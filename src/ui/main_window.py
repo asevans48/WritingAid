@@ -20,6 +20,7 @@ from src.ui.grader_widget import GraderWidget
 from src.ui.agent_manager_widget import AgentManagerWidget
 from src.ui.settings_dialog import SettingsDialog
 from src.ui.chat_widget import ChatWidget
+from src.ui.attributions_tab import AttributionsTab
 from src.export.manuscript_exporter import ManuscriptExporter
 from src.export.llm_context_exporter import LLMContextExporter
 from src.ui.styles import get_modern_style, get_icon
@@ -79,12 +80,17 @@ class MainWindow(QMainWindow):
         self.image_generator = ImageGeneratorWidget()
         self.grader_widget = GraderWidget()
         self.agent_manager = AgentManagerWidget()
+        self.attributions_tab = AttributionsTab()
+
+        # Connect attributions tab jump signal
+        self.attributions_tab.jump_to_annotation.connect(self._jump_to_annotation)
 
         # Add tabs with icons for visual appeal
         self.tab_widget.addTab(self.manuscript_editor, f"{get_icon('manuscript')} Write")
         self.tab_widget.addTab(self.story_planning_widget, f"{get_icon('story')} Plot")
         self.tab_widget.addTab(self.characters_widget, f"{get_icon('characters')} Characters")
         self.tab_widget.addTab(self.worldbuilding_widget, f"{get_icon('worldbuilding')} World")
+        self.tab_widget.addTab(self.attributions_tab, "📚 Attributions")
         self.tab_widget.addTab(self.image_generator, f"{get_icon('images')} Visuals")
         self.tab_widget.addTab(self.grader_widget, f"{get_icon('grader')} Critique")
         self.tab_widget.addTab(self.agent_manager, f"{get_icon('agents')} Publishing")
@@ -237,6 +243,9 @@ class MainWindow(QMainWindow):
         self.story_planning_widget.content_changed.connect(self._on_content_changed)
         self.manuscript_editor.content_changed.connect(self._on_content_changed)
 
+        # Connect annotation changes to update attributions tab
+        self.manuscript_editor.annotations_changed.connect(self._on_annotations_changed)
+
         # Connect chat to AI assistance
         self.chat_widget.message_sent.connect(self._handle_chat_message)
 
@@ -337,6 +346,7 @@ class MainWindow(QMainWindow):
         self.manuscript_editor.load_manuscript(self.current_project.manuscript)
         self.image_generator.load_data(self.current_project.generated_images)
         self.agent_manager.load_data(self.current_project.agent_contacts)
+        self.attributions_tab.set_manuscript(self.current_project.manuscript)
 
         self.project_changed.emit()
 
@@ -377,6 +387,12 @@ class MainWindow(QMainWindow):
         if self.current_project:
             window_title = f"Writer Platform - {self.current_project.name}*"
             self.setWindowTitle(window_title)
+
+    def _on_annotations_changed(self):
+        """Handle annotation changes - update attributions tab."""
+        if self.current_project:
+            self.attributions_tab.set_manuscript(self.current_project.manuscript)
+            self._on_content_changed()
 
     def _toggle_chat(self):
         """Toggle chat widget visibility."""
@@ -535,6 +551,29 @@ class MainWindow(QMainWindow):
             "Features worldbuilding, character development, story planning, "
             "manuscript editing, AI assistance, and more."
         )
+
+    def _jump_to_annotation(self, chapter_id: str, annotation_id: str):
+        """Jump to specific annotation in manuscript editor."""
+        # Switch to Write tab
+        self.tab_widget.setCurrentWidget(self.manuscript_editor)
+
+        # Find and select the chapter in manuscript editor
+        for i in range(self.manuscript_editor.chapter_list.count()):
+            item = self.manuscript_editor.chapter_list.item(i)
+            if item.data(Qt.ItemDataRole.UserRole) == chapter_id:
+                self.manuscript_editor.chapter_list.setCurrentItem(item)
+
+                # Wait for chapter to load, then jump to annotation
+                if self.manuscript_editor.current_chapter_editor:
+                    # Find the annotation to get its line number
+                    annotation = next(
+                        (a for a in self.manuscript_editor.current_chapter_editor.chapter.annotations
+                         if a.id == annotation_id),
+                        None
+                    )
+                    if annotation:
+                        self.manuscript_editor.current_chapter_editor._jump_to_line(annotation.line_number)
+                break
 
     def closeEvent(self, event):
         """Handle window close event."""

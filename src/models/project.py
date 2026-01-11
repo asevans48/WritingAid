@@ -114,6 +114,22 @@ class ChapterRevision(BaseModel):
     notes: str = ""
 
 
+class Annotation(BaseModel):
+    """Annotation/note attached to a specific line in a chapter."""
+    id: str
+    line_number: int
+    annotation_type: str = "note"  # note, attribution, recommendation
+    content: str = ""
+
+    # For attributions - references to other elements
+    referenced_type: Optional[str] = None  # character, chapter, myth, worldbuilding, etc.
+    referenced_id: Optional[str] = None
+    referenced_name: Optional[str] = None
+
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
+
+
 class Chapter(BaseModel):
     """Chapter unit for manuscript."""
     id: str
@@ -122,6 +138,7 @@ class Chapter(BaseModel):
     content: str = ""  # Content stored inline (legacy) or loaded from file_path
     file_path: Optional[str] = None  # Relative path to chapter file within project
     revisions: List[ChapterRevision] = Field(default_factory=list)
+    annotations: List[Annotation] = Field(default_factory=list)  # Line-specific notes and attributions
     notes: str = ""
     word_count: int = 0
     created_at: datetime = Field(default_factory=datetime.now)

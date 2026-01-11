@@ -4,7 +4,7 @@ from typing import Optional, Dict, List
 from enum import Enum
 import anthropic
 import openai
-import google.generativeai as genai
+from google import genai
 
 
 class LLMProvider(Enum):
@@ -37,15 +37,14 @@ class LLMClient:
             openai.api_key = api_key
             self.client = openai
         elif provider == LLMProvider.GEMINI:
-            genai.configure(api_key=api_key)
-            self.client = genai
+            self.client = genai.Client(api_key=api_key)
 
     def _get_default_model(self) -> str:
         """Get default model for provider."""
         defaults = {
             LLMProvider.CLAUDE: "claude-3-5-sonnet-20241022",
             LLMProvider.CHATGPT: "gpt-4-turbo-preview",
-            LLMProvider.GEMINI: "gemini-pro"
+            LLMProvider.GEMINI: "gemini-2.0-flash-exp"
         }
         return defaults[self.provider]
 
@@ -119,20 +118,21 @@ class LLMClient:
         temperature: float
     ) -> str:
         """Generate text using Gemini."""
-        model = genai.GenerativeModel(self.model)
+        from google.genai import types
 
         full_prompt = prompt
         if system_prompt:
             full_prompt = f"{system_prompt}\n\n{prompt}"
 
-        generation_config = {
-            "max_output_tokens": max_tokens,
-            "temperature": temperature
-        }
+        config = types.GenerateContentConfig(
+            temperature=temperature,
+            max_output_tokens=max_tokens
+        )
 
-        response = model.generate_content(
-            full_prompt,
-            generation_config=generation_config
+        response = self.client.models.generate_content(
+            model=self.model,
+            contents=full_prompt,
+            config=config
         )
         return response.text
 

@@ -3,15 +3,103 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QPushButton, QLabel, QTextEdit, QToolBar, QComboBox, QSpinBox,
-    QMessageBox, QInputDialog, QGroupBox, QSplitter, QFileDialog
+    QMessageBox, QInputDialog, QGroupBox, QSplitter, QFileDialog,
+    QDialog, QMenu
 )
-from PyQt6.QtCore import pyqtSignal, Qt
-from PyQt6.QtGui import QFont, QTextCursor, QAction
+from PyQt6.QtCore import pyqtSignal, Qt, QRect, QSize
+from PyQt6.QtGui import QFont, QTextCursor, QAction, QTextCharFormat, QColor, QPainter, QTextFormat
 from typing import List, Optional
 import uuid
 
-from src.models.project import Manuscript, Chapter
+from src.models.project import Manuscript, Chapter, Annotation
 from src.ui.enhanced_text_editor import EnhancedTextEditor
+from src.ui.annotations import AnnotationDialog
+from src.ui.annotation_list_dialog import AnnotationListDialog
+
+
+class AnnotationMarginArea(QWidget):
+    """Custom widget for displaying annotation indicators in the margin."""
+
+    annotation_clicked = pyqtSignal(int)  # line_number
+
+    def __init__(self, editor):
+        """Initialize margin area."""
+        super().__init__(editor)
+        self.editor = editor
+        self.annotations = []
+
+    def set_annotations(self, annotations):
+        """Set annotations to display."""
+        self.annotations = annotations
+        self.update()
+
+    def sizeHint(self):
+        """Return size hint for margin."""
+        return QSize(30, 0)
+
+    def paintEvent(self, event):
+        """Paint annotation indicators."""
+        painter = QPainter(self)
+        painter.fillRect(event.rect(), QColor(250, 250, 250))
+
+        # Get document
+        document = self.editor.document()
+
+        # Get viewport rect to determine visible area
+        viewport_rect = self.editor.viewport().rect()
+
+        # Iterate through all blocks in document
+        block = document.begin()
+        block_number = 0
+
+        while block.isValid():
+            line_number = block_number + 1
+
+            # Check if this line has annotations
+            line_annotations = [a for a in self.annotations if a.line_number == line_number]
+
+            if line_annotations:
+                # Get the block's position in the editor
+                cursor = QTextCursor(block)
+                rect = self.editor.cursorRect(cursor)
+
+                # Only draw if within visible area
+                if rect.top() >= -rect.height() and rect.top() <= self.height():
+                    # Draw plus indicator
+                    painter.setPen(QColor(100, 100, 255))
+                    painter.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+                    painter.drawText(0, rect.top(), self.width(), rect.height(),
+                                   Qt.AlignmentFlag.AlignCenter, "+")
+
+            block = block.next()
+            block_number += 1
+
+    def mousePressEvent(self, event):
+        """Handle click on annotation indicator."""
+        # Get document
+        document = self.editor.document()
+
+        # Find which line was clicked by iterating through blocks
+        block = document.begin()
+        block_number = 0
+        click_y = event.pos().y()
+
+        while block.isValid():
+            line_number = block_number + 1
+
+            # Get the block's position in the editor
+            cursor = QTextCursor(block)
+            rect = self.editor.cursorRect(cursor)
+
+            # Check if click was in this block's area
+            if rect.top() <= click_y <= rect.top() + rect.height():
+                # Check if this line has annotations
+                if any(a.line_number == line_number for a in self.annotations):
+                    self.annotation_clicked.emit(line_number)
+                break
+
+            block = block.next()
+            block_number += 1
 
 
 class ChapterEditor(QWidget):
@@ -19,6 +107,7 @@ class ChapterEditor(QWidget):
 
     content_changed = pyqtSignal()
     word_count_changed = pyqtSignal(int)
+    annotations_changed = pyqtSignal()  # Signal when annotations are added/edited/deleted
 
     def __init__(self, chapter: Chapter, project=None):
         """Initialize chapter editor."""
@@ -73,6 +162,20 @@ class ChapterEditor(QWidget):
         underline_action.triggered.connect(self._toggle_underline)
         toolbar.addAction(underline_action)
 
+        toolbar.addSeparator()
+
+        # Annotation actions
+        annotation_action = QAction("📝 Add Note", self)
+        annotation_action.setShortcut("Ctrl+Shift+N")
+        annotation_action.triggered.connect(lambda: self._add_annotation())
+        annotation_action.setToolTip("Add annotation at current line (Ctrl+Shift+N)")
+        toolbar.addAction(annotation_action)
+
+        view_annotations_action = QAction("📋 View All", self)
+        view_annotations_action.triggered.connect(self._view_annotations_list)
+        view_annotations_action.setToolTip("View all annotations")
+        toolbar.addAction(view_annotations_action)
+
         layout.addWidget(toolbar)
 
         # Chapter title
@@ -88,6 +191,11 @@ class ChapterEditor(QWidget):
 
         layout.addLayout(title_layout)
 
+        # Main editor with annotation margin
+        editor_container = QHBoxLayout()
+        editor_container.setContentsMargins(0, 0, 0, 0)
+        editor_container.setSpacing(0)
+
         # Main editor - use enhanced editor
         self.editor = EnhancedTextEditor()
         self.editor.setPlaceholderText("Start writing your chapter...")
@@ -97,11 +205,33 @@ class ChapterEditor(QWidget):
         font = QFont("Times New Roman", 12)
         self.editor.setFont(font)
 
+        # Override the EnhancedTextEditor's context menu with our own
+        # Disconnect the default handler first
+        try:
+            self.editor.customContextMenuRequested.disconnect()
+        except:
+            pass
+
+        # Connect our custom context menu
+        self.editor.customContextMenuRequested.connect(self._show_context_menu)
+
         # Set up context lookup callbacks if project is available
         if self.project:
             self._setup_context_lookup()
 
-        layout.addWidget(self.editor)
+        # Annotation margin area
+        self.annotation_margin = AnnotationMarginArea(self.editor)
+        self.annotation_margin.annotation_clicked.connect(self._on_margin_clicked)
+
+        # Connect editor updates to margin repaints
+        # QTextEdit uses verticalScrollBar signals instead of updateRequest
+        self.editor.verticalScrollBar().valueChanged.connect(self._update_margin_area_scroll)
+        self.editor.textChanged.connect(self.annotation_margin.update)
+
+        editor_container.addWidget(self.annotation_margin)
+        editor_container.addWidget(self.editor)
+
+        layout.addLayout(editor_container)
 
         # Bottom toolbar
         bottom_toolbar = QHBoxLayout()
@@ -144,6 +274,8 @@ class ChapterEditor(QWidget):
         self.title_edit.setPlainText(self.chapter.title)
         self.editor.setPlainText(self.chapter.content)
         self._update_word_count()
+        self._update_margin_annotations()
+        self._highlight_annotated_lines()
 
     def _on_text_changed(self):
         """Handle text changes."""
@@ -215,6 +347,79 @@ class ChapterEditor(QWidget):
         fmt.setFontUnderline(not fmt.fontUnderline())
         cursor.mergeCharFormat(fmt)
 
+    def _show_context_menu(self, position):
+        """Show custom context menu with annotation option."""
+        # Get cursor at click position
+        cursor = self.editor.cursorForPosition(position)
+        line_number = cursor.blockNumber() + 1
+
+        # Create context menu
+        menu = QMenu(self.editor)
+
+        # Add annotation action
+        add_annotation_action = menu.addAction("📝 Add Annotation")
+        add_annotation_action.triggered.connect(lambda: self._add_annotation(line_number))
+
+        # Check if there are annotations on this line
+        line_annotations = [a for a in self.chapter.annotations if a.line_number == line_number]
+
+        if line_annotations:
+            view_annotations_action = menu.addAction(f"📋 View Annotations ({len(line_annotations)})")
+            view_annotations_action.triggered.connect(lambda: self._on_margin_clicked(line_number))
+
+        menu.addSeparator()
+
+        # Standard edit actions
+        undo_action = menu.addAction("Undo")
+        undo_action.triggered.connect(self.editor.undo)
+        undo_action.setEnabled(self.editor.document().isUndoAvailable())
+
+        redo_action = menu.addAction("Redo")
+        redo_action.triggered.connect(self.editor.redo)
+        redo_action.setEnabled(self.editor.document().isRedoAvailable())
+
+        menu.addSeparator()
+
+        # Copy/Paste actions
+        if cursor.hasSelection():
+            cut_action = menu.addAction("Cut")
+            cut_action.triggered.connect(self.editor.cut)
+
+            copy_action = menu.addAction("Copy")
+            copy_action.triggered.connect(self.editor.copy)
+
+        paste_action = menu.addAction("Paste")
+        paste_action.triggered.connect(self.editor.paste)
+
+        menu.addSeparator()
+
+        # Context lookup menu
+        lookup_menu = menu.addMenu("Look Up Context")
+
+        # Get selected text
+        selected_text = cursor.selectedText()
+
+        if selected_text:
+            # Lookup selected text
+            lookup_selected = lookup_menu.addAction(f'Look Up "{selected_text[:30]}..."')
+            lookup_selected.triggered.connect(lambda: self._lookup_selected_text(selected_text))
+            lookup_menu.addSeparator()
+
+        # Character lookup
+        character_action = lookup_menu.addAction("Character Reference")
+        character_action.triggered.connect(self._lookup_character)
+
+        # Worldbuilding lookup
+        worldbuilding_action = lookup_menu.addAction("Worldbuilding Reference")
+        worldbuilding_action.triggered.connect(self._lookup_worldbuilding)
+
+        # Plot lookup
+        plot_action = lookup_menu.addAction("Plot Reference")
+        plot_action.triggered.connect(self._lookup_plot)
+
+        # Show menu at cursor position
+        menu.exec(self.editor.mapToGlobal(position))
+
     def _request_ai_hints(self):
         """Request AI hints for improving the chapter."""
         # TODO: Integrate with AI client
@@ -223,6 +428,60 @@ class ChapterEditor(QWidget):
             "AI Hints",
             "AI chapter hints will be integrated soon."
         )
+
+    def _lookup_selected_text(self, text: str):
+        """Look up context for selected text."""
+        if hasattr(self.editor, 'lookup_context_callback') and self.editor.lookup_context_callback:
+            from src.ui.enhanced_text_editor import ContextLookupDialog
+            result = self.editor.lookup_context_callback(text)
+            dialog = ContextLookupDialog(f"Context for: {text}", result, self)
+            dialog.exec()
+
+    def _lookup_character(self):
+        """Look up character reference."""
+        if not hasattr(self.editor, 'get_character_list_callback') or not self.editor.get_character_list_callback:
+            QMessageBox.information(self, "Not Available", "Character lookup not configured.")
+            return
+
+        from src.ui.enhanced_text_editor import ContextLookupDialog, QuickReferenceDialog
+        characters = self.editor.get_character_list_callback()
+        if not characters:
+            QMessageBox.information(self, "No Characters", "No characters defined in your project yet.")
+            return
+
+        dialog = QuickReferenceDialog(characters, "Character", self)
+        if dialog.exec() and dialog.selected_item:
+            if hasattr(self.editor, 'lookup_characters_callback') and self.editor.lookup_characters_callback:
+                result = self.editor.lookup_characters_callback(dialog.selected_item)
+                ref_dialog = ContextLookupDialog(f"Character: {dialog.selected_item}", result, self)
+                ref_dialog.exec()
+
+    def _lookup_worldbuilding(self):
+        """Look up worldbuilding reference."""
+        if not hasattr(self.editor, 'get_worldbuilding_sections_callback') or not self.editor.get_worldbuilding_sections_callback:
+            QMessageBox.information(self, "Not Available", "Worldbuilding lookup not configured.")
+            return
+
+        from src.ui.enhanced_text_editor import ContextLookupDialog, QuickReferenceDialog
+        sections = self.editor.get_worldbuilding_sections_callback()
+        if not sections:
+            QMessageBox.information(self, "No Worldbuilding", "No worldbuilding sections defined yet.")
+            return
+
+        dialog = QuickReferenceDialog(sections, "Worldbuilding Section", self)
+        if dialog.exec() and dialog.selected_item:
+            if hasattr(self.editor, 'lookup_worldbuilding_callback') and self.editor.lookup_worldbuilding_callback:
+                result = self.editor.lookup_worldbuilding_callback(dialog.selected_item)
+                ref_dialog = ContextLookupDialog(f"Worldbuilding: {dialog.selected_item}", result, self)
+                ref_dialog.exec()
+
+    def _lookup_plot(self):
+        """Look up plot reference."""
+        if hasattr(self.editor, 'lookup_plot_callback') and self.editor.lookup_plot_callback:
+            from src.ui.enhanced_text_editor import ContextLookupDialog
+            result = self.editor.lookup_plot_callback()
+            dialog = ContextLookupDialog("Plot Reference", result, self)
+            dialog.exec()
 
     def _save_revision(self):
         """Save current content as a revision."""
@@ -377,6 +636,189 @@ class ChapterEditor(QWidget):
             get_worldbuilding_sections=get_worldbuilding_sections
         )
 
+    def _add_annotation(self, line_number: int = None):
+        """Add annotation at current line or specified line."""
+        if line_number is None:
+            cursor = self.editor.textCursor()
+            line_number = cursor.blockNumber() + 1
+
+        dialog = AnnotationDialog(
+            line_number=line_number,
+            available_characters=self.project.characters if self.project else [],
+            available_chapters=self.project.manuscript.chapters if self.project else [],
+            available_myths=self.project.worldbuilding.myths if self.project else [],
+            parent=self
+        )
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            annotation = dialog.get_annotation()
+            self.chapter.annotations.append(annotation)
+            self._update_margin_annotations()
+            self._highlight_annotated_lines()
+            self.content_changed.emit()
+            self.annotations_changed.emit()
+
+    def _on_margin_clicked(self, line_number: int):
+        """Handle click on annotation margin - show annotations for that line."""
+        line_annotations = [a for a in self.chapter.annotations if a.line_number == line_number]
+
+        if not line_annotations:
+            return
+
+        # If only one annotation, edit it directly
+        if len(line_annotations) == 1:
+            self._edit_annotation(line_annotations[0])
+        else:
+            # Show selection dialog
+            from PyQt6.QtWidgets import QListWidget, QDialog, QVBoxLayout, QPushButton
+            dialog = QDialog(self)
+            dialog.setWindowTitle(f"Annotations at Line {line_number}")
+            layout = QVBoxLayout(dialog)
+
+            list_widget = QListWidget()
+            for ann in line_annotations:
+                type_icon = {"note": "📝", "attribution": "🔗", "recommendation": "💡"}
+                icon = type_icon.get(ann.annotation_type, "📝")
+                preview = ann.content[:50] + "..." if len(ann.content) > 50 else ann.content
+                list_widget.addItem(f"{icon} {preview}")
+
+            list_widget.itemDoubleClicked.connect(lambda: (self._edit_annotation(line_annotations[list_widget.currentRow()]), dialog.accept()))
+            layout.addWidget(list_widget)
+
+            btn = QPushButton("Close")
+            btn.clicked.connect(dialog.accept)
+            layout.addWidget(btn)
+
+            dialog.exec()
+
+    def _edit_annotation(self, annotation: Annotation):
+        """Edit an annotation."""
+        dialog = AnnotationDialog(
+            annotation=annotation,
+            line_number=annotation.line_number,
+            available_characters=self.project.characters if self.project else [],
+            available_chapters=self.project.manuscript.chapters if self.project else [],
+            available_myths=self.project.worldbuilding.myths if self.project else [],
+            parent=self
+        )
+
+        # Connect delete signal
+        dialog.delete_requested.connect(lambda: self._delete_annotation(annotation.id))
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._update_margin_annotations()
+            self._highlight_annotated_lines()
+            self.content_changed.emit()
+            self.annotations_changed.emit()
+
+    def _delete_annotation(self, annotation_id: str):
+        """Delete annotation."""
+        self.chapter.annotations = [a for a in self.chapter.annotations if a.id != annotation_id]
+        self._update_margin_annotations()
+        self._highlight_annotated_lines()
+        self.content_changed.emit()
+        self.annotations_changed.emit()
+
+    def _update_margin_annotations(self):
+        """Update annotation margin."""
+        self.annotation_margin.set_annotations(self.chapter.annotations)
+
+    def _update_margin_area_scroll(self):
+        """Update margin area when editor scrolls."""
+        self.annotation_margin.update()
+
+    def _view_annotations_list(self):
+        """Open annotation list dialog."""
+        dialog = AnnotationListDialog(self.chapter.annotations, self)
+
+        # Connect signals
+        dialog.jump_to_line.connect(self._jump_to_line)
+        dialog.edit_annotation.connect(lambda ann_id: self._edit_annotation_by_id_and_refresh(ann_id, dialog))
+        dialog.delete_annotation.connect(lambda ann_id: self._delete_annotation_and_refresh(ann_id, dialog))
+
+        dialog.exec()
+
+    def _edit_annotation_by_id_and_refresh(self, annotation_id: str, dialog):
+        """Edit annotation and refresh the dialog."""
+        annotation = next((a for a in self.chapter.annotations if a.id == annotation_id), None)
+        if annotation:
+            edit_dialog = AnnotationDialog(
+                annotation=annotation,
+                line_number=annotation.line_number,
+                available_characters=self.project.characters if self.project else [],
+                available_chapters=self.project.manuscript.chapters if self.project else [],
+                available_myths=self.project.worldbuilding.myths if self.project else [],
+                parent=self
+            )
+
+            # Connect delete signal - delete and refresh both dialogs
+            edit_dialog.delete_requested.connect(lambda: self._delete_annotation_and_refresh(annotation.id, dialog))
+
+            if edit_dialog.exec() == QDialog.DialogCode.Accepted:
+                self._update_margin_annotations()
+                self._highlight_annotated_lines()
+                self.content_changed.emit()
+                self.annotations_changed.emit()
+                dialog.set_annotations(self.chapter.annotations)
+
+    def _delete_annotation_and_refresh(self, annotation_id: str, dialog):
+        """Delete annotation and refresh the dialog."""
+        self.chapter.annotations = [a for a in self.chapter.annotations if a.id != annotation_id]
+        self._update_margin_annotations()
+        self._highlight_annotated_lines()
+        self.content_changed.emit()
+        self.annotations_changed.emit()
+        dialog.set_annotations(self.chapter.annotations)
+
+    def _jump_to_line(self, line_number: int):
+        """Jump to specific line in editor."""
+        cursor = self.editor.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.Start)
+        cursor.movePosition(QTextCursor.MoveOperation.Down, QTextCursor.MoveMode.MoveAnchor, line_number - 1)
+        self.editor.setTextCursor(cursor)
+        self.editor.setFocus()
+
+    def _edit_annotation_by_id(self, annotation_id: str):
+        """Edit annotation by ID."""
+        annotation = next((a for a in self.chapter.annotations if a.id == annotation_id), None)
+        if annotation:
+            self._edit_annotation(annotation)
+
+    def _highlight_annotated_lines(self):
+        """Highlight lines that have annotations."""
+        # Store current cursor position
+        old_cursor = self.editor.textCursor()
+        old_position = old_cursor.position()
+
+        # Clear all formatting first
+        cursor = QTextCursor(self.editor.document())
+        cursor.select(QTextCursor.SelectionType.Document)
+        fmt = QTextCharFormat()
+        cursor.setCharFormat(fmt)
+
+        # Highlight annotated lines
+        for annotation in self.chapter.annotations:
+            cursor = QTextCursor(self.editor.document())
+            cursor.movePosition(QTextCursor.MoveOperation.Start)
+            cursor.movePosition(QTextCursor.MoveOperation.Down, QTextCursor.MoveMode.MoveAnchor, annotation.line_number - 1)
+            cursor.select(QTextCursor.SelectionType.LineUnderCursor)
+
+            # Color based on type
+            fmt = QTextCharFormat()
+            if annotation.annotation_type == "attribution":
+                fmt.setBackground(QColor(230, 244, 255, 100))  # Light blue
+            elif annotation.annotation_type == "recommendation":
+                fmt.setBackground(QColor(255, 250, 230, 100))  # Light yellow
+            else:
+                fmt.setBackground(QColor(240, 240, 240, 100))  # Light gray
+
+            cursor.mergeCharFormat(fmt)
+
+        # Restore cursor position
+        new_cursor = self.editor.textCursor()
+        new_cursor.setPosition(old_position)
+        self.editor.setTextCursor(new_cursor)
+
     def save_to_model(self):
         """Save editor content to chapter model."""
         self.chapter.title = self.title_edit.toPlainText()
@@ -388,6 +830,7 @@ class ManuscriptEditor(QWidget):
     """Main manuscript editor with chapter navigation."""
 
     content_changed = pyqtSignal()
+    annotations_changed = pyqtSignal()  # Signal when any annotation changes
 
     def __init__(self, project=None):
         """Initialize manuscript editor."""
@@ -687,6 +1130,7 @@ class ManuscriptEditor(QWidget):
             self._clear_editor()
             self.current_chapter_editor = ChapterEditor(chapter, self.project)
             self.current_chapter_editor.content_changed.connect(self.content_changed.emit)
+            self.current_chapter_editor.annotations_changed.connect(self.annotations_changed.emit)
             self.current_chapter_editor.word_count_changed.connect(
                 lambda _: self._update_total_word_count()
             )
