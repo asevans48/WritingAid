@@ -1,0 +1,217 @@
+"""Manuscript export functionality for various formats."""
+
+from pathlib import Path
+from typing import Optional
+from docx import Document
+from docx.shared import Pt, Inches
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+import ebooklib
+from ebooklib import epub
+
+from src.models.project import Manuscript, Chapter
+
+
+class ManuscriptExporter:
+    """Export manuscripts to various publishing formats."""
+
+    def __init__(self, manuscript: Manuscript):
+        """Initialize exporter with manuscript."""
+        self.manuscript = manuscript
+
+    def export_to_docx(self, output_path: str) -> bool:
+        """Export manuscript as Word document."""
+        try:
+            doc = Document()
+
+            # Set up document styles
+            style = doc.styles['Normal']
+            font = style.font
+            font.name = 'Times New Roman'
+            font.size = Pt(12)
+
+            # Title page
+            title = doc.add_heading(self.manuscript.title, 0)
+            title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+            if self.manuscript.author:
+                author = doc.add_paragraph(f"by {self.manuscript.author}")
+                author.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+            doc.add_page_break()
+
+            # Add chapters
+            for chapter in self.manuscript.chapters:
+                # Chapter title
+                doc.add_heading(chapter.title, 1)
+
+                # Chapter content
+                if chapter.content:
+                    doc.add_paragraph(chapter.content)
+
+                doc.add_page_break()
+
+            # Save document
+            doc.save(output_path)
+            return True
+
+        except Exception as e:
+            print(f"Error exporting to DOCX: {e}")
+            return False
+
+    def export_for_kindle(self, output_path: str) -> bool:
+        """
+        Export manuscript for Kindle Direct Publishing (EPUB format).
+
+        KDP accepts EPUB, MOBI, and Word formats. EPUB is recommended.
+        """
+        try:
+            book = epub.EpubBook()
+
+            # Set metadata
+            book.set_identifier(f'id-{self.manuscript.title}')
+            book.set_title(self.manuscript.title)
+            book.set_language('en')
+
+            if self.manuscript.author:
+                book.add_author(self.manuscript.author)
+
+            # Create chapters
+            epub_chapters = []
+
+            for chapter in self.manuscript.chapters:
+                # Create EPUB chapter
+                c = epub.EpubHtml(
+                    title=chapter.title,
+                    file_name=f'chapter_{chapter.number}.xhtml',
+                    lang='en'
+                )
+
+                # Format content
+                content = f'<h1>{chapter.title}</h1>'
+                # Convert plain text to HTML paragraphs
+                paragraphs = chapter.content.split('\n\n')
+                for para in paragraphs:
+                    if para.strip():
+                        content += f'<p>{para.strip()}</p>'
+
+                c.content = content
+
+                book.add_item(c)
+                epub_chapters.append(c)
+
+            # Define Table of Contents
+            book.toc = tuple(epub_chapters)
+
+            # Add default NCX and Nav files
+            book.add_item(epub.EpubNcx())
+            book.add_item(epub.EpubNav())
+
+            # Basic spine
+            book.spine = ['nav'] + epub_chapters
+
+            # Write EPUB file
+            epub.write_epub(output_path, book)
+            return True
+
+        except Exception as e:
+            print(f"Error exporting for Kindle: {e}")
+            return False
+
+    def export_for_barnes_noble(self, output_path: str) -> bool:
+        """
+        Export manuscript for Barnes & Noble Press (EPUB format).
+
+        Barnes & Noble Press requires EPUB format.
+        Similar to Kindle but with B&N-specific requirements.
+        """
+        # B&N Press uses standard EPUB format
+        return self.export_for_kindle(output_path)
+
+    def export_publisher_ready(self, output_path: str) -> bool:
+        """
+        Export manuscript in publisher-ready format (DOCX).
+
+        Standard manuscript format:
+        - 12pt Times New Roman
+        - Double-spaced
+        - 1-inch margins
+        - Chapter titles on new pages
+        - Page numbers
+        """
+        try:
+            doc = Document()
+
+            # Set up standard manuscript formatting
+            style = doc.styles['Normal']
+            font = style.font
+            font.name = 'Times New Roman'
+            font.size = Pt(12)
+
+            # Set paragraph formatting
+            paragraph_format = style.paragraph_format
+            paragraph_format.line_spacing = 2.0  # Double-spaced
+            paragraph_format.space_after = Pt(0)
+
+            # Set margins (1 inch)
+            sections = doc.sections
+            for section in sections:
+                section.top_margin = Inches(1)
+                section.bottom_margin = Inches(1)
+                section.left_margin = Inches(1)
+                section.right_margin = Inches(1)
+
+            # Title page
+            title = doc.add_heading(self.manuscript.title, 0)
+            title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+            if self.manuscript.author:
+                author = doc.add_paragraph(f"by {self.manuscript.author}")
+                author.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+            # Word count
+            word_count = doc.add_paragraph(f"Word Count: {self.manuscript.total_word_count:,}")
+            word_count.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+            doc.add_page_break()
+
+            # Add chapters
+            for chapter in self.manuscript.chapters:
+                # Chapter title - centered
+                chapter_title = doc.add_heading(chapter.title, 1)
+                chapter_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+                # Chapter content - double-spaced
+                if chapter.content:
+                    # Split into paragraphs
+                    paragraphs = chapter.content.split('\n\n')
+                    for para in paragraphs:
+                        if para.strip():
+                            p = doc.add_paragraph(para.strip())
+                            # Indent first line
+                            p.paragraph_format.first_line_indent = Inches(0.5)
+
+                doc.add_page_break()
+
+            # Save document
+            doc.save(output_path)
+            return True
+
+        except Exception as e:
+            print(f"Error exporting publisher-ready manuscript: {e}")
+            return False
+
+    def get_manuscript_statistics(self) -> dict:
+        """Get manuscript statistics for submission purposes."""
+        total_words = sum(chapter.word_count for chapter in self.manuscript.chapters)
+        total_chapters = len(self.manuscript.chapters)
+
+        # Estimate pages (250 words per page is standard)
+        estimated_pages = total_words / 250
+
+        return {
+            'total_words': total_words,
+            'total_chapters': total_chapters,
+            'estimated_pages': int(estimated_pages),
+            'title': self.manuscript.title,
+            'author': self.manuscript.author
+        }
