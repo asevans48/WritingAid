@@ -268,10 +268,19 @@ class WriterProject(BaseModel):
 
     @classmethod
     def load_project(cls, file_path: str) -> 'WriterProject':
-        """Load project from JSON file."""
+        """Load project from JSON file with backwards compatibility and repair."""
         with open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        project = cls(**data)
+
+        # Repair and migrate data before loading
+        data = cls._repair_project_data(data, file_path)
+
+        try:
+            project = cls(**data)
+        except Exception as e:
+            # If standard loading fails, try field-by-field recovery
+            project = cls._recover_project_fields(data, file_path, e)
+
         project.project_path = file_path
 
         # Load chapter content from separate files if they exist
@@ -279,5 +288,278 @@ class WriterProject(BaseModel):
         for chapter in project.manuscript.chapters:
             if chapter.file_path:
                 chapter.load_content_from_file(project_dir)
+
+        return project
+
+    @classmethod
+    def _repair_project_data(cls, data: dict, file_path: str) -> dict:
+        """Repair and migrate project data for backwards compatibility.
+
+        This handles:
+        - Missing required fields
+        - Old field formats that need migration
+        - Corrupted nested data
+        """
+        # Ensure required top-level fields exist
+        if 'name' not in data or not data['name']:
+            # Try to get name from file path
+            data['name'] = Path(file_path).stem.replace('.writerproj', '') or 'Recovered Project'
+
+        # Ensure all main sections exist with defaults
+        section_defaults = {
+            'worldbuilding': {},
+            'characters': [],
+            'story_planning': {},
+            'manuscript': {},
+            'generated_images': [],
+            'agent_contacts': [],
+            'dictionary': {},
+        }
+
+        for section, default in section_defaults.items():
+            if section not in data:
+                data[section] = default
+
+        # Repair worldbuilding section
+        data['worldbuilding'] = cls._repair_worldbuilding(data.get('worldbuilding', {}))
+
+        # Repair characters list
+        data['characters'] = cls._repair_characters(data.get('characters', []))
+
+        # Repair story planning
+        data['story_planning'] = cls._repair_story_planning(data.get('story_planning', {}))
+
+        # Repair manuscript
+        data['manuscript'] = cls._repair_manuscript(data.get('manuscript', {}))
+
+        # Repair generated images
+        data['generated_images'] = cls._repair_generated_images(data.get('generated_images', []))
+
+        # Repair agent contacts
+        data['agent_contacts'] = cls._repair_agent_contacts(data.get('agent_contacts', []))
+
+        return data
+
+    @classmethod
+    def _repair_worldbuilding(cls, wb_data: dict) -> dict:
+        """Repair worldbuilding data."""
+        if not isinstance(wb_data, dict):
+            return {}
+
+        # Ensure all text fields are strings
+        text_fields = ['mythology', 'planets', 'climate', 'history', 'politics',
+                       'military', 'economy', 'power_hierarchy']
+        for field in text_fields:
+            if field not in wb_data or not isinstance(wb_data.get(field), str):
+                wb_data[field] = wb_data.get(field, '') if isinstance(wb_data.get(field), str) else ''
+
+        # Ensure element dicts exist
+        element_fields = ['mythology_elements', 'planets_elements', 'climate_elements',
+                          'history_elements', 'politics_elements', 'military_elements',
+                          'economy_elements', 'power_hierarchy_elements', 'custom_sections']
+        for field in element_fields:
+            if field not in wb_data or not isinstance(wb_data.get(field), dict):
+                wb_data[field] = {}
+
+        # Ensure list fields exist
+        list_fields = ['factions', 'myths', 'climate_presets', 'technologies',
+                       'flora', 'fauna', 'stars', 'star_systems']
+        for field in list_fields:
+            if field not in wb_data or not isinstance(wb_data.get(field), list):
+                wb_data[field] = []
+
+        return wb_data
+
+    @classmethod
+    def _repair_characters(cls, chars_data: list) -> list:
+        """Repair characters list."""
+        if not isinstance(chars_data, list):
+            return []
+
+        repaired = []
+        for i, char in enumerate(chars_data):
+            if not isinstance(char, dict):
+                continue
+
+            # Ensure required fields
+            if 'id' not in char or not char['id']:
+                char['id'] = f"char_{i}_{datetime.now().timestamp()}"
+            if 'name' not in char or not char['name']:
+                char['name'] = f"Unknown Character {i+1}"
+            if 'character_type' not in char:
+                char['character_type'] = 'minor'
+
+            # Ensure optional fields have correct types
+            if not isinstance(char.get('social_network'), dict):
+                char['social_network'] = {}
+
+            repaired.append(char)
+
+        return repaired
+
+    @classmethod
+    def _repair_story_planning(cls, sp_data: dict) -> dict:
+        """Repair story planning data."""
+        if not isinstance(sp_data, dict):
+            return {}
+
+        # Ensure freytag_pyramid exists
+        if 'freytag_pyramid' not in sp_data or not isinstance(sp_data.get('freytag_pyramid'), dict):
+            sp_data['freytag_pyramid'] = {}
+
+        # Repair freytag pyramid fields
+        fp = sp_data['freytag_pyramid']
+        for field in ['exposition', 'rising_action', 'climax', 'falling_action', 'resolution']:
+            if not isinstance(fp.get(field), str):
+                fp[field] = ''
+        if not isinstance(fp.get('events'), list):
+            fp['events'] = []
+
+        # Ensure other fields
+        if not isinstance(sp_data.get('main_plot'), str):
+            sp_data['main_plot'] = ''
+        if not isinstance(sp_data.get('subplots'), list):
+            sp_data['subplots'] = []
+        if not isinstance(sp_data.get('themes'), list):
+            sp_data['themes'] = []
+
+        return sp_data
+
+    @classmethod
+    def _repair_manuscript(cls, ms_data: dict) -> dict:
+        """Repair manuscript data."""
+        if not isinstance(ms_data, dict):
+            return {}
+
+        # Ensure required fields
+        if not isinstance(ms_data.get('title'), str):
+            ms_data['title'] = 'Untitled Manuscript'
+        if not isinstance(ms_data.get('author'), str):
+            ms_data['author'] = ''
+        if not isinstance(ms_data.get('chapters'), list):
+            ms_data['chapters'] = []
+
+        # Repair each chapter
+        repaired_chapters = []
+        for i, chapter in enumerate(ms_data.get('chapters', [])):
+            if not isinstance(chapter, dict):
+                continue
+
+            # Ensure required chapter fields
+            if 'id' not in chapter or not chapter['id']:
+                chapter['id'] = f"chapter_{i}_{datetime.now().timestamp()}"
+            if 'number' not in chapter:
+                chapter['number'] = i + 1
+            if 'title' not in chapter or not chapter['title']:
+                chapter['title'] = f"Chapter {chapter['number']}"
+            if not isinstance(chapter.get('content'), str):
+                chapter['content'] = ''
+            if not isinstance(chapter.get('revisions'), list):
+                chapter['revisions'] = []
+            if not isinstance(chapter.get('annotations'), list):
+                chapter['annotations'] = []
+
+            repaired_chapters.append(chapter)
+
+        ms_data['chapters'] = repaired_chapters
+        return ms_data
+
+    @classmethod
+    def _repair_generated_images(cls, images_data: list) -> list:
+        """Repair generated images list."""
+        if not isinstance(images_data, list):
+            return []
+
+        repaired = []
+        for i, img in enumerate(images_data):
+            if not isinstance(img, dict):
+                continue
+
+            # Ensure required fields
+            if 'id' not in img or not img['id']:
+                img['id'] = f"img_{i}_{datetime.now().timestamp()}"
+            if 'image_path' not in img:
+                continue  # Skip images without paths
+            if 'prompt' not in img:
+                img['prompt'] = ''
+            if 'image_type' not in img:
+                img['image_type'] = 'scene'
+
+            repaired.append(img)
+
+        return repaired
+
+    @classmethod
+    def _repair_agent_contacts(cls, agents_data: list) -> list:
+        """Repair agent contacts list."""
+        if not isinstance(agents_data, list):
+            return []
+
+        repaired = []
+        for i, agent in enumerate(agents_data):
+            if not isinstance(agent, dict):
+                continue
+
+            # Ensure required fields
+            if 'id' not in agent or not agent['id']:
+                agent['id'] = f"agent_{i}_{datetime.now().timestamp()}"
+            if 'name' not in agent or not agent['name']:
+                agent['name'] = f"Unknown Agent {i+1}"
+
+            # Ensure optional fields
+            for field in ['agency', 'email', 'phone', 'notes']:
+                if not isinstance(agent.get(field), str):
+                    agent[field] = ''
+            if not isinstance(agent.get('submissions'), list):
+                agent['submissions'] = []
+
+            repaired.append(agent)
+
+        return repaired
+
+    @classmethod
+    def _recover_project_fields(cls, data: dict, file_path: str, original_error: Exception) -> 'WriterProject':
+        """Last-resort recovery: create project with whatever data we can salvage."""
+        print(f"Warning: Project file had errors, attempting recovery. Original error: {original_error}")
+
+        # Create minimal project
+        project = cls(
+            name=data.get('name', Path(file_path).stem or 'Recovered Project'),
+            description=data.get('description', f'Recovered from corrupted file. Original error: {original_error}')
+        )
+
+        # Try to recover each section independently
+        try:
+            project.worldbuilding = WorldBuilding(**cls._repair_worldbuilding(data.get('worldbuilding', {})))
+        except Exception as e:
+            print(f"Could not recover worldbuilding: {e}")
+
+        try:
+            chars = cls._repair_characters(data.get('characters', []))
+            project.characters = [Character(**c) for c in chars]
+        except Exception as e:
+            print(f"Could not recover characters: {e}")
+
+        try:
+            project.story_planning = StoryPlanning(**cls._repair_story_planning(data.get('story_planning', {})))
+        except Exception as e:
+            print(f"Could not recover story planning: {e}")
+
+        try:
+            project.manuscript = Manuscript(**cls._repair_manuscript(data.get('manuscript', {})))
+        except Exception as e:
+            print(f"Could not recover manuscript: {e}")
+
+        try:
+            imgs = cls._repair_generated_images(data.get('generated_images', []))
+            project.generated_images = [GeneratedImage(**img) for img in imgs]
+        except Exception as e:
+            print(f"Could not recover generated images: {e}")
+
+        try:
+            agents = cls._repair_agent_contacts(data.get('agent_contacts', []))
+            project.agent_contacts = [AgentContact(**a) for a in agents]
+        except Exception as e:
+            print(f"Could not recover agent contacts: {e}")
 
         return project

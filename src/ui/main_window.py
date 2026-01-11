@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QTabWidget, QMenuBar, QMenu, QFileDialog, QMessageBox,
     QToolBar, QStatusBar, QSplitter, QLabel
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QPoint
 from PyQt6.QtGui import QAction, QKeySequence
 from pathlib import Path
 from typing import Optional
@@ -21,6 +21,8 @@ from src.ui.agent_manager_widget import AgentManagerWidget
 from src.ui.settings_dialog import SettingsDialog
 from src.ui.chat_widget import ChatWidget
 from src.ui.attributions_tab import AttributionsTab
+from src.ui.window_manager import WindowManager
+from src.ui.secondary_window import SecondaryWindow
 from src.export.manuscript_exporter import ManuscriptExporter
 from src.export.llm_context_exporter import LLMContextExporter
 from src.ui.styles import get_modern_style, get_icon
@@ -39,6 +41,10 @@ class MainWindow(QMainWindow):
         self.current_project: Optional[WriterProject] = None
         self.ai_config = get_ai_config()
         self.settings = self.ai_config.get_settings()
+
+        # Register with window manager
+        self.window_manager = WindowManager()
+        self.window_manager.set_main_window(self)
 
         # Apply modern stylesheet
         self.setStyleSheet(get_modern_style())
@@ -71,6 +77,10 @@ class MainWindow(QMainWindow):
         self.tab_widget.setTabPosition(QTabWidget.TabPosition.North)
         self.tab_widget.setDocumentMode(True)  # Cleaner look
         self.tab_widget.setMovable(True)  # Allow tab reordering
+
+        # Enable context menu on tab bar for multi-window support
+        self.tab_widget.tabBar().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tab_widget.tabBar().customContextMenuRequested.connect(self._show_tab_context_menu)
 
         # Initialize section widgets
         self.worldbuilding_widget = ComprehensiveWorldBuildingWidget()
@@ -162,6 +172,16 @@ class MainWindow(QMainWindow):
         toggle_chat_action.setShortcut(QKeySequence("Ctrl+B"))
         toggle_chat_action.triggered.connect(self._toggle_chat)
         view_menu.addAction(toggle_chat_action)
+
+        view_menu.addSeparator()
+
+        # Multi-window mode toggle
+        self.multi_window_action = QAction("&Multi-Window Mode", self)
+        self.multi_window_action.setCheckable(True)
+        self.multi_window_action.setChecked(False)
+        self.multi_window_action.setToolTip("Enable to detach tabs into separate windows")
+        self.multi_window_action.triggered.connect(self._toggle_multi_window_mode)
+        view_menu.addAction(self.multi_window_action)
 
         # Export menu
         export_menu = menubar.addMenu("E&xport")
@@ -575,9 +595,85 @@ class MainWindow(QMainWindow):
                         self.manuscript_editor.current_chapter_editor._jump_to_line(annotation.line_number)
                 break
 
+    def _toggle_multi_window_mode(self, checked: bool):
+        """Toggle multi-window mode on/off."""
+        self.window_manager.set_multi_window_mode(checked)
+
+        if not checked:
+            # Merge all tabs back to main window
+            self._merge_all_secondary_windows()
+            self.statusBar().showMessage("Multi-window mode disabled", 3000)
+        else:
+            self.statusBar().showMessage(
+                "Multi-window mode enabled - Right-click tabs to create new windows",
+                5000
+            )
+
+    def _merge_all_secondary_windows(self):
+        """Merge all secondary windows back to main window."""
+        for window in self.window_manager.get_secondary_windows():
+            window.close()  # closeEvent will merge tabs back
+
+    def _show_tab_context_menu(self, pos: QPoint):
+        """Show context menu for tab operations."""
+        tab_bar = self.tab_widget.tabBar()
+        tab_index = tab_bar.tabAt(pos)
+        if tab_index == -1:
+            return
+
+        menu = QMenu(self)
+
+        # Only show Create New Window if multi-window mode is enabled
+        if self.window_manager.is_multi_window_mode():
+            # Don't allow detaching the last tab
+            if self.tab_widget.count() > 1:
+                detach_action = menu.addAction("Create New Window")
+                detach_action.triggered.connect(lambda: self._detach_tab_to_new_window(tab_index))
+
+        if not menu.isEmpty():
+            menu.exec(tab_bar.mapToGlobal(pos))
+
+    def _detach_tab_to_new_window(self, tab_index: int):
+        """Detach a tab to a new secondary window."""
+        if tab_index < 0 or tab_index >= self.tab_widget.count():
+            return
+
+        # Don't allow detaching the last tab
+        if self.tab_widget.count() <= 1:
+            QMessageBox.warning(
+                self,
+                "Cannot Detach",
+                "Cannot detach the last tab from the main window."
+            )
+            return
+
+        # Get widget and label
+        widget = self.tab_widget.widget(tab_index)
+        label = self.tab_widget.tabText(tab_index)
+
+        # Remove from main window
+        widget.setParent(None)
+        self.tab_widget.removeTab(tab_index)
+
+        # Create new secondary window
+        project_name = self.current_project.name if self.current_project else "Writer Platform"
+        new_window = SecondaryWindow(project_name, self)
+        new_window.add_tab(widget, label)
+        new_window.tab_merge_requested.connect(self._handle_tab_merge)
+        new_window.show()
+
+        self.statusBar().showMessage(f"Created new window with '{label}' tab", 3000)
+
+    def _handle_tab_merge(self, widget: QWidget, label: str):
+        """Handle merging a tab back from a secondary window."""
+        self.tab_widget.addTab(widget, label)
+        self.statusBar().showMessage(f"Merged '{label}' tab back to main window", 3000)
+
     def closeEvent(self, event):
         """Handle window close event."""
         if self.current_project and not self._confirm_unsaved_changes():
             event.ignore()
         else:
+            # Close all secondary windows
+            self.window_manager.close_all_secondary_windows()
             event.accept()
