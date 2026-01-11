@@ -43,7 +43,10 @@ class AIConfig:
         # Advanced Options
         "enable_streaming": False,
         "enable_fallback": True,
-        "enable_caching": True
+        "enable_caching": True,
+
+        # Session State
+        "last_project_path": ""
     }
 
     def __init__(self):
@@ -183,6 +186,26 @@ class AIConfig:
             True if reset successful
         """
         self.settings = self.DEFAULT_SETTINGS.copy()
+        return self.save_settings(self.settings)
+
+    def get_last_project_path(self) -> str:
+        """Get the path of the last opened project.
+
+        Returns:
+            Path string or empty string if none
+        """
+        return self.settings.get("last_project_path", "")
+
+    def set_last_project_path(self, path: str) -> bool:
+        """Save the last opened project path.
+
+        Args:
+            path: Project file path
+
+        Returns:
+            True if save successful
+        """
+        self.settings["last_project_path"] = path
         return self.save_settings(self.settings)
 
 

@@ -24,6 +24,7 @@ class AnnotationDialog(QDialog):
                  available_characters: List = None,
                  available_chapters: List = None,
                  available_myths: List = None,
+                 available_places: List = None,
                  parent=None):
         """Initialize annotation dialog."""
         super().__init__(parent)
@@ -35,6 +36,7 @@ class AnnotationDialog(QDialog):
         self.available_characters = available_characters or []
         self.available_chapters = available_chapters or []
         self.available_myths = available_myths or []
+        self.available_places = available_places or []
         self._init_ui()
         if annotation:
             self._load_annotation()
@@ -83,7 +85,7 @@ class AnnotationDialog(QDialog):
         attribution_layout = QFormLayout()
 
         self.ref_type_combo = QComboBox()
-        self.ref_type_combo.addItems(["None", "Character", "Chapter", "Myth/Legend", "Worldbuilding Element"])
+        self.ref_type_combo.addItems(["None", "Character", "Chapter", "Myth/Legend", "Place/Landmark", "Worldbuilding Element"])
         self.ref_type_combo.currentTextChanged.connect(self._on_ref_type_changed)
         attribution_layout.addRow("Reference Type:", self.ref_type_combo)
 
@@ -127,6 +129,8 @@ class AnnotationDialog(QDialog):
             self.ref_name_combo.addItems([f"Chapter {c.number}: {c.title}" for c in self.available_chapters])
         elif ref_type == "Myth/Legend":
             self.ref_name_combo.addItems([m.name for m in self.available_myths])
+        elif ref_type == "Place/Landmark":
+            self.ref_name_combo.addItems([p.name for p in self.available_places])
         elif ref_type == "Worldbuilding Element":
             self.ref_name_combo.setEditable(True)
             self.ref_name_combo.setPlaceholderText("Enter element name...")
@@ -142,6 +146,7 @@ class AnnotationDialog(QDialog):
                 "character": "Character",
                 "chapter": "Chapter",
                 "myth": "Myth/Legend",
+                "place": "Place/Landmark",
                 "worldbuilding": "Worldbuilding Element"
             }
             self.ref_type_combo.setCurrentText(ref_type_map.get(self.annotation.referenced_type, "None"))
@@ -166,6 +171,7 @@ class AnnotationDialog(QDialog):
                     "Character": "character",
                     "Chapter": "chapter",
                     "Myth/Legend": "myth",
+                    "Place/Landmark": "place",
                     "Worldbuilding Element": "worldbuilding"
                 }
                 self.annotation.referenced_type = ref_type_map.get(ref_type)
@@ -189,6 +195,10 @@ class AnnotationDialog(QDialog):
                     myth = next((m for m in self.available_myths if m.name == self.annotation.referenced_name), None)
                     if myth:
                         self.annotation.referenced_id = myth.id
+                elif ref_type == "Place/Landmark":
+                    place = next((p for p in self.available_places if p.name == self.annotation.referenced_name), None)
+                    if place:
+                        self.annotation.referenced_id = place.id
 
         self.accept()
 

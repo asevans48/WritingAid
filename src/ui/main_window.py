@@ -23,6 +23,8 @@ from src.ui.chat_widget import ChatWidget
 from src.ui.attributions_tab import AttributionsTab
 from src.ui.window_manager import WindowManager
 from src.ui.secondary_window import SecondaryWindow
+from src.ui.import_guide_dialog import ImportGuideDialog
+from src.ui.json_import_dialog import JSONImportDialog
 from src.export.manuscript_exporter import ManuscriptExporter
 from src.export.llm_context_exporter import LLMContextExporter
 from src.ui.styles import get_modern_style, get_icon
@@ -54,8 +56,8 @@ class MainWindow(QMainWindow):
         self._create_minimal_toolbar()
         self._create_status_bar()
 
-        # Start with new project
-        self._new_project()
+        # Try to load last project, or prompt for new one
+        self._startup_load_project()
 
     def _init_ui(self):
         """Initialize user interface."""
@@ -212,6 +214,18 @@ class MainWindow(QMainWindow):
         # Help menu
         help_menu = menubar.addMenu("&Help")
 
+        import_guide_action = QAction("&Import Guide (AI Prompts)", self)
+        import_guide_action.setToolTip("Prompts to help build your project with ChatGPT, Claude, or other AI assistants")
+        import_guide_action.triggered.connect(self._show_import_guide)
+        help_menu.addAction(import_guide_action)
+
+        import_json_action = QAction("Import &JSON Data...", self)
+        import_json_action.setToolTip("Import AI-generated JSON data into your project")
+        import_json_action.triggered.connect(self._show_json_import)
+        help_menu.addAction(import_json_action)
+
+        help_menu.addSeparator()
+
         about_action = QAction("&About", self)
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
@@ -269,6 +283,30 @@ class MainWindow(QMainWindow):
         # Connect chat to AI assistance
         self.chat_widget.message_sent.connect(self._handle_chat_message)
 
+    def _startup_load_project(self):
+        """Load last project on startup, or prompt for new one."""
+        from pathlib import Path
+
+        last_path = self.ai_config.get_last_project_path()
+
+        if last_path and Path(last_path).exists():
+            try:
+                self.current_project = WriterProject.load_project(last_path)
+                self._load_project_into_ui()
+                self.project_name_label.setText(self.current_project.name)
+                self.statusBar().showMessage(f"Loaded: {last_path}")
+                return
+            except Exception as e:
+                # Failed to load, will prompt for new project
+                QMessageBox.warning(
+                    self,
+                    "Could Not Load Project",
+                    f"Failed to load last project:\n{last_path}\n\nError: {str(e)}\n\nPlease create a new project."
+                )
+
+        # No last project or failed to load - prompt for new one
+        self._new_project()
+
     def _new_project(self):
         """Create new project."""
         if self.current_project and not self._confirm_unsaved_changes():
@@ -307,6 +345,8 @@ class MainWindow(QMainWindow):
                 self._load_project_into_ui()
                 self.project_name_label.setText(self.current_project.name)
                 self.statusBar().showMessage(f"Opened: {file_path}")
+                # Remember this project for next startup
+                self.ai_config.set_last_project_path(file_path)
             except Exception as e:
                 QMessageBox.critical(
                     self,
@@ -345,6 +385,8 @@ class MainWindow(QMainWindow):
             self._collect_project_data()
             self.current_project.save_project(file_path)
             self.statusBar().showMessage(f"Saved: {file_path}")
+            # Remember this project for next startup
+            self.ai_config.set_last_project_path(file_path)
         except Exception as e:
             QMessageBox.critical(
                 self,
@@ -559,6 +601,31 @@ class MainWindow(QMainWindow):
                     "Export Error",
                     f"An error occurred during export:\n{str(e)}"
                 )
+
+    def _show_import_guide(self):
+        """Show the import guide dialog with AI prompts."""
+        dialog = ImportGuideDialog(self)
+        dialog.exec()
+
+    def _show_json_import(self):
+        """Show the JSON import dialog."""
+        if not self.current_project:
+            QMessageBox.warning(
+                self,
+                "No Project",
+                "Please create or open a project before importing data."
+            )
+            return
+
+        dialog = JSONImportDialog(self, self.current_project)
+        dialog.data_imported.connect(self._on_json_imported)
+        dialog.exec()
+
+    def _on_json_imported(self, imported_data: dict):
+        """Handle successful JSON import."""
+        # Refresh all widgets to show imported data
+        self._load_project_into_ui()
+        self.statusBar().showMessage("Data imported successfully", 5000)
 
     def _show_about(self):
         """Show about dialog."""

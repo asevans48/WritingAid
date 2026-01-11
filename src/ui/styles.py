@@ -32,11 +32,29 @@ COLORS = {
 
 # Modern stylesheet
 MODERN_STYLE = f"""
-/* Global styles */
+/* Global styles - explicit font-size prevents Qt warning about point size <= 0 */
 QWidget {{
     font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
     font-size: 13px;
     color: {COLORS['text_dark']};
+}}
+
+/* Explicit font sizes for interactive elements to prevent font inheritance issues */
+QToolButton, QToolBar QToolButton {{
+    font-size: 13px;
+}}
+
+QAction {{
+    font-size: 13px;
+}}
+
+QToolTip {{
+    font-size: 12px;
+    background-color: #1a1a1a;
+    color: white;
+    border: 1px solid #333;
+    padding: 4px 8px;
+    border-radius: 4px;
 }}
 
 /* Main window */

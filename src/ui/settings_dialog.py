@@ -41,6 +41,14 @@ class SettingsDialog(QDialog):
         model_tab = self._create_model_config_tab()
         tabs.addTab(model_tab, "⚙️ Model Settings")
 
+        # Hugging Face / Local Models Tab
+        hf_tab = self._create_huggingface_tab()
+        tabs.addTab(hf_tab, "🤗 Local Models")
+
+        # Training Data Collection Tab
+        training_tab = self._create_training_data_tab()
+        tabs.addTab(training_tab, "📊 Training Data")
+
         # Features Tab
         features_tab = self._create_features_tab()
         tabs.addTab(features_tab, "✨ AI Features")
@@ -287,6 +295,361 @@ class SettingsDialog(QDialog):
         scroll_area.setWidget(widget)
         return scroll_area
 
+    def _create_huggingface_tab(self) -> QWidget:
+        """Create Hugging Face / Local Models configuration tab."""
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(16, 16, 16, 16)
+
+        # Enable Local Models
+        enable_group = QGroupBox("Local Model Support")
+        enable_layout = QVBoxLayout()
+
+        self.enable_local_models = QCheckBox("Enable local/small language models (requires additional setup)")
+        self.enable_local_models.setChecked(self.settings.get("enable_local_models", False))
+        self.enable_local_models.toggled.connect(self._on_local_models_toggled)
+        enable_layout.addWidget(self.enable_local_models)
+
+        enable_note = QLabel(
+            "Local models run on your machine and don't require API calls. "
+            "They're faster and private, but may require significant GPU memory."
+        )
+        enable_note.setWordWrap(True)
+        enable_note.setStyleSheet("color: #6b7280; font-size: 11px; padding: 4px;")
+        enable_layout.addWidget(enable_note)
+
+        enable_group.setLayout(enable_layout)
+        layout.addWidget(enable_group)
+
+        # Hugging Face API
+        hf_api_group = QGroupBox("Hugging Face Inference API")
+        hf_api_layout = QFormLayout()
+
+        hf_key_container = QVBoxLayout()
+        self.hf_api_key_edit = QLineEdit()
+        self.hf_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.hf_api_key_edit.setText(self.settings.get("huggingface_api_key", ""))
+        self.hf_api_key_edit.setPlaceholderText("hf_...")
+        hf_key_container.addWidget(self.hf_api_key_edit)
+
+        self.show_hf_key = QCheckBox("Show key")
+        self.show_hf_key.toggled.connect(
+            lambda checked: self.hf_api_key_edit.setEchoMode(
+                QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
+            )
+        )
+        hf_key_container.addWidget(self.show_hf_key)
+        hf_api_layout.addRow("HF API Token:", hf_key_container)
+
+        self.hf_api_model_edit = QLineEdit()
+        self.hf_api_model_edit.setText(self.settings.get("hf_api_model", "mistralai/Mistral-7B-Instruct-v0.2"))
+        self.hf_api_model_edit.setPlaceholderText("e.g., mistralai/Mistral-7B-Instruct-v0.2")
+        hf_api_layout.addRow("API Model ID:", self.hf_api_model_edit)
+
+        hf_api_group.setLayout(hf_api_layout)
+        layout.addWidget(hf_api_group)
+
+        # Local Model Configuration
+        local_group = QGroupBox("Local Model Configuration")
+        local_layout = QFormLayout()
+
+        self.local_model_edit = QLineEdit()
+        self.local_model_edit.setText(self.settings.get("local_model_id", "microsoft/phi-2"))
+        self.local_model_edit.setPlaceholderText("e.g., microsoft/phi-2, TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+        local_layout.addRow("Model ID:", self.local_model_edit)
+
+        # Recommended models info
+        models_info = QLabel(
+            "Recommended small models for writing assistance:\n"
+            "• microsoft/phi-2 (2.7B) - Good quality, low memory\n"
+            "• TinyLlama/TinyLlama-1.1B-Chat-v1.0 - Very fast, 1.1B\n"
+            "• mistralai/Mistral-7B-Instruct-v0.2 - High quality, needs 16GB+ VRAM\n"
+            "• Qwen/Qwen2-1.5B-Instruct - Good balance\n"
+            "• stabilityai/stablelm-2-zephyr-1_6b - Optimized for chat"
+        )
+        models_info.setWordWrap(True)
+        models_info.setStyleSheet("color: #6b7280; font-size: 10px; padding: 8px; background-color: #f9fafb; border-radius: 4px;")
+        local_layout.addRow("", models_info)
+
+        # Quantization
+        self.quantization_combo = QComboBox()
+        self.quantization_combo.addItems(["None (full precision)", "8-bit (recommended)", "4-bit (low memory)"])
+        current_quant = self.settings.get("local_model_quantization", "8bit")
+        if current_quant == "4bit":
+            self.quantization_combo.setCurrentIndex(2)
+        elif current_quant == "8bit":
+            self.quantization_combo.setCurrentIndex(1)
+        else:
+            self.quantization_combo.setCurrentIndex(0)
+        local_layout.addRow("Quantization:", self.quantization_combo)
+
+        # Device selection
+        self.device_combo = QComboBox()
+        self.device_combo.addItems(["Auto", "CUDA (GPU)", "CPU"])
+        current_device = self.settings.get("local_model_device", "auto")
+        device_map = {"auto": 0, "cuda": 1, "cpu": 2}
+        self.device_combo.setCurrentIndex(device_map.get(current_device, 0))
+        local_layout.addRow("Device:", self.device_combo)
+
+        # Trust remote code
+        self.trust_remote_code = QCheckBox("Trust remote code (required for some models like Phi, Qwen)")
+        self.trust_remote_code.setChecked(self.settings.get("trust_remote_code", False))
+        local_layout.addRow("", self.trust_remote_code)
+
+        local_group.setLayout(local_layout)
+        layout.addWidget(local_group)
+
+        # Use local instead of API
+        preference_group = QGroupBox("Model Preference")
+        preference_layout = QVBoxLayout()
+
+        self.prefer_local_model = QCheckBox("Use local model instead of API when available")
+        self.prefer_local_model.setChecked(self.settings.get("prefer_local_model", False))
+        preference_layout.addWidget(self.prefer_local_model)
+
+        preference_note = QLabel(
+            "When enabled, local models will be used for AI features instead of cloud APIs. "
+            "This keeps your data private and works offline."
+        )
+        preference_note.setWordWrap(True)
+        preference_note.setStyleSheet("color: #6b7280; font-size: 11px;")
+        preference_layout.addWidget(preference_note)
+
+        preference_group.setLayout(preference_layout)
+        layout.addWidget(preference_group)
+
+        # Requirements note
+        requirements = QLabel(
+            "Requirements: pip install transformers torch huggingface_hub\n"
+            "For quantization: pip install bitsandbytes accelerate"
+        )
+        requirements.setWordWrap(True)
+        requirements.setStyleSheet("color: #f59e0b; font-size: 11px; padding: 10px; background-color: #fffbeb; border-radius: 4px;")
+        layout.addWidget(requirements)
+
+        layout.addStretch()
+        scroll_area.setWidget(widget)
+        return scroll_area
+
+    def _create_training_data_tab(self) -> QWidget:
+        """Create training data collection configuration tab."""
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(16, 16, 16, 16)
+
+        # Info header
+        info_header = QLabel(
+            "📊 Build Your Personal Training Dataset\n\n"
+            "Collect high-quality AI conversations to fine-tune a small language model "
+            "that matches your unique writing style and creative process."
+        )
+        info_header.setWordWrap(True)
+        info_header.setStyleSheet("font-size: 12px; padding: 10px; background-color: #f0f9ff; border-radius: 6px; color: #0369a1;")
+        layout.addWidget(info_header)
+
+        # Enable collection
+        enable_group = QGroupBox("Data Collection")
+        enable_layout = QVBoxLayout()
+
+        self.enable_conversation_collection = QCheckBox("Enable conversation collection for fine-tuning")
+        self.enable_conversation_collection.setChecked(self.settings.get("enable_conversation_collection", False))
+        self.enable_conversation_collection.toggled.connect(self._on_collection_toggled)
+        enable_layout.addWidget(self.enable_conversation_collection)
+
+        collection_note = QLabel(
+            "When enabled, you can rate AI conversations as 'Excellent' to save them for training. "
+            "Only conversations you explicitly rate are saved. All data stays on your machine."
+        )
+        collection_note.setWordWrap(True)
+        collection_note.setStyleSheet("color: #6b7280; font-size: 11px; padding: 4px;")
+        enable_layout.addWidget(collection_note)
+
+        enable_group.setLayout(enable_layout)
+        layout.addWidget(enable_group)
+
+        # Collection settings
+        collection_group = QGroupBox("Collection Settings")
+        collection_layout = QFormLayout()
+
+        # Auto-prompt for rating
+        self.auto_prompt_rating = QCheckBox("Prompt to rate conversations after AI responses")
+        self.auto_prompt_rating.setChecked(self.settings.get("auto_prompt_rating", True))
+        collection_layout.addRow("", self.auto_prompt_rating)
+
+        # Minimum rating to save
+        self.min_rating_combo = QComboBox()
+        self.min_rating_combo.addItems(["Excellent only", "Good and above", "All rated"])
+        min_rating = self.settings.get("min_collection_rating", "good")
+        rating_map = {"excellent": 0, "good": 1, "all": 2}
+        self.min_rating_combo.setCurrentIndex(rating_map.get(min_rating, 1))
+        collection_layout.addRow("Save conversations rated:", self.min_rating_combo)
+
+        # Task types to collect
+        task_types_label = QLabel("Collect data for:")
+        collection_layout.addRow("", task_types_label)
+
+        self.collect_character_dev = QCheckBox("Character development")
+        self.collect_character_dev.setChecked(self.settings.get("collect_character_dev", True))
+        collection_layout.addRow("", self.collect_character_dev)
+
+        self.collect_worldbuilding = QCheckBox("Worldbuilding")
+        self.collect_worldbuilding.setChecked(self.settings.get("collect_worldbuilding", True))
+        collection_layout.addRow("", self.collect_worldbuilding)
+
+        self.collect_plot = QCheckBox("Plot & story planning")
+        self.collect_plot.setChecked(self.settings.get("collect_plot", True))
+        collection_layout.addRow("", self.collect_plot)
+
+        self.collect_writing = QCheckBox("Writing assistance & critique")
+        self.collect_writing.setChecked(self.settings.get("collect_writing", True))
+        collection_layout.addRow("", self.collect_writing)
+
+        self.collect_general = QCheckBox("General chat")
+        self.collect_general.setChecked(self.settings.get("collect_general", True))
+        collection_layout.addRow("", self.collect_general)
+
+        collection_group.setLayout(collection_layout)
+        layout.addWidget(collection_group)
+
+        # Export options
+        export_group = QGroupBox("Export Training Data")
+        export_layout = QVBoxLayout()
+
+        export_note = QLabel(
+            "Export your collected conversations in formats ready for fine-tuning:\n"
+            "• OpenAI format (JSONL) - For OpenAI fine-tuning API\n"
+            "• Alpaca format - For local fine-tuning with tools like LLaMA-Factory\n"
+            "• ShareGPT format - Compatible with many training frameworks"
+        )
+        export_note.setWordWrap(True)
+        export_note.setStyleSheet("color: #6b7280; font-size: 11px; padding: 4px;")
+        export_layout.addWidget(export_note)
+
+        export_buttons = QHBoxLayout()
+
+        export_openai_btn = QPushButton("Export OpenAI Format")
+        export_openai_btn.clicked.connect(lambda: self._export_training_data("openai"))
+        export_buttons.addWidget(export_openai_btn)
+
+        export_alpaca_btn = QPushButton("Export Alpaca Format")
+        export_alpaca_btn.clicked.connect(lambda: self._export_training_data("alpaca"))
+        export_buttons.addWidget(export_alpaca_btn)
+
+        export_layout.addLayout(export_buttons)
+
+        # Stats display
+        self.training_stats_label = QLabel("No training data collected yet.")
+        self.training_stats_label.setStyleSheet("color: #6b7280; font-size: 11px; padding: 8px; background-color: #f9fafb; border-radius: 4px;")
+        export_layout.addWidget(self.training_stats_label)
+
+        view_stats_btn = QPushButton("Refresh Statistics")
+        view_stats_btn.clicked.connect(self._refresh_training_stats)
+        view_stats_btn.setMaximumWidth(150)
+        export_layout.addWidget(view_stats_btn)
+
+        export_group.setLayout(export_layout)
+        layout.addWidget(export_group)
+
+        # Privacy notice
+        privacy = QLabel(
+            "🔒 Privacy: All collected data is stored locally on your machine in:\n"
+            "~/.writer_platform/training_data/\n\n"
+            "Your conversations are never uploaded anywhere unless you explicitly export and share them."
+        )
+        privacy.setWordWrap(True)
+        privacy.setStyleSheet("color: #059669; font-size: 11px; padding: 10px; background-color: #ecfdf5; border-radius: 4px;")
+        layout.addWidget(privacy)
+
+        layout.addStretch()
+        scroll_area.setWidget(widget)
+        return scroll_area
+
+    def _on_local_models_toggled(self, checked: bool):
+        """Handle local models toggle."""
+        # Could enable/disable related controls
+        pass
+
+    def _on_collection_toggled(self, checked: bool):
+        """Handle collection toggle."""
+        # Could enable/disable related controls
+        pass
+
+    def _export_training_data(self, format_type: str):
+        """Export training data in specified format."""
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+        from pathlib import Path
+
+        try:
+            from src.ai.conversation_store import ConversationStore, ConversationRating
+
+            store = ConversationStore()
+            stats = store.get_statistics()
+
+            if stats["high_quality_count"] == 0:
+                QMessageBox.warning(
+                    self,
+                    "No Data",
+                    "No high-quality conversations have been collected yet.\n\n"
+                    "Rate some AI conversations as 'Good' or 'Excellent' to build your dataset."
+                )
+                return
+
+            # Get save path
+            file_ext = ".jsonl" if format_type in ["openai", "alpaca"] else ".json"
+            file_path, _ = QFileDialog.getSaveFileName(
+                self,
+                f"Export {format_type.title()} Training Data",
+                f"training_data_{format_type}{file_ext}",
+                f"JSONL Files (*{file_ext});;All Files (*)"
+            )
+
+            if file_path:
+                count = store.export_for_training(
+                    Path(file_path),
+                    format_type=format_type,
+                    min_rating=ConversationRating.GOOD
+                )
+                QMessageBox.information(
+                    self,
+                    "Export Complete",
+                    f"Exported {count} conversations in {format_type} format.\n\n"
+                    f"File saved to:\n{file_path}"
+                )
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Export Error",
+                f"Failed to export training data:\n{str(e)}"
+            )
+
+    def _refresh_training_stats(self):
+        """Refresh training data statistics display."""
+        try:
+            from src.ai.conversation_store import ConversationStore
+
+            store = ConversationStore()
+            stats = store.get_statistics()
+
+            text = (
+                f"Total conversations: {stats['total_conversations']}\n"
+                f"High quality (Good+): {stats['high_quality_count']}\n\n"
+                f"By rating: {', '.join(f'{k}: {v}' for k, v in stats['rating_distribution'].items() if v > 0)}\n"
+                f"By task: {', '.join(f'{k}: {v}' for k, v in stats['task_type_distribution'].items() if v > 0)}"
+            )
+            self.training_stats_label.setText(text)
+        except Exception as e:
+            self.training_stats_label.setText(f"Error loading stats: {e}")
+
     def _create_features_tab(self) -> QWidget:
         """Create AI features configuration tab."""
         # Create scroll area wrapper
@@ -397,6 +760,11 @@ class SettingsDialog(QDialog):
 
     def get_settings(self) -> dict:
         """Get updated settings."""
+        # Map quantization combo to value
+        quant_map = {0: "none", 1: "8bit", 2: "4bit"}
+        device_map = {0: "auto", 1: "cuda", 2: "cpu"}
+        min_rating_map = {0: "excellent", 1: "good", 2: "all"}
+
         return {
             # API Keys
             "claude_api_key": self.claude_key_edit.text(),
@@ -413,6 +781,26 @@ class SettingsDialog(QDialog):
             "temperature": self.temperature_slider.value() / 100,
             "max_tokens": self.max_tokens_spin.value(),
             "top_p": self.top_p_slider.value() / 100,
+
+            # Hugging Face / Local Models
+            "enable_local_models": self.enable_local_models.isChecked(),
+            "huggingface_api_key": self.hf_api_key_edit.text(),
+            "hf_api_model": self.hf_api_model_edit.text(),
+            "local_model_id": self.local_model_edit.text(),
+            "local_model_quantization": quant_map.get(self.quantization_combo.currentIndex(), "8bit"),
+            "local_model_device": device_map.get(self.device_combo.currentIndex(), "auto"),
+            "trust_remote_code": self.trust_remote_code.isChecked(),
+            "prefer_local_model": self.prefer_local_model.isChecked(),
+
+            # Training Data Collection
+            "enable_conversation_collection": self.enable_conversation_collection.isChecked(),
+            "auto_prompt_rating": self.auto_prompt_rating.isChecked(),
+            "min_collection_rating": min_rating_map.get(self.min_rating_combo.currentIndex(), "good"),
+            "collect_character_dev": self.collect_character_dev.isChecked(),
+            "collect_worldbuilding": self.collect_worldbuilding.isChecked(),
+            "collect_plot": self.collect_plot.isChecked(),
+            "collect_writing": self.collect_writing.isChecked(),
+            "collect_general": self.collect_general.isChecked(),
 
             # Features
             "enable_chat": self.enable_chat.isChecked(),

@@ -478,6 +478,92 @@ class Technology(BaseModel):
     notes: str = ""
 
 
+# ===== PLACES & LANDMARKS =====
+class PlaceType(str, Enum):
+    """Type of place or landmark."""
+    CITY = "city"
+    TOWN = "town"
+    VILLAGE = "village"
+    FORTRESS = "fortress"
+    CASTLE = "castle"
+    TEMPLE = "temple"
+    RUINS = "ruins"
+    NATURAL_LANDMARK = "natural_landmark"
+    MOUNTAIN = "mountain"
+    FOREST = "forest"
+    LAKE = "lake"
+    RIVER = "river"
+    CAVE = "cave"
+    ISLAND = "island"
+    BATTLEFIELD = "battlefield"
+    MONUMENT = "monument"
+    PORT = "port"
+    MARKET = "market"
+    ACADEMY = "academy"
+    PRISON = "prison"
+    SACRED_SITE = "sacred_site"
+    HIDDEN_LOCATION = "hidden_location"
+    OTHER = "other"
+
+
+class Place(BaseModel):
+    """A place or landmark in the world - cities, ruins, natural wonders, etc."""
+    id: str
+    name: str
+    place_type: PlaceType
+    description: str = ""
+
+    # Location References
+    planet: Optional[str] = None  # Planet name or ID
+    continent: Optional[str] = None  # Continent name
+    region: Optional[str] = None  # Region/area name
+    coordinates: Optional[str] = None  # Lat/Long or custom coordinates
+
+    # Faction Control
+    controlling_faction: Optional[str] = None  # Faction ID or name that controls this place
+    contested_by: List[str] = Field(default_factory=list)  # Faction IDs contesting control
+    historical_owners: List[str] = Field(default_factory=list)  # Previous controlling factions
+
+    # Key Features
+    key_features: List[str] = Field(default_factory=list)  # Notable features/landmarks within
+    resources: List[str] = Field(default_factory=list)  # Resources available here
+    population: Optional[int] = None  # If inhabited
+    size: Optional[str] = None  # e.g., "small town", "sprawling metropolis", "10 sq km"
+
+    # Strategic Importance
+    strategic_value: int = 50  # 0-100 scale
+    economic_value: int = 50  # 0-100 scale
+    cultural_significance: str = ""  # Religious, historical, cultural importance
+
+    # Connections
+    connected_places: List[str] = Field(default_factory=list)  # Other place IDs/names (roads, portals, etc.)
+    trade_routes: List[str] = Field(default_factory=list)  # Trade route names passing through
+
+    # Inhabitants
+    notable_inhabitants: List[str] = Field(default_factory=list)  # Character IDs/names
+    species_present: List[str] = Field(default_factory=list)  # Flora/Fauna IDs present here
+
+    # History
+    founded: Optional[str] = None  # When established/discovered
+    historical_events: List[str] = Field(default_factory=list)  # Event IDs that occurred here
+
+    # Atmosphere
+    climate: Optional[str] = None  # Local climate if different from region
+    atmosphere: str = ""  # Mood, feel, sensory description
+    dangers: List[str] = Field(default_factory=list)  # Hazards, monsters, traps
+
+    # Story Relevance
+    story_relevance: str = ""  # How this place matters to the plot
+    scenes_set_here: List[str] = Field(default_factory=list)  # Chapter/scene references
+
+    # Media
+    image_path: Optional[str] = None  # Image/map of the location
+
+    notes: str = ""
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
+
+
 # ===== MYTHOLOGY =====
 class Myth(BaseModel):
     """A myth or legend."""

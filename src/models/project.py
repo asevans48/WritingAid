@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 import json
 
-from src.models.worldbuilding_objects import Faction, Myth, ClimatePreset, Flora, Fauna, Technology, Star, StarSystem
+from src.models.worldbuilding_objects import Faction, Myth, ClimatePreset, Flora, Fauna, Technology, Star, StarSystem, Place
 
 
 class WorldBuilding(BaseModel):
@@ -36,6 +36,7 @@ class WorldBuilding(BaseModel):
     # New: Structured worldbuilding objects
     factions: List[Faction] = Field(default_factory=list)
     myths: List[Myth] = Field(default_factory=list)
+    places: List[Place] = Field(default_factory=list)  # Places and landmarks
     climate_presets: List[ClimatePreset] = Field(default_factory=list)
     technologies: List[Technology] = Field(default_factory=list)
     flora: List[Flora] = Field(default_factory=list)
@@ -362,7 +363,7 @@ class WriterProject(BaseModel):
                 wb_data[field] = {}
 
         # Ensure list fields exist
-        list_fields = ['factions', 'myths', 'climate_presets', 'technologies',
+        list_fields = ['factions', 'myths', 'places', 'climate_presets', 'technologies',
                        'flora', 'fauna', 'stars', 'star_systems']
         for field in list_fields:
             if field not in wb_data or not isinstance(wb_data.get(field), list):

@@ -15,6 +15,7 @@ from src.models.project import Manuscript, Chapter, Annotation
 from src.ui.enhanced_text_editor import EnhancedTextEditor
 from src.ui.annotations import AnnotationDialog
 from src.ui.annotation_list_dialog import AnnotationListDialog
+from src.ai.chapter_memory import ChapterMemoryManager
 
 
 class AnnotationMarginArea(QWidget):
@@ -575,8 +576,17 @@ class ChapterEditor(QWidget):
         """Set up context lookup callbacks for RAG system."""
         from src.ai.rag_system import RAGSystem
 
-        # Create RAG system
-        rag = RAGSystem(self.project)
+        # Get memory manager from parent if available
+        memory_manager = None
+        parent = self.parent()
+        while parent:
+            if hasattr(parent, 'memory_manager'):
+                memory_manager = parent.memory_manager
+                break
+            parent = parent.parent()
+
+        # Create RAG system with memory manager for faster lookups
+        rag = RAGSystem(self.project, memory_manager=memory_manager)
 
         # Define callback functions
         def lookup_worldbuilding(section_name: str) -> str:
@@ -647,6 +657,7 @@ class ChapterEditor(QWidget):
             available_characters=self.project.characters if self.project else [],
             available_chapters=self.project.manuscript.chapters if self.project else [],
             available_myths=self.project.worldbuilding.myths if self.project else [],
+            available_places=self.project.worldbuilding.places if self.project else [],
             parent=self
         )
 
@@ -699,6 +710,7 @@ class ChapterEditor(QWidget):
             available_characters=self.project.characters if self.project else [],
             available_chapters=self.project.manuscript.chapters if self.project else [],
             available_myths=self.project.worldbuilding.myths if self.project else [],
+            available_places=self.project.worldbuilding.places if self.project else [],
             parent=self
         )
 
@@ -748,6 +760,7 @@ class ChapterEditor(QWidget):
                 available_characters=self.project.characters if self.project else [],
                 available_chapters=self.project.manuscript.chapters if self.project else [],
                 available_myths=self.project.worldbuilding.myths if self.project else [],
+                available_places=self.project.worldbuilding.places if self.project else [],
                 parent=self
             )
 
@@ -838,11 +851,20 @@ class ManuscriptEditor(QWidget):
         self.manuscript: Optional[Manuscript] = None
         self.project = project
         self.current_chapter_editor: Optional[ChapterEditor] = None
+        self._current_chapter_id: Optional[str] = None
+
+        # Initialize memory manager for chapter caching and key points
+        self.memory_manager = ChapterMemoryManager(
+            project=project,
+            cache_size=5,  # Keep 5 chapters in memory
+            cache_memory_mb=50.0  # Up to 50MB of chapter content
+        )
         self._init_ui()
 
     def set_project(self, project):
         """Set the project for context lookup."""
         self.project = project
+        self.memory_manager.set_project(project)
 
     def _init_ui(self):
         """Initialize user interface."""
@@ -1114,10 +1136,12 @@ class ManuscriptEditor(QWidget):
         if not current:
             return
 
-        # Save previous chapter
-        if self.current_chapter_editor:
+        # Save previous chapter and notify memory manager
+        if self.current_chapter_editor and self._current_chapter_id:
             self.current_chapter_editor.save_to_model()
             self._update_total_word_count()
+            # Notify memory manager of chapter exit (saves state, marks for re-analysis if changed)
+            self.memory_manager.on_chapter_exit(self._current_chapter_id, save_content=True)
 
         # Load selected chapter
         chapter_id = current.data(Qt.ItemDataRole.UserRole)
@@ -1127,14 +1151,33 @@ class ManuscriptEditor(QWidget):
         )
 
         if chapter:
+            # Notify memory manager of chapter entry (preloads cache, generates summary)
+            self.memory_manager.on_chapter_enter(chapter_id)
+
+            # Try to load content from cache first for faster display
+            cached_content = self.memory_manager.get_chapter_content(chapter_id)
+            if cached_content is not None and not chapter.content:
+                chapter.content = cached_content
+
             self._clear_editor()
+            self._current_chapter_id = chapter_id
             self.current_chapter_editor = ChapterEditor(chapter, self.project)
+            self.current_chapter_editor.content_changed.connect(self._on_content_changed)
             self.current_chapter_editor.content_changed.connect(self.content_changed.emit)
             self.current_chapter_editor.annotations_changed.connect(self.annotations_changed.emit)
             self.current_chapter_editor.word_count_changed.connect(
                 lambda _: self._update_total_word_count()
             )
             self.editor_layout.addWidget(self.current_chapter_editor)
+
+            # Preload adjacent chapters in background for faster navigation
+            self.memory_manager.preload_adjacent(chapter_id, count=1)
+
+    def _on_content_changed(self):
+        """Handle content changes - update memory manager cache."""
+        if self._current_chapter_id and self.current_chapter_editor:
+            new_content = self.current_chapter_editor.editor.toPlainText()
+            self.memory_manager.on_content_changed(self._current_chapter_id, new_content)
 
     def _clear_editor(self):
         """Clear the editor area."""
@@ -1155,12 +1198,21 @@ class ManuscriptEditor(QWidget):
     def load_manuscript(self, manuscript: Manuscript):
         """Load manuscript into editor."""
         self.manuscript = manuscript
+        self._current_chapter_id = None
         self.chapter_list.clear()
+
+        # Reset memory manager for new manuscript
+        if self.project:
+            self.memory_manager.set_project(self.project)
 
         for chapter in manuscript.chapters:
             item = QListWidgetItem(f"{chapter.number}. {chapter.title}")
             item.setData(Qt.ItemDataRole.UserRole, chapter.id)
             self.chapter_list.addItem(item)
+
+            # Pre-populate cache with chapter content for faster initial load
+            if chapter.content:
+                self.memory_manager.cache.put(chapter.id, chapter.content)
 
         self._update_total_word_count()
 
@@ -1172,3 +1224,19 @@ class ManuscriptEditor(QWidget):
 
         self._update_total_word_count()
         return self.manuscript
+
+    def get_memory_stats(self) -> dict:
+        """Get memory manager statistics for debugging/monitoring."""
+        return self.memory_manager.get_cache_stats()
+
+    def get_chapter_summary(self, chapter_id: str):
+        """Get summary for a specific chapter (key points, characters, etc.)."""
+        return self.memory_manager.get_summary(chapter_id)
+
+    def get_all_key_points(self, max_points: int = 20):
+        """Get the most important key points across all chapters."""
+        return self.memory_manager.get_key_points_for_context(max_points)
+
+    def search_key_points(self, query: str, point_types=None):
+        """Search key points across all chapters."""
+        return self.memory_manager.search_key_points(query, point_types)
