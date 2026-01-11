@@ -43,7 +43,7 @@ class MythEditor(QDialog):
         """Initialize UI."""
         self.setWindowTitle("Myth Editor")
         self.setMinimumWidth(600)
-        self.setMinimumHeight(700)
+        self.setMinimumHeight(500)  # Reduced for laptop compatibility
 
         layout = QVBoxLayout(self)
 

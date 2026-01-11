@@ -21,7 +21,7 @@ class SettingsDialog(QDialog):
     def _init_ui(self):
         """Initialize user interface."""
         self.setWindowTitle("AI Configuration & Settings")
-        self.setMinimumSize(700, 600)
+        self.setMinimumSize(600, 500)  # Reduced for laptop compatibility
 
         layout = QVBoxLayout(self)
 
@@ -76,6 +76,12 @@ class SettingsDialog(QDialog):
 
     def _create_api_keys_tab(self) -> QWidget:
         """Create API keys configuration tab."""
+        # Create scroll area wrapper
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -150,10 +156,19 @@ class SettingsDialog(QDialog):
         layout.addWidget(help_text)
 
         layout.addStretch()
-        return widget
+
+        # Set widget to scroll area and return scroll area
+        scroll_area.setWidget(widget)
+        return scroll_area
 
     def _create_model_config_tab(self) -> QWidget:
         """Create model configuration tab."""
+        # Create scroll area wrapper
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -267,10 +282,19 @@ class SettingsDialog(QDialog):
         layout.addWidget(explain_label)
 
         layout.addStretch()
-        return widget
+
+        # Set widget to scroll area and return scroll area
+        scroll_area.setWidget(widget)
+        return scroll_area
 
     def _create_features_tab(self) -> QWidget:
         """Create AI features configuration tab."""
+        # Create scroll area wrapper
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -351,7 +375,10 @@ class SettingsDialog(QDialog):
         layout.addWidget(advanced_group)
 
         layout.addStretch()
-        return widget
+
+        # Set widget to scroll area and return scroll area
+        scroll_area.setWidget(widget)
+        return scroll_area
 
     def _test_connection(self):
         """Test AI API connection."""

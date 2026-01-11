@@ -43,7 +43,7 @@ class ClimatePresetEditor(QDialog):
         """Initialize UI."""
         self.setWindowTitle("Climate Preset Editor")
         self.setMinimumWidth(600)
-        self.setMinimumHeight(650)
+        self.setMinimumHeight(500)  # Reduced for laptop compatibility
 
         layout = QVBoxLayout(self)
 

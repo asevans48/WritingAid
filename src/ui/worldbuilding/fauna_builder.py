@@ -33,7 +33,7 @@ class FaunaEditor(QDialog):
     def _init_ui(self):
         """Initialize UI."""
         self.setWindowTitle("Fauna Species Editor")
-        self.setMinimumSize(700, 750)
+        self.setMinimumSize(600, 500)  # Reduced for laptop compatibility
 
         main_layout = QVBoxLayout(self)
 

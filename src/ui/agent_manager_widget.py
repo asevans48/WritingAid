@@ -3,7 +3,7 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QPushButton, QLabel, QLineEdit, QTextEdit, QGroupBox,
-    QFormLayout, QMessageBox, QInputDialog
+    QFormLayout, QMessageBox, QInputDialog, QScrollArea
 )
 from PyQt6.QtCore import pyqtSignal, Qt
 from typing import List
@@ -26,7 +26,19 @@ class AgentContactWidget(QWidget):
 
     def _init_ui(self):
         """Initialize user interface."""
-        layout = QVBoxLayout(self)
+        # Main layout with scroll area
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Create scroll area for all content
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        # Content widget inside scroll area
+        content_widget = QWidget()
+        layout = QVBoxLayout(content_widget)
 
         # Contact info
         info_group = QGroupBox("Contact Information")
@@ -67,6 +79,10 @@ class AgentContactWidget(QWidget):
         email_button = QPushButton("Compose Email to Agent")
         email_button.clicked.connect(self._compose_email)
         layout.addWidget(email_button)
+
+        # Set content widget to scroll area and add to main layout
+        scroll_area.setWidget(content_widget)
+        main_layout.addWidget(scroll_area)
 
     def _load_agent(self):
         """Load agent data."""

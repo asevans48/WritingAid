@@ -3,7 +3,7 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QPushButton, QLabel, QTextEdit, QComboBox, QGroupBox,
-    QMessageBox, QFileDialog
+    QMessageBox, QFileDialog, QScrollArea
 )
 from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QPixmap
@@ -26,7 +26,19 @@ class ImageGeneratorWidget(QWidget):
 
     def _init_ui(self):
         """Initialize user interface."""
-        layout = QVBoxLayout(self)
+        # Main layout with scroll area
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Create scroll area for all content
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        # Content widget inside scroll area
+        content_widget = QWidget()
+        layout = QVBoxLayout(content_widget)
 
         # Header
         header = QLabel("Image & Cover Art Generator")
@@ -101,6 +113,10 @@ class ImageGeneratorWidget(QWidget):
 
         gallery_group.setLayout(gallery_layout)
         layout.addWidget(gallery_group)
+
+        # Set content widget to scroll area and add to main layout
+        scroll_area.setWidget(content_widget)
+        main_layout.addWidget(scroll_area)
 
     def _generate_image(self):
         """Generate image using AI."""

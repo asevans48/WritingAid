@@ -1,0 +1,99 @@
+{
+  "name": "Test Novel",
+  "description": "Testing separate chapter files",
+  "project_path": null,
+  "worldbuilding": {
+    "mythology": "",
+    "planets": "",
+    "climate": "",
+    "history": "",
+    "politics": "",
+    "military": "",
+    "economy": "",
+    "power_hierarchy": "",
+    "custom_sections": {},
+    "mythology_elements": {},
+    "planets_elements": {},
+    "climate_elements": {},
+    "history_elements": {},
+    "politics_elements": {},
+    "military_elements": {},
+    "economy_elements": {},
+    "power_hierarchy_elements": {},
+    "factions": [],
+    "myths": [],
+    "climate_presets": [],
+    "technologies": [],
+    "flora": [],
+    "fauna": [],
+    "stars": [],
+    "star_systems": []
+  },
+  "characters": [],
+  "story_planning": {
+    "freytag_pyramid": {
+      "exposition": "",
+      "rising_action": "",
+      "climax": "",
+      "falling_action": "",
+      "resolution": "",
+      "events": []
+    },
+    "main_plot": "",
+    "subplots": [],
+    "themes": []
+  },
+  "manuscript": {
+    "title": "My Novel",
+    "author": "Test Author",
+    "chapters": [
+      {
+        "id": "680a5168-6e78-487f-8a33-26df1c2b7c40",
+        "number": 1,
+        "title": "Chapter 1: The Adventure Begins",
+        "content": "",
+        "file_path": "chapters/chapter_001.md",
+        "revisions": [],
+        "notes": "",
+        "word_count": 0,
+        "created_at": "2026-01-11T00:43:42.545455",
+        "updated_at": "2026-01-11T00:43:42.545456"
+      },
+      {
+        "id": "a806a538-6d18-4c14-a672-e97b0f633d7d",
+        "number": 2,
+        "title": "Chapter 2",
+        "content": "",
+        "file_path": "chapters/chapter_002.md",
+        "revisions": [],
+        "notes": "",
+        "word_count": 0,
+        "created_at": "2026-01-11T00:43:42.545469",
+        "updated_at": "2026-01-11T00:43:42.545470"
+      },
+      {
+        "id": "ec8ebdca-21e3-4b8b-ba18-70393244e7a4",
+        "number": 3,
+        "title": "Chapter 3",
+        "content": "",
+        "file_path": "chapters/chapter_003.md",
+        "revisions": [],
+        "notes": "",
+        "word_count": 0,
+        "created_at": "2026-01-11T00:43:42.545478",
+        "updated_at": "2026-01-11T00:43:42.545478"
+      }
+    ],
+    "total_word_count": 0,
+    "created_at": "2026-01-11T00:43:42.545413",
+    "updated_at": "2026-01-11T00:43:42.545413"
+  },
+  "generated_images": [],
+  "agent_contacts": [],
+  "dictionary": {
+    "words": [],
+    "definitions": {}
+  },
+  "created_at": "2026-01-11T00:43:42.545408",
+  "updated_at": "2026-01-11T00:43:42.546262"
+}

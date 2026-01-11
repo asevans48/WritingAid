@@ -53,7 +53,7 @@ class MainWindow(QMainWindow):
     def _init_ui(self):
         """Initialize user interface."""
         self.setWindowTitle("Writer Platform")
-        self.setMinimumSize(1200, 800)
+        self.setMinimumSize(800, 600)  # Reduced from 1200x800 for laptop compatibility
 
         # Create central widget with splitter for chat
         central_widget = QWidget()

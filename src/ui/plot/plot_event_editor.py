@@ -47,7 +47,7 @@ class PlotEventEditor(QDialog):
         """Initialize UI."""
         self.setWindowTitle("Plot Event Editor")
         self.setMinimumWidth(600)
-        self.setMinimumHeight(700)
+        self.setMinimumHeight(500)  # Reduced for laptop compatibility
 
         layout = QVBoxLayout(self)
 

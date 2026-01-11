@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget,
     QListWidgetItem, QDialog, QDialogButtonBox, QLabel, QLineEdit,
     QTextEdit, QComboBox, QFormLayout, QGroupBox,
-    QTabWidget, QInputDialog, QMessageBox
+    QTabWidget, QInputDialog, QMessageBox, QScrollArea
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from typing import List, Optional
@@ -38,7 +38,7 @@ class PlanetEditorDialog(QDialog):
     def _init_ui(self):
         """Initialize UI."""
         self.setWindowTitle("Planet Editor")
-        self.setMinimumSize(800, 700)
+        self.setMinimumSize(600, 500)  # Reduced for laptop compatibility
 
         main_layout = QVBoxLayout(self)
 
@@ -69,6 +69,12 @@ class PlanetEditorDialog(QDialog):
 
     def _create_basic_tab(self):
         """Create basic info tab."""
+        # Create scroll area wrapper
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
         widget = QWidget()
         layout = QFormLayout(widget)
 
@@ -95,10 +101,17 @@ class PlanetEditorDialog(QDialog):
         self.description_edit.setMaximumHeight(200)
         layout.addRow("Description:", self.description_edit)
 
-        return widget
+        scroll_area.setWidget(widget)
+        return scroll_area
 
     def _create_climate_tab(self):
         """Create climate management tab."""
+        # Create scroll area wrapper
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
@@ -131,10 +144,17 @@ class PlanetEditorDialog(QDialog):
 
         layout.addLayout(list_layout)
 
-        return widget
+        scroll_area.setWidget(widget)
+        return scroll_area
 
     def _create_biology_tab(self):
         """Create biology tab for flora and fauna."""
+        # Create scroll area wrapper
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
@@ -178,7 +198,8 @@ class PlanetEditorDialog(QDialog):
 
         layout.addWidget(fauna_group)
 
-        return widget
+        scroll_area.setWidget(widget)
+        return scroll_area
 
     def _add_climate_zone(self):
         """Add a new climate zone."""
@@ -349,7 +370,7 @@ class EnhancedStarSystemEditor(QDialog):
     def _init_ui(self):
         """Initialize UI."""
         self.setWindowTitle("Star System Editor")
-        self.setMinimumSize(900, 750)
+        self.setMinimumSize(600, 500)  # Reduced for laptop compatibility
 
         main_layout = QVBoxLayout(self)
 

@@ -50,8 +50,8 @@ class TechnologyEditor(QDialog):
     def _init_ui(self):
         """Initialize UI."""
         self.setWindowTitle("Technology Editor")
-        self.setMinimumWidth(700)
-        self.setMinimumHeight(750)
+        self.setMinimumWidth(600)
+        self.setMinimumHeight(500)  # Reduced for laptop compatibility
 
         layout = QVBoxLayout(self)
 

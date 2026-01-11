@@ -448,6 +448,10 @@ class ManuscriptEditor(QWidget):
         insert_button.clicked.connect(self._insert_chapter)
         button_layout.addWidget(insert_button)
 
+        rename_button = QPushButton("Rename Chapter")
+        rename_button.clicked.connect(self._rename_chapter)
+        button_layout.addWidget(rename_button)
+
         remove_button = QPushButton("Remove Chapter")
         remove_button.clicked.connect(self._remove_chapter)
         button_layout.addWidget(remove_button)
@@ -486,6 +490,11 @@ class ManuscriptEditor(QWidget):
     def _add_chapter(self):
         """Add new chapter at the end."""
         if not self.manuscript:
+            QMessageBox.warning(
+                self,
+                "No Manuscript",
+                "Please create or load a project first."
+            )
             return
 
         chapter_num = len(self.manuscript.chapters) + 1
@@ -514,6 +523,11 @@ class ManuscriptEditor(QWidget):
     def _insert_chapter(self):
         """Insert chapter before selected chapter."""
         if not self.manuscript:
+            QMessageBox.warning(
+                self,
+                "No Manuscript",
+                "Please create or load a project first."
+            )
             return
 
         current_row = self.chapter_list.currentRow()
@@ -543,6 +557,43 @@ class ManuscriptEditor(QWidget):
             self.chapter_list.insertItem(current_row, item)
 
             self.chapter_list.setCurrentItem(item)
+            self.content_changed.emit()
+
+    def _rename_chapter(self):
+        """Rename selected chapter."""
+        current_item = self.chapter_list.currentItem()
+        if not current_item:
+            QMessageBox.information(
+                self,
+                "No Selection",
+                "Please select a chapter to rename."
+            )
+            return
+
+        chapter_id = current_item.data(Qt.ItemDataRole.UserRole)
+        chapter = next(
+            (c for c in self.manuscript.chapters if c.id == chapter_id),
+            None
+        )
+
+        if not chapter:
+            return
+
+        new_title, ok = QInputDialog.getText(
+            self,
+            "Rename Chapter",
+            f"Enter new title for Chapter {chapter.number}:",
+            text=chapter.title
+        )
+
+        if ok and new_title.strip():
+            chapter.title = new_title.strip()
+            current_item.setText(f"{chapter.number}. {chapter.title}")
+
+            # Update the chapter editor title if it's currently displayed
+            if self.current_chapter_editor and self.current_chapter_editor.chapter.id == chapter_id:
+                self.current_chapter_editor.title_edit.setPlainText(chapter.title)
+
             self.content_changed.emit()
 
     def _remove_chapter(self):

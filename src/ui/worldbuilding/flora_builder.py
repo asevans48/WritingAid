@@ -33,7 +33,7 @@ class FloraEditor(QDialog):
     def _init_ui(self):
         """Initialize UI."""
         self.setWindowTitle("Flora Species Editor")
-        self.setMinimumSize(700, 700)
+        self.setMinimumSize(600, 500)  # Reduced for laptop compatibility
 
         main_layout = QVBoxLayout(self)
 

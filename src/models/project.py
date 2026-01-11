@@ -119,7 +119,8 @@ class Chapter(BaseModel):
     id: str
     number: int
     title: str
-    content: str = ""
+    content: str = ""  # Content stored inline (legacy) or loaded from file_path
+    file_path: Optional[str] = None  # Relative path to chapter file within project
     revisions: List[ChapterRevision] = Field(default_factory=list)
     notes: str = ""
     word_count: int = 0
@@ -135,10 +136,32 @@ class Chapter(BaseModel):
         )
         self.revisions.append(revision)
 
+    def load_content_from_file(self, project_dir: Path) -> bool:
+        """Load chapter content from external file."""
+        if not self.file_path:
+            return False
+
+        full_path = project_dir / self.file_path
+        if full_path.exists():
+            self.content = full_path.read_text(encoding='utf-8')
+            return True
+        return False
+
+    def save_content_to_file(self, project_dir: Path) -> bool:
+        """Save chapter content to external file."""
+        if not self.file_path:
+            # Auto-generate file path
+            self.file_path = f"chapters/chapter_{self.number:03d}.md"
+
+        full_path = project_dir / self.file_path
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_text(self.content, encoding='utf-8')
+        return True
+
 
 class Manuscript(BaseModel):
     """Manuscript containing chapters."""
-    title: str
+    title: str = "Untitled Manuscript"
     author: str = ""
     chapters: List[Chapter] = Field(default_factory=list)
     total_word_count: int = 0
@@ -192,11 +215,38 @@ class WriterProject(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 
-    def save_project(self, file_path: str):
-        """Save project to JSON file."""
+    def save_project(self, file_path: str, save_chapters_separately: bool = True):
+        """Save project to JSON file.
+
+        Args:
+            file_path: Path to save the project.json file
+            save_chapters_separately: If True, save chapters as separate files
+        """
         self.updated_at = datetime.now()
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(self.model_dump(mode='json'), f, indent=2, default=str)
+        project_dir = Path(file_path).parent
+
+        # Save chapters to separate files if enabled
+        if save_chapters_separately:
+            for chapter in self.manuscript.chapters:
+                chapter.save_content_to_file(project_dir)
+                # Clear content from JSON to save space
+                original_content = chapter.content
+                chapter.content = ""  # Will be loaded from file
+
+            # Save project config
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(self.model_dump(mode='json'), f, indent=2, default=str)
+
+            # Restore content in memory
+            for chapter in self.manuscript.chapters:
+                full_path = project_dir / chapter.file_path
+                if full_path.exists():
+                    chapter.content = full_path.read_text(encoding='utf-8')
+        else:
+            # Legacy: save everything in one file
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(self.model_dump(mode='json'), f, indent=2, default=str)
+
         self.project_path = file_path
 
     @classmethod
@@ -206,4 +256,11 @@ class WriterProject(BaseModel):
             data = json.load(f)
         project = cls(**data)
         project.project_path = file_path
+
+        # Load chapter content from separate files if they exist
+        project_dir = Path(file_path).parent
+        for chapter in project.manuscript.chapters:
+            if chapter.file_path:
+                chapter.load_content_from_file(project_dir)
+
         return project
