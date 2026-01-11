@@ -58,3 +58,7 @@ ai_config.json
 *.temp
 .cache/
 *.md
+
+#Claude
+
+*.claude/**

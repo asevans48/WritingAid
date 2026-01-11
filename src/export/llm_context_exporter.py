@@ -83,6 +83,41 @@ class LLMContextExporter:
                     content.append(f"- **Distance from Earth**: {system.distance_from_earth}")
                 if system.habitable_zone_inner or system.habitable_zone_outer:
                     content.append(f"- **Habitable Zone**: {system.habitable_zone_inner or '?'} - {system.habitable_zone_outer or '?'}")
+
+                # Stars in system
+                if hasattr(system, 'stars') and system.stars:
+                    content.append(f"\n**Stars**: {len(system.stars)}")
+                    for star in system.stars:
+                        content.append(f"  - {star.name} ({star.spectral_class if hasattr(star, 'spectral_class') else 'Unknown'})")
+
+                # Planets in system
+                if hasattr(system, 'planets') and system.planets:
+                    content.append(f"\n**Planets**: {len(system.planets)}")
+                    for planet in system.planets:
+                        planet_type = planet.planet_type.value.replace("_", " ").title() if hasattr(planet, 'planet_type') else "Unknown"
+                        content.append(f"  - **{planet.name}** ({planet_type})")
+
+                        # Planet description
+                        if planet.description:
+                            content.append(f"    - Description: {planet.description}")
+
+                        # Climate zones
+                        if hasattr(planet, 'climate_zones') and planet.climate_zones:
+                            zones = [z.zone_name for z in planet.climate_zones]
+                            content.append(f"    - Climate Zones: {', '.join(zones)}")
+
+                        # Flora
+                        if hasattr(planet, 'flora_species') and planet.flora_species:
+                            content.append(f"    - Flora Species: {len(planet.flora_species)} species")
+
+                        # Fauna
+                        if hasattr(planet, 'fauna_species') and planet.fauna_species:
+                            content.append(f"    - Fauna Species: {len(planet.fauna_species)} species")
+
+                # Key facts (distances, etc.)
+                if hasattr(system, 'key_facts') and system.key_facts:
+                    content.append(f"\n**Key Facts**:\n{system.key_facts}")
+
                 if system.description:
                     content.append(f"\n{system.description}")
                 if system.notes:

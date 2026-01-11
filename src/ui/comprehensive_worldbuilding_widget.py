@@ -6,7 +6,6 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import pyqtSignal
 
 from src.ui.worldbuilding.faction_builder import FactionBuilderWidget
-from src.ui.worldbuilding.planet_builder import PlanetBuilderWidget
 from src.ui.worldbuilding.timeline_builder import TimelineBuilderWidget
 from src.ui.worldbuilding.military_builder import MilitaryBuilderWidget
 from src.ui.worldbuilding.economy_builder import EconomyBuilderWidget
@@ -17,7 +16,7 @@ from src.ui.worldbuilding.climate_preset_builder import ClimatePresetBuilderWidg
 from src.ui.worldbuilding.technology_builder import TechnologyBuilderWidget
 from src.ui.worldbuilding.flora_builder import FloraBuilderWidget
 from src.ui.worldbuilding.fauna_builder import FaunaBuilderWidget
-from src.ui.worldbuilding.star_system_builder import StarSystemBuilderWidget
+from src.ui.worldbuilding.enhanced_star_system_builder import EnhancedStarSystemBuilderWidget
 
 
 class ComprehensiveWorldBuildingWidget(QWidget):
@@ -63,7 +62,7 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         self.tabs.addTab(self.factions_widget, "⚔️ Factions")
 
         # Star Systems - Contains stars, planets, and all astronomical data
-        self.star_systems_widget = StarSystemBuilderWidget()
+        self.star_systems_widget = EnhancedStarSystemBuilderWidget()
         self.star_systems_widget.content_changed.connect(self.content_changed.emit)
         self.tabs.addTab(self.star_systems_widget, "⭐ Systems")
 
@@ -164,10 +163,10 @@ class ComprehensiveWorldBuildingWidget(QWidget):
             self._update_mythology_factions()
             self._update_technology_factions()
 
-        # Load climate presets (needed by planet builder)
+        # Load climate presets
         if hasattr(worldbuilding, 'climate_presets'):
             self.climate_preset_widget.load_presets(worldbuilding.climate_presets)
-            self._update_planet_climates()
+            self._update_star_system_climates()
 
         # Load mythology
         if hasattr(worldbuilding, 'myths'):
@@ -180,27 +179,22 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         # Load flora
         if hasattr(worldbuilding, 'flora'):
             self.flora_widget.load_flora(worldbuilding.flora)
+            self._update_star_system_flora()
 
         # Load fauna
         if hasattr(worldbuilding, 'fauna'):
             self.fauna_widget.load_fauna(worldbuilding.fauna)
+            self._update_star_system_fauna()
 
-        # Load star systems (after planets are loaded so they can reference them)
+        # Load star systems (contains all astronomical data)
         if hasattr(worldbuilding, 'star_systems'):
-            # First, update star systems with available planets
-            planets = self.planets_widget.get_planets()
-            self.star_systems_widget.set_available_planets(planets)
-            # Then load the systems
             self.star_systems_widget.load_star_systems(worldbuilding.star_systems)
-
-        # TODO: Load stars (when star builder widget is created)
 
     def get_data(self):
         """Get worldbuilding data."""
         from src.models.project import WorldBuilding
 
-        # For now, return simple data structure
-        # TODO: Return CompleteWorldBuilding with all objects
+        # Return worldbuilding data structure
         worldbuilding = WorldBuilding(
             factions=self.factions_widget.get_factions(),
             myths=self.mythology_widget.get_myths(),
@@ -208,10 +202,10 @@ class ComprehensiveWorldBuildingWidget(QWidget):
             climate_presets=self.climate_preset_widget.get_presets(),
             flora=self.flora_widget.get_flora(),
             fauna=self.fauna_widget.get_fauna(),
-            stars=[],  # TODO: Add star builder widget
+            stars=[],  # Stars are now embedded in star_systems
             star_systems=self.star_systems_widget.get_star_systems(),
             mythology_elements={},  # Deprecated - kept for backwards compatibility
-            planets_elements={},  # TODO: Convert planets to dict
+            planets_elements={},  # Deprecated - planets now embedded in star_systems
             climate_elements={},  # Deprecated - climate now managed via presets
             history_elements={},  # TODO: Convert events to dict
             politics_elements={},  # TODO: Convert systems to dict

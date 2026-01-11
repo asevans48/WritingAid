@@ -203,12 +203,16 @@ class StarSystem(BaseModel):
     name: str
     system_type: str = "single"  # single, binary, trinary, multiple
 
-    # Stars in the system
-    primary_star: Optional[str] = None  # Star ID
-    companion_stars: List[str] = Field(default_factory=list)  # Star IDs for binary/multiple systems
+    # Stars in the system (embedded objects)
+    stars: List['Star'] = Field(default_factory=list)
 
-    # Planets in the system
-    planet_ids: List[str] = Field(default_factory=list)  # Planet IDs in this system
+    # Planets in the system (embedded objects)
+    planets: List['Planet'] = Field(default_factory=list)
+
+    # Legacy fields (for backward compatibility)
+    primary_star: Optional[str] = None  # Star ID (deprecated - use stars list)
+    companion_stars: List[str] = Field(default_factory=list)  # Star IDs (deprecated)
+    planet_ids: List[str] = Field(default_factory=list)  # Planet IDs (deprecated)
 
     # System properties
     galaxy: Optional[str] = None  # e.g., "Milky Way", "Andromeda", custom galaxy name
@@ -218,6 +222,9 @@ class StarSystem(BaseModel):
     # Habitable zone
     habitable_zone_inner: Optional[str] = None  # e.g., "0.95 AU"
     habitable_zone_outer: Optional[str] = None  # e.g., "1.37 AU"
+
+    # Key facts (inter-planetary distances, notable features)
+    key_facts: str = ""
 
     # Additional info
     description: str = ""
