@@ -18,6 +18,7 @@ from src.ui.worldbuilding.flora_builder import FloraBuilderWidget
 from src.ui.worldbuilding.fauna_builder import FaunaBuilderWidget
 from src.ui.worldbuilding.enhanced_star_system_builder import EnhancedStarSystemBuilderWidget
 from src.ui.worldbuilding.culture_builder import CultureBuilderWidget
+from src.ui.worldbuilding.place_builder import PlaceBuilderWidget
 
 
 class ComprehensiveWorldBuildingWidget(QWidget):
@@ -122,12 +123,20 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         self.culture_widget.content_changed.connect(self.content_changed.emit)
         self.tabs.addTab(self.culture_widget, "🎭 Culture")
 
+        # Places & Landmarks - Cities, landmarks, and points of interest
+        self.places_widget = PlaceBuilderWidget()
+        self.places_widget.content_changed.connect(self.content_changed.emit)
+        self.tabs.addTab(self.places_widget, "🗺️ Places")
+
         layout.addWidget(self.tabs)
 
         # Connect faction changes to update other widgets
         self.factions_widget.content_changed.connect(self._update_mythology_factions)
         self.factions_widget.content_changed.connect(self._update_technology_factions)
         self.factions_widget.content_changed.connect(self._update_culture_factions)
+        self.factions_widget.content_changed.connect(self._update_military_factions)
+        self.factions_widget.content_changed.connect(self._update_economy_factions)
+        self.factions_widget.content_changed.connect(self._update_places_factions)
 
         # Connect flora/fauna/climate changes to update star systems
         self.flora_widget.content_changed.connect(self._update_star_system_flora)
@@ -138,6 +147,7 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         self.star_systems_widget.content_changed.connect(self._update_culture_planets)
         self.star_systems_widget.content_changed.connect(self._update_flora_planets)
         self.star_systems_widget.content_changed.connect(self._update_fauna_planets)
+        self.star_systems_widget.content_changed.connect(self._update_places_planets)
 
     def _update_mythology_factions(self):
         """Update available factions in mythology widget."""
@@ -196,6 +206,21 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         factions = self.factions_widget.get_factions()
         self.culture_widget.set_available_factions(factions)
 
+    def _update_military_factions(self):
+        """Update available factions in military widget."""
+        factions = self.factions_widget.get_factions()
+        self.military_widget.set_available_factions(factions)
+
+    def _update_economy_factions(self):
+        """Update available factions in economy widget."""
+        factions = self.factions_widget.get_factions()
+        self.economy_widget.set_available_factions(factions)
+
+    def _update_places_factions(self):
+        """Update available factions in places widget."""
+        factions = self.factions_widget.get_factions()
+        self.places_widget.set_available_factions(factions)
+
     def _update_culture_planets(self):
         """Update available planets in culture widget."""
         planet_names = self._get_all_planet_names()
@@ -210,6 +235,11 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         """Update available planets in fauna widget."""
         planet_names = self._get_all_planet_names()
         self.fauna_widget.set_available_planets(planet_names)
+
+    def _update_places_planets(self):
+        """Update available planets in places widget."""
+        planet_names = self._get_all_planet_names()
+        self.places_widget.set_available_planets(planet_names)
 
     def _get_all_planet_names(self) -> list:
         """Get all planet names from star systems."""
@@ -227,6 +257,8 @@ class ComprehensiveWorldBuildingWidget(QWidget):
             self.factions_widget.load_factions(worldbuilding.factions)
             self._update_mythology_factions()
             self._update_technology_factions()
+            self._update_military_factions()
+            self._update_economy_factions()
 
         # Load climate presets
         if hasattr(worldbuilding, 'climate_presets'):
@@ -259,10 +291,24 @@ class ComprehensiveWorldBuildingWidget(QWidget):
             self._update_flora_planets()
             self._update_fauna_planets()
 
+        # Load economies
+        if hasattr(worldbuilding, 'economies'):
+            self.economy_widget.load_economies(worldbuilding.economies)
+
         # Load cultures
         if hasattr(worldbuilding, 'cultures'):
             self.culture_widget.load_cultures(worldbuilding.cultures)
             self._update_culture_factions()
+
+        # Load armies (military forces)
+        if hasattr(worldbuilding, 'armies'):
+            self.military_widget.load_armies(worldbuilding.armies)
+
+        # Load places (landmarks and points of interest)
+        if hasattr(worldbuilding, 'places'):
+            self.places_widget.load_places(worldbuilding.places)
+            self._update_places_factions()
+            self._update_places_planets()
 
     def get_data(self):
         """Get worldbuilding data."""
@@ -279,6 +325,9 @@ class ComprehensiveWorldBuildingWidget(QWidget):
             stars=[],  # Stars are now embedded in star_systems
             star_systems=self.star_systems_widget.get_star_systems(),
             cultures=self.culture_widget.get_cultures(),
+            armies=self.military_widget.get_armies(),  # Military forces
+            economies=self.economy_widget.get_economies(),  # Economic systems
+            places=self.places_widget.get_places(),  # Places and landmarks
             mythology_elements={},  # Deprecated - kept for backwards compatibility
             planets_elements={},  # Deprecated - planets now embedded in star_systems
             climate_elements={},  # Deprecated - climate now managed via presets

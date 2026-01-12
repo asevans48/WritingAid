@@ -3,16 +3,17 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QPushButton, QLabel, QLineEdit, QTextEdit, QComboBox, QSpinBox,
-    QFormLayout, QGroupBox, QScrollArea, QSplitter, QInputDialog, QTabWidget,
+    QFormLayout, QGroupBox, QScrollArea, QInputDialog, QTabWidget,
     QDialog, QDialogButtonBox, QMessageBox
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF
-from PyQt6.QtGui import QPainter, QPen, QColor, QFont, QBrush
+from PyQt6.QtCore import Qt, pyqtSignal, QRectF
+from PyQt6.QtGui import QPainter, QPen, QColor, QFont
 from typing import List, Optional, Dict, Tuple
 import uuid
 import math
 
 from src.models.worldbuilding_objects import Faction, FactionType
+from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
 
 
 class FactionRelationshipGraph(QWidget):
@@ -25,8 +26,8 @@ class FactionRelationshipGraph(QWidget):
         super().__init__()
         self.factions: List[Faction] = []
         self.faction_positions: Dict[str, Tuple[float, float]] = {}
-        self.setMinimumHeight(250)
-        self.setMaximumHeight(250)
+        self.setMinimumHeight(400)
+        self.setMinimumWidth(500)
         self.setStyleSheet("background-color: white; border: 1px solid #e5e7eb; border-radius: 8px;")
 
     def set_factions(self, factions: List[Faction]):
@@ -146,30 +147,78 @@ class FactionRelationshipGraph(QWidget):
         self._calculate_positions()
 
 
-class FactionEditor(QWidget):
-    """Editor for a faction."""
+class FactionRelationshipGraphDialog(QDialog):
+    """Popup dialog showing faction relationship graph."""
 
-    content_changed = pyqtSignal()
+    def __init__(self, factions: List[Faction], parent=None):
+        """Initialize dialog."""
+        super().__init__(parent)
+        self.setWindowTitle("Faction Relationships")
+        self.resize(800, 600)
+        self._init_ui(factions)
 
-    def __init__(self, faction: Faction, available_factions: List[Faction] = None):
-        """Initialize faction editor.
+    def _init_ui(self, factions: List[Faction]):
+        """Initialize UI."""
+        layout = QVBoxLayout(self)
 
-        Args:
-            faction: Faction to edit
-            available_factions: List of all available factions for relationship selection
-        """
-        super().__init__()
-        self.faction = faction
+        # Legend
+        legend_layout = QHBoxLayout()
+        legend_layout.addWidget(QLabel("Legend:"))
+
+        ally_label = QLabel("━ Allies")
+        ally_label.setStyleSheet("color: #10b981; font-weight: bold;")
+        legend_layout.addWidget(ally_label)
+
+        enemy_label = QLabel("- - Enemies")
+        enemy_label.setStyleSheet("color: #ef4444; font-weight: bold;")
+        legend_layout.addWidget(enemy_label)
+
+        legend_layout.addStretch()
+        layout.addLayout(legend_layout)
+
+        # Graph
+        self.graph = FactionRelationshipGraph()
+        self.graph.set_factions(factions)
+        layout.addWidget(self.graph)
+
+        # Close button
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn)
+
+
+class FactionEditor(QDialog):
+    """Dialog for editing a faction."""
+
+    def __init__(self, faction: Optional[Faction] = None, available_factions: List[Faction] = None, parent=None):
+        """Initialize faction editor dialog."""
+        super().__init__(parent)
+        self.faction = faction or Faction(
+            id="",
+            name="",
+            faction_type=FactionType.NATION
+        )
         self.available_factions = available_factions or []
         self._init_ui()
-        self._load_faction()
+        if faction:
+            self._load_faction()
 
     def _init_ui(self):
         """Initialize UI."""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
+        self.setWindowTitle("Faction Editor")
+        self.resize(750, 600)
 
-        # Tabs
+        layout = QVBoxLayout(self)
+
+        # Create scrollable area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+
+        # Tabs for organization
         tabs = QTabWidget()
 
         # Basic Info Tab
@@ -188,7 +237,17 @@ class FactionEditor(QWidget):
         power_tab = self._create_power_tab()
         tabs.addTab(power_tab, "Power & Influence")
 
-        layout.addWidget(tabs)
+        scroll_layout.addWidget(tabs)
+        scroll.setWidget(scroll_content)
+        layout.addWidget(scroll)
+
+        # Buttons
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._save)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
 
     def _create_basic_tab(self) -> QWidget:
         """Create basic info tab."""
@@ -196,12 +255,11 @@ class FactionEditor(QWidget):
         layout = QFormLayout(widget)
 
         self.name_edit = QLineEdit()
-        self.name_edit.textChanged.connect(self.content_changed.emit)
-        layout.addRow("Faction Name:", self.name_edit)
+        self.name_edit.setPlaceholderText("Faction name")
+        layout.addRow("Name:*", self.name_edit)
 
         self.type_combo = QComboBox()
         self.type_combo.addItems([t.value.title() for t in FactionType])
-        self.type_combo.currentTextChanged.connect(self.content_changed.emit)
         layout.addRow("Type:", self.type_combo)
 
         self.leader_edit = QLineEdit()
@@ -220,10 +278,13 @@ class FactionEditor(QWidget):
         layout.addRow("Government Type:", self.government_edit)
 
         self.description_edit = QTextEdit()
+        self.description_edit.setMaximumHeight(100)
+        self.description_edit.setPlaceholderText("Description of this faction...")
         layout.addRow("Description:", self.description_edit)
 
         self.notes_edit = QTextEdit()
-        self.notes_edit.setMaximumHeight(100)
+        self.notes_edit.setMaximumHeight(80)
+        self.notes_edit.setPlaceholderText("Additional notes...")
         layout.addRow("Notes:", self.notes_edit)
 
         return widget
@@ -242,6 +303,7 @@ class FactionEditor(QWidget):
         territory_layout.addWidget(territory_help)
 
         self.territory_list = QListWidget()
+        self.territory_list.setMaximumHeight(120)
         territory_layout.addWidget(self.territory_list)
 
         terr_btn_layout = QHBoxLayout()
@@ -252,6 +314,7 @@ class FactionEditor(QWidget):
         remove_terr_btn = QPushButton("Remove")
         remove_terr_btn.clicked.connect(self._remove_territory)
         terr_btn_layout.addWidget(remove_terr_btn)
+        terr_btn_layout.addStretch()
 
         territory_layout.addLayout(terr_btn_layout)
         layout.addWidget(territory_group)
@@ -265,6 +328,7 @@ class FactionEditor(QWidget):
         resources_layout.addWidget(resources_help)
 
         self.resources_list = QListWidget()
+        self.resources_list.setMaximumHeight(120)
         resources_layout.addWidget(self.resources_list)
 
         res_btn_layout = QHBoxLayout()
@@ -279,10 +343,12 @@ class FactionEditor(QWidget):
         remove_res_btn = QPushButton("Remove")
         remove_res_btn.clicked.connect(self._remove_resource)
         res_btn_layout.addWidget(remove_res_btn)
+        res_btn_layout.addStretch()
 
         resources_layout.addLayout(res_btn_layout)
         layout.addWidget(resources_group)
 
+        layout.addStretch()
         return widget
 
     def _create_relations_tab(self) -> QWidget:
@@ -299,6 +365,7 @@ class FactionEditor(QWidget):
         allies_layout.addWidget(allies_help)
 
         self.allies_list = QListWidget()
+        self.allies_list.setMaximumHeight(120)
         allies_layout.addWidget(self.allies_list)
 
         allies_btn_layout = QHBoxLayout()
@@ -309,6 +376,7 @@ class FactionEditor(QWidget):
         remove_ally_btn = QPushButton("Remove")
         remove_ally_btn.clicked.connect(self._remove_ally)
         allies_btn_layout.addWidget(remove_ally_btn)
+        allies_btn_layout.addStretch()
 
         allies_layout.addLayout(allies_btn_layout)
         layout.addWidget(allies_group)
@@ -322,6 +390,7 @@ class FactionEditor(QWidget):
         enemies_layout.addWidget(enemies_help)
 
         self.enemies_list = QListWidget()
+        self.enemies_list.setMaximumHeight(120)
         enemies_layout.addWidget(self.enemies_list)
 
         enemies_btn_layout = QHBoxLayout()
@@ -332,10 +401,12 @@ class FactionEditor(QWidget):
         remove_enemy_btn = QPushButton("Remove")
         remove_enemy_btn.clicked.connect(self._remove_enemy)
         enemies_btn_layout.addWidget(remove_enemy_btn)
+        enemies_btn_layout.addStretch()
 
         enemies_layout.addLayout(enemies_btn_layout)
         layout.addWidget(enemies_group)
 
+        layout.addStretch()
         return widget
 
     def _create_power_tab(self) -> QWidget:
@@ -353,23 +424,26 @@ class FactionEditor(QWidget):
         self.economic_spin.setMinimum(0)
         layout.addRow("Economic Power (0-100):", self.economic_spin)
 
-        # Connected systems
+        # Connected systems info
         connections_group = QGroupBox("Connected Systems")
         connections_layout = QVBoxLayout(connections_group)
 
-        connections_help = QLabel("This faction is connected to:")
+        connections_help = QLabel("This faction connects to:")
         connections_help.setStyleSheet("font-weight: 600; margin-top: 8px;")
         connections_layout.addWidget(connections_help)
 
-        self.connections_display = QTextEdit()
-        self.connections_display.setReadOnly(True)
-        self.connections_display.setMaximumHeight(150)
-        self.connections_display.setStyleSheet("background-color: #f9fafb; border: 1px solid #e5e7eb;")
-        connections_layout.addWidget(self.connections_display)
-
-        refresh_btn = QPushButton("🔄 Refresh Connections")
-        refresh_btn.clicked.connect(self._refresh_connections)
-        connections_layout.addWidget(refresh_btn)
+        connections_info = QLabel(
+            "• Political System (Government)\n"
+            "• Economic System (Trade & Commerce)\n"
+            "• Military Forces (Armies & Branches)\n"
+            "• Power Hierarchy (Leadership Structure)\n"
+            "• Historical Events (Timeline)\n"
+            "• Characters (Members & Leaders)\n"
+            "• Planets (Territory)\n"
+            "• Mythology (Beliefs & Legends)"
+        )
+        connections_info.setStyleSheet("color: #6b7280; font-size: 11px; padding: 8px;")
+        connections_layout.addWidget(connections_info)
 
         layout.addRow(connections_group)
 
@@ -402,21 +476,19 @@ class FactionEditor(QWidget):
         for ally_id in self.faction.allies:
             faction_name = self._get_faction_name(ally_id)
             item = QListWidgetItem(faction_name)
-            item.setData(Qt.ItemDataRole.UserRole, ally_id)  # Store ID in item data
+            item.setData(Qt.ItemDataRole.UserRole, ally_id)
             self.allies_list.addItem(item)
 
         # Enemies - display faction names instead of IDs
         for enemy_id in self.faction.enemies:
             faction_name = self._get_faction_name(enemy_id)
             item = QListWidgetItem(faction_name)
-            item.setData(Qt.ItemDataRole.UserRole, enemy_id)  # Store ID in item data
+            item.setData(Qt.ItemDataRole.UserRole, enemy_id)
             self.enemies_list.addItem(item)
 
         # Power
         self.military_spin.setValue(self.faction.military_strength)
         self.economic_spin.setValue(self.faction.economic_power)
-
-        self._refresh_connections()
 
     def _add_territory(self):
         """Add territory."""
@@ -524,43 +596,29 @@ class FactionEditor(QWidget):
             self.enemies_list.takeItem(current)
 
     def _get_faction_name(self, faction_id: str) -> str:
-        """Get faction name from ID.
-
-        Args:
-            faction_id: Faction ID
-
-        Returns:
-            Faction name or ID if not found
-        """
+        """Get faction name from ID."""
         for faction in self.available_factions:
             if faction.id == faction_id:
                 return faction.name
-        return faction_id  # Fallback to ID if not found
+        return faction_id
 
-    def _refresh_connections(self):
-        """Refresh connections display."""
-        connections = []
-        connections.append("• Political System (Government)")
-        connections.append("• Economic System (Trade & Commerce)")
-        connections.append("• Military Forces (Armies & Branches)")
-        connections.append("• Power Hierarchy (Leadership Structure)")
-        connections.append("• Historical Events (Timeline)")
-        connections.append("• Characters (Members & Leaders)")
-        connections.append("• Planets (Territory)")
-        connections.append("• Mythology (Beliefs & Legends)")
+    def _save(self):
+        """Save faction data."""
+        name = self.name_edit.text().strip()
+        if not name:
+            return
 
-        self.connections_display.setPlainText("\n".join(connections))
+        if not self.faction.id:
+            self.faction.id = str(uuid.uuid4())
 
-    def save_to_model(self):
-        """Save to faction model."""
-        self.faction.name = self.name_edit.text()
+        self.faction.name = name
         self.faction.faction_type = FactionType(self.type_combo.currentText().lower())
-        self.faction.leader = self.leader_edit.text()
-        self.faction.founded_date = self.founded_edit.text()
-        self.faction.capital = self.capital_edit.text()
-        self.faction.government_type = self.government_edit.text()
-        self.faction.description = self.description_edit.toPlainText()
-        self.faction.notes = self.notes_edit.toPlainText()
+        self.faction.leader = self.leader_edit.text().strip()
+        self.faction.founded_date = self.founded_edit.text().strip()
+        self.faction.capital = self.capital_edit.text().strip()
+        self.faction.government_type = self.government_edit.text().strip()
+        self.faction.description = self.description_edit.toPlainText().strip()
+        self.faction.notes = self.notes_edit.toPlainText().strip()
         self.faction.military_strength = self.military_spin.value()
         self.faction.economic_power = self.economic_spin.value()
 
@@ -588,6 +646,12 @@ class FactionEditor(QWidget):
             for i in range(self.enemies_list.count())
         ]
 
+        self.accept()
+
+    def get_faction(self) -> Faction:
+        """Get the edited faction."""
+        return self.faction
+
 
 class FactionBuilderWidget(QWidget):
     """Widget for managing factions - central hub of worldbuilding."""
@@ -598,7 +662,6 @@ class FactionBuilderWidget(QWidget):
         """Initialize faction builder."""
         super().__init__()
         self.factions: List[Faction] = []
-        self.current_editor: Optional[FactionEditor] = None
         self._init_ui()
 
     def _init_ui(self):
@@ -606,24 +669,62 @@ class FactionBuilderWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # Faction relationship graph
-        self.relationship_graph = FactionRelationshipGraph()
-        layout.addWidget(self.relationship_graph)
+        # Header
+        header_widget = QWidget()
+        header_layout = QVBoxLayout(header_widget)
+        header_layout.setContentsMargins(16, 12, 16, 8)
 
-        # Splitter for list and editor
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        header = QLabel("Factions")
+        header.setStyleSheet("font-size: 16px; font-weight: 600; color: #1a1a1a;")
+        header_layout.addWidget(header)
 
-        # Left: Faction list
-        left_panel = QWidget()
-        left_layout = QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(8, 8, 8, 8)
+        subtitle = QLabel("Central hub - factions connect to all other worldbuilding elements")
+        subtitle.setStyleSheet("font-size: 12px; color: #6b7280;")
+        header_layout.addWidget(subtitle)
 
-        list_label = QLabel("Factions")
-        list_label.setStyleSheet("font-weight: 600; font-size: 13px;")
-        left_layout.addWidget(list_label)
+        layout.addWidget(header_widget)
 
+        # Filter/Sort controls
+        self.filter_sort = FilterSortWidget(
+            sort_options=["Name", "Type"],
+            filter_placeholder="Search factions..."
+        )
+        self.filter_sort.set_filter_options(["All"] + [t.value.title() for t in FactionType])
+        self.filter_sort.filter_changed.connect(self._update_list)
+        layout.addWidget(self.filter_sort)
+
+        # Toolbar
+        toolbar = QHBoxLayout()
+
+        add_btn = QPushButton("Add Faction")
+        add_btn.clicked.connect(self._add_faction)
+        toolbar.addWidget(add_btn)
+
+        self.edit_btn = QPushButton("Edit")
+        self.edit_btn.clicked.connect(self._edit_faction)
+        self.edit_btn.setEnabled(False)
+        toolbar.addWidget(self.edit_btn)
+
+        self.remove_btn = QPushButton("Remove")
+        self.remove_btn.clicked.connect(self._remove_faction)
+        self.remove_btn.setEnabled(False)
+        toolbar.addWidget(self.remove_btn)
+
+        toolbar.addSpacing(16)
+
+        # View Relationships Graph button
+        view_graph_btn = QPushButton("View Relationship Graph")
+        view_graph_btn.clicked.connect(self._show_relationship_graph)
+        toolbar.addWidget(view_graph_btn)
+
+        toolbar.addStretch()
+
+        layout.addLayout(toolbar)
+
+        # Faction list
         self.faction_list = QListWidget()
-        self.faction_list.currentItemChanged.connect(self._on_faction_selected)
+        self.faction_list.itemSelectionChanged.connect(self._on_selection_changed)
+        self.faction_list.itemDoubleClicked.connect(self._edit_faction)
         self.faction_list.setStyleSheet("""
             QListWidget {
                 background-color: white;
@@ -631,8 +732,8 @@ class FactionBuilderWidget(QWidget):
                 border-radius: 8px;
             }
             QListWidget::item {
-                padding: 12px;
-                border-radius: 6px;
+                padding: 8px;
+                border-radius: 4px;
                 margin: 2px;
             }
             QListWidget::item:selected {
@@ -640,64 +741,93 @@ class FactionBuilderWidget(QWidget):
                 color: white;
             }
         """)
-        left_layout.addWidget(self.faction_list)
+        layout.addWidget(self.faction_list)
 
-        btn_layout = QHBoxLayout()
-        add_btn = QPushButton("➕ Add Faction")
-        add_btn.clicked.connect(self._add_faction)
-        btn_layout.addWidget(add_btn)
+    def _update_list(self):
+        """Update faction list display."""
+        self.faction_list.clear()
 
-        remove_btn = QPushButton("🗑️")
-        remove_btn.setMaximumWidth(40)
-        remove_btn.clicked.connect(self._remove_faction)
-        btn_layout.addWidget(remove_btn)
+        # Filter and sort functions
+        def get_searchable_text(faction):
+            return f"{faction.name} {faction.faction_type.value} {faction.description or ''}"
 
-        left_layout.addLayout(btn_layout)
+        def get_sort_value(faction, key):
+            if key == "Name":
+                return faction.name.lower()
+            elif key == "Type":
+                return faction.faction_type.value
+            return faction.name.lower()
 
-        left_panel.setMaximumWidth(280)
-        splitter.addWidget(left_panel)
+        def get_type(faction):
+            return faction.faction_type.value.title()
 
-        # Right: Faction editor
-        self.editor_scroll = QScrollArea()
-        self.editor_scroll.setWidgetResizable(True)
+        filtered_factions = self.filter_sort.filter_and_sort(
+            self.factions, get_searchable_text, get_sort_value, get_type
+        )
 
-        placeholder = QLabel("Add or select a faction to begin")
-        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        placeholder.setStyleSheet("color: #9ca3af; font-size: 14px;")
-        self.editor_scroll.setWidget(placeholder)
+        for faction in filtered_factions:
+            type_display = faction.faction_type.value.title()
 
-        splitter.addWidget(self.editor_scroll)
+            # Add ally/enemy counts
+            relations_text = ""
+            if faction.allies or faction.enemies:
+                parts = []
+                if faction.allies:
+                    parts.append(f"{len(faction.allies)} allies")
+                if faction.enemies:
+                    parts.append(f"{len(faction.enemies)} enemies")
+                relations_text = f" - {', '.join(parts)}"
 
-        layout.addWidget(splitter)
+            item_text = f"{faction.name} ({type_display}){relations_text}"
 
-    def _add_faction(self):
-        """Add new faction."""
-        name, ok = QInputDialog.getText(self, "New Faction", "Enter faction name:")
+            # Add truncated description if available
+            if faction.description:
+                desc = faction.description[:50] + "..." if len(faction.description) > 50 else faction.description
+                item_text += f" - {desc}"
 
-        if ok and name:
-            faction = Faction(
-                id=str(uuid.uuid4()),
-                name=name,
-                faction_type=FactionType.NATION
-            )
-            self.factions.append(faction)
-
-            item = QListWidgetItem(f"{name} ({faction.faction_type.value.title()})")
+            item = QListWidgetItem(item_text)
             item.setData(Qt.ItemDataRole.UserRole, faction.id)
             self.faction_list.addItem(item)
 
-            self.faction_list.setCurrentItem(item)
-            self._update_graph()
+    def _on_selection_changed(self):
+        """Handle selection change."""
+        has_selection = bool(self.faction_list.selectedItems())
+        self.edit_btn.setEnabled(has_selection)
+        self.remove_btn.setEnabled(has_selection)
+
+    def _add_faction(self):
+        """Add new faction."""
+        editor = FactionEditor(available_factions=self.factions, parent=self)
+        if editor.exec() == QDialog.DialogCode.Accepted:
+            faction = editor.get_faction()
+            self.factions.append(faction)
+            self._update_list()
+            self.content_changed.emit()
+
+    def _edit_faction(self):
+        """Edit selected faction."""
+        items = self.faction_list.selectedItems()
+        if not items:
+            return
+
+        faction_id = items[0].data(Qt.ItemDataRole.UserRole)
+        faction = next((f for f in self.factions if f.id == faction_id), None)
+        if not faction:
+            return
+
+        editor = FactionEditor(faction=faction, available_factions=self.factions, parent=self)
+        if editor.exec() == QDialog.DialogCode.Accepted:
+            self._update_list()
             self.content_changed.emit()
 
     def _remove_faction(self):
         """Remove selected faction."""
-        current = self.faction_list.currentItem()
-        if not current:
+        items = self.faction_list.selectedItems()
+        if not items:
             return
 
-        faction_id = current.data(Qt.ItemDataRole.UserRole)
-        faction_name = current.text().split(" (")[0]  # Extract name from display text
+        faction_id = items[0].data(Qt.ItemDataRole.UserRole)
+        faction_name = next((f.name for f in self.factions if f.id == faction_id), "")
 
         # Confirm deletion
         reply = QMessageBox.question(
@@ -722,90 +852,31 @@ class FactionBuilderWidget(QWidget):
             if faction_id in faction.enemies:
                 faction.enemies.remove(faction_id)
 
-        # Get current row before removing
-        current_row = self.faction_list.row(current)
-
-        # Remove the faction
+        current_row = self.faction_list.row(items[0])
         self.factions = [f for f in self.factions if f.id != faction_id]
-        self.faction_list.takeItem(current_row)
-        self._update_graph()
-
-        # Clear editor reference
-        self.current_editor = None
+        self._update_list()
 
         # Select next available faction if any exist
         if self.faction_list.count() > 0:
-            # Select the item at the same position, or the last item if we removed the last one
             next_row = min(current_row, self.faction_list.count() - 1)
             self.faction_list.setCurrentRow(next_row)
-            # The _on_faction_selected signal will handle loading the editor
-        else:
-            # No factions left, show placeholder
-            placeholder = QLabel("Add or select a faction to begin")
-            placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            placeholder.setStyleSheet("color: #9ca3af; font-size: 14px;")
-            self.editor_scroll.setWidget(placeholder)
 
-        # Emit content changed to propagate to other widgets
         self.content_changed.emit()
 
-    def _on_faction_selected(self, current, previous):
-        """Handle faction selection."""
-        if not current:
+    def _show_relationship_graph(self):
+        """Show faction relationship graph in popup."""
+        if not self.factions:
+            QMessageBox.information(self, "No Factions", "Add factions to view the relationship graph.")
             return
 
-        # Save previous and update its list item
-        if self.current_editor and previous:
-            self.current_editor.save_to_model()
-            self._update_list_item(previous)
-            self._update_graph()
-
-        # Load selected
-        faction_id = current.data(Qt.ItemDataRole.UserRole)
-        faction = next((f for f in self.factions if f.id == faction_id), None)
-
-        if faction:
-            self.current_editor = FactionEditor(faction, available_factions=self.factions)
-            self.current_editor.content_changed.connect(self.content_changed.emit)
-            self.current_editor.content_changed.connect(self._update_graph)
-            self.current_editor.content_changed.connect(self._update_current_list_item)
-            self.editor_scroll.setWidget(self.current_editor)
-
-    def _update_current_list_item(self):
-        """Update the currently selected list item with faction data."""
-        current = self.faction_list.currentItem()
-        if current and self.current_editor:
-            # Save current editor state to faction model first
-            self.current_editor.save_to_model()
-            self._update_list_item(current)
-
-    def _update_list_item(self, item: QListWidgetItem):
-        """Update a list item to reflect the faction's current name and type."""
-        if not item:
-            return
-        faction_id = item.data(Qt.ItemDataRole.UserRole)
-        faction = next((f for f in self.factions if f.id == faction_id), None)
-        if faction:
-            item.setText(f"{faction.name} ({faction.faction_type.value.title()})")
-
-    def _update_graph(self):
-        """Update relationship graph."""
-        self.relationship_graph.set_factions(self.factions)
+        dialog = FactionRelationshipGraphDialog(self.factions, self)
+        dialog.exec()
 
     def get_factions(self) -> List[Faction]:
         """Get all factions."""
-        if self.current_editor:
-            self.current_editor.save_to_model()
         return self.factions
 
     def load_factions(self, factions: List[Faction]):
         """Load factions."""
         self.factions = factions
-        self.faction_list.clear()
-
-        for faction in factions:
-            item = QListWidgetItem(f"{faction.name} ({faction.faction_type.value.title()})")
-            item.setData(Qt.ItemDataRole.UserRole, faction.id)
-            self.faction_list.addItem(item)
-
-        self._update_graph()
+        self._update_list()

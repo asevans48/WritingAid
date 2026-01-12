@@ -3,7 +3,7 @@
 from .planet_builder import PlanetBuilderWidget, PlanetEditor
 from .timeline_builder import TimelineBuilderWidget, TimelineVisualization
 from .military_builder import MilitaryBuilderWidget, ArmyEditor
-from .economy_builder import EconomyBuilderWidget, TradeNetworkGraph
+from .economy_builder import EconomyBuilderWidget
 from .hierarchy_builder import HierarchyBuilderWidget, HierarchyTreeWidget
 from .politics_builder import PoliticsBuilderWidget, GovernmentTreeWidget
 from .faction_builder import FactionBuilderWidget, FactionEditor
@@ -18,7 +18,6 @@ __all__ = [
     'MilitaryBuilderWidget',
     'ArmyEditor',
     'EconomyBuilderWidget',
-    'TradeNetworkGraph',
     'HierarchyBuilderWidget',
     'HierarchyTreeWidget',
     'PoliticsBuilderWidget',

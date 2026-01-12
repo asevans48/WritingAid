@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 import json
 
-from src.models.worldbuilding_objects import Faction, Myth, ClimatePreset, Flora, Fauna, Technology, Star, StarSystem, Place, Culture
+from src.models.worldbuilding_objects import Faction, Myth, ClimatePreset, Flora, Fauna, Technology, Star, StarSystem, Place, Culture, Army, Economy
 
 
 class WorldBuilding(BaseModel):
@@ -44,6 +44,8 @@ class WorldBuilding(BaseModel):
     stars: List[Star] = Field(default_factory=list)
     star_systems: List[StarSystem] = Field(default_factory=list)
     cultures: List[Culture] = Field(default_factory=list)  # Cultural systems
+    armies: List['Army'] = Field(default_factory=list)  # Military forces linked to factions
+    economies: List[Economy] = Field(default_factory=list)  # Economic systems for factions
 
 
 class Character(BaseModel):

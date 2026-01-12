@@ -9,6 +9,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from typing import List, Optional
 
 from src.models.worldbuilding_objects import Fauna, FaunaType, SpeciesInteraction
+from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
 
 
 class FaunaEditor(QDialog):
@@ -34,7 +35,7 @@ class FaunaEditor(QDialog):
     def _init_ui(self):
         """Initialize UI."""
         self.setWindowTitle("Fauna Species Editor")
-        self.setMinimumSize(600, 500)  # Reduced for laptop compatibility
+        self.resize(750, 600)
 
         main_layout = QVBoxLayout(self)
 
@@ -402,6 +403,15 @@ class FaunaBuilderWidget(QWidget):
 
         layout.addWidget(header_widget)
 
+        # Filter/Sort controls
+        self.filter_sort = FilterSortWidget(
+            sort_options=["Name", "Type", "Danger Level"],
+            filter_placeholder="Search fauna..."
+        )
+        self.filter_sort.set_filter_options(["All"] + [t.value.replace("_", " ").title() for t in FaunaType])
+        self.filter_sort.filter_changed.connect(self._update_list)
+        layout.addWidget(self.filter_sort)
+
         # Toolbar
         toolbar = QHBoxLayout()
 
@@ -460,16 +470,44 @@ class FaunaBuilderWidget(QWidget):
         if not items:
             return
 
+        current_row = self.list_widget.row(items[0])
         fauna_id = items[0].data(Qt.ItemDataRole.UserRole)
         self.fauna_list = [f for f in self.fauna_list if f.id != fauna_id]
         self._update_list()
+
+        # Select next available fauna if any exist
+        if self.list_widget.count() > 0:
+            next_row = min(current_row, self.list_widget.count() - 1)
+            self.list_widget.setCurrentRow(next_row)
+
         self.content_changed.emit()
 
     def _update_list(self):
         """Update fauna list display."""
         self.list_widget.clear()
 
-        for fauna in self.fauna_list:
+        # Filter and sort functions
+        def get_searchable_text(fauna):
+            planets = " ".join(fauna.native_planets) if fauna.native_planets else ""
+            return f"{fauna.name} {fauna.fauna_type.value} {planets} {fauna.description or ''}"
+
+        def get_sort_value(fauna, key):
+            if key == "Name":
+                return fauna.name.lower()
+            elif key == "Type":
+                return fauna.fauna_type.value
+            elif key == "Danger Level":
+                return fauna.danger_level
+            return fauna.name.lower()
+
+        def get_type(fauna):
+            return fauna.fauna_type.value.replace("_", " ").title()
+
+        filtered_fauna = self.filter_sort.filter_and_sort(
+            self.fauna_list, get_searchable_text, get_sort_value, get_type
+        )
+
+        for fauna in filtered_fauna:
             # Create display text with type and key features
             features = []
             if fauna.danger_level > 70:
@@ -496,6 +534,11 @@ class FaunaBuilderWidget(QWidget):
                 item_text += f" {features_text}"
             if planets_text:
                 item_text += planets_text
+
+            # Add truncated description if available
+            if fauna.description:
+                desc = fauna.description[:50] + "..." if len(fauna.description) > 50 else fauna.description
+                item_text += f" - {desc}"
 
             item = QListWidgetItem(item_text)
             item.setData(Qt.ItemDataRole.UserRole, fauna.id)

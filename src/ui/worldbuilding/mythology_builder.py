@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import pyqtSignal, Qt
 
 from src.models.worldbuilding_objects import Myth, Faction
+from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
 
 
 class MythEditor(QDialog):
@@ -42,8 +43,7 @@ class MythEditor(QDialog):
     def _init_ui(self):
         """Initialize UI."""
         self.setWindowTitle("Myth Editor")
-        self.setMinimumWidth(600)
-        self.setMinimumHeight(500)  # Reduced for laptop compatibility
+        self.resize(750, 600)
 
         layout = QVBoxLayout(self)
 
@@ -264,6 +264,16 @@ class MythologyBuilderWidget(QWidget):
         help_text.setStyleSheet("color: #6b7280; font-size: 11px; margin-bottom: 8px;")
         layout.addWidget(help_text)
 
+        # Filter/Sort controls
+        myth_types = ["Creation", "Hero", "Prophecy", "Deity", "Origin", "Epic", "Legend", "Folklore", "Cosmology", "Apocalypse"]
+        self.filter_sort = FilterSortWidget(
+            sort_options=["Name", "Type"],
+            filter_placeholder="Search myths..."
+        )
+        self.filter_sort.set_filter_options(["All"] + myth_types)
+        self.filter_sort.filter_changed.connect(self._update_list)
+        layout.addWidget(self.filter_sort)
+
         # Toolbar
         toolbar = QHBoxLayout()
 
@@ -320,7 +330,26 @@ class MythologyBuilderWidget(QWidget):
         """Update myth list display."""
         self.myth_list.clear()
 
-        for myth in self.myths:
+        # Filter and sort functions
+        def get_searchable_text(myth):
+            faction_names = [f.name for f in self.available_factions if f.id in myth.associated_factions]
+            return f"{myth.name} {myth.myth_type} {' '.join(faction_names)} {myth.description or ''}"
+
+        def get_sort_value(myth, key):
+            if key == "Name":
+                return myth.name.lower()
+            elif key == "Type":
+                return myth.myth_type
+            return myth.name.lower()
+
+        def get_type(myth):
+            return myth.myth_type
+
+        filtered_myths = self.filter_sort.filter_and_sort(
+            self.myths, get_searchable_text, get_sort_value, get_type
+        )
+
+        for myth in filtered_myths:
             # Get faction names for display
             faction_names = []
             for faction_id in myth.associated_factions:
@@ -328,9 +357,14 @@ class MythologyBuilderWidget(QWidget):
                 if faction:
                     faction_names.append(faction.name)
 
-            # Create display text
+            # Create display text with truncated description
             factions_text = f" • {', '.join(faction_names)}" if faction_names else ""
             item_text = f"{myth.name} ({myth.myth_type}){factions_text}"
+
+            # Add truncated description if available
+            if myth.description:
+                desc = myth.description[:50] + "..." if len(myth.description) > 50 else myth.description
+                item_text += f" - {desc}"
 
             item = QListWidgetItem(item_text)
             item.setData(Qt.ItemDataRole.UserRole, myth.id)
@@ -373,7 +407,14 @@ class MythologyBuilderWidget(QWidget):
         if not items:
             return
 
+        current_row = self.myth_list.row(items[0])
         myth_id = items[0].data(Qt.ItemDataRole.UserRole)
         self.myths = [m for m in self.myths if m.id != myth_id]
         self._update_list()
+
+        # Select next available myth if any exist
+        if self.myth_list.count() > 0:
+            next_row = min(current_row, self.myth_list.count() - 1)
+            self.myth_list.setCurrentRow(next_row)
+
         self.content_changed.emit()

@@ -9,6 +9,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from typing import List, Optional
 
 from src.models.worldbuilding_objects import Flora, FloraType, SpeciesInteraction
+from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
 
 
 class FloraEditor(QDialog):
@@ -34,7 +35,7 @@ class FloraEditor(QDialog):
     def _init_ui(self):
         """Initialize UI."""
         self.setWindowTitle("Flora Species Editor")
-        self.setMinimumSize(600, 500)  # Reduced for laptop compatibility
+        self.resize(750, 600)
 
         main_layout = QVBoxLayout(self)
 
@@ -335,6 +336,15 @@ class FloraBuilderWidget(QWidget):
 
         layout.addWidget(header_widget)
 
+        # Filter/Sort controls
+        self.filter_sort = FilterSortWidget(
+            sort_options=["Name", "Type"],
+            filter_placeholder="Search flora..."
+        )
+        self.filter_sort.set_filter_options(["All"] + [t.value.replace("_", " ").title() for t in FloraType])
+        self.filter_sort.filter_changed.connect(self._update_list)
+        layout.addWidget(self.filter_sort)
+
         # Toolbar
         toolbar = QHBoxLayout()
 
@@ -393,16 +403,42 @@ class FloraBuilderWidget(QWidget):
         if not items:
             return
 
+        current_row = self.list_widget.row(items[0])
         flora_id = items[0].data(Qt.ItemDataRole.UserRole)
         self.flora_list = [f for f in self.flora_list if f.id != flora_id]
         self._update_list()
+
+        # Select next available flora if any exist
+        if self.list_widget.count() > 0:
+            next_row = min(current_row, self.list_widget.count() - 1)
+            self.list_widget.setCurrentRow(next_row)
+
         self.content_changed.emit()
 
     def _update_list(self):
         """Update flora list display."""
         self.list_widget.clear()
 
-        for flora in self.flora_list:
+        # Filter and sort functions
+        def get_searchable_text(flora):
+            planets = " ".join(flora.native_planets) if flora.native_planets else ""
+            return f"{flora.name} {flora.flora_type.value} {planets} {flora.description or ''}"
+
+        def get_sort_value(flora, key):
+            if key == "Name":
+                return flora.name.lower()
+            elif key == "Type":
+                return flora.flora_type.value
+            return flora.name.lower()
+
+        def get_type(flora):
+            return flora.flora_type.value.replace("_", " ").title()
+
+        filtered_flora = self.filter_sort.filter_and_sort(
+            self.flora_list, get_searchable_text, get_sort_value, get_type
+        )
+
+        for flora in filtered_flora:
             # Create display text with type and key features
             features = []
             if flora.edible:
@@ -427,6 +463,11 @@ class FloraBuilderWidget(QWidget):
                 item_text += f" {features_text}"
             if planets_text:
                 item_text += planets_text
+
+            # Add truncated description if available
+            if flora.description:
+                desc = flora.description[:50] + "..." if len(flora.description) > 50 else flora.description
+                item_text += f" - {desc}"
 
             item = QListWidgetItem(item_text)
             item.setData(Qt.ItemDataRole.UserRole, flora.id)

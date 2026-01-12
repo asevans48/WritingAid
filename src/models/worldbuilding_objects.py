@@ -313,8 +313,9 @@ class MilitaryBranch(BaseModel):
     branch_type: str  # Army, Navy, Air Force, Space Force, etc.
     size: Optional[int] = None
     commander: Optional[str] = None  # Character name
+    description: str = ""  # General description of the branch
     equipment: List[str] = Field(default_factory=list)
-    specialization: str = ""
+    specialization: str = ""  # Specific specialization/focus
     bases: List[str] = Field(default_factory=list)  # Location names
 
 
@@ -369,6 +370,7 @@ class TradeRoute(BaseModel):
 class Economy(BaseModel):
     """Economic system for a faction."""
     id: str
+    name: str  # Name of the economy
     faction_id: str
     economy_type: EconomyType
     currency: Optional[str] = None

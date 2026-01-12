@@ -3,24 +3,27 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QPushButton, QLabel, QLineEdit, QTextEdit, QComboBox, QSpinBox,
-    QFormLayout, QGroupBox, QScrollArea, QSplitter, QInputDialog, QTabWidget
+    QFormLayout, QGroupBox, QScrollArea, QInputDialog, QTabWidget,
+    QDialog, QDialogButtonBox, QMessageBox, QToolBar
 )
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QAction
 from typing import List, Optional
 import uuid
 
-from src.models.worldbuilding_objects import Army, MilitaryBranch
+from src.models.worldbuilding_objects import Army, MilitaryBranch, Faction
+from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
 
 
-class MilitaryBranchEditor(QWidget):
-    """Editor for a military branch."""
+class MilitaryBranchEditor(QDialog):
+    """Dialog for editing a military branch."""
 
-    content_changed = pyqtSignal()
-
-    def __init__(self, branch: MilitaryBranch):
+    def __init__(self, branch: MilitaryBranch, parent=None):
         """Initialize branch editor."""
-        super().__init__()
+        super().__init__(parent)
         self.branch = branch
+        self.setWindowTitle("Edit Military Branch")
+        self.resize(700, 600)
         self._init_ui()
         self._load_branch()
 
@@ -29,11 +32,18 @@ class MilitaryBranchEditor(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
 
+        # Scroll area for content
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        scroll_widget = QWidget()
+        scroll_layout = QVBoxLayout(scroll_widget)
+
         form = QFormLayout()
 
         # Name
         self.name_edit = QLineEdit()
-        self.name_edit.textChanged.connect(self.content_changed.emit)
         form.addRow("Branch Name:", self.name_edit)
 
         # Type
@@ -50,13 +60,23 @@ class MilitaryBranchEditor(QWidget):
         self.commander_edit = QLineEdit()
         form.addRow("Commander:", self.commander_edit)
 
-        layout.addLayout(form)
+        scroll_layout.addLayout(form)
+
+        # Description
+        desc_label = QLabel("Description:")
+        scroll_layout.addWidget(desc_label)
+
+        self.description_edit = QTextEdit()
+        self.description_edit.setMaximumHeight(80)
+        self.description_edit.setPlaceholderText("General description of this military branch...")
+        scroll_layout.addWidget(self.description_edit)
 
         # Equipment
         equip_group = QGroupBox("Equipment")
         equip_layout = QVBoxLayout(equip_group)
 
         self.equipment_list = QListWidget()
+        self.equipment_list.setMaximumHeight(120)
         equip_layout.addWidget(self.equipment_list)
 
         equip_btn_layout = QHBoxLayout()
@@ -69,13 +89,14 @@ class MilitaryBranchEditor(QWidget):
         equip_btn_layout.addWidget(remove_equip_btn)
 
         equip_layout.addLayout(equip_btn_layout)
-        layout.addWidget(equip_group)
+        scroll_layout.addWidget(equip_group)
 
         # Bases
         bases_group = QGroupBox("Bases")
         bases_layout = QVBoxLayout(bases_group)
 
         self.bases_list = QListWidget()
+        self.bases_list.setMaximumHeight(120)
         bases_layout.addWidget(self.bases_list)
 
         bases_btn_layout = QHBoxLayout()
@@ -88,15 +109,26 @@ class MilitaryBranchEditor(QWidget):
         bases_btn_layout.addWidget(remove_base_btn)
 
         bases_layout.addLayout(bases_btn_layout)
-        layout.addWidget(bases_group)
+        scroll_layout.addWidget(bases_group)
 
         # Specialization
         spec_label = QLabel("Specialization:")
-        layout.addWidget(spec_label)
+        scroll_layout.addWidget(spec_label)
 
         self.specialization_edit = QTextEdit()
         self.specialization_edit.setMaximumHeight(80)
-        layout.addWidget(self.specialization_edit)
+        scroll_layout.addWidget(self.specialization_edit)
+
+        scroll.setWidget(scroll_widget)
+        layout.addWidget(scroll)
+
+        # Dialog buttons
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._save)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
 
     def _load_branch(self):
         """Load branch data."""
@@ -106,6 +138,7 @@ class MilitaryBranchEditor(QWidget):
             self.size_spin.setValue(self.branch.size)
         if self.branch.commander:
             self.commander_edit.setText(self.branch.commander)
+        self.description_edit.setPlainText(self.branch.description)
         self.specialization_edit.setPlainText(self.branch.specialization)
 
         for equip in self.branch.equipment:
@@ -138,12 +171,13 @@ class MilitaryBranchEditor(QWidget):
         if current >= 0:
             self.bases_list.takeItem(current)
 
-    def save_to_model(self):
-        """Save to branch model."""
+    def _save(self):
+        """Save branch data and close dialog."""
         self.branch.name = self.name_edit.text()
         self.branch.branch_type = self.type_edit.text()
         self.branch.size = self.size_spin.value() if self.size_spin.value() > 0 else None
         self.branch.commander = self.commander_edit.text()
+        self.branch.description = self.description_edit.toPlainText()
         self.branch.specialization = self.specialization_edit.toPlainText()
 
         self.branch.equipment = [
@@ -156,23 +190,26 @@ class MilitaryBranchEditor(QWidget):
             for i in range(self.bases_list.count())
         ]
 
+        self.accept()
 
-class ArmyEditor(QWidget):
-    """Editor for a complete army."""
 
-    content_changed = pyqtSignal()
+class ArmyEditorDialog(QDialog):
+    """Popup dialog for editing an army."""
 
-    def __init__(self, army: Army):
-        """Initialize army editor."""
-        super().__init__()
+    def __init__(self, army: Optional[Army] = None, available_factions: List[Faction] = None, parent=None):
+        """Initialize army editor dialog."""
+        super().__init__(parent)
         self.army = army
+        self.available_factions = available_factions or []
+        self.setWindowTitle("Edit Military Force" if army else "New Military Force")
+        self.resize(750, 650)
         self._init_ui()
-        self._load_army()
+        if army:
+            self._load_army()
 
     def _init_ui(self):
         """Initialize UI."""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
 
         # Tabs
         tabs = QTabWidget()
@@ -195,24 +232,40 @@ class ArmyEditor(QWidget):
 
         layout.addWidget(tabs)
 
+        # Dialog buttons
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(self._save_and_accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
     def _create_basic_tab(self) -> QWidget:
         """Create basic info tab."""
         widget = QWidget()
         layout = QFormLayout(widget)
 
         self.name_edit = QLineEdit()
-        self.name_edit.textChanged.connect(self.content_changed.emit)
+        self.name_edit.setPlaceholderText("Enter army name")
         layout.addRow("Army Name:", self.name_edit)
 
-        self.faction_edit = QLineEdit()
-        self.faction_edit.setPlaceholderText("Faction ID or name")
-        layout.addRow("Faction:", self.faction_edit)
+        # Faction selection - use combo box with existing factions
+        self.faction_combo = QComboBox()
+        self.faction_combo.setEditable(False)
+        self.faction_combo.addItem("-- Select Faction --", "")
+
+        # Populate with available factions
+        for faction in self.available_factions:
+            self.faction_combo.addItem(faction.name, faction.id)
+
+        layout.addRow("Faction:", self.faction_combo)
 
         self.strength_spin = QSpinBox()
         self.strength_spin.setMaximum(999999999)
         layout.addRow("Total Strength:", self.strength_spin)
 
         self.description_edit = QTextEdit()
+        self.description_edit.setPlaceholderText("Describe this military force...")
         layout.addRow("Description:", self.description_edit)
 
         return widget
@@ -222,11 +275,11 @@ class ArmyEditor(QWidget):
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
-        label = QLabel("Military Branches:")
+        label = QLabel("Military Branches (double-click to edit):")
         layout.addWidget(label)
 
         self.branches_list = QListWidget()
-        self.branches_list.currentItemChanged.connect(self._on_branch_selected)
+        self.branches_list.itemDoubleClicked.connect(self._edit_branch_dialog)
         layout.addWidget(self.branches_list)
 
         btn_layout = QHBoxLayout()
@@ -234,34 +287,34 @@ class ArmyEditor(QWidget):
         add_branch_btn.clicked.connect(self._add_branch)
         btn_layout.addWidget(add_branch_btn)
 
+        edit_branch_btn = QPushButton("Edit Branch")
+        edit_branch_btn.clicked.connect(lambda: self._edit_branch_dialog(self.branches_list.currentItem()))
+        btn_layout.addWidget(edit_branch_btn)
+
         remove_branch_btn = QPushButton("Remove Branch")
         remove_branch_btn.clicked.connect(self._remove_branch)
         btn_layout.addWidget(remove_branch_btn)
 
         layout.addLayout(btn_layout)
 
-        # Branch editor area
-        self.branch_editor_scroll = QScrollArea()
-        self.branch_editor_scroll.setWidgetResizable(True)
-
-        placeholder = QLabel("Add or select a branch")
-        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.branch_editor_scroll.setWidget(placeholder)
-
-        layout.addWidget(self.branch_editor_scroll)
-
         return widget
 
     def _create_relations_tab(self) -> QWidget:
         """Create relations tab."""
         widget = QWidget()
-        layout = QVBoxLayout(widget)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+
+        content = QWidget()
+        layout = QVBoxLayout(content)
 
         # Allies
         allies_group = QGroupBox("Allied Forces")
         allies_layout = QVBoxLayout(allies_group)
 
         self.allies_list = QListWidget()
+        self.allies_list.setMaximumHeight(100)
         allies_layout.addWidget(self.allies_list)
 
         allies_btn_layout = QHBoxLayout()
@@ -281,6 +334,7 @@ class ArmyEditor(QWidget):
         enemies_layout = QVBoxLayout(enemies_group)
 
         self.enemies_list = QListWidget()
+        self.enemies_list.setMaximumHeight(100)
         enemies_layout.addWidget(self.enemies_list)
 
         enemies_btn_layout = QHBoxLayout()
@@ -300,6 +354,7 @@ class ArmyEditor(QWidget):
         conflicts_layout = QVBoxLayout(conflicts_group)
 
         self.conflicts_list = QListWidget()
+        self.conflicts_list.setMaximumHeight(100)
         conflicts_layout.addWidget(self.conflicts_list)
 
         conflicts_btn_layout = QHBoxLayout()
@@ -314,18 +369,30 @@ class ArmyEditor(QWidget):
         conflicts_layout.addLayout(conflicts_btn_layout)
         layout.addWidget(conflicts_group)
 
+        scroll.setWidget(content)
+
+        outer_layout = QVBoxLayout(widget)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.addWidget(scroll)
+
         return widget
 
     def _create_history_tab(self) -> QWidget:
         """Create military history tab."""
         widget = QWidget()
-        layout = QVBoxLayout(widget)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+
+        content = QWidget()
+        layout = QVBoxLayout(content)
 
         # Victories
         victories_group = QGroupBox("Notable Victories")
         victories_layout = QVBoxLayout(victories_group)
 
         self.victories_list = QListWidget()
+        self.victories_list.setMaximumHeight(120)
         victories_layout.addWidget(self.victories_list)
 
         victories_btn_layout = QHBoxLayout()
@@ -345,6 +412,7 @@ class ArmyEditor(QWidget):
         defeats_layout = QVBoxLayout(defeats_group)
 
         self.defeats_list = QListWidget()
+        self.defeats_list.setMaximumHeight(120)
         defeats_layout.addWidget(self.defeats_list)
 
         defeats_btn_layout = QHBoxLayout()
@@ -359,27 +427,65 @@ class ArmyEditor(QWidget):
         defeats_layout.addLayout(defeats_btn_layout)
         layout.addWidget(defeats_group)
 
+        scroll.setWidget(content)
+
+        outer_layout = QVBoxLayout(widget)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.addWidget(scroll)
+
         return widget
 
     def _load_army(self):
         """Load army data."""
+        if not self.army:
+            return
+
         self.name_edit.setText(self.army.name)
-        self.faction_edit.setText(self.army.faction_id)
+
+        # Set faction in combo box
+        for i in range(self.faction_combo.count()):
+            if self.faction_combo.itemData(i) == self.army.faction_id:
+                self.faction_combo.setCurrentIndex(i)
+                break
+
         if self.army.total_strength:
             self.strength_spin.setValue(self.army.total_strength)
         self.description_edit.setPlainText(self.army.description)
 
-        # Load branches
-        for branch in self.army.branches:
-            self.branches_list.addItem(branch.name)
+        # Load branches with truncated descriptions
+        for idx, branch in enumerate(self.army.branches):
+            desc = branch.description[:50] + "..." if len(branch.description) > 50 else branch.description
+            display_text = f"{branch.name} ({branch.branch_type})"
+            if desc:
+                display_text += f" - {desc}"
 
-        # Load allies
-        for ally in self.army.allies:
-            self.allies_list.addItem(ally)
+            item = QListWidgetItem(display_text)
+            item.setData(Qt.ItemDataRole.UserRole, idx)
+            self.branches_list.addItem(item)
 
-        # Load enemies
-        for enemy in self.army.enemies:
-            self.enemies_list.addItem(enemy)
+        # Load allies - display faction names but store faction IDs
+        for ally_id in self.army.allies:
+            faction = next((f for f in self.available_factions if f.id == ally_id), None)
+            if faction:
+                item = QListWidgetItem(f"{faction.name} ({faction.faction_type})")
+                item.setData(Qt.ItemDataRole.UserRole, ally_id)
+                self.allies_list.addItem(item)
+            else:
+                item = QListWidgetItem(f"Unknown Faction ({ally_id})")
+                item.setData(Qt.ItemDataRole.UserRole, ally_id)
+                self.allies_list.addItem(item)
+
+        # Load enemies - display faction names but store faction IDs
+        for enemy_id in self.army.enemies:
+            faction = next((f for f in self.available_factions if f.id == enemy_id), None)
+            if faction:
+                item = QListWidgetItem(f"{faction.name} ({faction.faction_type})")
+                item.setData(Qt.ItemDataRole.UserRole, enemy_id)
+                self.enemies_list.addItem(item)
+            else:
+                item = QListWidgetItem(f"Unknown Faction ({enemy_id})")
+                item.setData(Qt.ItemDataRole.UserRole, enemy_id)
+                self.enemies_list.addItem(item)
 
         # Load conflicts
         for conflict in self.army.active_conflicts:
@@ -395,36 +501,80 @@ class ArmyEditor(QWidget):
 
     def _add_branch(self):
         """Add new branch."""
-        name, ok = QInputDialog.getText(self, "New Branch", "Enter branch name:")
-        if ok and name:
-            branch = MilitaryBranch(name=name, branch_type="")
+        branch = MilitaryBranch(name="New Branch", branch_type="", description="")
+        editor = MilitaryBranchEditor(branch, self)
+        if editor.exec() == QDialog.DialogCode.Accepted:
+            if not self.army:
+                self.army = Army(id=str(uuid.uuid4()), name="", faction_id="")
             self.army.branches.append(branch)
-            self.branches_list.addItem(name)
+            self._refresh_branch_list()
 
     def _remove_branch(self):
         """Remove branch."""
         current = self.branches_list.currentRow()
-        if current >= 0 and current < len(self.army.branches):
+        if self.army and current >= 0 and current < len(self.army.branches):
             self.army.branches.pop(current)
-            self.branches_list.takeItem(current)
+            self._refresh_branch_list()
 
-    def _on_branch_selected(self, current, previous):
-        """Handle branch selection."""
-        if not current:
+    def _edit_branch_dialog(self, item):
+        """Open dialog to edit branch."""
+        if not item or not self.army:
             return
 
-        idx = self.branches_list.row(current)
-        if idx >= 0 and idx < len(self.army.branches):
+        idx = item.data(Qt.ItemDataRole.UserRole)
+        if idx is not None and idx < len(self.army.branches):
             branch = self.army.branches[idx]
-            editor = MilitaryBranchEditor(branch)
-            editor.content_changed.connect(self.content_changed.emit)
-            self.branch_editor_scroll.setWidget(editor)
+            editor = MilitaryBranchEditor(branch, self)
+            if editor.exec() == QDialog.DialogCode.Accepted:
+                self._refresh_branch_list()
+
+    def _refresh_branch_list(self):
+        """Refresh the branches list display."""
+        self.branches_list.clear()
+        if not self.army:
+            return
+        for idx, branch in enumerate(self.army.branches):
+            desc = branch.description[:50] + "..." if len(branch.description) > 50 else branch.description
+            display_text = f"{branch.name} ({branch.branch_type})"
+            if desc:
+                display_text += f" - {desc}"
+
+            item = QListWidgetItem(display_text)
+            item.setData(Qt.ItemDataRole.UserRole, idx)
+            self.branches_list.addItem(item)
 
     def _add_ally(self):
         """Add ally."""
-        name, ok = QInputDialog.getText(self, "Add Ally", "Enter faction ID/name:")
-        if ok and name:
-            self.allies_list.addItem(name)
+        if not self.available_factions:
+            QMessageBox.information(self, "No Factions", "Please create factions first before adding allies.")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Select Allied Faction")
+        layout = QVBoxLayout(dialog)
+
+        faction_list = QListWidget()
+        for faction in self.available_factions:
+            faction_list.addItem(f"{faction.name} ({faction.faction_type})")
+            faction_list.item(faction_list.count() - 1).setData(Qt.ItemDataRole.UserRole, faction.id)
+
+        layout.addWidget(faction_list)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted and faction_list.currentItem():
+            faction_id = faction_list.currentItem().data(Qt.ItemDataRole.UserRole)
+            faction_name = faction_list.currentItem().text()
+            # Check if already added
+            for i in range(self.allies_list.count()):
+                if self.allies_list.item(i).data(Qt.ItemDataRole.UserRole) == faction_id:
+                    return
+            item = QListWidgetItem(faction_name)
+            item.setData(Qt.ItemDataRole.UserRole, faction_id)
+            self.allies_list.addItem(item)
 
     def _remove_ally(self):
         """Remove ally."""
@@ -434,9 +584,36 @@ class ArmyEditor(QWidget):
 
     def _add_enemy(self):
         """Add enemy."""
-        name, ok = QInputDialog.getText(self, "Add Enemy", "Enter faction ID/name:")
-        if ok and name:
-            self.enemies_list.addItem(name)
+        if not self.available_factions:
+            QMessageBox.information(self, "No Factions", "Please create factions first before adding enemies.")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Select Enemy Faction")
+        layout = QVBoxLayout(dialog)
+
+        faction_list = QListWidget()
+        for faction in self.available_factions:
+            faction_list.addItem(f"{faction.name} ({faction.faction_type})")
+            faction_list.item(faction_list.count() - 1).setData(Qt.ItemDataRole.UserRole, faction.id)
+
+        layout.addWidget(faction_list)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted and faction_list.currentItem():
+            faction_id = faction_list.currentItem().data(Qt.ItemDataRole.UserRole)
+            faction_name = faction_list.currentItem().text()
+            # Check if already added
+            for i in range(self.enemies_list.count()):
+                if self.enemies_list.item(i).data(Qt.ItemDataRole.UserRole) == faction_id:
+                    return
+            item = QListWidgetItem(faction_name)
+            item.setData(Qt.ItemDataRole.UserRole, faction_id)
+            self.enemies_list.addItem(item)
 
     def _remove_enemy(self):
         """Remove enemy."""
@@ -480,159 +657,220 @@ class ArmyEditor(QWidget):
         if current >= 0:
             self.defeats_list.takeItem(current)
 
-    def save_to_model(self):
-        """Save to army model."""
-        self.army.name = self.name_edit.text()
-        self.army.faction_id = self.faction_edit.text()
-        self.army.total_strength = self.strength_spin.value() if self.strength_spin.value() > 0 else None
-        self.army.description = self.description_edit.toPlainText()
+    def _save_and_accept(self):
+        """Validate and save."""
+        name = self.name_edit.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Validation Error", "Army name is required.")
+            return
+        self.accept()
 
-        self.army.allies = [
-            self.allies_list.item(i).text()
+    def get_army(self) -> Army:
+        """Get army from form data."""
+        army_id = self.army.id if self.army else str(uuid.uuid4())
+        branches = self.army.branches if self.army else []
+
+        allies = [
+            self.allies_list.item(i).data(Qt.ItemDataRole.UserRole)
             for i in range(self.allies_list.count())
         ]
 
-        self.army.enemies = [
-            self.enemies_list.item(i).text()
+        enemies = [
+            self.enemies_list.item(i).data(Qt.ItemDataRole.UserRole)
             for i in range(self.enemies_list.count())
         ]
 
-        self.army.active_conflicts = [
+        active_conflicts = [
             self.conflicts_list.item(i).text()
             for i in range(self.conflicts_list.count())
         ]
 
-        self.army.victories = [
+        victories = [
             self.victories_list.item(i).text()
             for i in range(self.victories_list.count())
         ]
 
-        self.army.defeats = [
+        defeats = [
             self.defeats_list.item(i).text()
             for i in range(self.defeats_list.count())
         ]
 
+        return Army(
+            id=army_id,
+            name=self.name_edit.text().strip(),
+            faction_id=self.faction_combo.currentData() or "",
+            total_strength=self.strength_spin.value() if self.strength_spin.value() > 0 else None,
+            description=self.description_edit.toPlainText(),
+            branches=branches,
+            allies=allies,
+            enemies=enemies,
+            active_conflicts=active_conflicts,
+            victories=victories,
+            defeats=defeats
+        )
+
+
+# Keep ArmyEditor for backward compatibility (alias to dialog)
+ArmyEditor = ArmyEditorDialog
+
 
 class MilitaryBuilderWidget(QWidget):
-    """Widget for managing all armies."""
+    """Widget for managing all armies with popup editor."""
 
     content_changed = pyqtSignal()
 
-    def __init__(self):
+    def __init__(self, available_factions: List[Faction] = None):
         """Initialize military builder."""
         super().__init__()
         self.armies: List[Army] = []
-        self.current_editor: Optional[ArmyEditor] = None
+        self.available_factions = available_factions or []
         self._init_ui()
 
     def _init_ui(self):
         """Initialize UI."""
-        layout = QHBoxLayout(self)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
 
-        # Splitter
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        # Header
+        header = QLabel("Military Forces")
+        header.setStyleSheet("font-size: 16px; font-weight: 600; padding: 8px;")
+        layout.addWidget(header)
 
-        # Left: Army list
-        left_panel = QWidget()
-        left_layout = QVBoxLayout(left_panel)
+        # Filter/Sort controls
+        self.filter_sort = FilterSortWidget(
+            sort_options=["Name", "Faction", "Strength"],
+            filter_placeholder="Search armies..."
+        )
+        self.filter_sort.filter_changed.connect(self._update_list)
+        layout.addWidget(self.filter_sort)
 
-        label = QLabel("Military Forces")
-        label.setStyleSheet("font-weight: 600; font-size: 13px;")
-        left_layout.addWidget(label)
+        # Toolbar
+        toolbar = QToolBar()
+        toolbar.setMovable(False)
+        toolbar.setStyleSheet("QToolBar { spacing: 8px; padding: 4px; }")
 
+        add_action = QAction("Add Army", self)
+        add_action.triggered.connect(self._add_army)
+        toolbar.addAction(add_action)
+
+        edit_action = QAction("Edit", self)
+        edit_action.triggered.connect(self._edit_army)
+        toolbar.addAction(edit_action)
+
+        remove_action = QAction("Remove", self)
+        remove_action.triggered.connect(self._remove_army)
+        toolbar.addAction(remove_action)
+
+        layout.addWidget(toolbar)
+
+        # Army list
         self.army_list = QListWidget()
-        self.army_list.currentItemChanged.connect(self._on_army_selected)
-        left_layout.addWidget(self.army_list)
+        self.army_list.itemDoubleClicked.connect(self._edit_army)
+        layout.addWidget(self.army_list)
 
-        btn_layout = QHBoxLayout()
-        add_btn = QPushButton("➕ Add Army")
-        add_btn.clicked.connect(self._add_army)
-        btn_layout.addWidget(add_btn)
+    def _update_list(self):
+        """Update army list display with filtering and sorting."""
+        self.army_list.clear()
 
-        remove_btn = QPushButton("🗑️")
-        remove_btn.setMaximumWidth(40)
-        remove_btn.clicked.connect(self._remove_army)
-        btn_layout.addWidget(remove_btn)
+        # Get faction name helper
+        def get_faction_name(army):
+            faction = next((f for f in self.available_factions if f.id == army.faction_id), None)
+            return faction.name if faction else army.faction_id
 
-        left_layout.addLayout(btn_layout)
+        # Filter and sort functions
+        def get_searchable_text(army):
+            faction_name = get_faction_name(army)
+            return f"{army.name} {faction_name} {army.description or ''}"
 
-        left_panel.setMaximumWidth(250)
-        splitter.addWidget(left_panel)
+        def get_sort_value(army, key):
+            if key == "Name":
+                return army.name.lower()
+            elif key == "Faction":
+                return get_faction_name(army).lower()
+            elif key == "Strength":
+                return army.total_strength or 0
+            return army.name.lower()
 
-        # Right: Army editor
-        self.editor_scroll = QScrollArea()
-        self.editor_scroll.setWidgetResizable(True)
+        filtered_armies = self.filter_sort.filter_and_sort(
+            self.armies, get_searchable_text, get_sort_value
+        )
 
-        placeholder = QLabel("Add or select a military force")
-        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.editor_scroll.setWidget(placeholder)
-
-        splitter.addWidget(self.editor_scroll)
-
-        layout.addWidget(splitter)
-
-    def _add_army(self):
-        """Add new army."""
-        name, ok = QInputDialog.getText(self, "New Army", "Enter army name:")
-
-        if ok and name:
-            army = Army(
-                id=str(uuid.uuid4()),
-                name=name,
-                faction_id=""
-            )
-            self.armies.append(army)
-
-            item = QListWidgetItem(name)
+        for army in filtered_armies:
+            faction_name = get_faction_name(army)
+            display_text = f"{army.name}"
+            if faction_name:
+                display_text += f" ({faction_name})"
+            if army.total_strength:
+                display_text += f" - {army.total_strength:,} troops"
+            item = QListWidgetItem(display_text)
             item.setData(Qt.ItemDataRole.UserRole, army.id)
             self.army_list.addItem(item)
 
-            self.army_list.setCurrentItem(item)
-
-    def _remove_army(self):
-        """Remove selected army."""
-        current = self.army_list.currentItem()
-        if current:
-            army_id = current.data(Qt.ItemDataRole.UserRole)
-            self.armies = [a for a in self.armies if a.id != army_id]
-            self.army_list.takeItem(self.army_list.row(current))
-
-            # Show placeholder
-            placeholder = QLabel("Add or select a military force")
-            placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.editor_scroll.setWidget(placeholder)
+    def _add_army(self):
+        """Add new army via popup dialog."""
+        dialog = ArmyEditorDialog(available_factions=self.available_factions, parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            army = dialog.get_army()
+            self.armies.append(army)
+            self._update_list()
             self.content_changed.emit()
 
-    def _on_army_selected(self, current, previous):
-        """Handle army selection."""
+    def _edit_army(self):
+        """Edit selected army via popup dialog."""
+        current = self.army_list.currentItem()
         if not current:
+            QMessageBox.information(self, "No Selection", "Please select an army to edit.")
             return
 
-        # Save previous
-        if self.current_editor:
-            self.current_editor.save_to_model()
-
-        # Load selected
         army_id = current.data(Qt.ItemDataRole.UserRole)
         army = next((a for a in self.armies if a.id == army_id), None)
 
         if army:
-            self.current_editor = ArmyEditor(army)
-            self.current_editor.content_changed.connect(self.content_changed.emit)
-            self.editor_scroll.setWidget(self.current_editor)
+            dialog = ArmyEditorDialog(army=army, available_factions=self.available_factions, parent=self)
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                updated_army = dialog.get_army()
+                # Update in list
+                for i, a in enumerate(self.armies):
+                    if a.id == army_id:
+                        self.armies[i] = updated_army
+                        break
+                self._update_list()
+                self.content_changed.emit()
+
+    def _remove_army(self):
+        """Remove selected army."""
+        current = self.army_list.currentItem()
+        if not current:
+            QMessageBox.information(self, "No Selection", "Please select an army to remove.")
+            return
+
+        army_id = current.data(Qt.ItemDataRole.UserRole)
+        army = next((a for a in self.armies if a.id == army_id), None)
+
+        if army:
+            reply = QMessageBox.question(
+                self,
+                "Confirm Removal",
+                f"Remove army '{army.name}'?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+
+            if reply == QMessageBox.StandardButton.Yes:
+                self.armies = [a for a in self.armies if a.id != army_id]
+                self._update_list()
+                self.content_changed.emit()
 
     def get_armies(self) -> List[Army]:
         """Get all armies."""
-        if self.current_editor:
-            self.current_editor.save_to_model()
         return self.armies
 
     def load_armies(self, armies: List[Army]):
         """Load armies."""
         self.armies = armies
-        self.army_list.clear()
+        self._update_list()
 
-        for army in armies:
-            item = QListWidgetItem(army.name)
-            item.setData(Qt.ItemDataRole.UserRole, army.id)
-            self.army_list.addItem(item)
+    def set_available_factions(self, factions: List[Faction]):
+        """Update the list of available factions."""
+        self.available_factions = factions
+        self._update_list()

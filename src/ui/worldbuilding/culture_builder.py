@@ -12,6 +12,7 @@ from PyQt6.QtCore import pyqtSignal, Qt
 from src.models.worldbuilding_objects import (
     Culture, Ritual, Language, MusicStyle, ArtForm, Tradition, Cuisine, Faction, Planet
 )
+from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
 
 
 class RitualEditor(QDialog):
@@ -1204,6 +1205,14 @@ class CultureBuilderWidget(QWidget):
         toolbar.addStretch()
         left_layout.addLayout(toolbar)
 
+        # Filter/Sort controls
+        self.filter_sort = FilterSortWidget(
+            sort_options=["Name"],
+            filter_placeholder="Search cultures..."
+        )
+        self.filter_sort.filter_changed.connect(self._update_list)
+        left_layout.addWidget(self.filter_sort)
+
         # Culture list
         self.culture_list = QListWidget()
         self.culture_list.itemSelectionChanged.connect(self._on_selection_changed)
@@ -1275,7 +1284,22 @@ class CultureBuilderWidget(QWidget):
         """Update culture list display."""
         self.culture_list.clear()
 
-        for culture in self.cultures:
+        # Filter and sort functions
+        def get_searchable_text(culture):
+            faction_names = [f.name for f in self.available_factions if f.id in culture.associated_factions]
+            planets = " ".join(culture.associated_planets) if culture.associated_planets else ""
+            return f"{culture.name} {' '.join(faction_names)} {planets} {culture.description or ''}"
+
+        def get_sort_value(culture, key):
+            if key == "Name":
+                return culture.name.lower()
+            return culture.name.lower()
+
+        filtered_cultures = self.filter_sort.filter_and_sort(
+            self.cultures, get_searchable_text, get_sort_value
+        )
+
+        for culture in filtered_cultures:
             # Get faction names for display
             faction_names = []
             for faction_id in culture.associated_factions:

@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import pyqtSignal, Qt
 
 from src.models.worldbuilding_objects import Technology, TechnologyType, Faction
+from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
 
 
 class TechnologyEditor(QDialog):
@@ -50,8 +51,7 @@ class TechnologyEditor(QDialog):
     def _init_ui(self):
         """Initialize UI."""
         self.setWindowTitle("Technology Editor")
-        self.setMinimumWidth(600)
-        self.setMinimumHeight(500)  # Reduced for laptop compatibility
+        self.resize(750, 600)
 
         layout = QVBoxLayout(self)
 
@@ -382,6 +382,15 @@ class TechnologyBuilderWidget(QWidget):
         help_text.setStyleSheet("color: #6b7280; font-size: 11px; margin-bottom: 8px;")
         layout.addWidget(help_text)
 
+        # Filter/Sort controls
+        self.filter_sort = FilterSortWidget(
+            sort_options=["Name", "Type", "Tech Level"],
+            filter_placeholder="Search technologies..."
+        )
+        self.filter_sort.set_filter_options(["All"] + [t.value.replace("_", " ").title() for t in TechnologyType])
+        self.filter_sort.filter_changed.connect(self._update_list)
+        layout.addWidget(self.filter_sort)
+
         # Toolbar
         toolbar = QHBoxLayout()
 
@@ -438,7 +447,28 @@ class TechnologyBuilderWidget(QWidget):
         """Update technology list display."""
         self.tech_list.clear()
 
-        for tech in self.technologies:
+        # Filter and sort functions
+        def get_searchable_text(tech):
+            faction_names = [f.name for f in self.available_factions if f.id in tech.factions_with_access]
+            return f"{tech.name} {tech.technology_type.value} {tech.tech_level or ''} {' '.join(faction_names)} {tech.description or ''}"
+
+        def get_sort_value(tech, key):
+            if key == "Name":
+                return tech.name.lower()
+            elif key == "Type":
+                return tech.technology_type.value
+            elif key == "Tech Level":
+                return tech.tech_level or ""
+            return tech.name.lower()
+
+        def get_type(tech):
+            return tech.technology_type.value.replace("_", " ").title()
+
+        filtered_techs = self.filter_sort.filter_and_sort(
+            self.technologies, get_searchable_text, get_sort_value, get_type
+        )
+
+        for tech in filtered_techs:
             # Get faction names
             faction_names = []
             for faction_id in tech.factions_with_access[:3]:  # Show first 3
@@ -455,6 +485,11 @@ class TechnologyBuilderWidget(QWidget):
             dest_indicator = "⚠️" if tech.destructive_level > 70 else "✅" if tech.destructive_level < 30 else ""
 
             item_text = f"{gc_indicator}{dest_indicator} {tech.name} ({tech.technology_type.value.replace('_', ' ').title()}){factions_text}"
+
+            # Add truncated description if available
+            if tech.description:
+                desc = tech.description[:50] + "..." if len(tech.description) > 50 else tech.description
+                item_text += f" - {desc}"
 
             item = QListWidgetItem(item_text)
             item.setData(Qt.ItemDataRole.UserRole, tech.id)
@@ -497,7 +532,14 @@ class TechnologyBuilderWidget(QWidget):
         if not items:
             return
 
+        current_row = self.tech_list.row(items[0])
         tech_id = items[0].data(Qt.ItemDataRole.UserRole)
         self.technologies = [t for t in self.technologies if t.id != tech_id]
         self._update_list()
+
+        # Select next available technology if any exist
+        if self.tech_list.count() > 0:
+            next_row = min(current_row, self.tech_list.count() - 1)
+            self.tech_list.setCurrentRow(next_row)
+
         self.content_changed.emit()

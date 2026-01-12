@@ -3,16 +3,17 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QPushButton, QLabel, QLineEdit, QTextEdit, QComboBox,
-    QFormLayout, QGroupBox, QScrollArea, QSplitter, QInputDialog
+    QFormLayout, QGroupBox, QScrollArea, QInputDialog, QDialog,
+    QDialogButtonBox, QMessageBox, QToolBar
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QRect
-from PyQt6.QtGui import QPainter, QPen, QColor, QFont
+from PyQt6.QtGui import QPainter, QPen, QColor, QFont, QAction
 from typing import List, Optional
 import uuid
-from datetime import datetime
 import re
 
-from src.models.worldbuilding_objects import HistoricalEvent, CharacterLifeEvent
+from src.models.worldbuilding_objects import HistoricalEvent
+from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
 
 
 class TimelineVisualization(QWidget):
@@ -151,40 +152,50 @@ class TimelineVisualization(QWidget):
         painter.drawText(date_rect, Qt.AlignmentFlag.AlignCenter, evt.date)
 
 
-class HistoricalEventEditor(QWidget):
-    """Editor for a historical event."""
+class HistoricalEventEditorDialog(QDialog):
+    """Popup dialog for editing historical events."""
 
-    content_changed = pyqtSignal()
-
-    def __init__(self, event: HistoricalEvent):
-        """Initialize editor."""
-        super().__init__()
+    def __init__(self, event: Optional[HistoricalEvent] = None, parent=None):
+        """Initialize editor dialog."""
+        super().__init__(parent)
         self.event = event
+        self.setWindowTitle("Edit Historical Event" if event else "New Historical Event")
+        self.resize(750, 600)
         self._init_ui()
-        self._load_event()
+        if event:
+            self._load_event()
 
     def _init_ui(self):
         """Initialize UI."""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
 
-        form = QFormLayout()
+        # Scroll area for content
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setSpacing(16)
+
+        # Basic Info Section
+        basic_group = QGroupBox("Basic Information")
+        basic_layout = QFormLayout(basic_group)
 
         # Name
         self.name_edit = QLineEdit()
-        self.name_edit.textChanged.connect(self.content_changed.emit)
-        form.addRow("Event Name:", self.name_edit)
+        self.name_edit.setPlaceholderText("Enter event name")
+        basic_layout.addRow("Event Name:", self.name_edit)
 
         # Date
         self.date_edit = QLineEdit()
         self.date_edit.setPlaceholderText("e.g., Year 1453, 3rd Age, 2145 CE")
-        self.date_edit.textChanged.connect(self.content_changed.emit)
-        form.addRow("Date:", self.date_edit)
+        basic_layout.addRow("Date:", self.date_edit)
 
         # Timestamp (for sorting)
         self.timestamp_edit = QLineEdit()
-        self.timestamp_edit.setPlaceholderText("Optional numeric value for sorting")
-        form.addRow("Timeline Position:", self.timestamp_edit)
+        self.timestamp_edit.setPlaceholderText("Optional numeric value for sorting/positioning")
+        basic_layout.addRow("Timeline Position:", self.timestamp_edit)
 
         # Event type
         self.type_combo = QComboBox()
@@ -192,20 +203,21 @@ class HistoricalEventEditor(QWidget):
             "General", "War", "Treaty", "Discovery", "Disaster",
             "Birth", "Death", "Founding", "Revolution", "Other"
         ])
-        self.type_combo.currentTextChanged.connect(self.content_changed.emit)
-        form.addRow("Type:", self.type_combo)
+        basic_layout.addRow("Type:", self.type_combo)
 
         # Location
         self.location_edit = QLineEdit()
-        form.addRow("Location:", self.location_edit)
+        self.location_edit.setPlaceholderText("Where did this event occur?")
+        basic_layout.addRow("Location:", self.location_edit)
 
-        layout.addLayout(form)
+        content_layout.addWidget(basic_group)
 
-        # Key Figures
+        # Key Figures Section
         figures_group = QGroupBox("Key Figures (Characters)")
         figures_layout = QVBoxLayout(figures_group)
 
         self.figures_list = QListWidget()
+        self.figures_list.setMaximumHeight(120)
         figures_layout.addWidget(self.figures_list)
 
         fig_btn_layout = QHBoxLayout()
@@ -216,31 +228,53 @@ class HistoricalEventEditor(QWidget):
         remove_fig_btn = QPushButton("Remove")
         remove_fig_btn.clicked.connect(self._remove_figure)
         fig_btn_layout.addWidget(remove_fig_btn)
+        fig_btn_layout.addStretch()
 
         figures_layout.addLayout(fig_btn_layout)
-        layout.addWidget(figures_group)
+        content_layout.addWidget(figures_group)
 
-        # Description
-        desc_label = QLabel("Description:")
-        layout.addWidget(desc_label)
+        # Description Section
+        desc_group = QGroupBox("Description")
+        desc_layout = QVBoxLayout(desc_group)
 
         self.description_edit = QTextEdit()
-        self.description_edit.textChanged.connect(self.content_changed.emit)
-        layout.addWidget(self.description_edit)
+        self.description_edit.setPlaceholderText("Describe what happened during this event...")
+        self.description_edit.setMinimumHeight(150)
+        desc_layout.addWidget(self.description_edit)
 
-        # Consequences
-        cons_label = QLabel("Consequences:")
-        layout.addWidget(cons_label)
+        content_layout.addWidget(desc_group)
+
+        # Consequences Section
+        cons_group = QGroupBox("Consequences & Impact")
+        cons_layout = QVBoxLayout(cons_group)
 
         self.consequences_edit = QTextEdit()
-        self.consequences_edit.setMaximumHeight(100)
-        layout.addWidget(self.consequences_edit)
+        self.consequences_edit.setPlaceholderText("What were the consequences of this event?")
+        self.consequences_edit.setMinimumHeight(100)
+        cons_layout.addWidget(self.consequences_edit)
+
+        content_layout.addWidget(cons_group)
+
+        content_layout.addStretch()
+        scroll.setWidget(content)
+        layout.addWidget(scroll)
+
+        # Dialog buttons
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(self._save_and_accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
 
     def _load_event(self):
-        """Load event data."""
+        """Load event data into form."""
+        if not self.event:
+            return
+
         self.name_edit.setText(self.event.name)
         self.date_edit.setText(self.event.date)
-        if self.event.timestamp:
+        if self.event.timestamp is not None:
             self.timestamp_edit.setText(str(self.event.timestamp))
         self.type_combo.setCurrentText(self.event.event_type.title())
         if self.event.location:
@@ -263,29 +297,44 @@ class HistoricalEventEditor(QWidget):
         if current >= 0:
             self.figures_list.takeItem(current)
 
-    def save_to_model(self):
-        """Save to event model."""
-        self.event.name = self.name_edit.text()
-        self.event.date = self.date_edit.text()
+    def _save_and_accept(self):
+        """Validate and save."""
+        name = self.name_edit.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Validation Error", "Event name is required.")
+            return
+
+        self.accept()
+
+    def get_event(self) -> HistoricalEvent:
+        """Get event from form data."""
+        event_id = self.event.id if self.event else str(uuid.uuid4())
 
         try:
-            self.event.timestamp = int(self.timestamp_edit.text()) if self.timestamp_edit.text() else None
-        except:
-            self.event.timestamp = None
+            timestamp = int(self.timestamp_edit.text()) if self.timestamp_edit.text().strip() else None
+        except ValueError:
+            timestamp = None
 
-        self.event.event_type = self.type_combo.currentText().lower()
-        self.event.location = self.location_edit.text()
-        self.event.description = self.description_edit.toPlainText()
-        self.event.consequences = self.consequences_edit.toPlainText()
-
-        self.event.key_figures = [
+        key_figures = [
             self.figures_list.item(i).text()
             for i in range(self.figures_list.count())
         ]
 
+        return HistoricalEvent(
+            id=event_id,
+            name=self.name_edit.text().strip(),
+            date=self.date_edit.text().strip(),
+            timestamp=timestamp,
+            event_type=self.type_combo.currentText().lower(),
+            location=self.location_edit.text().strip() or None,
+            description=self.description_edit.toPlainText(),
+            consequences=self.consequences_edit.toPlainText(),
+            key_figures=key_figures
+        )
+
 
 class TimelineBuilderWidget(QWidget):
-    """Timeline builder for history."""
+    """Timeline builder for history with popup editor."""
 
     content_changed = pyqtSignal()
 
@@ -293,113 +342,157 @@ class TimelineBuilderWidget(QWidget):
         """Initialize timeline builder."""
         super().__init__()
         self.events: List[HistoricalEvent] = []
-        self.current_editor: Optional[HistoricalEventEditor] = None
         self._init_ui()
 
     def _init_ui(self):
         """Initialize UI."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
 
-        # Timeline visualization
+        # Header
+        header = QLabel("Historical Timeline")
+        header.setStyleSheet("font-size: 16px; font-weight: 600; padding: 8px;")
+        layout.addWidget(header)
+
+        # Timeline visualization - KEPT AT TOP
         self.timeline_viz = TimelineVisualization()
         layout.addWidget(self.timeline_viz)
 
-        # Splitter for list and editor
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        # Filter and sort controls
+        self.filter_sort = FilterSortWidget(
+            sort_options=["Name", "Date", "Type"],
+            filter_placeholder="Search events..."
+        )
+        self.filter_sort.set_filter_options([
+            "All", "General", "War", "Treaty", "Discovery", "Disaster",
+            "Birth", "Death", "Founding", "Revolution", "Other"
+        ])
+        self.filter_sort.filter_changed.connect(self._update_list)
+        layout.addWidget(self.filter_sort)
 
-        # Left: Event list
-        left_panel = QWidget()
-        left_layout = QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(8, 8, 8, 8)
+        # Toolbar
+        toolbar = QToolBar()
+        toolbar.setMovable(False)
+        toolbar.setStyleSheet("QToolBar { spacing: 8px; padding: 4px; }")
 
-        label = QLabel("Historical Events")
-        label.setStyleSheet("font-weight: 600; font-size: 13px;")
-        left_layout.addWidget(label)
+        add_action = QAction("Add Event", self)
+        add_action.triggered.connect(self._add_event)
+        toolbar.addAction(add_action)
 
+        edit_action = QAction("Edit", self)
+        edit_action.triggered.connect(self._edit_event)
+        toolbar.addAction(edit_action)
+
+        remove_action = QAction("Remove", self)
+        remove_action.triggered.connect(self._remove_event)
+        toolbar.addAction(remove_action)
+
+        toolbar.addSeparator()
+
+        ai_action = QAction("AI Generate", self)
+        ai_action.triggered.connect(self._ai_generate)
+        toolbar.addAction(ai_action)
+
+        layout.addWidget(toolbar)
+
+        # Event list
         self.event_list = QListWidget()
-        self.event_list.currentItemChanged.connect(self._on_event_selected)
-        left_layout.addWidget(self.event_list)
+        self.event_list.itemDoubleClicked.connect(self._edit_event)
+        layout.addWidget(self.event_list)
 
-        btn_layout = QHBoxLayout()
-        add_btn = QPushButton("➕ Add Event")
-        add_btn.clicked.connect(self._add_event)
-        btn_layout.addWidget(add_btn)
+    def _update_list(self):
+        """Update the event list with filtering and sorting."""
+        self.event_list.clear()
 
-        ai_btn = QPushButton("✨ AI Generate")
-        ai_btn.clicked.connect(self._ai_generate)
-        btn_layout.addWidget(ai_btn)
+        def get_text(event):
+            return f"{event.name} {event.date} {event.event_type}"
 
-        remove_btn = QPushButton("🗑️")
-        remove_btn.setMaximumWidth(40)
-        remove_btn.clicked.connect(self._remove_event)
-        btn_layout.addWidget(remove_btn)
+        def get_sort_value(event, sort_by):
+            if sort_by == "Name":
+                return event.name.lower()
+            elif sort_by == "Date":
+                return event.timestamp if event.timestamp is not None else 0
+            elif sort_by == "Type":
+                return event.event_type.lower()
+            return event.name.lower()
 
-        left_layout.addLayout(btn_layout)
+        def get_type(event):
+            return event.event_type.title()
 
-        left_panel.setMaximumWidth(280)
-        splitter.addWidget(left_panel)
+        filtered_events = self.filter_sort.filter_and_sort(
+            self.events,
+            get_text,
+            get_sort_value,
+            get_type
+        )
 
-        # Right: Event editor
-        self.editor_scroll = QScrollArea()
-        self.editor_scroll.setWidgetResizable(True)
+        for event in filtered_events:
+            display_text = f"{event.name}"
+            if event.date:
+                display_text += f" ({event.date})"
+            display_text += f" - {event.event_type.title()}"
 
-        placeholder = QLabel("Add or select an event")
-        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.editor_scroll.setWidget(placeholder)
-
-        splitter.addWidget(self.editor_scroll)
-
-        layout.addWidget(splitter)
-
-    def _add_event(self):
-        """Add new event."""
-        name, ok = QInputDialog.getText(self, "New Event", "Enter event name:")
-
-        if ok and name:
-            event = HistoricalEvent(
-                id=str(uuid.uuid4()),
-                name=name,
-                date="",
-                timestamp=len(self.events)  # Default position
-            )
-            self.events.append(event)
-
-            item = QListWidgetItem(name)
+            item = QListWidgetItem(display_text)
             item.setData(Qt.ItemDataRole.UserRole, event.id)
             self.event_list.addItem(item)
 
-            self.event_list.setCurrentItem(item)
-            self._update_timeline()
-
-    def _remove_event(self):
-        """Remove selected event."""
-        current = self.event_list.currentItem()
-        if current:
-            event_id = current.data(Qt.ItemDataRole.UserRole)
-            self.events = [e for e in self.events if e.id != event_id]
-            self.event_list.takeItem(self.event_list.row(current))
+    def _add_event(self):
+        """Add new event via popup dialog."""
+        dialog = HistoricalEventEditorDialog(parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            event = dialog.get_event()
+            self.events.append(event)
+            self._update_list()
             self._update_timeline()
             self.content_changed.emit()
 
-    def _on_event_selected(self, current, previous):
-        """Handle event selection."""
+    def _edit_event(self):
+        """Edit selected event via popup dialog."""
+        current = self.event_list.currentItem()
         if not current:
+            QMessageBox.information(self, "No Selection", "Please select an event to edit.")
             return
 
-        # Save previous
-        if self.current_editor:
-            self.current_editor.save_to_model()
-
-        # Load selected
         event_id = current.data(Qt.ItemDataRole.UserRole)
         event = next((e for e in self.events if e.id == event_id), None)
 
         if event:
-            self.current_editor = HistoricalEventEditor(event)
-            self.current_editor.content_changed.connect(self.content_changed.emit)
-            self.current_editor.content_changed.connect(self._update_timeline)
-            self.editor_scroll.setWidget(self.current_editor)
+            dialog = HistoricalEventEditorDialog(event=event, parent=self)
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                updated_event = dialog.get_event()
+                # Update in list
+                for i, e in enumerate(self.events):
+                    if e.id == event_id:
+                        self.events[i] = updated_event
+                        break
+                self._update_list()
+                self._update_timeline()
+                self.content_changed.emit()
+
+    def _remove_event(self):
+        """Remove selected event."""
+        current = self.event_list.currentItem()
+        if not current:
+            QMessageBox.information(self, "No Selection", "Please select an event to remove.")
+            return
+
+        event_id = current.data(Qt.ItemDataRole.UserRole)
+        event = next((e for e in self.events if e.id == event_id), None)
+
+        if event:
+            reply = QMessageBox.question(
+                self,
+                "Confirm Removal",
+                f"Remove event '{event.name}'?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+
+            if reply == QMessageBox.StandardButton.Yes:
+                self.events = [e for e in self.events if e.id != event_id]
+                self._update_list()
+                self._update_timeline()
+                self.content_changed.emit()
 
     def _update_timeline(self):
         """Update timeline visualization."""
@@ -407,7 +500,6 @@ class TimelineBuilderWidget(QWidget):
 
     def _ai_generate(self):
         """AI generate event."""
-        from PyQt6.QtWidgets import QMessageBox
         QMessageBox.information(
             self,
             "AI Generation",
@@ -416,18 +508,10 @@ class TimelineBuilderWidget(QWidget):
 
     def get_events(self) -> List[HistoricalEvent]:
         """Get all events."""
-        if self.current_editor:
-            self.current_editor.save_to_model()
         return self.events
 
     def load_events(self, events: List[HistoricalEvent]):
         """Load events."""
         self.events = events
-        self.event_list.clear()
-
-        for event in events:
-            item = QListWidgetItem(event.name)
-            item.setData(Qt.ItemDataRole.UserRole, event.id)
-            self.event_list.addItem(item)
-
+        self._update_list()
         self._update_timeline()
