@@ -259,6 +259,8 @@ class ComprehensiveWorldBuildingWidget(QWidget):
             self._update_technology_factions()
             self._update_military_factions()
             self._update_economy_factions()
+            self._update_places_factions()
+            self._update_culture_factions()
 
         # Load climate presets
         if hasattr(worldbuilding, 'climate_presets'):
@@ -298,7 +300,6 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         # Load cultures
         if hasattr(worldbuilding, 'cultures'):
             self.culture_widget.load_cultures(worldbuilding.cultures)
-            self._update_culture_factions()
 
         # Load armies (military forces)
         if hasattr(worldbuilding, 'armies'):
@@ -307,8 +308,19 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         # Load places (landmarks and points of interest)
         if hasattr(worldbuilding, 'places'):
             self.places_widget.load_places(worldbuilding.places)
-            self._update_places_factions()
             self._update_places_planets()
+
+        # Load historical events (timeline)
+        if hasattr(worldbuilding, 'historical_events'):
+            self.history_widget.load_events(worldbuilding.historical_events)
+
+        # Load power hierarchies
+        if hasattr(worldbuilding, 'hierarchies'):
+            self.hierarchy_widget.load_hierarchies(worldbuilding.hierarchies)
+
+        # Load political systems
+        if hasattr(worldbuilding, 'political_systems'):
+            self.politics_widget.load_political_systems(worldbuilding.political_systems)
 
     def get_data(self):
         """Get worldbuilding data."""
@@ -328,10 +340,13 @@ class ComprehensiveWorldBuildingWidget(QWidget):
             armies=self.military_widget.get_armies(),  # Military forces
             economies=self.economy_widget.get_economies(),  # Economic systems
             places=self.places_widget.get_places(),  # Places and landmarks
+            historical_events=self.history_widget.get_events(),  # Timeline events
+            hierarchies=self.hierarchy_widget.get_hierarchies(),  # Power hierarchies
+            political_systems=self.politics_widget.get_political_systems(),  # Political systems
             mythology_elements={},  # Deprecated - kept for backwards compatibility
             planets_elements={},  # Deprecated - planets now embedded in star_systems
             climate_elements={},  # Deprecated - climate now managed via presets
-            history_elements={},  # TODO: Convert events to dict
+            history_elements={},  # Deprecated - now using historical_events list
             politics_elements={},  # TODO: Convert systems to dict
             military_elements={},  # TODO: Convert armies to dict
             economy_elements={},  # TODO: Convert economies to dict
