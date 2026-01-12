@@ -380,6 +380,7 @@ class TimelineBuilderWidget(QWidget):
             self.events = [e for e in self.events if e.id != event_id]
             self.event_list.takeItem(self.event_list.row(current))
             self._update_timeline()
+            self.content_changed.emit()
 
     def _on_event_selected(self, current, previous):
         """Handle event selection."""

@@ -595,6 +595,7 @@ class PoliticsBuilderWidget(QWidget):
             placeholder = QLabel("Add or select a political system")
             placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.editor_scroll.setWidget(placeholder)
+            self.content_changed.emit()
 
     def _on_system_selected(self, current, previous):
         """Handle system selection."""

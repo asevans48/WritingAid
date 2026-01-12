@@ -3,7 +3,7 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget,
     QListWidgetItem, QDialog, QDialogButtonBox, QLabel, QLineEdit,
-    QTextEdit, QComboBox, QFormLayout, QGroupBox, QScrollArea, QSlider
+    QTextEdit, QComboBox, QFormLayout, QGroupBox, QScrollArea, QSlider, QCheckBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from typing import List, Optional
@@ -15,7 +15,7 @@ class FaunaEditor(QDialog):
     """Dialog for editing fauna species."""
 
     def __init__(self, fauna: Optional[Fauna] = None, all_fauna: List[Fauna] = None,
-                 all_flora: List = None, parent=None):
+                 all_flora: List = None, available_planets: List[str] = None, parent=None):
         """Initialize fauna editor."""
         super().__init__(parent)
         self.fauna = fauna or Fauna(
@@ -26,6 +26,7 @@ class FaunaEditor(QDialog):
         )
         self.all_fauna = all_fauna or []
         self.all_flora = all_flora or []
+        self.available_planets = available_planets or []
         self._init_ui()
         if fauna:
             self._load_fauna()
@@ -83,24 +84,48 @@ class FaunaEditor(QDialog):
 
         # Habitat
         habitat_group = QGroupBox("Habitat")
-        habitat_layout = QFormLayout()
+        habitat_layout = QVBoxLayout()
 
-        self.native_planets_edit = QTextEdit()
-        self.native_planets_edit.setPlaceholderText("Planet names, one per line")
-        self.native_planets_edit.setMaximumHeight(60)
-        habitat_layout.addRow("Native Planets:", self.native_planets_edit)
+        # Native Planets - checkbox selection
+        planets_label = QLabel("Native Planets:")
+        planets_label.setStyleSheet("font-weight: bold;")
+        habitat_layout.addWidget(planets_label)
+
+        self.planet_checkboxes = {}
+        self.planets_container = QWidget()
+        self.planets_layout = QVBoxLayout(self.planets_container)
+        self.planets_layout.setContentsMargins(0, 0, 0, 0)
+        self.planets_layout.setSpacing(4)
+
+        if self.available_planets:
+            for planet_name in self.available_planets:
+                checkbox = QCheckBox(planet_name)
+                checkbox.setProperty("planet_name", planet_name)
+                self.planet_checkboxes[planet_name] = checkbox
+                self.planets_layout.addWidget(checkbox)
+        else:
+            no_planets_label = QLabel("No planets available. Create planets in Star Systems first.")
+            no_planets_label.setStyleSheet("color: #6b7280; font-style: italic; font-size: 11px;")
+            self.planets_layout.addWidget(no_planets_label)
+
+        habitat_layout.addWidget(self.planets_container)
+
+        # Form layout for other habitat fields
+        habitat_form = QFormLayout()
 
         self.preferred_climate_edit = QLineEdit()
         self.preferred_climate_edit.setPlaceholderText("e.g., tropical, arctic, temperate")
-        habitat_layout.addRow("Preferred Climate:", self.preferred_climate_edit)
+        habitat_form.addRow("Preferred Climate:", self.preferred_climate_edit)
 
         self.habitat_edit = QLineEdit()
         self.habitat_edit.setPlaceholderText("e.g., forest, ocean, desert, mountains")
-        habitat_layout.addRow("Habitat:", self.habitat_edit)
+        habitat_form.addRow("Habitat:", self.habitat_edit)
 
         self.territory_edit = QLineEdit()
         self.territory_edit.setPlaceholderText("e.g., 5 km radius, migratory")
-        habitat_layout.addRow("Territory Size:", self.territory_edit)
+        habitat_form.addRow("Territory Size:", self.territory_edit)
+
+        habitat_layout.addLayout(habitat_form)
 
         habitat_group.setLayout(habitat_layout)
         scroll_layout.addWidget(habitat_group)
@@ -251,8 +276,10 @@ class FaunaEditor(QDialog):
 
         self.description_edit.setPlainText(self.fauna.description)
 
-        if self.fauna.native_planets:
-            self.native_planets_edit.setPlainText("\n".join(self.fauna.native_planets))
+        # Check planet checkboxes
+        for planet_name in self.fauna.native_planets:
+            if planet_name in self.planet_checkboxes:
+                self.planet_checkboxes[planet_name].setChecked(True)
 
         self.preferred_climate_edit.setText(self.fauna.preferred_climate)
         self.habitat_edit.setText(self.fauna.habitat)
@@ -303,8 +330,11 @@ class FaunaEditor(QDialog):
 
         self.fauna.description = self.description_edit.toPlainText().strip()
 
-        native_planets_text = self.native_planets_edit.toPlainText().strip()
-        self.fauna.native_planets = [p.strip() for p in native_planets_text.split("\n") if p.strip()]
+        # Get selected planets from checkboxes
+        self.fauna.native_planets = [
+            planet_name for planet_name, checkbox in self.planet_checkboxes.items()
+            if checkbox.isChecked()
+        ]
 
         self.fauna.preferred_climate = self.preferred_climate_edit.text().strip()
         self.fauna.habitat = self.habitat_edit.text().strip()
@@ -349,6 +379,7 @@ class FaunaBuilderWidget(QWidget):
         """Initialize fauna builder."""
         super().__init__()
         self.fauna_list: List[Fauna] = []
+        self.available_planets: List[str] = []
         self._init_ui()
 
     def _init_ui(self):
@@ -400,7 +431,7 @@ class FaunaBuilderWidget(QWidget):
 
     def _add_fauna(self):
         """Add new fauna."""
-        editor = FaunaEditor(all_fauna=self.fauna_list, parent=self)
+        editor = FaunaEditor(all_fauna=self.fauna_list, available_planets=self.available_planets, parent=self)
         if editor.exec() == QDialog.DialogCode.Accepted:
             fauna = editor.get_fauna()
             self.fauna_list.append(fauna)
@@ -418,7 +449,7 @@ class FaunaBuilderWidget(QWidget):
         if not fauna:
             return
 
-        editor = FaunaEditor(fauna=fauna, all_fauna=self.fauna_list, parent=self)
+        editor = FaunaEditor(fauna=fauna, all_fauna=self.fauna_list, available_planets=self.available_planets, parent=self)
         if editor.exec() == QDialog.DialogCode.Accepted:
             self._update_list()
             self.content_changed.emit()
@@ -455,9 +486,16 @@ class FaunaBuilderWidget(QWidget):
             features_text = " ".join(features)
             type_display = fauna.fauna_type.value.replace("_", " ").title()
 
+            # Show planet associations
+            planets_text = ""
+            if fauna.native_planets:
+                planets_text = f" • {', '.join(fauna.native_planets)}"
+
             item_text = f"{fauna.name} ({type_display})"
             if features_text:
                 item_text += f" {features_text}"
+            if planets_text:
+                item_text += planets_text
 
             item = QListWidgetItem(item_text)
             item.setData(Qt.ItemDataRole.UserRole, fauna.id)
@@ -468,6 +506,19 @@ class FaunaBuilderWidget(QWidget):
         has_selection = bool(self.list_widget.selectedItems())
         self.edit_btn.setEnabled(has_selection)
         self.remove_btn.setEnabled(has_selection)
+
+    def set_available_planets(self, planets: List[str]):
+        """Set available planets for fauna association.
+
+        Args:
+            planets: List of planet names
+        """
+        self.available_planets = planets
+        # Clean up references to deleted planets
+        valid_planets = set(planets)
+        for fauna in self.fauna_list:
+            fauna.native_planets = [p for p in fauna.native_planets if p in valid_planets]
+        self._update_list()
 
     def load_fauna(self, fauna_list: List[Fauna]):
         """Load fauna list."""

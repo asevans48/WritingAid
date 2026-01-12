@@ -17,6 +17,7 @@ from src.ui.worldbuilding.technology_builder import TechnologyBuilderWidget
 from src.ui.worldbuilding.flora_builder import FloraBuilderWidget
 from src.ui.worldbuilding.fauna_builder import FaunaBuilderWidget
 from src.ui.worldbuilding.enhanced_star_system_builder import EnhancedStarSystemBuilderWidget
+from src.ui.worldbuilding.culture_builder import CultureBuilderWidget
 
 
 class ComprehensiveWorldBuildingWidget(QWidget):
@@ -116,26 +117,61 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         self.fauna_widget.content_changed.connect(self.content_changed.emit)
         self.tabs.addTab(self.fauna_widget, "🦁 Fauna")
 
+        # Culture - Rituals, language, music, art, traditions
+        self.culture_widget = CultureBuilderWidget()
+        self.culture_widget.content_changed.connect(self.content_changed.emit)
+        self.tabs.addTab(self.culture_widget, "🎭 Culture")
+
         layout.addWidget(self.tabs)
 
         # Connect faction changes to update other widgets
         self.factions_widget.content_changed.connect(self._update_mythology_factions)
         self.factions_widget.content_changed.connect(self._update_technology_factions)
+        self.factions_widget.content_changed.connect(self._update_culture_factions)
 
         # Connect flora/fauna/climate changes to update star systems
         self.flora_widget.content_changed.connect(self._update_star_system_flora)
         self.fauna_widget.content_changed.connect(self._update_star_system_fauna)
         self.climate_preset_widget.content_changed.connect(self._update_star_system_climates)
 
+        # Connect star system changes to update culture and flora/fauna planets
+        self.star_systems_widget.content_changed.connect(self._update_culture_planets)
+        self.star_systems_widget.content_changed.connect(self._update_flora_planets)
+        self.star_systems_widget.content_changed.connect(self._update_fauna_planets)
+
     def _update_mythology_factions(self):
         """Update available factions in mythology widget."""
         factions = self.factions_widget.get_factions()
+        faction_ids = {f.id for f in factions}
+
+        # Clean up references to deleted factions in myths
+        for myth in self.mythology_widget.get_myths():
+            myth.associated_factions = [
+                fid for fid in myth.associated_factions if fid in faction_ids
+            ]
+
         self.mythology_widget.set_available_factions(factions)
+        # Refresh the mythology list to show updated faction associations
+        self.mythology_widget._update_list()
 
     def _update_technology_factions(self):
         """Update available factions in technology widget."""
         factions = self.factions_widget.get_factions()
+        faction_ids = {f.id for f in factions}
+
+        # Clean up references to deleted factions in technologies
+        for tech in self.technology_widget.get_technologies():
+            tech.factions_with_access = [
+                fid for fid in tech.factions_with_access if fid in faction_ids
+            ]
+            # Also clean up inventor faction if deleted
+            if tech.inventor_faction and tech.inventor_faction not in faction_ids:
+                tech.inventor_faction = None
+
         self.technology_widget.set_available_factions(factions)
+        # Refresh the technology list to show updated faction associations
+        if hasattr(self.technology_widget, '_update_list'):
+            self.technology_widget._update_list()
 
     def _update_star_system_flora(self):
         """Update available flora in star system widget."""
@@ -154,6 +190,35 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         presets = self.climate_preset_widget.get_presets()
         if hasattr(self.star_systems_widget, 'set_available_climate_presets'):
             self.star_systems_widget.set_available_climate_presets(presets)
+
+    def _update_culture_factions(self):
+        """Update available factions in culture widget."""
+        factions = self.factions_widget.get_factions()
+        self.culture_widget.set_available_factions(factions)
+
+    def _update_culture_planets(self):
+        """Update available planets in culture widget."""
+        planet_names = self._get_all_planet_names()
+        self.culture_widget.set_available_planets(planet_names)
+
+    def _update_flora_planets(self):
+        """Update available planets in flora widget."""
+        planet_names = self._get_all_planet_names()
+        self.flora_widget.set_available_planets(planet_names)
+
+    def _update_fauna_planets(self):
+        """Update available planets in fauna widget."""
+        planet_names = self._get_all_planet_names()
+        self.fauna_widget.set_available_planets(planet_names)
+
+    def _get_all_planet_names(self) -> list:
+        """Get all planet names from star systems."""
+        planet_names = []
+        star_systems = self.star_systems_widget.get_star_systems()
+        for system in star_systems:
+            for planet in system.planets:
+                planet_names.append(planet.name)
+        return planet_names
 
     def load_data(self, worldbuilding):
         """Load worldbuilding data."""
@@ -189,6 +254,15 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         # Load star systems (contains all astronomical data)
         if hasattr(worldbuilding, 'star_systems'):
             self.star_systems_widget.load_star_systems(worldbuilding.star_systems)
+            # Update planets for culture, flora, and fauna
+            self._update_culture_planets()
+            self._update_flora_planets()
+            self._update_fauna_planets()
+
+        # Load cultures
+        if hasattr(worldbuilding, 'cultures'):
+            self.culture_widget.load_cultures(worldbuilding.cultures)
+            self._update_culture_factions()
 
     def get_data(self):
         """Get worldbuilding data."""
@@ -204,6 +278,7 @@ class ComprehensiveWorldBuildingWidget(QWidget):
             fauna=self.fauna_widget.get_fauna(),
             stars=[],  # Stars are now embedded in star_systems
             star_systems=self.star_systems_widget.get_star_systems(),
+            cultures=self.culture_widget.get_cultures(),
             mythology_elements={},  # Deprecated - kept for backwards compatibility
             planets_elements={},  # Deprecated - planets now embedded in star_systems
             climate_elements={},  # Deprecated - climate now managed via presets

@@ -15,7 +15,7 @@ class FloraEditor(QDialog):
     """Dialog for editing flora species."""
 
     def __init__(self, flora: Optional[Flora] = None, all_flora: List[Flora] = None,
-                 all_fauna: List = None, parent=None):
+                 all_fauna: List = None, available_planets: List[str] = None, parent=None):
         """Initialize flora editor."""
         super().__init__(parent)
         self.flora = flora or Flora(
@@ -26,6 +26,7 @@ class FloraEditor(QDialog):
         )
         self.all_flora = all_flora or []
         self.all_fauna = all_fauna or []
+        self.available_planets = available_planets or []
         self._init_ui()
         if flora:
             self._load_flora()
@@ -83,20 +84,44 @@ class FloraEditor(QDialog):
 
         # Habitat
         habitat_group = QGroupBox("Habitat")
-        habitat_layout = QFormLayout()
+        habitat_layout = QVBoxLayout()
 
-        self.native_planets_edit = QTextEdit()
-        self.native_planets_edit.setPlaceholderText("Planet names, one per line")
-        self.native_planets_edit.setMaximumHeight(60)
-        habitat_layout.addRow("Native Planets:", self.native_planets_edit)
+        # Native Planets - checkbox selection
+        planets_label = QLabel("Native Planets:")
+        planets_label.setStyleSheet("font-weight: bold;")
+        habitat_layout.addWidget(planets_label)
+
+        self.planet_checkboxes = {}
+        self.planets_container = QWidget()
+        self.planets_layout = QVBoxLayout(self.planets_container)
+        self.planets_layout.setContentsMargins(0, 0, 0, 0)
+        self.planets_layout.setSpacing(4)
+
+        if self.available_planets:
+            for planet_name in self.available_planets:
+                checkbox = QCheckBox(planet_name)
+                checkbox.setProperty("planet_name", planet_name)
+                self.planet_checkboxes[planet_name] = checkbox
+                self.planets_layout.addWidget(checkbox)
+        else:
+            no_planets_label = QLabel("No planets available. Create planets in Star Systems first.")
+            no_planets_label.setStyleSheet("color: #6b7280; font-style: italic; font-size: 11px;")
+            self.planets_layout.addWidget(no_planets_label)
+
+        habitat_layout.addWidget(self.planets_container)
+
+        # Form layout for other habitat fields
+        habitat_form = QFormLayout()
 
         self.preferred_climate_edit = QLineEdit()
         self.preferred_climate_edit.setPlaceholderText("e.g., tropical, temperate, arid")
-        habitat_layout.addRow("Preferred Climate:", self.preferred_climate_edit)
+        habitat_form.addRow("Preferred Climate:", self.preferred_climate_edit)
 
         self.habitat_edit = QLineEdit()
         self.habitat_edit.setPlaceholderText("e.g., forest floor, canopy, riverbanks")
-        habitat_layout.addRow("Habitat:", self.habitat_edit)
+        habitat_form.addRow("Habitat:", self.habitat_edit)
+
+        habitat_layout.addLayout(habitat_form)
 
         habitat_group.setLayout(habitat_layout)
         scroll_layout.addWidget(habitat_group)
@@ -202,8 +227,10 @@ class FloraEditor(QDialog):
 
         self.description_edit.setPlainText(self.flora.description)
 
-        if self.flora.native_planets:
-            self.native_planets_edit.setPlainText("\n".join(self.flora.native_planets))
+        # Check planet checkboxes
+        for planet_name in self.flora.native_planets:
+            if planet_name in self.planet_checkboxes:
+                self.planet_checkboxes[planet_name].setChecked(True)
 
         self.preferred_climate_edit.setText(self.flora.preferred_climate)
         self.habitat_edit.setText(self.flora.habitat)
@@ -245,8 +272,11 @@ class FloraEditor(QDialog):
 
         self.flora.description = self.description_edit.toPlainText().strip()
 
-        native_planets_text = self.native_planets_edit.toPlainText().strip()
-        self.flora.native_planets = [p.strip() for p in native_planets_text.split("\n") if p.strip()]
+        # Get selected planets from checkboxes
+        self.flora.native_planets = [
+            planet_name for planet_name, checkbox in self.planet_checkboxes.items()
+            if checkbox.isChecked()
+        ]
 
         self.flora.preferred_climate = self.preferred_climate_edit.text().strip()
         self.flora.habitat = self.habitat_edit.text().strip()
@@ -282,6 +312,7 @@ class FloraBuilderWidget(QWidget):
         """Initialize flora builder."""
         super().__init__()
         self.flora_list: List[Flora] = []
+        self.available_planets: List[str] = []
         self._init_ui()
 
     def _init_ui(self):
@@ -333,7 +364,7 @@ class FloraBuilderWidget(QWidget):
 
     def _add_flora(self):
         """Add new flora."""
-        editor = FloraEditor(all_flora=self.flora_list, parent=self)
+        editor = FloraEditor(all_flora=self.flora_list, available_planets=self.available_planets, parent=self)
         if editor.exec() == QDialog.DialogCode.Accepted:
             flora = editor.get_flora()
             self.flora_list.append(flora)
@@ -351,7 +382,7 @@ class FloraBuilderWidget(QWidget):
         if not flora:
             return
 
-        editor = FloraEditor(flora=flora, all_flora=self.flora_list, parent=self)
+        editor = FloraEditor(flora=flora, all_flora=self.flora_list, available_planets=self.available_planets, parent=self)
         if editor.exec() == QDialog.DialogCode.Accepted:
             self._update_list()
             self.content_changed.emit()
@@ -386,9 +417,16 @@ class FloraBuilderWidget(QWidget):
             features_text = " ".join(features)
             type_display = flora.flora_type.value.replace("_", " ").title()
 
+            # Show planet associations
+            planets_text = ""
+            if flora.native_planets:
+                planets_text = f" • {', '.join(flora.native_planets)}"
+
             item_text = f"{flora.name} ({type_display})"
             if features_text:
                 item_text += f" {features_text}"
+            if planets_text:
+                item_text += planets_text
 
             item = QListWidgetItem(item_text)
             item.setData(Qt.ItemDataRole.UserRole, flora.id)
@@ -399,6 +437,19 @@ class FloraBuilderWidget(QWidget):
         has_selection = bool(self.list_widget.selectedItems())
         self.edit_btn.setEnabled(has_selection)
         self.remove_btn.setEnabled(has_selection)
+
+    def set_available_planets(self, planets: List[str]):
+        """Set available planets for flora association.
+
+        Args:
+            planets: List of planet names
+        """
+        self.available_planets = planets
+        # Clean up references to deleted planets
+        valid_planets = set(planets)
+        for flora in self.flora_list:
+            flora.native_planets = [p for p in flora.native_planets if p in valid_planets]
+        self._update_list()
 
     def load_flora(self, flora_list: List[Flora]):
         """Load flora list."""

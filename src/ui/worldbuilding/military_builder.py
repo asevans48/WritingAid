@@ -601,6 +601,7 @@ class MilitaryBuilderWidget(QWidget):
             placeholder = QLabel("Add or select a military force")
             placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.editor_scroll.setWidget(placeholder)
+            self.content_changed.emit()
 
     def _on_army_selected(self, current, previous):
         """Handle army selection."""

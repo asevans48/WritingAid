@@ -128,6 +128,13 @@ class FactionRelationshipGraph(QWidget):
             FactionType.RELIGION: "#f59e0b",      # Amber
             FactionType.TRIBE: "#10b981",         # Green
             FactionType.CORPORATION: "#3b82f6",   # Blue
+            FactionType.ECONOMIC_CLASS: "#14b8a6", # Teal
+            FactionType.MINORITY_GROUP: "#f97316", # Orange
+            FactionType.POLITICAL_PARTY: "#dc2626", # Red
+            FactionType.GUILD: "#ca8a04",         # Yellow/Gold
+            FactionType.MILITARY: "#059669",      # Emerald
+            FactionType.CRIMINAL: "#7c3aed",      # Violet
+            FactionType.RESISTANCE: "#be185d",    # Rose
             FactionType.INDIVIDUAL: "#ec4899",    # Pink
             FactionType.OTHER: "#6b7280"          # Gray
         }
@@ -681,30 +688,76 @@ class FactionBuilderWidget(QWidget):
 
             self.faction_list.setCurrentItem(item)
             self._update_graph()
+            self.content_changed.emit()
 
     def _remove_faction(self):
         """Remove selected faction."""
         current = self.faction_list.currentItem()
-        if current:
-            faction_id = current.data(Qt.ItemDataRole.UserRole)
-            self.factions = [f for f in self.factions if f.id != faction_id]
-            self.faction_list.takeItem(self.faction_list.row(current))
-            self._update_graph()
+        if not current:
+            return
 
-            # Show placeholder
+        faction_id = current.data(Qt.ItemDataRole.UserRole)
+        faction_name = current.text().split(" (")[0]  # Extract name from display text
+
+        # Confirm deletion
+        reply = QMessageBox.question(
+            self,
+            "Remove Faction",
+            f"Are you sure you want to remove '{faction_name}'?\n\n"
+            "This will also remove references to this faction from:\n"
+            "• Other factions' allies and enemies lists\n"
+            "• Mythology associations\n"
+            "• Technology associations",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Remove faction references from other factions
+        for faction in self.factions:
+            if faction_id in faction.allies:
+                faction.allies.remove(faction_id)
+            if faction_id in faction.enemies:
+                faction.enemies.remove(faction_id)
+
+        # Get current row before removing
+        current_row = self.faction_list.row(current)
+
+        # Remove the faction
+        self.factions = [f for f in self.factions if f.id != faction_id]
+        self.faction_list.takeItem(current_row)
+        self._update_graph()
+
+        # Clear editor reference
+        self.current_editor = None
+
+        # Select next available faction if any exist
+        if self.faction_list.count() > 0:
+            # Select the item at the same position, or the last item if we removed the last one
+            next_row = min(current_row, self.faction_list.count() - 1)
+            self.faction_list.setCurrentRow(next_row)
+            # The _on_faction_selected signal will handle loading the editor
+        else:
+            # No factions left, show placeholder
             placeholder = QLabel("Add or select a faction to begin")
             placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
             placeholder.setStyleSheet("color: #9ca3af; font-size: 14px;")
             self.editor_scroll.setWidget(placeholder)
+
+        # Emit content changed to propagate to other widgets
+        self.content_changed.emit()
 
     def _on_faction_selected(self, current, previous):
         """Handle faction selection."""
         if not current:
             return
 
-        # Save previous
-        if self.current_editor:
+        # Save previous and update its list item
+        if self.current_editor and previous:
             self.current_editor.save_to_model()
+            self._update_list_item(previous)
             self._update_graph()
 
         # Load selected
@@ -715,7 +768,25 @@ class FactionBuilderWidget(QWidget):
             self.current_editor = FactionEditor(faction, available_factions=self.factions)
             self.current_editor.content_changed.connect(self.content_changed.emit)
             self.current_editor.content_changed.connect(self._update_graph)
+            self.current_editor.content_changed.connect(self._update_current_list_item)
             self.editor_scroll.setWidget(self.current_editor)
+
+    def _update_current_list_item(self):
+        """Update the currently selected list item with faction data."""
+        current = self.faction_list.currentItem()
+        if current and self.current_editor:
+            # Save current editor state to faction model first
+            self.current_editor.save_to_model()
+            self._update_list_item(current)
+
+    def _update_list_item(self, item: QListWidgetItem):
+        """Update a list item to reflect the faction's current name and type."""
+        if not item:
+            return
+        faction_id = item.data(Qt.ItemDataRole.UserRole)
+        faction = next((f for f in self.factions if f.id == faction_id), None)
+        if faction:
+            item.setText(f"{faction.name} ({faction.faction_type.value.title()})")
 
     def _update_graph(self):
         """Update relationship graph."""

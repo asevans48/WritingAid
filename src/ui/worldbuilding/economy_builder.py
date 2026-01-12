@@ -3,9 +3,10 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QPushButton, QLabel, QLineEdit, QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox,
-    QFormLayout, QGroupBox, QScrollArea, QSplitter, QInputDialog, QTabWidget
+    QFormLayout, QGroupBox, QScrollArea, QSplitter, QInputDialog, QTabWidget,
+    QStackedWidget, QMessageBox, QDialog, QDialogButtonBox
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF
+from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF, QTimer
 from PyQt6.QtGui import QPainter, QPen, QColor, QFont, QBrush
 from typing import List, Optional, Dict, Tuple
 import uuid
@@ -24,8 +25,9 @@ class TradeNetworkGraph(QWidget):
         super().__init__()
         self.economies: List[Economy] = []
         self.faction_positions: Dict[str, Tuple[float, float]] = {}
-        self.setMinimumHeight(400)
-        self.setStyleSheet("background-color: white; border: 1px solid #e5e7eb; border-radius: 8px;")
+        self.setMinimumHeight(150)
+        self.setMaximumHeight(200)
+        self.setStyleSheet("background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px;")
 
     def set_economies(self, economies: List[Economy]):
         """Set economies to display."""
@@ -44,7 +46,7 @@ class TradeNetworkGraph(QWidget):
         radius = min(self.width(), self.height()) / 3
 
         for i, economy in enumerate(self.economies):
-            angle = (2 * math.pi * i) / num_economies
+            angle = (2 * math.pi * i) / num_economies - math.pi / 2  # Start from top
             x = center_x + radius * math.cos(angle)
             y = center_y + radius * math.sin(angle)
             self.faction_positions[economy.faction_id] = (x, y)
@@ -57,7 +59,7 @@ class TradeNetworkGraph(QWidget):
             painter = QPainter(self)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             painter.setPen(QColor("#9ca3af"))
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No economies in trade network")
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No economies - add one below")
             return
 
         painter = QPainter(self)
@@ -83,24 +85,6 @@ class TradeNetworkGraph(QWidget):
                     int(to_pos[0]), int(to_pos[1])
                 )
 
-                # Draw arrow
-                self._draw_arrow(painter, from_pos, to_pos)
-
-                # Draw route info at midpoint
-                mid_x = (from_pos[0] + to_pos[0]) / 2
-                mid_y = (from_pos[1] + to_pos[1]) / 2
-
-                # Small label with goods count
-                goods_count = len(route.goods)
-                if goods_count > 0:
-                    font_small = QFont("Segoe UI", 8)
-                    painter.setFont(font_small)
-                    painter.setPen(QColor("#6b7280"))
-                    painter.drawText(
-                        int(mid_x - 20), int(mid_y - 5),
-                        f"{goods_count} good{'s' if goods_count != 1 else ''}"
-                    )
-
         # Draw faction nodes
         for economy in self.economies:
             pos = self.faction_positions.get(economy.faction_id)
@@ -109,58 +93,19 @@ class TradeNetworkGraph(QWidget):
 
             x, y = pos
 
-            # Node circle
+            # Node circle - smaller for compact view
             painter.setBrush(QColor("#6366f1"))
-            painter.setPen(QPen(QColor("white"), 3))
-            painter.drawEllipse(int(x - 25), int(y - 25), 50, 50)
+            painter.setPen(QPen(QColor("white"), 2))
+            painter.drawEllipse(int(x - 15), int(y - 15), 30, 30)
 
-            # Faction name
-            font = QFont("Segoe UI", 10, QFont.Weight.Bold)
+            # Faction name below node
+            font = QFont("Segoe UI", 8)
             painter.setFont(font)
             painter.setPen(QColor("#1a1a1a"))
 
-            # Get shortened faction name (ID)
-            faction_name = economy.faction_id[:12] if len(economy.faction_id) > 12 else economy.faction_id
-
-            text_rect = QRectF(x - 60, y + 35, 120, 30)
+            faction_name = economy.faction_id[:10] if len(economy.faction_id) > 10 else economy.faction_id
+            text_rect = QRectF(x - 40, y + 18, 80, 20)
             painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, faction_name)
-
-            # Economy type badge
-            font_small = QFont("Segoe UI", 8)
-            painter.setFont(font_small)
-            painter.setPen(QColor("#6b7280"))
-            type_text = economy.economy_type.value.title()
-            type_rect = QRectF(x - 60, y + 55, 120, 20)
-            painter.drawText(type_rect, Qt.AlignmentFlag.AlignCenter, type_text)
-
-    def _draw_arrow(self, painter: QPainter, from_pos: Tuple[float, float], to_pos: Tuple[float, float]):
-        """Draw arrow indicating trade direction."""
-        # Calculate arrow position (2/3 along the line)
-        arrow_x = from_pos[0] + 0.66 * (to_pos[0] - from_pos[0])
-        arrow_y = from_pos[1] + 0.66 * (to_pos[1] - from_pos[1])
-
-        # Calculate angle
-        dx = to_pos[0] - from_pos[0]
-        dy = to_pos[1] - from_pos[1]
-        angle = math.atan2(dy, dx)
-
-        # Arrow size
-        arrow_size = 10
-
-        # Arrow points
-        point1_x = arrow_x - arrow_size * math.cos(angle - math.pi / 6)
-        point1_y = arrow_y - arrow_size * math.sin(angle - math.pi / 6)
-        point2_x = arrow_x - arrow_size * math.cos(angle + math.pi / 6)
-        point2_y = arrow_y - arrow_size * math.sin(angle + math.pi / 6)
-
-        painter.setBrush(QColor("#6366f1"))
-        painter.setPen(QPen(QColor("#6366f1"), 2))
-        points = [
-            QPointF(arrow_x, arrow_y),
-            QPointF(point1_x, point1_y),
-            QPointF(point2_x, point2_y)
-        ]
-        painter.drawPolygon(points)
 
     def resizeEvent(self, event):
         """Recalculate positions on resize."""
@@ -168,44 +113,56 @@ class TradeNetworkGraph(QWidget):
         self._calculate_positions()
 
 
-class GoodEditor(QWidget):
-    """Editor for a tradeable good."""
+class GoodEditorDialog(QDialog):
+    """Dialog for editing a good."""
 
-    content_changed = pyqtSignal()
-
-    def __init__(self, good: Good):
-        """Initialize good editor."""
-        super().__init__()
+    def __init__(self, good: Good, parent=None):
+        super().__init__(parent)
         self.good = good
+        self.setWindowTitle("Edit Good")
+        self.setMinimumWidth(350)
+        self.setMaximumWidth(500)
         self._init_ui()
         self._load_good()
 
     def _init_ui(self):
-        """Initialize UI."""
-        layout = QFormLayout(self)
+        layout = QVBoxLayout(self)
+
+        form = QFormLayout()
 
         self.name_edit = QLineEdit()
-        self.name_edit.textChanged.connect(self.content_changed.emit)
-        layout.addRow("Good Name:", self.name_edit)
+        self.name_edit.setPlaceholderText("Name of the good/resource")
+        form.addRow("Name:*", self.name_edit)
 
         self.category_edit = QLineEdit()
-        self.category_edit.setPlaceholderText("Raw material, manufactured, service, etc.")
-        layout.addRow("Category:", self.category_edit)
+        self.category_edit.setPlaceholderText("Raw material, manufactured, service, luxury, etc.")
+        form.addRow("Category:", self.category_edit)
 
         self.value_spin = QDoubleSpinBox()
         self.value_spin.setMaximum(9999999.99)
-        layout.addRow("Value:", self.value_spin)
+        self.value_spin.setDecimals(2)
+        form.addRow("Value:", self.value_spin)
 
         self.unit_edit = QLineEdit()
-        self.unit_edit.setPlaceholderText("units, kg, tons, etc.")
-        layout.addRow("Unit:", self.unit_edit)
+        self.unit_edit.setPlaceholderText("units, kg, tons, barrels, etc.")
+        form.addRow("Unit:", self.unit_edit)
 
         self.description_edit = QTextEdit()
-        self.description_edit.setMaximumHeight(80)
-        layout.addRow("Description:", self.description_edit)
+        self.description_edit.setMaximumHeight(100)
+        self.description_edit.setPlaceholderText("Description of this good...")
+        form.addRow("Description:", self.description_edit)
+
+        layout.addLayout(form)
+
+        # Buttons
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._save)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
 
     def _load_good(self):
-        """Load good data."""
         self.name_edit.setText(self.good.name)
         self.category_edit.setText(self.good.category)
         if self.good.value:
@@ -213,48 +170,57 @@ class GoodEditor(QWidget):
         self.unit_edit.setText(self.good.unit)
         self.description_edit.setPlainText(self.good.description)
 
-    def save_to_model(self):
-        """Save to good model."""
-        self.good.name = self.name_edit.text()
-        self.good.category = self.category_edit.text()
+    def _save(self):
+        if not self.name_edit.text().strip():
+            return
+        self.good.name = self.name_edit.text().strip()
+        self.good.category = self.category_edit.text().strip()
         self.good.value = self.value_spin.value() if self.value_spin.value() > 0 else None
-        self.good.unit = self.unit_edit.text()
-        self.good.description = self.description_edit.toPlainText()
+        self.good.unit = self.unit_edit.text().strip()
+        self.good.description = self.description_edit.toPlainText().strip()
+        self.accept()
 
 
-class TradeRouteEditor(QWidget):
-    """Editor for a trade route."""
+class TradeRouteEditorDialog(QDialog):
+    """Dialog for editing a trade route."""
 
-    content_changed = pyqtSignal()
-
-    def __init__(self, route: TradeRoute, available_goods: List[str]):
-        """Initialize route editor."""
-        super().__init__()
+    def __init__(self, route: TradeRoute, available_factions: List[str], available_goods: List[str], parent=None):
+        super().__init__(parent)
         self.route = route
+        self.available_factions = available_factions
         self.available_goods = available_goods
+        self.setWindowTitle("Edit Trade Route")
+        self.setMinimumWidth(380)
+        self.setMaximumWidth(550)
+        self.setMinimumHeight(350)
         self._init_ui()
         self._load_route()
 
     def _init_ui(self):
-        """Initialize UI."""
         layout = QVBoxLayout(self)
 
         form = QFormLayout()
 
-        self.to_faction_edit = QLineEdit()
-        form.addRow("To Faction:", self.to_faction_edit)
+        # To Faction - combo if available, otherwise text
+        self.to_faction_combo = QComboBox()
+        self.to_faction_combo.setEditable(True)
+        if self.available_factions:
+            self.to_faction_combo.addItems(self.available_factions)
+        form.addRow("To Faction:*", self.to_faction_combo)
 
         self.route_type_combo = QComboBox()
-        self.route_type_combo.addItems(["Bilateral", "Export", "Import"])
+        self.route_type_combo.addItems(["bilateral", "export", "import"])
         form.addRow("Route Type:", self.route_type_combo)
 
         self.volume_spin = QDoubleSpinBox()
         self.volume_spin.setMaximum(9999999.99)
+        self.volume_spin.setDecimals(2)
         form.addRow("Volume:", self.volume_spin)
 
         self.value_spin = QDoubleSpinBox()
         self.value_spin.setMaximum(9999999.99)
-        form.addRow("Value:", self.value_spin)
+        self.value_spin.setDecimals(2)
+        form.addRow("Trade Value:", self.value_spin)
 
         layout.addLayout(form)
 
@@ -263,24 +229,36 @@ class TradeRouteEditor(QWidget):
         goods_layout = QVBoxLayout(goods_group)
 
         self.goods_list = QListWidget()
+        self.goods_list.setMaximumHeight(120)
         goods_layout.addWidget(self.goods_list)
 
         goods_btn_layout = QHBoxLayout()
-        add_good_btn = QPushButton("Add Good")
+
+        add_good_btn = QPushButton("+ Add Good")
         add_good_btn.clicked.connect(self._add_good)
         goods_btn_layout.addWidget(add_good_btn)
 
-        remove_good_btn = QPushButton("Remove")
+        remove_good_btn = QPushButton("- Remove")
         remove_good_btn.clicked.connect(self._remove_good)
         goods_btn_layout.addWidget(remove_good_btn)
 
+        goods_btn_layout.addStretch()
         goods_layout.addLayout(goods_btn_layout)
         layout.addWidget(goods_group)
 
+        layout.addStretch()
+
+        # Buttons
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._save)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
     def _load_route(self):
-        """Load route data."""
-        self.to_faction_edit.setText(self.route.to_faction)
-        self.route_type_combo.setCurrentText(self.route.route_type.title())
+        self.to_faction_combo.setCurrentText(self.route.to_faction)
+        self.route_type_combo.setCurrentText(self.route.route_type)
         if self.route.volume:
             self.volume_spin.setValue(self.route.volume)
         if self.route.value:
@@ -290,7 +268,6 @@ class TradeRouteEditor(QWidget):
             self.goods_list.addItem(good)
 
     def _add_good(self):
-        """Add good to route."""
         if self.available_goods:
             good, ok = QInputDialog.getItem(
                 self, "Add Good", "Select good:",
@@ -304,31 +281,30 @@ class TradeRouteEditor(QWidget):
                 self.goods_list.addItem(name)
 
     def _remove_good(self):
-        """Remove good from route."""
         current = self.goods_list.currentRow()
         if current >= 0:
             self.goods_list.takeItem(current)
 
-    def save_to_model(self):
-        """Save to route model."""
-        self.route.to_faction = self.to_faction_edit.text()
-        self.route.route_type = self.route_type_combo.currentText().lower()
+    def _save(self):
+        if not self.to_faction_combo.currentText().strip():
+            return
+        self.route.to_faction = self.to_faction_combo.currentText().strip()
+        self.route.route_type = self.route_type_combo.currentText()
         self.route.volume = self.volume_spin.value() if self.volume_spin.value() > 0 else None
         self.route.value = self.value_spin.value() if self.value_spin.value() > 0 else None
-
         self.route.goods = [
             self.goods_list.item(i).text()
             for i in range(self.goods_list.count())
         ]
+        self.accept()
 
 
 class EconomyEditor(QWidget):
-    """Editor for an economy."""
+    """Editor for an economy - redesigned for clarity."""
 
     content_changed = pyqtSignal()
 
     def __init__(self, economy: Economy, all_economies: List[Economy]):
-        """Initialize economy editor."""
         super().__init__()
         self.economy = economy
         self.all_economies = all_economies
@@ -336,317 +312,402 @@ class EconomyEditor(QWidget):
         self._load_economy()
 
     def _init_ui(self):
-        """Initialize UI."""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setContentsMargins(0, 0, 0, 0)
 
-        # Tabs
-        tabs = QTabWidget()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        # Basic Info Tab
-        basic_tab = self._create_basic_tab()
-        tabs.addTab(basic_tab, "Basic Info")
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setSpacing(12)
 
-        # Goods Tab
-        goods_tab = self._create_goods_tab()
-        tabs.addTab(goods_tab, "Goods & Resources")
-
-        # Trade Routes Tab
-        routes_tab = self._create_routes_tab()
-        tabs.addTab(routes_tab, "Trade Routes")
-
-        # Relations Tab
-        relations_tab = self._create_relations_tab()
-        tabs.addTab(relations_tab, "Trade Relations")
-
-        layout.addWidget(tabs)
-
-    def _create_basic_tab(self) -> QWidget:
-        """Create basic info tab."""
-        widget = QWidget()
-        layout = QFormLayout(widget)
+        # Basic Info Section
+        basic_group = QGroupBox("Basic Information")
+        basic_layout = QFormLayout()
+        basic_layout.setSpacing(8)
 
         self.faction_edit = QLineEdit()
-        layout.addRow("Faction ID:", self.faction_edit)
+        self.faction_edit.setPlaceholderText("Faction this economy belongs to")
+        self.faction_edit.textChanged.connect(self._on_change)
+        basic_layout.addRow("Faction ID:*", self.faction_edit)
 
         self.type_combo = QComboBox()
-        self.type_combo.addItems([t.value.title() for t in EconomyType])
-        layout.addRow("Economy Type:", self.type_combo)
+        self.type_combo.addItems([t.value.replace("_", " ").title() for t in EconomyType])
+        self.type_combo.currentTextChanged.connect(self._on_change)
+        basic_layout.addRow("Economy Type:", self.type_combo)
 
         self.currency_edit = QLineEdit()
-        layout.addRow("Currency:", self.currency_edit)
+        self.currency_edit.setPlaceholderText("Gold, Credits, Dollars, etc.")
+        self.currency_edit.textChanged.connect(self._on_change)
+        basic_layout.addRow("Currency:", self.currency_edit)
 
         self.gdp_spin = QDoubleSpinBox()
         self.gdp_spin.setMaximum(999999999999.99)
-        layout.addRow("GDP:", self.gdp_spin)
+        self.gdp_spin.setDecimals(2)
+        self.gdp_spin.valueChanged.connect(self._on_change)
+        basic_layout.addRow("GDP:", self.gdp_spin)
 
         self.description_edit = QTextEdit()
-        layout.addRow("Description:", self.description_edit)
+        self.description_edit.setMaximumHeight(80)
+        self.description_edit.setPlaceholderText("Overview of this economy...")
+        self.description_edit.textChanged.connect(self._on_change)
+        basic_layout.addRow("Description:", self.description_edit)
 
-        return widget
+        basic_group.setLayout(basic_layout)
+        scroll_layout.addWidget(basic_group)
 
-    def _create_goods_tab(self) -> QWidget:
-        """Create goods management tab."""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-
-        # Major Industries
+        # Industries Section
         industries_group = QGroupBox("Major Industries")
-        industries_layout = QVBoxLayout(industries_group)
+        industries_layout = QVBoxLayout()
 
         self.industries_list = QListWidget()
+        self.industries_list.setMinimumHeight(60)
+        self.industries_list.setMaximumHeight(120)
         industries_layout.addWidget(self.industries_list)
 
         ind_btn_layout = QHBoxLayout()
-        add_ind_btn = QPushButton("Add Industry")
+        add_ind_btn = QPushButton("+ Add Industry")
         add_ind_btn.clicked.connect(self._add_industry)
         ind_btn_layout.addWidget(add_ind_btn)
 
-        remove_ind_btn = QPushButton("Remove")
+        remove_ind_btn = QPushButton("- Remove")
         remove_ind_btn.clicked.connect(self._remove_industry)
         ind_btn_layout.addWidget(remove_ind_btn)
 
+        ind_btn_layout.addStretch()
         industries_layout.addLayout(ind_btn_layout)
-        layout.addWidget(industries_group)
 
-        # Goods
-        goods_label = QLabel("Produced Goods:")
-        layout.addWidget(goods_label)
+        industries_group.setLayout(industries_layout)
+        scroll_layout.addWidget(industries_group)
+
+        # Goods Section
+        goods_group = QGroupBox("Goods & Resources")
+        goods_layout = QVBoxLayout()
+
+        goods_help = QLabel("Define goods produced or traded by this economy.")
+        goods_help.setStyleSheet("color: #6b7280; font-size: 11px;")
+        goods_layout.addWidget(goods_help)
 
         self.goods_list = QListWidget()
-        self.goods_list.currentItemChanged.connect(self._on_good_selected)
-        layout.addWidget(self.goods_list)
+        self.goods_list.setMinimumHeight(80)
+        self.goods_list.setMaximumHeight(150)
+        self.goods_list.itemDoubleClicked.connect(self._edit_good)
+        goods_layout.addWidget(self.goods_list)
 
         goods_btn_layout = QHBoxLayout()
-        add_good_btn = QPushButton("Add Good")
+        add_good_btn = QPushButton("+ Add Good")
         add_good_btn.clicked.connect(self._add_good)
         goods_btn_layout.addWidget(add_good_btn)
 
-        remove_good_btn = QPushButton("Remove")
+        edit_good_btn = QPushButton("Edit")
+        edit_good_btn.clicked.connect(self._edit_good)
+        goods_btn_layout.addWidget(edit_good_btn)
+
+        remove_good_btn = QPushButton("- Remove")
         remove_good_btn.clicked.connect(self._remove_good)
         goods_btn_layout.addWidget(remove_good_btn)
 
-        layout.addLayout(goods_btn_layout)
+        goods_btn_layout.addStretch()
+        goods_layout.addLayout(goods_btn_layout)
 
-        # Good editor area
-        self.good_editor_scroll = QScrollArea()
-        self.good_editor_scroll.setWidgetResizable(True)
-        self.good_editor_scroll.setMaximumHeight(200)
+        goods_group.setLayout(goods_layout)
+        scroll_layout.addWidget(goods_group)
 
-        placeholder = QLabel("Select a good to edit")
-        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.good_editor_scroll.setWidget(placeholder)
+        # Trade Routes Section
+        routes_group = QGroupBox("Trade Routes")
+        routes_layout = QVBoxLayout()
 
-        layout.addWidget(self.good_editor_scroll)
-
-        return widget
-
-    def _create_routes_tab(self) -> QWidget:
-        """Create trade routes tab."""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-
-        label = QLabel("Trade Routes:")
-        layout.addWidget(label)
+        routes_help = QLabel("Define trade routes to other factions.")
+        routes_help.setStyleSheet("color: #6b7280; font-size: 11px;")
+        routes_layout.addWidget(routes_help)
 
         self.routes_list = QListWidget()
-        self.routes_list.currentItemChanged.connect(self._on_route_selected)
-        layout.addWidget(self.routes_list)
+        self.routes_list.setMinimumHeight(80)
+        self.routes_list.setMaximumHeight(150)
+        self.routes_list.itemDoubleClicked.connect(self._edit_route)
+        routes_layout.addWidget(self.routes_list)
 
         routes_btn_layout = QHBoxLayout()
-        add_route_btn = QPushButton("Add Route")
+        add_route_btn = QPushButton("+ Add Route")
         add_route_btn.clicked.connect(self._add_route)
         routes_btn_layout.addWidget(add_route_btn)
 
-        remove_route_btn = QPushButton("Remove")
+        edit_route_btn = QPushButton("Edit")
+        edit_route_btn.clicked.connect(self._edit_route)
+        routes_btn_layout.addWidget(edit_route_btn)
+
+        remove_route_btn = QPushButton("- Remove")
         remove_route_btn.clicked.connect(self._remove_route)
         routes_btn_layout.addWidget(remove_route_btn)
 
-        layout.addLayout(routes_btn_layout)
+        routes_btn_layout.addStretch()
+        routes_layout.addLayout(routes_btn_layout)
 
-        # Route editor area
-        self.route_editor_scroll = QScrollArea()
-        self.route_editor_scroll.setWidgetResizable(True)
+        routes_group.setLayout(routes_layout)
+        scroll_layout.addWidget(routes_group)
 
-        placeholder = QLabel("Select a route to edit")
-        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.route_editor_scroll.setWidget(placeholder)
+        # Trade Relations Section
+        relations_group = QGroupBox("Trade Relations")
+        relations_layout = QHBoxLayout()
 
-        layout.addWidget(self.route_editor_scroll)
+        # Partners
+        partners_widget = QWidget()
+        partners_layout = QVBoxLayout(partners_widget)
+        partners_layout.setContentsMargins(0, 0, 0, 0)
 
-        return widget
-
-    def _create_relations_tab(self) -> QWidget:
-        """Create trade relations tab."""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-
-        # Trade Partners
-        partners_group = QGroupBox("Trade Partners")
-        partners_layout = QVBoxLayout(partners_group)
+        partners_label = QLabel("Trade Partners:")
+        partners_label.setStyleSheet("font-weight: bold;")
+        partners_layout.addWidget(partners_label)
 
         self.partners_list = QListWidget()
+        self.partners_list.setMinimumHeight(60)
+        self.partners_list.setMaximumHeight(100)
         partners_layout.addWidget(self.partners_list)
 
-        partners_btn_layout = QHBoxLayout()
-        add_partner_btn = QPushButton("Add Partner")
+        partners_btn = QHBoxLayout()
+        add_partner_btn = QPushButton("+")
+        add_partner_btn.setMaximumWidth(30)
         add_partner_btn.clicked.connect(self._add_partner)
-        partners_btn_layout.addWidget(add_partner_btn)
+        partners_btn.addWidget(add_partner_btn)
 
-        remove_partner_btn = QPushButton("Remove")
+        remove_partner_btn = QPushButton("-")
+        remove_partner_btn.setMaximumWidth(30)
         remove_partner_btn.clicked.connect(self._remove_partner)
-        partners_btn_layout.addWidget(remove_partner_btn)
+        partners_btn.addWidget(remove_partner_btn)
+        partners_btn.addStretch()
+        partners_layout.addLayout(partners_btn)
 
-        partners_layout.addLayout(partners_btn_layout)
-        layout.addWidget(partners_group)
+        relations_layout.addWidget(partners_widget)
 
         # Embargoes
-        embargoes_group = QGroupBox("Embargoes")
-        embargoes_layout = QVBoxLayout(embargoes_group)
+        embargoes_widget = QWidget()
+        embargoes_layout = QVBoxLayout(embargoes_widget)
+        embargoes_layout.setContentsMargins(0, 0, 0, 0)
+
+        embargoes_label = QLabel("Embargoes:")
+        embargoes_label.setStyleSheet("font-weight: bold;")
+        embargoes_layout.addWidget(embargoes_label)
 
         self.embargoes_list = QListWidget()
+        self.embargoes_list.setMinimumHeight(60)
+        self.embargoes_list.setMaximumHeight(100)
         embargoes_layout.addWidget(self.embargoes_list)
 
-        emb_btn_layout = QHBoxLayout()
-        add_emb_btn = QPushButton("Add Embargo")
+        emb_btn = QHBoxLayout()
+        add_emb_btn = QPushButton("+")
+        add_emb_btn.setMaximumWidth(30)
         add_emb_btn.clicked.connect(self._add_embargo)
-        emb_btn_layout.addWidget(add_emb_btn)
+        emb_btn.addWidget(add_emb_btn)
 
-        remove_emb_btn = QPushButton("Remove")
+        remove_emb_btn = QPushButton("-")
+        remove_emb_btn.setMaximumWidth(30)
         remove_emb_btn.clicked.connect(self._remove_embargo)
-        emb_btn_layout.addWidget(remove_emb_btn)
+        emb_btn.addWidget(remove_emb_btn)
+        emb_btn.addStretch()
+        embargoes_layout.addLayout(emb_btn)
 
-        embargoes_layout.addLayout(emb_btn_layout)
-        layout.addWidget(embargoes_group)
+        relations_layout.addWidget(embargoes_widget)
 
-        return widget
+        relations_group.setLayout(relations_layout)
+        scroll_layout.addWidget(relations_group)
+
+        scroll_layout.addStretch()
+        scroll.setWidget(scroll_content)
+        layout.addWidget(scroll)
+
+        # Save button - prominent at bottom
+        save_layout = QHBoxLayout()
+        save_layout.addStretch()
+
+        self.save_btn = QPushButton("Save Economy")
+        self.save_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #6366f1;
+                color: white;
+                border: none;
+                padding: 10px 24px;
+                border-radius: 6px;
+                font-weight: 600;
+                font-size: 13px;
+                min-width: 120px;
+            }
+            QPushButton:hover {
+                background-color: #4f46e5;
+            }
+            QPushButton:pressed {
+                background-color: #4338ca;
+            }
+        """)
+        self.save_btn.clicked.connect(self._save_clicked)
+        save_layout.addWidget(self.save_btn)
+
+        self.save_status = QLabel("")
+        self.save_status.setStyleSheet("color: #059669; font-size: 12px; margin-left: 8px;")
+        save_layout.addWidget(self.save_status)
+
+        save_layout.addStretch()
+        layout.addLayout(save_layout)
 
     def _load_economy(self):
-        """Load economy data."""
         self.faction_edit.setText(self.economy.faction_id)
-        self.type_combo.setCurrentText(self.economy.economy_type.value.title())
+
+        type_text = self.economy.economy_type.value.replace("_", " ").title()
+        idx = self.type_combo.findText(type_text)
+        if idx >= 0:
+            self.type_combo.setCurrentIndex(idx)
+
         if self.economy.currency:
             self.currency_edit.setText(self.economy.currency)
         if self.economy.gdp:
             self.gdp_spin.setValue(self.economy.gdp)
         self.description_edit.setPlainText(self.economy.description)
 
-        # Load industries
         for industry in self.economy.major_industries:
             self.industries_list.addItem(industry)
 
-        # Load goods
-        for good in self.economy.goods:
-            self.goods_list.addItem(good.name)
+        self._update_goods_list()
+        self._update_routes_list()
 
-        # Load routes
-        for route in self.economy.trade_routes:
-            self.routes_list.addItem(f"{route.from_faction} -> {route.to_faction}")
-
-        # Load partners
         for partner in self.economy.trade_partners:
             self.partners_list.addItem(partner)
 
-        # Load embargoes
         for embargo in self.economy.embargoes:
             self.embargoes_list.addItem(embargo)
 
+    def _update_goods_list(self):
+        self.goods_list.clear()
+        for good in self.economy.goods:
+            display = f"{good.name}"
+            if good.category:
+                display += f" ({good.category})"
+            if good.value:
+                display += f" - {good.value} {good.unit}"
+            self.goods_list.addItem(display)
+
+    def _update_routes_list(self):
+        self.routes_list.clear()
+        for route in self.economy.trade_routes:
+            goods_count = len(route.goods)
+            display = f"To: {route.to_faction} ({route.route_type})"
+            if goods_count > 0:
+                display += f" - {goods_count} good{'s' if goods_count != 1 else ''}"
+            self.routes_list.addItem(display)
+
+    def _on_change(self):
+        self.save_to_model()
+        self.content_changed.emit()
+
     def _add_industry(self):
-        """Add industry."""
         name, ok = QInputDialog.getText(self, "Add Industry", "Enter industry name:")
         if ok and name:
             self.industries_list.addItem(name)
+            self._on_change()
 
     def _remove_industry(self):
-        """Remove industry."""
         current = self.industries_list.currentRow()
         if current >= 0:
             self.industries_list.takeItem(current)
+            self._on_change()
 
     def _add_good(self):
-        """Add good."""
-        name, ok = QInputDialog.getText(self, "Add Good", "Enter good name:")
-        if ok and name:
-            good = Good(name=name, category="")
+        good = Good(name="New Good", category="")
+        dialog = GoodEditorDialog(good, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
             self.economy.goods.append(good)
-            self.goods_list.addItem(name)
+            self._update_goods_list()
+            self._on_change()
+
+    def _edit_good(self):
+        current = self.goods_list.currentRow()
+        if current >= 0 and current < len(self.economy.goods):
+            good = self.economy.goods[current]
+            dialog = GoodEditorDialog(good, self)
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                self._update_goods_list()
+                self._on_change()
 
     def _remove_good(self):
-        """Remove good."""
         current = self.goods_list.currentRow()
         if current >= 0 and current < len(self.economy.goods):
             self.economy.goods.pop(current)
-            self.goods_list.takeItem(current)
-
-    def _on_good_selected(self, current, previous):
-        """Handle good selection."""
-        if not current:
-            return
-
-        idx = self.goods_list.row(current)
-        if idx >= 0 and idx < len(self.economy.goods):
-            good = self.economy.goods[idx]
-            editor = GoodEditor(good)
-            editor.content_changed.connect(self.content_changed.emit)
-            self.good_editor_scroll.setWidget(editor)
+            self._update_goods_list()
+            self._on_change()
 
     def _add_route(self):
-        """Add trade route."""
+        available_factions = [e.faction_id for e in self.all_economies if e.id != self.economy.id]
+        available_goods = [g.name for g in self.economy.goods]
+
         route = TradeRoute(from_faction=self.economy.faction_id, to_faction="")
-        self.economy.trade_routes.append(route)
-        self.routes_list.addItem(f"{route.from_faction} -> [New Route]")
+        dialog = TradeRouteEditorDialog(route, available_factions, available_goods, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.economy.trade_routes.append(route)
+            self._update_routes_list()
+            self._on_change()
+
+    def _edit_route(self):
+        current = self.routes_list.currentRow()
+        if current >= 0 and current < len(self.economy.trade_routes):
+            route = self.economy.trade_routes[current]
+            available_factions = [e.faction_id for e in self.all_economies if e.id != self.economy.id]
+            available_goods = [g.name for g in self.economy.goods]
+            dialog = TradeRouteEditorDialog(route, available_factions, available_goods, self)
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                self._update_routes_list()
+                self._on_change()
 
     def _remove_route(self):
-        """Remove route."""
         current = self.routes_list.currentRow()
         if current >= 0 and current < len(self.economy.trade_routes):
             self.economy.trade_routes.pop(current)
-            self.routes_list.takeItem(current)
-
-    def _on_route_selected(self, current, previous):
-        """Handle route selection."""
-        if not current:
-            return
-
-        idx = self.routes_list.row(current)
-        if idx >= 0 and idx < len(self.economy.trade_routes):
-            route = self.economy.trade_routes[idx]
-            available_goods = [g.name for g in self.economy.goods]
-            editor = TradeRouteEditor(route, available_goods)
-            editor.content_changed.connect(self.content_changed.emit)
-            self.route_editor_scroll.setWidget(editor)
+            self._update_routes_list()
+            self._on_change()
 
     def _add_partner(self):
-        """Add trade partner."""
-        name, ok = QInputDialog.getText(self, "Add Partner", "Enter faction ID:")
+        available = [e.faction_id for e in self.all_economies if e.id != self.economy.id]
+        if available:
+            name, ok = QInputDialog.getItem(self, "Add Partner", "Select faction:", available, 0, True)
+        else:
+            name, ok = QInputDialog.getText(self, "Add Partner", "Enter faction ID:")
         if ok and name:
             self.partners_list.addItem(name)
+            self._on_change()
 
     def _remove_partner(self):
-        """Remove partner."""
         current = self.partners_list.currentRow()
         if current >= 0:
             self.partners_list.takeItem(current)
+            self._on_change()
 
     def _add_embargo(self):
-        """Add embargo."""
-        name, ok = QInputDialog.getText(self, "Add Embargo", "Enter faction ID:")
+        available = [e.faction_id for e in self.all_economies if e.id != self.economy.id]
+        if available:
+            name, ok = QInputDialog.getItem(self, "Add Embargo", "Select faction:", available, 0, True)
+        else:
+            name, ok = QInputDialog.getText(self, "Add Embargo", "Enter faction ID:")
         if ok and name:
             self.embargoes_list.addItem(name)
+            self._on_change()
 
     def _remove_embargo(self):
-        """Remove embargo."""
         current = self.embargoes_list.currentRow()
         if current >= 0:
             self.embargoes_list.takeItem(current)
+            self._on_change()
 
     def save_to_model(self):
-        """Save to economy model."""
-        self.economy.faction_id = self.faction_edit.text()
-        self.economy.economy_type = EconomyType(self.type_combo.currentText().lower().replace(" ", "_"))
-        self.economy.currency = self.currency_edit.text()
+        self.economy.faction_id = self.faction_edit.text().strip()
+
+        type_text = self.type_combo.currentText().lower().replace(" ", "_")
+        try:
+            self.economy.economy_type = EconomyType(type_text)
+        except ValueError:
+            self.economy.economy_type = EconomyType.MIXED
+
+        self.economy.currency = self.currency_edit.text().strip()
         self.economy.gdp = self.gdp_spin.value() if self.gdp_spin.value() > 0 else None
-        self.economy.description = self.description_edit.toPlainText()
+        self.economy.description = self.description_edit.toPlainText().strip()
 
         self.economy.major_industries = [
             self.industries_list.item(i).text()
@@ -663,6 +724,13 @@ class EconomyEditor(QWidget):
             for i in range(self.embargoes_list.count())
         ]
 
+    def _save_clicked(self):
+        """Handle explicit save button click."""
+        self.save_to_model()
+        self.content_changed.emit()
+        self.save_status.setText("Saved!")
+        QTimer.singleShot(2000, lambda: self.save_status.setText(""))
+
 
 class EconomyBuilderWidget(QWidget):
     """Widget for managing economies with trade network visualization."""
@@ -670,99 +738,159 @@ class EconomyBuilderWidget(QWidget):
     content_changed = pyqtSignal()
 
     def __init__(self):
-        """Initialize economy builder."""
         super().__init__()
         self.economies: List[Economy] = []
         self.current_editor: Optional[EconomyEditor] = None
         self._init_ui()
 
     def _init_ui(self):
-        """Initialize UI."""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
 
-        # Trade network visualization
+        # Header
+        header_layout = QHBoxLayout()
+        title = QLabel("Economy Builder")
+        title.setStyleSheet("font-size: 16px; font-weight: 600; color: #1a1a1a;")
+        header_layout.addWidget(title)
+
+        header_layout.addStretch()
+
+        help_label = QLabel("Manage economies, goods, and trade routes")
+        help_label.setStyleSheet("color: #6b7280; font-size: 12px;")
+        help_label.setWordWrap(True)
+        header_layout.addWidget(help_label)
+
+        layout.addLayout(header_layout)
+
+        # Trade network visualization - compact at top
+        network_group = QGroupBox("Trade Network Overview")
+        network_layout = QVBoxLayout(network_group)
+        network_layout.setContentsMargins(8, 8, 8, 8)
+
         self.trade_network = TradeNetworkGraph()
-        layout.addWidget(self.trade_network)
+        network_layout.addWidget(self.trade_network)
 
-        # Splitter for list and editor
+        layout.addWidget(network_group)
+
+        # Main content area - list + editor splitter
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # Left: Economy list
+        # Left: Economy list (compact)
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(8)
 
-        label = QLabel("Economies")
-        label.setStyleSheet("font-weight: 600; font-size: 13px;")
-        left_layout.addWidget(label)
+        list_label = QLabel("Economies")
+        list_label.setStyleSheet("font-weight: 600; font-size: 13px;")
+        left_layout.addWidget(list_label)
 
         self.economy_list = QListWidget()
         self.economy_list.currentItemChanged.connect(self._on_economy_selected)
         left_layout.addWidget(self.economy_list)
 
         btn_layout = QHBoxLayout()
-        add_btn = QPushButton("➕ Add Economy")
+        add_btn = QPushButton("+ Add")
         add_btn.clicked.connect(self._add_economy)
         btn_layout.addWidget(add_btn)
 
-        remove_btn = QPushButton("🗑️")
-        remove_btn.setMaximumWidth(40)
+        remove_btn = QPushButton("- Remove")
         remove_btn.clicked.connect(self._remove_economy)
         btn_layout.addWidget(remove_btn)
 
         left_layout.addLayout(btn_layout)
 
+        left_panel.setMinimumWidth(140)
         left_panel.setMaximumWidth(250)
         splitter.addWidget(left_panel)
 
-        # Right: Economy editor
-        self.editor_scroll = QScrollArea()
-        self.editor_scroll.setWidgetResizable(True)
+        # Right: Economy editor (takes most space)
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
 
-        placeholder = QLabel("Add or select an economy")
-        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.editor_scroll.setWidget(placeholder)
+        self.editor_stack = QStackedWidget()
 
-        splitter.addWidget(self.editor_scroll)
+        # Placeholder
+        placeholder = QWidget()
+        placeholder_layout = QVBoxLayout(placeholder)
+        placeholder_label = QLabel("Select an economy to edit or click '+ Add' to create one")
+        placeholder_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        placeholder_label.setStyleSheet("color: #6b7280; font-size: 14px;")
+        placeholder_layout.addWidget(placeholder_label)
+        self.editor_stack.addWidget(placeholder)
 
-        layout.addWidget(splitter)
+        right_layout.addWidget(self.editor_stack)
+        splitter.addWidget(right_panel)
+
+        # Set splitter proportions - editor gets more space
+        splitter.setStretchFactor(0, 1)  # List
+        splitter.setStretchFactor(1, 3)  # Editor
+
+        # Set initial sizes for responsiveness (list:editor ratio)
+        splitter.setSizes([200, 600])
+
+        layout.addWidget(splitter, 1)  # Splitter takes remaining space
 
     def _add_economy(self):
-        """Add new economy."""
         faction_id, ok = QInputDialog.getText(self, "New Economy", "Enter faction ID:")
 
-        if ok and faction_id:
+        if ok and faction_id.strip():
             economy = Economy(
                 id=str(uuid.uuid4()),
-                faction_id=faction_id,
+                faction_id=faction_id.strip(),
                 economy_type=EconomyType.MIXED
             )
             self.economies.append(economy)
 
-            item = QListWidgetItem(faction_id)
+            item = QListWidgetItem(faction_id.strip())
             item.setData(Qt.ItemDataRole.UserRole, economy.id)
             self.economy_list.addItem(item)
 
             self.economy_list.setCurrentItem(item)
             self._update_network()
+            self.content_changed.emit()
 
     def _remove_economy(self):
-        """Remove selected economy."""
         current = self.economy_list.currentItem()
-        if current:
-            economy_id = current.data(Qt.ItemDataRole.UserRole)
-            self.economies = [e for e in self.economies if e.id != economy_id]
-            self.economy_list.takeItem(self.economy_list.row(current))
-            self._update_network()
+        if not current:
+            return
 
-            # Show placeholder
-            placeholder = QLabel("Add or select an economy")
-            placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.editor_scroll.setWidget(placeholder)
+        economy_id = current.data(Qt.ItemDataRole.UserRole)
+        economy = next((e for e in self.economies if e.id == economy_id), None)
+
+        if economy:
+            reply = QMessageBox.question(
+                self,
+                "Remove Economy",
+                f"Are you sure you want to remove the economy for '{economy.faction_id}'?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+        current_row = self.economy_list.row(current)
+        self.economies = [e for e in self.economies if e.id != economy_id]
+        self.economy_list.takeItem(current_row)
+        self._update_network()
+
+        self.current_editor = None
+
+        # Select next or show placeholder
+        if self.economy_list.count() > 0:
+            next_row = min(current_row, self.economy_list.count() - 1)
+            self.economy_list.setCurrentRow(next_row)
+        else:
+            self.editor_stack.setCurrentIndex(0)
+
+        self.content_changed.emit()
 
     def _on_economy_selected(self, current, previous):
-        """Handle economy selection."""
         if not current:
+            self.editor_stack.setCurrentIndex(0)
             return
 
         # Save previous
@@ -775,24 +903,37 @@ class EconomyBuilderWidget(QWidget):
 
         if economy:
             self.current_editor = EconomyEditor(economy, self.economies)
-            self.current_editor.content_changed.connect(self.content_changed.emit)
-            self.current_editor.content_changed.connect(self._update_network)
-            self.editor_scroll.setWidget(self.current_editor)
+            self.current_editor.content_changed.connect(self._on_editor_changed)
+
+            # Remove old editor if exists
+            if self.editor_stack.count() > 1:
+                old_widget = self.editor_stack.widget(1)
+                self.editor_stack.removeWidget(old_widget)
+                old_widget.deleteLater()
+
+            self.editor_stack.addWidget(self.current_editor)
+            self.editor_stack.setCurrentIndex(1)
+
+    def _on_editor_changed(self):
+        # Update list item text
+        current = self.economy_list.currentItem()
+        if current and self.current_editor:
+            current.setText(self.current_editor.economy.faction_id)
+        self._update_network()
+        self.content_changed.emit()
 
     def _update_network(self):
-        """Update trade network visualization."""
         self.trade_network.set_economies(self.economies)
 
     def get_economies(self) -> List[Economy]:
-        """Get all economies."""
         if self.current_editor:
             self.current_editor.save_to_model()
         return self.economies
 
     def load_economies(self, economies: List[Economy]):
-        """Load economies."""
         self.economies = economies
         self.economy_list.clear()
+        self.current_editor = None
 
         for economy in economies:
             item = QListWidgetItem(economy.faction_id)
@@ -800,3 +941,10 @@ class EconomyBuilderWidget(QWidget):
             self.economy_list.addItem(item)
 
         self._update_network()
+
+        # Reset to placeholder
+        if self.editor_stack.count() > 1:
+            old_widget = self.editor_stack.widget(1)
+            self.editor_stack.removeWidget(old_widget)
+            old_widget.deleteLater()
+        self.editor_stack.setCurrentIndex(0)

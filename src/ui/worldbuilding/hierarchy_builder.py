@@ -556,6 +556,7 @@ class HierarchyBuilderWidget(QWidget):
             placeholder = QLabel("Add or select a hierarchy")
             placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.editor_scroll.setWidget(placeholder)
+            self.content_changed.emit()
 
     def _on_hierarchy_selected(self, current, previous):
         """Handle hierarchy selection."""

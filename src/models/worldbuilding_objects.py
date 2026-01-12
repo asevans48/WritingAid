@@ -14,6 +14,13 @@ class FactionType(str, Enum):
     RELIGION = "religion"
     TRIBE = "tribe"
     CORPORATION = "corporation"
+    ECONOMIC_CLASS = "economic class"
+    MINORITY_GROUP = "minority group"
+    POLITICAL_PARTY = "political party"
+    GUILD = "guild"
+    MILITARY = "military"
+    CRIMINAL = "criminal"
+    RESISTANCE = "resistance"
     INDIVIDUAL = "individual"
     OTHER = "other"
 
@@ -562,6 +569,132 @@ class Place(BaseModel):
     notes: str = ""
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
+
+
+# ===== CULTURE =====
+class Ritual(BaseModel):
+    """A cultural ritual or ceremony."""
+    id: str
+    name: str
+    ritual_type: str = "ceremony"  # ceremony, rite_of_passage, festival, mourning, religious, seasonal, etc.
+    description: str = ""
+    significance: str = ""  # Cultural/spiritual meaning
+    frequency: str = ""  # e.g., "annually", "at birth", "weekly"
+    participants: str = ""  # Who participates
+    location: str = ""  # Where it takes place
+    required_items: List[str] = Field(default_factory=list)  # Objects needed
+    duration: str = ""  # How long it lasts
+    origin_story: str = ""  # How this ritual came to be
+    notes: str = ""
+
+
+class Language(BaseModel):
+    """A language or dialect."""
+    id: str
+    name: str
+    language_family: str = ""  # e.g., "Romance", "Sino-Tibetan", custom family
+    writing_system: str = ""  # e.g., "Alphabetic", "Logographic", "None (oral)"
+    description: str = ""
+    speakers_count: str = ""  # e.g., "~1 million", "extinct"
+    status: str = "living"  # living, endangered, extinct, constructed
+    sample_words: Dict[str, str] = Field(default_factory=dict)  # word -> translation
+    sample_phrases: Dict[str, str] = Field(default_factory=dict)  # phrase -> translation
+    phonetics: str = ""  # Sound characteristics
+    grammar_notes: str = ""  # Notable grammar features
+    related_languages: List[str] = Field(default_factory=list)  # Language IDs
+    notes: str = ""
+
+
+class MusicStyle(BaseModel):
+    """A musical style or tradition."""
+    id: str
+    name: str
+    music_type: str = "traditional"  # traditional, sacred, folk, courtly, popular, ceremonial
+    description: str = ""
+    instruments: List[str] = Field(default_factory=list)  # Instrument names
+    vocal_style: str = ""  # e.g., "chanting", "polyphonic", "solo"
+    rhythm_pattern: str = ""  # Characteristic rhythms
+    occasions: List[str] = Field(default_factory=list)  # When played
+    famous_compositions: List[str] = Field(default_factory=list)
+    famous_performers: List[str] = Field(default_factory=list)
+    notes: str = ""
+
+
+class ArtForm(BaseModel):
+    """A form of visual or performance art."""
+    id: str
+    name: str
+    art_type: str = "visual"  # visual, performance, textile, sculpture, architecture, literary, craft
+    description: str = ""
+    medium: str = ""  # e.g., "oil paint", "stone", "dance"
+    style_characteristics: str = ""  # Defining visual/aesthetic features
+    common_subjects: List[str] = Field(default_factory=list)  # What is depicted
+    famous_works: List[str] = Field(default_factory=list)
+    famous_artists: List[str] = Field(default_factory=list)
+    cultural_significance: str = ""
+    notes: str = ""
+
+
+class Tradition(BaseModel):
+    """A cultural tradition or custom."""
+    id: str
+    name: str
+    tradition_type: str = "social"  # social, familial, religious, seasonal, culinary, dress, greeting
+    description: str = ""
+    origin: str = ""  # How it started
+    significance: str = ""  # Why it matters
+    practice: str = ""  # How it's observed
+    variations: str = ""  # Regional/group variations
+    related_traditions: List[str] = Field(default_factory=list)  # Tradition IDs
+    notes: str = ""
+
+
+class Cuisine(BaseModel):
+    """Culinary traditions and food culture."""
+    id: str
+    name: str
+    description: str = ""
+    staple_foods: List[str] = Field(default_factory=list)  # Main ingredients
+    signature_dishes: List[str] = Field(default_factory=list)  # Famous dishes
+    cooking_methods: List[str] = Field(default_factory=list)  # e.g., "smoking", "fermentation"
+    dining_customs: str = ""  # How meals are served/eaten
+    taboos: List[str] = Field(default_factory=list)  # Foods not eaten
+    beverages: List[str] = Field(default_factory=list)  # Traditional drinks
+    festivals_food: str = ""  # Special occasion foods
+    notes: str = ""
+
+
+class Culture(BaseModel):
+    """A complete culture with all its elements."""
+    id: str
+    name: str
+    description: str = ""
+
+    # Core cultural elements
+    rituals: List[Ritual] = Field(default_factory=list)
+    languages: List[Language] = Field(default_factory=list)
+    music_styles: List[MusicStyle] = Field(default_factory=list)
+    art_forms: List[ArtForm] = Field(default_factory=list)
+    traditions: List[Tradition] = Field(default_factory=list)
+    cuisines: List[Cuisine] = Field(default_factory=list)
+
+    # Values and beliefs
+    core_values: List[str] = Field(default_factory=list)  # e.g., "honor", "community", "knowledge"
+    taboos: List[str] = Field(default_factory=list)  # Things forbidden or frowned upon
+    social_structure: str = ""  # How society is organized
+    family_structure: str = ""  # Nuclear, extended, clan-based, etc.
+    gender_roles: str = ""  # Cultural expectations around gender
+    coming_of_age: str = ""  # How adulthood is marked
+
+    # Associations
+    associated_factions: List[str] = Field(default_factory=list)  # Faction IDs
+    associated_planets: List[str] = Field(default_factory=list)  # Planet IDs or names
+    origin_location: Optional[str] = None  # Where culture originated
+
+    # Additional info
+    historical_influences: str = ""  # What shaped this culture
+    neighboring_cultures: List[str] = Field(default_factory=list)  # Culture IDs
+    notes: str = ""
 
 
 # ===== MYTHOLOGY =====

@@ -890,6 +890,7 @@ Create at least 10-15 historical events to give the world depth.""",
 World type: [FANTASY/SCI-FI/OTHER]
 Climate/biomes: [DESCRIBE ENVIRONMENTS]
 Existing creatures: [ANY YOU'VE ALREADY CREATED]
+Planets in my world: [LIST PLANETS WHERE THESE SPECIES LIVE]
 
 Please create 5 unique flora and 5 unique fauna that:
 - Fit the world's ecosystem
@@ -901,12 +902,116 @@ For each, provide:
 - Name (common and scientific if applicable)
 - Type/category
 - Physical description
+- Native planets (which planets this species lives on)
 - Habitat and behavior
 - Special properties
 - Danger level (if fauna)
 - Cultural/economic significance
 - How it might appear in the story""",
-            "",
+            "Species must be associated with planets. Create planets in Star Systems first.",
+            "Worldbuilding"
+        ))
+
+        widgets.append(self._create_prompt_widget(
+            "Culture Builder",
+            """Help me develop a rich culture for my world:
+
+Culture name: [NAME OF THIS CULTURE]
+Associated factions: [WHICH FACTIONS PRACTICE THIS CULTURE]
+Associated planets: [WHERE THIS CULTURE EXISTS]
+Basic premise: [BRIEF DESCRIPTION]
+
+Please develop:
+
+**Rituals & Ceremonies:**
+- Coming of age rituals
+- Marriage/union ceremonies
+- Death/mourning practices
+- Seasonal festivals
+- Religious ceremonies
+For each ritual, provide: name, type, description, significance, frequency, participants
+
+**Language:**
+- Language name and family
+- Writing system (alphabetic, logographic, none)
+- Status (living, endangered, extinct)
+- Sample words with translations (10-15 words)
+- Sample phrases with translations (5-10 phrases)
+- Notable features (sounds, grammar quirks)
+
+**Music & Art:**
+- Musical styles and instruments
+- When music is performed
+- Visual art forms and mediums
+- Common artistic subjects/themes
+- Famous works or artists
+
+**Traditions & Customs:**
+- Social customs (greetings, hospitality)
+- Family traditions
+- Dress codes or fashion
+- Taboos (things forbidden or frowned upon)
+
+**Cuisine:**
+- Staple foods
+- Signature dishes
+- Cooking methods
+- Dining customs
+- Food taboos
+- Traditional beverages
+
+**Values & Social Structure:**
+- Core values (honor, community, knowledge, etc.)
+- Family structure (nuclear, extended, clan-based)
+- Social hierarchy
+- Gender roles
+- Coming of age markers
+
+Format each section with detailed entries I can add to my worldbuilding.""",
+            "Build comprehensive cultures with rituals, language, music, art, traditions, and cuisine.",
+            "Worldbuilding"
+        ))
+
+        widgets.append(self._create_prompt_widget(
+            "Historical Timeline Builder",
+            """Help me build a detailed historical timeline for my world:
+
+World overview: [DESCRIBE YOUR WORLD BRIEFLY]
+Current story time period: [WHEN DOES YOUR STORY TAKE PLACE]
+Key factions: [LIST MAJOR FACTIONS/NATIONS]
+Key locations: [LIST IMPORTANT PLACES]
+
+Please create a timeline including:
+
+**Ancient History:**
+- Creation/origin (if applicable)
+- First civilizations
+- Early conflicts
+
+**Major Eras:**
+- Define 3-5 distinct eras/ages
+- What characterized each era
+- How each era ended/transitioned
+
+**Pivotal Events:**
+For each event, provide:
+- Date/period (can be relative like "500 years before story")
+- Event name
+- Event type (war, treaty, discovery, disaster, founding, etc.)
+- Description (what happened)
+- Key figures involved
+- Factions involved
+- Location where it occurred
+- Consequences (what changed as a result)
+- Related events (what it led to or was caused by)
+
+**Recent History:**
+- Events in the last 100 years
+- Current political situation origins
+- Living memory events
+
+Create at least 15-20 historical events to give the world depth and context for current conflicts.""",
+            "Build a rich historical timeline with events, figures, and consequences.",
             "Worldbuilding"
         ))
 
@@ -1342,7 +1447,7 @@ Generate JSON with this structure:
       {
         "id": "faction_[unique_id]",
         "name": "Faction Name",
-        "faction_type": "nation|organization|religion|tribe|corporation|other",
+        "faction_type": "nation|organization|religion|tribe|corporation|economic_class|minority_group|political_party|guild|military|criminal|resistance|individual|other",
         "description": "Description...",
         "leader": "Leader name or null",
         "territory": ["Location 1", "Location 2"],
@@ -1361,7 +1466,7 @@ Generate JSON with this structure:
         "description": "Brief description...",
         "full_text": "The full story of the myth...",
         "moral_lesson": "What it teaches...",
-        "associated_factions": ["Faction Name"]
+        "associated_factions": ["faction_id1"]
       }
     ]
   }
@@ -1374,6 +1479,240 @@ Fill in all sections based on the provided information. Leave sections empty (""
         ))
 
         widgets.append(self._create_prompt_widget(
+            "Culture JSON Export",
+            """Based on the following culture information, generate JSON for Writer Platform:
+
+[PASTE YOUR CULTURE NOTES]
+
+Generate JSON with this structure:
+```json
+{
+  "cultures": [
+    {
+      "id": "culture_[unique_id]",
+      "name": "Culture Name",
+      "description": "Overview of this culture...",
+      "rituals": [
+        {
+          "id": "ritual_[unique_id]",
+          "name": "Ritual Name",
+          "ritual_type": "ceremony|rite_of_passage|festival|mourning|religious|seasonal|initiation|blessing|other",
+          "description": "What happens during this ritual...",
+          "significance": "Cultural/spiritual meaning...",
+          "frequency": "annually|monthly|at_birth|at_death|seasonal|etc",
+          "participants": "Who participates",
+          "location": "Where it takes place",
+          "required_items": ["item1", "item2"],
+          "duration": "How long it lasts",
+          "origin_story": "How this ritual came to be"
+        }
+      ],
+      "languages": [
+        {
+          "id": "lang_[unique_id]",
+          "name": "Language Name",
+          "language_family": "Proto-Indo-European|Sino-Tibetan|custom",
+          "writing_system": "Alphabetic|Logographic|Syllabic|None (oral)",
+          "description": "About this language...",
+          "speakers_count": "~1 million",
+          "status": "living|endangered|extinct|constructed",
+          "sample_words": {"hello": "translation", "goodbye": "translation"},
+          "sample_phrases": {"How are you?": "translation"},
+          "phonetics": "Sound characteristics...",
+          "grammar_notes": "Notable grammar features..."
+        }
+      ],
+      "music_styles": [
+        {
+          "id": "music_[unique_id]",
+          "name": "Style Name",
+          "music_type": "traditional|sacred|folk|courtly|popular|ceremonial|military",
+          "description": "About this music style...",
+          "instruments": ["instrument1", "instrument2"],
+          "vocal_style": "chanting|polyphonic|solo|call_and_response",
+          "rhythm_pattern": "Characteristic rhythms...",
+          "occasions": ["weddings", "funerals", "festivals"],
+          "famous_compositions": ["composition1"],
+          "famous_performers": ["performer1"]
+        }
+      ],
+      "art_forms": [
+        {
+          "id": "art_[unique_id]",
+          "name": "Art Form Name",
+          "art_type": "visual|performance|textile|sculpture|architecture|literary|craft",
+          "description": "About this art form...",
+          "medium": "oil paint|stone|dance|etc",
+          "style_characteristics": "Defining visual/aesthetic features...",
+          "common_subjects": ["nature", "mythology", "portraits"],
+          "famous_works": ["work1"],
+          "famous_artists": ["artist1"],
+          "cultural_significance": "Why this art matters..."
+        }
+      ],
+      "traditions": [
+        {
+          "id": "trad_[unique_id]",
+          "name": "Tradition Name",
+          "tradition_type": "social|familial|religious|seasonal|culinary|dress|greeting",
+          "description": "What this tradition involves...",
+          "origin": "How it started...",
+          "significance": "Why it matters...",
+          "practice": "How it's observed...",
+          "variations": "Regional/group variations..."
+        }
+      ],
+      "cuisines": [
+        {
+          "id": "cuisine_[unique_id]",
+          "name": "Cuisine Name",
+          "description": "About this cuisine...",
+          "staple_foods": ["rice", "wheat", "corn"],
+          "signature_dishes": ["dish1", "dish2"],
+          "cooking_methods": ["smoking", "fermentation", "grilling"],
+          "dining_customs": "How meals are served/eaten...",
+          "taboos": ["forbidden_food1"],
+          "beverages": ["drink1", "drink2"],
+          "festivals_food": "Special occasion foods..."
+        }
+      ],
+      "core_values": ["honor", "community", "knowledge"],
+      "taboos": ["taboo1", "taboo2"],
+      "social_structure": "How society is organized...",
+      "family_structure": "Nuclear|Extended|Clan-based",
+      "gender_roles": "Cultural expectations around gender...",
+      "coming_of_age": "How adulthood is marked...",
+      "associated_factions": ["faction_id1", "faction_id2"],
+      "associated_planets": ["Planet Name 1", "Planet Name 2"],
+      "origin_location": "Where culture originated",
+      "historical_influences": "What shaped this culture...",
+      "notes": ""
+    }
+  ]
+}
+```
+
+Generate complete culture entries with all sub-elements filled in.""",
+            "Generate rich cultural data including rituals, language, music, art, traditions, and cuisine.",
+            "JSON Export"
+        ))
+
+        widgets.append(self._create_prompt_widget(
+            "Historical Timeline JSON Export",
+            """Based on the following historical information, generate JSON for Writer Platform:
+
+[PASTE YOUR HISTORY/TIMELINE NOTES]
+
+Generate JSON with this structure:
+```json
+{
+  "historical_events": [
+    {
+      "id": "event_[unique_id]",
+      "name": "Event Name",
+      "date": "Year 500 of the Third Age",
+      "timestamp": 500,
+      "event_type": "war|treaty|discovery|disaster|founding|revolution|assassination|coronation|other",
+      "key_figures": ["Character Name 1", "Character Name 2"],
+      "factions_involved": ["faction_id1", "faction_id2"],
+      "location": "Planet or place name",
+      "description": "Detailed description of what happened...",
+      "consequences": "What changed as a result of this event...",
+      "related_events": ["event_id1", "event_id2"]
+    }
+  ]
+}
+```
+
+Notes:
+- "date" is a string in any format (e.g., "500 BCE", "Year 1 of the Empire", "3045 CE")
+- "timestamp" is an optional numeric value for sorting (higher = later in time)
+- "event_type" categorizes the event for filtering
+- "key_figures" are character names involved
+- "factions_involved" are faction IDs (reference existing factions)
+- "related_events" links events in cause-effect chains
+
+Generate at least 15-20 events covering ancient history to recent events.""",
+            "Generate historical timeline events with dates, figures, and consequences.",
+            "JSON Export"
+        ))
+
+        widgets.append(self._create_prompt_widget(
+            "Flora & Fauna JSON Export",
+            """Based on the following species information, generate JSON for Writer Platform:
+
+[PASTE YOUR FLORA/FAUNA NOTES]
+[LIST YOUR PLANETS: Planet1, Planet2, etc.]
+
+Generate JSON with this structure:
+```json
+{
+  "flora": [
+    {
+      "id": "flora_[unique_id]",
+      "name": "Species Name",
+      "flora_type": "tree|shrub|flower|grass|vine|moss|fungus|aquatic_plant|carnivorous_plant|crop|herb|medicinal|toxic|other",
+      "description": "Description of the plant...",
+      "scientific_name": "Genus species",
+      "common_names": ["name1", "name2"],
+      "native_planets": ["Planet Name 1", "Planet Name 2"],
+      "preferred_climate": "tropical|temperate|arid|arctic",
+      "habitat": "forest floor|canopy|riverbanks|etc",
+      "size": "10-15 meters tall",
+      "lifespan": "annual|perennial|1000+ years",
+      "growth_rate": "fast|slow|seasonal",
+      "appearance": "Physical description...",
+      "edible": true,
+      "medicinal_properties": "Healing uses...",
+      "toxicity": "If toxic, effects...",
+      "magical_properties": "For fantasy settings...",
+      "economic_value": "Trade/resource value...",
+      "cultural_significance": "Religious, symbolic meaning...",
+      "story_relevance": "Why this matters to the plot...",
+      "notes": ""
+    }
+  ],
+  "fauna": [
+    {
+      "id": "fauna_[unique_id]",
+      "name": "Species Name",
+      "fauna_type": "mammal|bird|reptile|amphibian|fish|insect|arachnid|crustacean|mollusk|mythical_creature|alien_creature|predator|herbivore|omnivore|other",
+      "description": "Description of the creature...",
+      "scientific_name": "Genus species",
+      "common_names": ["name1", "name2"],
+      "native_planets": ["Planet Name 1", "Planet Name 2"],
+      "preferred_climate": "tropical|arctic|temperate",
+      "habitat": "forest|ocean|desert|mountains",
+      "territory_size": "5 km radius|migratory",
+      "size": "2 meters long",
+      "weight": "50-70 kg",
+      "appearance": "Physical description...",
+      "lifespan": "10-15 years",
+      "diet": "What they eat",
+      "behavior": "Behavioral patterns...",
+      "social_structure": "pack animal|solitary|herd",
+      "intelligence_level": "low|moderate|high|sentient",
+      "reproduction": "Reproductive info...",
+      "special_abilities": ["flight", "camouflage", "venom"],
+      "magical_properties": "For fantasy settings...",
+      "danger_level": 50,
+      "domestication_status": "wild|domesticated|semi-domesticated",
+      "economic_value": "Hunt, trade, resources...",
+      "cultural_significance": "Religious, symbolic meaning...",
+      "story_relevance": "Why this matters to the plot...",
+      "notes": ""
+    }
+  ]
+}
+```
+
+IMPORTANT: native_planets must contain valid planet names that exist in your Star Systems.
+Generate at least 5 flora and 5 fauna species.""",
+            "Generate flora and fauna with planet associations. Planets must exist in Star Systems.",
+            "JSON Export"
+        ))
+
+        widgets.append(self._create_prompt_widget(
             "Complete Project JSON Template",
             """Generate a complete Writer Platform project JSON based on this story information:
 
@@ -1382,13 +1721,25 @@ Summary: [2-3 PARAGRAPH SUMMARY]
 Characters: [LIST MAIN CHARACTERS]
 Setting: [DESCRIBE SETTING]
 Genre: [YOUR GENRE]
+Planets/Locations: [LIST KEY PLANETS OR LOCATIONS]
+Factions: [LIST MAJOR FACTIONS/NATIONS]
+Cultures: [DESCRIBE ANY DISTINCT CULTURES]
 
 Generate a complete project JSON with this structure:
 ```json
 {
   "name": "Project Name",
   "description": "Project description...",
-  "worldbuilding": { ... },
+  "worldbuilding": {
+    "factions": [ ... ],
+    "myths": [ ... ],
+    "technologies": [ ... ],
+    "flora": [ ... ],
+    "fauna": [ ... ],
+    "star_systems": [ ... ],
+    "cultures": [ ... ],
+    "places": [ ... ]
+  },
   "characters": [ ... ],
   "story_planning": { ... },
   "manuscript": {
@@ -1405,10 +1756,16 @@ Generate a complete project JSON with this structure:
 }
 ```
 
-Populate worldbuilding, characters, and story_planning based on the provided information.
+Populate worldbuilding (including factions, cultures, flora, fauna with planet associations), characters, and story_planning based on the provided information.
 Leave manuscript.chapters empty (the user will add their own text).
-Generate unique IDs for all elements (format: type_randomstring, e.g., "char_a1b2c3d4").""",
-            "Generate a complete project file to start with.",
+Generate unique IDs for all elements (format: type_randomstring, e.g., "char_a1b2c3d4").
+
+Key requirements:
+- Flora and fauna must have "native_planets" arrays with valid planet names
+- Cultures must have "associated_factions" and "associated_planets" arrays
+- Include at least one culture with rituals, languages, music, art, and traditions
+- Factions can be: nation, organization, religion, tribe, corporation, economic_class, minority_group, political_party, guild, military, criminal, resistance, individual, or other""",
+            "Generate a complete project file with all worldbuilding elements.",
             "JSON Export"
         ))
 
