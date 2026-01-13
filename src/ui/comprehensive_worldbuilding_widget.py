@@ -19,6 +19,7 @@ from src.ui.worldbuilding.fauna_builder import FaunaBuilderWidget
 from src.ui.worldbuilding.enhanced_star_system_builder import EnhancedStarSystemBuilderWidget
 from src.ui.worldbuilding.culture_builder import CultureBuilderWidget
 from src.ui.worldbuilding.place_builder import PlaceBuilderWidget
+from src.ui.worldbuilding.map_builder_widgets import MapBuilderWidget
 
 
 class ComprehensiveWorldBuildingWidget(QWidget):
@@ -126,7 +127,12 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         # Places & Landmarks - Cities, landmarks, and points of interest
         self.places_widget = PlaceBuilderWidget()
         self.places_widget.content_changed.connect(self.content_changed.emit)
-        self.tabs.addTab(self.places_widget, "🗺️ Places")
+        self.tabs.addTab(self.places_widget, "📍 Places")
+
+        # Maps - Interactive maps with places, landmarks, and events
+        self.maps_widget = MapBuilderWidget()
+        self.maps_widget.content_changed.connect(self.content_changed.emit)
+        self.tabs.addTab(self.maps_widget, "🗺️ Maps")
 
         layout.addWidget(self.tabs)
 
@@ -137,6 +143,7 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         self.factions_widget.content_changed.connect(self._update_military_factions)
         self.factions_widget.content_changed.connect(self._update_economy_factions)
         self.factions_widget.content_changed.connect(self._update_places_factions)
+        self.factions_widget.content_changed.connect(self._update_maps_factions)
 
         # Connect flora/fauna/climate changes to update star systems
         self.flora_widget.content_changed.connect(self._update_star_system_flora)
@@ -148,6 +155,7 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         self.star_systems_widget.content_changed.connect(self._update_flora_planets)
         self.star_systems_widget.content_changed.connect(self._update_fauna_planets)
         self.star_systems_widget.content_changed.connect(self._update_places_planets)
+        self.star_systems_widget.content_changed.connect(self._update_maps_planets)
 
     def _update_mythology_factions(self):
         """Update available factions in mythology widget."""
@@ -241,6 +249,20 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         planet_names = self._get_all_planet_names()
         self.places_widget.set_available_planets(planet_names)
 
+    def _update_maps_factions(self):
+        """Update available factions in maps widget."""
+        factions = self.factions_widget.get_factions()
+        self.maps_widget.set_available_factions(factions)
+
+    def _update_maps_planets(self):
+        """Update available planets in maps widget."""
+        # Get actual Planet objects, not just names
+        planets = []
+        star_systems = self.star_systems_widget.get_star_systems()
+        for system in star_systems:
+            planets.extend(system.planets)
+        self.maps_widget.set_available_planets(planets)
+
     def _get_all_planet_names(self) -> list:
         """Get all planet names from star systems."""
         planet_names = []
@@ -261,6 +283,7 @@ class ComprehensiveWorldBuildingWidget(QWidget):
             self._update_economy_factions()
             self._update_places_factions()
             self._update_culture_factions()
+            self._update_maps_factions()
 
         # Load climate presets
         if hasattr(worldbuilding, 'climate_presets'):
@@ -288,10 +311,11 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         # Load star systems (contains all astronomical data)
         if hasattr(worldbuilding, 'star_systems'):
             self.star_systems_widget.load_star_systems(worldbuilding.star_systems)
-            # Update planets for culture, flora, and fauna
+            # Update planets for culture, flora, fauna, and maps
             self._update_culture_planets()
             self._update_flora_planets()
             self._update_fauna_planets()
+            self._update_maps_planets()
 
         # Load economies
         if hasattr(worldbuilding, 'economies'):
@@ -309,6 +333,12 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         if hasattr(worldbuilding, 'places'):
             self.places_widget.load_places(worldbuilding.places)
             self._update_places_planets()
+
+        # Load maps (backward compatibility - default to empty list if not present)
+        if hasattr(worldbuilding, 'maps') and worldbuilding.maps is not None:
+            self.maps_widget.load_maps(worldbuilding.maps)
+        else:
+            self.maps_widget.load_maps([])
 
         # Load historical events (timeline)
         if hasattr(worldbuilding, 'historical_events'):
@@ -340,6 +370,7 @@ class ComprehensiveWorldBuildingWidget(QWidget):
             armies=self.military_widget.get_armies(),  # Military forces
             economies=self.economy_widget.get_economies(),  # Economic systems
             places=self.places_widget.get_places(),  # Places and landmarks
+            maps=self.maps_widget.get_maps(),  # Interactive maps
             historical_events=self.history_widget.get_events(),  # Timeline events
             hierarchies=self.hierarchy_widget.get_hierarchies(),  # Power hierarchies
             political_systems=self.politics_widget.get_political_systems(),  # Political systems

@@ -848,6 +848,199 @@ class Fauna(BaseModel):
     notes: str = ""
 
 
+# ===== MAPS =====
+class MapElementType(str, Enum):
+    """Type of map element."""
+    PLACE = "place"
+    LANDMARK = "landmark"
+    EVENT = "event"
+
+
+class PlaceType(str, Enum):
+    """Type of place on a map."""
+    SETTLEMENT = "settlement"
+    CITY = "city"
+    TOWN = "town"
+    VILLAGE = "village"
+    REGION = "region"
+    TERRITORY = "territory"
+    DISTRICT = "district"
+    OTHER = "other"
+
+
+class LandmarkType(str, Enum):
+    """Type of landmark on a map."""
+    MOUNTAIN = "mountain"
+    RIVER = "river"
+    LAKE = "lake"
+    FOREST = "forest"
+    DESERT = "desert"
+    BUILDING = "building"
+    RUINS = "ruins"
+    ROAD = "road"
+    BRIDGE = "bridge"
+    MONUMENT = "monument"
+    NATURAL_FEATURE = "natural_feature"
+    OTHER = "other"
+
+
+class EventType(str, Enum):
+    """Type of event on a map."""
+    BATTLE = "battle"
+    TREATY = "treaty"
+    DISCOVERY = "discovery"
+    FOUNDING = "founding"
+    DISASTER = "disaster"
+    CELEBRATION = "celebration"
+    MEETING = "meeting"
+    OTHER = "other"
+
+
+class MarkerStyle(BaseModel):
+    """Visual style for a map marker."""
+    icon: str = "default"  # Icon name or path
+    color: str = "#3b82f6"  # Hex color
+    size: int = 20  # Size in pixels
+    shape: str = "circle"  # circle, square, triangle, custom
+
+
+class MapPlace(BaseModel):
+    """A place on a map (settlement, region, territory)."""
+    id: str
+    name: str
+    place_type: PlaceType
+    description: str = ""
+
+    # Position
+    x: float  # X coordinate on map
+    y: float  # Y coordinate on map
+
+    # Details
+    population: Optional[int] = None
+    faction_id: Optional[str] = None  # Controlling faction
+
+    # Visual
+    marker_style: MarkerStyle = Field(default_factory=MarkerStyle)
+    boundary_points: List[Tuple[float, float]] = Field(default_factory=list)  # For regions
+
+    # Metadata
+    tags: List[str] = Field(default_factory=list)
+    linked_elements: List[str] = Field(default_factory=list)  # IDs of linked places/landmarks/events
+    notes: str = ""
+
+
+class MapLandmark(BaseModel):
+    """A landmark on a map (mountain, river, building, ruins)."""
+    id: str
+    name: str
+    landmark_type: LandmarkType
+    description: str = ""
+
+    # Position
+    points: List[Tuple[float, float]]  # Single point or line (for rivers, roads)
+
+    # Visual
+    marker_style: MarkerStyle = Field(default_factory=MarkerStyle)
+    line_width: int = 2  # For line landmarks
+
+    # Metadata
+    tags: List[str] = Field(default_factory=list)
+    linked_elements: List[str] = Field(default_factory=list)
+    notes: str = ""
+
+
+class MapEvent(BaseModel):
+    """An event on a map (battle, treaty, discovery)."""
+    id: str
+    name: str
+    event_type: EventType
+    description: str = ""
+
+    # Position
+    x: float
+    y: float
+
+    # Temporal
+    date: Optional[str] = None  # Date or era
+    timeline_position: int = 0  # For sorting chronologically
+
+    # Details
+    associated_factions: List[str] = Field(default_factory=list)  # Faction IDs
+    associated_characters: List[str] = Field(default_factory=list)  # Character IDs
+
+    # Visual
+    marker_style: MarkerStyle = Field(default_factory=MarkerStyle)
+
+    # Metadata
+    tags: List[str] = Field(default_factory=list)
+    linked_elements: List[str] = Field(default_factory=list)
+    notes: str = ""
+
+
+class MapLayer(BaseModel):
+    """A layer on a map."""
+    id: str
+    name: str
+    visible: bool = True
+    opacity: float = 1.0  # 0.0 to 1.0
+
+    # Element IDs in this layer
+    place_ids: List[str] = Field(default_factory=list)
+    landmark_ids: List[str] = Field(default_factory=list)
+    event_ids: List[str] = Field(default_factory=list)
+
+
+class GridSettings(BaseModel):
+    """Grid overlay settings."""
+    enabled: bool = False
+    grid_type: str = "square"  # square or hex
+    cell_size: int = 50  # pixels
+    color: str = "#000000"
+    opacity: float = 0.3
+    snap_to_grid: bool = False
+
+
+class WorldMap(BaseModel):
+    """A map with places, landmarks, and events."""
+    id: str
+    name: str
+    description: str = ""
+
+    # Map type
+    map_type: str = "world"  # "world" or "location"
+
+    # Base map
+    image_path: str = ""  # Path to base map image
+    width: int = 0  # Image width in pixels
+    height: int = 0  # Image height in pixels
+
+    # Projection mode
+    projection_mode: str = "flat"  # "flat" or "sphere"
+
+    # Scale
+    map_scale: Optional[str] = None  # e.g., "1 inch = 50 miles"
+
+    # Associated planet (optional)
+    planet_id: Optional[str] = None
+    continent_name: Optional[str] = None
+
+    # Elements
+    places: List[MapPlace] = Field(default_factory=list)
+    landmarks: List[MapLandmark] = Field(default_factory=list)
+    events: List[MapEvent] = Field(default_factory=list)
+
+    # Layers
+    layers: List[MapLayer] = Field(default_factory=list)
+
+    # Grid
+    grid_settings: GridSettings = Field(default_factory=GridSettings)
+
+    # Metadata
+    created_date: str = Field(default_factory=lambda: datetime.now().isoformat())
+    modified_date: str = Field(default_factory=lambda: datetime.now().isoformat())
+    notes: str = ""
+
+
 # ===== COMPLETE WORLDBUILDING =====
 class CompleteWorldBuilding(BaseModel):
     """Complete worldbuilding with all interconnected objects."""
@@ -878,6 +1071,9 @@ class CompleteWorldBuilding(BaseModel):
 
     # Mythology
     myths: List[Myth] = Field(default_factory=list)
+
+    # Maps
+    maps: List[WorldMap] = Field(default_factory=list)
 
     # Legacy text fields (for backwards compatibility)
     legacy_text: Dict[str, str] = Field(default_factory=dict)

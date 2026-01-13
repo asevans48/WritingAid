@@ -1,12 +1,12 @@
 """Project model - Root level encapsulating all writer work."""
 
 from typing import List, Dict, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
 from pathlib import Path
 import json
 
-from src.models.worldbuilding_objects import Faction, Myth, ClimatePreset, Flora, Fauna, Technology, Star, StarSystem, Place, Culture, Army, Economy, HistoricalEvent, PowerHierarchy, PoliticalSystem
+from src.models.worldbuilding_objects import Faction, Myth, ClimatePreset, Flora, Fauna, Technology, Star, StarSystem, Place, Culture, Army, Economy, HistoricalEvent, PowerHierarchy, PoliticalSystem, WorldMap
 
 
 class WorldBuilding(BaseModel):
@@ -46,9 +46,16 @@ class WorldBuilding(BaseModel):
     cultures: List[Culture] = Field(default_factory=list)  # Cultural systems
     armies: List['Army'] = Field(default_factory=list)  # Military forces linked to factions
     economies: List[Economy] = Field(default_factory=list)  # Economic systems for factions
+    maps: List['WorldMap'] = Field(default_factory=list)  # Interactive maps
     historical_events: List[HistoricalEvent] = Field(default_factory=list)  # Timeline events
     hierarchies: List[PowerHierarchy] = Field(default_factory=list)  # Power hierarchies
     political_systems: List[PoliticalSystem] = Field(default_factory=list)  # Political systems
+
+    @field_validator('maps', mode='before')
+    @classmethod
+    def convert_none_to_empty_list(cls, v):
+        """Convert None to empty list for backward compatibility."""
+        return v if v is not None else []
 
 
 class Character(BaseModel):
