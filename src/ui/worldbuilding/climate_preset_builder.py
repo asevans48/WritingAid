@@ -296,6 +296,10 @@ class ClimatePresetBuilderWidget(QWidget):
 
         toolbar.addStretch()
 
+        import_btn = QPushButton("📥 Import")
+        import_btn.clicked.connect(self._import_presets)
+        toolbar.addWidget(import_btn)
+
         layout.addLayout(toolbar)
 
         # Preset list
@@ -320,6 +324,18 @@ class ClimatePresetBuilderWidget(QWidget):
             List of climate presets
         """
         return self.presets
+
+    def _import_presets(self):
+        """Import climate presets from JSON file."""
+        from src.ui.worldbuilding.worldbuilding_importer import show_import_dialog
+        from src.models.worldbuilding_objects import CompleteWorldBuilding
+
+        temp_wb = CompleteWorldBuilding(climate_presets=self.presets)
+        result = show_import_dialog(self, temp_wb, target_section="climate_presets")
+        if result and result.imported_counts.get("climate_presets", 0) > 0:
+            self.presets = temp_wb.climate_presets
+            self._update_list()
+            self.content_changed.emit()
 
     def _update_list(self):
         """Update preset list display."""

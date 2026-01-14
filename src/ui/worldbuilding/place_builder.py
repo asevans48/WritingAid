@@ -298,6 +298,10 @@ class PlaceBuilderWidget(QWidget):
 
         toolbar.addStretch()
 
+        import_btn = QPushButton("📥 Import")
+        import_btn.clicked.connect(self._import_places)
+        toolbar.addWidget(import_btn)
+
         layout.addLayout(toolbar)
 
         # Place list
@@ -424,3 +428,15 @@ class PlaceBuilderWidget(QWidget):
     def get_places(self) -> List[Place]:
         """Get places list."""
         return self.places_list
+
+    def _import_places(self):
+        """Import places from JSON file."""
+        from src.ui.worldbuilding.worldbuilding_importer import show_import_dialog
+        from src.models.worldbuilding_objects import CompleteWorldBuilding
+
+        temp_wb = CompleteWorldBuilding(places=self.places_list)
+        result = show_import_dialog(self, temp_wb, target_section="places")
+        if result and result.imported_counts.get("places", 0) > 0:
+            self.places_list = temp_wb.places
+            self._update_list()
+            self.content_changed.emit()

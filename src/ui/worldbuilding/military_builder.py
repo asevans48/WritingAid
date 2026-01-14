@@ -762,6 +762,13 @@ class MilitaryBuilderWidget(QWidget):
         remove_action.triggered.connect(self._remove_army)
         toolbar.addAction(remove_action)
 
+        toolbar.addSeparator()
+
+        import_action = QAction("Import", self)
+        import_action.setToolTip("Import armies from JSON file")
+        import_action.triggered.connect(self._import_armies)
+        toolbar.addAction(import_action)
+
         layout.addWidget(toolbar)
 
         # Army list
@@ -864,6 +871,19 @@ class MilitaryBuilderWidget(QWidget):
     def get_armies(self) -> List[Army]:
         """Get all armies."""
         return self.armies
+
+    def _import_armies(self):
+        """Import armies from JSON file."""
+        from src.ui.worldbuilding.worldbuilding_importer import show_import_dialog
+        from src.models.worldbuilding_objects import CompleteWorldBuilding
+
+        temp_wb = CompleteWorldBuilding(armies=self.armies)
+        result = show_import_dialog(self, temp_wb, target_section="armies")
+
+        if result and result.imported_counts.get("armies", 0) > 0:
+            self.armies = temp_wb.armies
+            self._update_list()
+            self.content_changed.emit()
 
     def load_armies(self, armies: List[Army]):
         """Load armies."""

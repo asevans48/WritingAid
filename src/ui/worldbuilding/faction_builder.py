@@ -717,6 +717,12 @@ class FactionBuilderWidget(QWidget):
         view_graph_btn.clicked.connect(self._show_relationship_graph)
         toolbar.addWidget(view_graph_btn)
 
+        # Import button
+        import_btn = QPushButton("Import")
+        import_btn.setToolTip("Import factions from JSON file")
+        import_btn.clicked.connect(self._import_factions)
+        toolbar.addWidget(import_btn)
+
         toolbar.addStretch()
 
         layout.addLayout(toolbar)
@@ -871,6 +877,21 @@ class FactionBuilderWidget(QWidget):
 
         dialog = FactionRelationshipGraphDialog(self.factions, self)
         dialog.exec()
+
+    def _import_factions(self):
+        """Import factions from JSON file."""
+        from src.ui.worldbuilding.worldbuilding_importer import show_import_dialog
+        from src.models.worldbuilding_objects import CompleteWorldBuilding
+
+        # Create temporary worldbuilding to import into
+        temp_wb = CompleteWorldBuilding(factions=self.factions)
+
+        result = show_import_dialog(self, temp_wb, target_section="factions")
+
+        if result and result.imported_counts.get("factions", 0) > 0:
+            self.factions = temp_wb.factions
+            self._update_list()
+            self.content_changed.emit()
 
     def get_factions(self) -> List[Faction]:
         """Get all factions."""

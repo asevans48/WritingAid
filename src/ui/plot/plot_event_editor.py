@@ -15,13 +15,16 @@ class PlotEventEditor(QDialog):
     """Dialog for editing a single plot event."""
 
     def __init__(self, event: Optional[PlotEvent] = None, available_characters: List[str] = None,
-                 available_subplots: List = None, parent=None):
+                 available_subplots: List = None, num_acts: int = 3, act_names: List[str] = None,
+                 parent=None):
         """Initialize plot event editor.
 
         Args:
             event: PlotEvent to edit (None for new event)
             available_characters: List of character names
             available_subplots: List of subplot objects with id and title
+            num_acts: Number of acts in the story
+            act_names: Names of acts
             parent: Parent widget
         """
         super().__init__(parent)
@@ -31,6 +34,7 @@ class PlotEventEditor(QDialog):
             description="",
             outcome="",
             stage="rising_action",
+            act=1,
             intensity=50,
             sort_order=0,
             related_characters=[],
@@ -39,6 +43,8 @@ class PlotEventEditor(QDialog):
         )
         self.available_characters = available_characters or []
         self.available_subplots = available_subplots or []
+        self.num_acts = num_acts
+        self.act_names = act_names or [f"Act {i+1}" for i in range(num_acts)]
         self._init_ui()
         if event:
             self._load_event()
@@ -77,6 +83,13 @@ class PlotEventEditor(QDialog):
         ])
         self.stage_combo.setCurrentIndex(1)  # Default to Rising Action
         basic_layout.addRow("Story Stage:", self.stage_combo)
+
+        # Act selection
+        self.act_combo = QComboBox()
+        for i in range(self.num_acts):
+            act_name = self.act_names[i] if i < len(self.act_names) else f"Act {i+1}"
+            self.act_combo.addItem(act_name, i + 1)  # Store 1-based act number as data
+        basic_layout.addRow("Act:", self.act_combo)
 
         self.sort_order_spin = QSpinBox()
         self.sort_order_spin.setRange(0, 1000)
@@ -212,6 +225,10 @@ class PlotEventEditor(QDialog):
         }
         self.stage_combo.setCurrentIndex(stage_map.get(self.event.stage, 1))
 
+        # Set act combo (1-based to 0-based index)
+        act_index = max(0, min(self.event.act - 1, self.act_combo.count() - 1))
+        self.act_combo.setCurrentIndex(act_index)
+
         self.sort_order_spin.setValue(self.event.sort_order)
         self.intensity_slider.setValue(self.event.intensity)
         self.description_edit.setPlainText(self.event.description)
@@ -244,6 +261,9 @@ class PlotEventEditor(QDialog):
         # Get stage from combo
         stage_map = ["exposition", "rising_action", "climax", "falling_action", "resolution"]
         self.event.stage = stage_map[self.stage_combo.currentIndex()]
+
+        # Get act (stored as data in combo items, 1-based)
+        self.event.act = self.act_combo.currentData() or (self.act_combo.currentIndex() + 1)
 
         self.event.sort_order = self.sort_order_spin.value()
         self.event.intensity = self.intensity_slider.value()

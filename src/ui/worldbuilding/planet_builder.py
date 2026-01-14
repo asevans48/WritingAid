@@ -757,6 +757,11 @@ class PlanetBuilderWidget(QWidget):
         remove_btn.clicked.connect(self._remove_planet)
         btn_layout.addWidget(remove_btn)
 
+        import_btn = QPushButton("📥 Import")
+        import_btn.setToolTip("Import planets from JSON file")
+        import_btn.clicked.connect(self._import_planets)
+        btn_layout.addWidget(import_btn)
+
         left_layout.addLayout(btn_layout)
 
         left_panel.setMaximumWidth(250)
@@ -829,6 +834,19 @@ class PlanetBuilderWidget(QWidget):
         if hasattr(self, 'current_editor') and self.current_editor:
             self.current_editor.save_to_model()
         return self.planets
+
+    def _import_planets(self):
+        """Import planets from JSON file."""
+        from src.ui.worldbuilding.worldbuilding_importer import show_import_dialog
+        from src.models.worldbuilding_objects import CompleteWorldBuilding
+
+        temp_wb = CompleteWorldBuilding(planets=self.planets)
+        result = show_import_dialog(self, temp_wb, target_section="planets")
+
+        if result and result.imported_counts.get("planets", 0) > 0:
+            self.planets = temp_wb.planets
+            self.load_planets(self.planets)
+            self.content_changed.emit()
 
     def load_planets(self, planets):
         """Load planets."""

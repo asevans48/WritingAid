@@ -79,6 +79,7 @@ class PlotEvent(BaseModel):
     description: str = ""
     outcome: str = ""  # What happens as a result
     stage: str = "rising_action"  # exposition, rising_action, climax, falling_action, resolution
+    act: int = 1  # Act number (1-based)
     intensity: int = 50  # 0-100, determines vertical position in pyramid
     sort_order: int = 0  # Order within the stage
     related_characters: List[str] = Field(default_factory=list)
@@ -95,7 +96,11 @@ class FreytagPyramid(BaseModel):
     falling_action: str = ""
     resolution: str = ""
 
-    # New: Detailed events with intensity tracking
+    # Act configuration
+    num_acts: int = 3  # Default to 3-act structure
+    act_names: List[str] = Field(default_factory=lambda: ["Act I", "Act II", "Act III"])
+
+    # Detailed events with intensity tracking
     events: List[PlotEvent] = Field(default_factory=list)
 
 

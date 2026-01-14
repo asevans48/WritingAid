@@ -829,13 +829,16 @@ class CultureEditor(QWidget):
     def _init_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
         scroll_content = QWidget()
         scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setSpacing(8)
 
         # Basic info group
         basic_group = QGroupBox("Basic Information")
@@ -984,9 +987,8 @@ class CultureEditor(QWidget):
         notes_group.setLayout(notes_layout)
         scroll_layout.addWidget(notes_group)
 
-        scroll_layout.addStretch()
         scroll.setWidget(scroll_content)
-        layout.addWidget(scroll)
+        layout.addWidget(scroll, 1)  # Give scroll area stretch to fill available space
 
     def set_available_factions(self, factions: List[Faction]):
         """Set available factions for association."""
@@ -1184,11 +1186,13 @@ class CultureBuilderWidget(QWidget):
 
         # Splitter for list and editor
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setChildrenCollapsible(False)
 
         # Left panel - culture list
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(4)
 
         # Toolbar
         toolbar = QHBoxLayout()
@@ -1203,6 +1207,11 @@ class CultureBuilderWidget(QWidget):
         toolbar.addWidget(self.remove_btn)
 
         toolbar.addStretch()
+
+        import_btn = QPushButton("📥 Import")
+        import_btn.clicked.connect(self._import_cultures)
+        toolbar.addWidget(import_btn)
+
         left_layout.addLayout(toolbar)
 
         # Filter/Sort controls
@@ -1224,6 +1233,7 @@ class CultureBuilderWidget(QWidget):
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
 
         # Stacked widget for editor/placeholder
         self.stack = QStackedWidget()
@@ -1246,7 +1256,7 @@ class CultureBuilderWidget(QWidget):
         splitter.addWidget(right_panel)
 
         splitter.setSizes([250, 550])
-        layout.addWidget(splitter)
+        layout.addWidget(splitter, 1)  # Give splitter stretch factor of 1 to take remaining space
 
     def set_available_factions(self, factions: List[Faction]):
         """Set available factions for culture association."""
@@ -1279,6 +1289,18 @@ class CultureBuilderWidget(QWidget):
     def get_cultures(self) -> List[Culture]:
         """Get all cultures."""
         return self.cultures
+
+    def _import_cultures(self):
+        """Import cultures from JSON file."""
+        from src.ui.worldbuilding.worldbuilding_importer import show_import_dialog
+        from src.models.worldbuilding_objects import CompleteWorldBuilding
+
+        temp_wb = CompleteWorldBuilding(cultures=self.cultures)
+        result = show_import_dialog(self, temp_wb, target_section="cultures")
+        if result and result.imported_counts.get("cultures", 0) > 0:
+            self.cultures = temp_wb.cultures
+            self._update_list()
+            self.content_changed.emit()
 
     def _update_list(self):
         """Update culture list display."""

@@ -394,6 +394,11 @@ class TimelineBuilderWidget(QWidget):
         ai_action.triggered.connect(self._ai_generate)
         toolbar.addAction(ai_action)
 
+        import_action = QAction("Import", self)
+        import_action.setToolTip("Import historical events from JSON file")
+        import_action.triggered.connect(self._import_events)
+        toolbar.addAction(import_action)
+
         layout.addWidget(toolbar)
 
         # Event list
@@ -509,6 +514,20 @@ class TimelineBuilderWidget(QWidget):
     def get_events(self) -> List[HistoricalEvent]:
         """Get all events."""
         return self.events
+
+    def _import_events(self):
+        """Import historical events from JSON file."""
+        from src.ui.worldbuilding.worldbuilding_importer import show_import_dialog
+        from src.models.worldbuilding_objects import CompleteWorldBuilding
+
+        temp_wb = CompleteWorldBuilding(historical_events=self.events)
+        result = show_import_dialog(self, temp_wb, target_section="historical_events")
+
+        if result and result.imported_counts.get("historical_events", 0) > 0:
+            self.events = temp_wb.historical_events
+            self._update_list()
+            self._update_timeline()
+            self.content_changed.emit()
 
     def load_events(self, events: List[HistoricalEvent]):
         """Load events."""

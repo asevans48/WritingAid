@@ -410,6 +410,10 @@ class TechnologyBuilderWidget(QWidget):
 
         toolbar.addStretch()
 
+        import_btn = QPushButton("📥 Import")
+        import_btn.clicked.connect(self._import_technologies)
+        toolbar.addWidget(import_btn)
+
         layout.addLayout(toolbar)
 
         # Technology list
@@ -442,6 +446,18 @@ class TechnologyBuilderWidget(QWidget):
             List of Technology objects
         """
         return self.technologies
+
+    def _import_technologies(self):
+        """Import technologies from JSON file."""
+        from src.ui.worldbuilding.worldbuilding_importer import show_import_dialog
+        from src.models.worldbuilding_objects import CompleteWorldBuilding
+
+        temp_wb = CompleteWorldBuilding(technologies=self.technologies)
+        result = show_import_dialog(self, temp_wb, target_section="technologies")
+        if result and result.imported_counts.get("technologies", 0) > 0:
+            self.technologies = temp_wb.technologies
+            self._update_list()
+            self.content_changed.emit()
 
     def _update_list(self):
         """Update technology list display."""

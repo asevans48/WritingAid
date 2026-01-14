@@ -693,18 +693,26 @@ Also identify any structural issues or gaps in the arc.""",
             """Break my story into specific plot events I can track:
 
 [PASTE YOUR STORY SUMMARY OR CHAPTER OUTLINE]
+[SPECIFY NUMBER OF ACTS: 3, 5, or other]
 
 For each major event, provide:
 1. Event title (brief, descriptive)
-2. Stage (exposition, rising_action, climax, falling_action, resolution)
-3. Description (2-3 sentences)
-4. Outcome (what changes as a result)
-5. Characters involved
-6. Intensity (0-100, how dramatic/important)
-7. Connection to other events
+2. Act number (which act this event belongs to: 1, 2, 3, etc.)
+3. Stage (exposition, rising_action, climax, falling_action, resolution)
+4. Description (2-3 sentences)
+5. Outcome (what changes as a result)
+6. Characters involved
+7. Intensity (0-100, how dramatic/important - higher means more tension)
+8. Sort order (position within the stage, 0 = first)
+9. Connection to subplots (if any)
 
-List events in chronological order. I need at least 10-15 events for a complete story arc.""",
-            "Create specific events to populate your plot timeline.",
+Organize events by act, then by stage within each act. I need at least 10-15 events distributed across all acts.
+
+Example distribution for 3-act structure:
+- Act 1: Exposition events (intensity 20-40), some rising action (40-60)
+- Act 2: Rising action events (60-80), climax (90-100)
+- Act 3: Falling action (60-40), resolution (20-30)""",
+            "Create specific events with act assignments for your plot timeline.",
             "Plot & Structure"
         ))
 
@@ -1375,6 +1383,7 @@ Generate complete entries for all characters mentioned. Use UUID-style IDs (e.g.
             """Based on the following plot information, generate JSON for Writer Platform:
 
 [PASTE YOUR PLOT SUMMARY OR OUTLINE]
+[SPECIFY NUMBER OF ACTS: 3, 5, or other]
 
 Generate JSON with this structure:
 ```json
@@ -1388,6 +1397,8 @@ Generate JSON with this structure:
       "climax": "The peak moment of conflict...",
       "falling_action": "Aftermath and consequences...",
       "resolution": "How things settle...",
+      "num_acts": 3,
+      "act_names": ["Act I: Setup", "Act II: Confrontation", "Act III: Resolution"],
       "events": [
         {
           "id": "event_[unique_id]",
@@ -1395,9 +1406,11 @@ Generate JSON with this structure:
           "description": "What happens...",
           "outcome": "What changes as a result...",
           "stage": "exposition|rising_action|climax|falling_action|resolution",
+          "act": 1,
           "intensity": 50,
           "sort_order": 1,
           "related_characters": ["Character Name 1"],
+          "related_subplots": ["subplot_id1"],
           "notes": ""
         }
       ]
@@ -1416,8 +1429,21 @@ Generate JSON with this structure:
 }
 ```
 
-Include at least 10 events across all stages. Intensity is 0-100 (higher = more dramatic).""",
-            "Generate plot structure data for your project.",
+Notes:
+- "num_acts" is the number of acts in your story (typically 3 or 5)
+- "act_names" are custom names for each act (e.g., "Act I: Setup", "Act II: Confrontation", "Act III: Resolution")
+- "act" in events is a 1-based number indicating which act the event belongs to (1, 2, 3, etc.)
+- "stage" is the Freytag pyramid stage: exposition, rising_action, climax, falling_action, resolution
+- "intensity" is 0-100, determines vertical position on the pyramid (higher = more dramatic)
+- "sort_order" determines order within the same stage (0 = first)
+- "related_subplots" links events to subplot IDs
+
+Common act structures:
+- 3-Act: Act I: Setup, Act II: Confrontation, Act III: Resolution
+- 5-Act: Act I: Exposition, Act II: Rising Action, Act III: Climax, Act IV: Falling Action, Act V: Denouement
+
+Include at least 10 events across all stages and acts. Distribute events across acts appropriately.""",
+            "Generate plot structure data with acts and Freytag pyramid events.",
             "JSON Export"
         ))
 
@@ -1598,10 +1624,70 @@ Generate complete culture entries with all sub-elements filled in.""",
         ))
 
         widgets.append(self._create_prompt_widget(
+            "Places JSON Export",
+            """Based on the following location information, generate JSON for Writer Platform:
+
+[PASTE YOUR LOCATION/PLACES NOTES]
+[LIST YOUR PLANETS AND FACTIONS]
+
+Generate JSON with this structure:
+```json
+{
+  "places": [
+    {
+      "id": "place_[unique_id]",
+      "name": "Place Name",
+      "place_type": "settlement|city|town|village|fortress|castle|temple|ruins|natural_landmark|mountain|forest|lake|river|cave|island|battlefield|monument|port|market|academy|prison|sacred_site|hidden_location|region|territory|district|other",
+      "description": "Detailed description of this place...",
+      "planet": "Planet Name",
+      "continent": "Continent Name",
+      "region": "Region/Area Name",
+      "coordinates": "lat,long or custom format",
+      "controlling_faction": "faction_id or null",
+      "contested_by": ["faction_id1", "faction_id2"],
+      "historical_owners": ["Previous Faction 1", "Previous Faction 2"],
+      "key_features": ["Notable Feature 1", "Notable Feature 2"],
+      "resources": ["Iron", "Timber", "Gold"],
+      "population": 50000,
+      "size": "sprawling metropolis|small town|10 sq km",
+      "strategic_value": 75,
+      "economic_value": 60,
+      "cultural_significance": "Religious, historical importance...",
+      "connected_places": ["place_id1", "place_id2"],
+      "trade_routes": ["Northern Trade Route", "Silk Road"],
+      "notable_inhabitants": ["character_id1", "Character Name 2"],
+      "species_present": ["flora_id1", "fauna_id1"],
+      "founded": "Year 100 of the First Age",
+      "historical_events": ["event_id1", "event_id2"],
+      "climate": "temperate|tropical|arid|arctic",
+      "atmosphere": "Mood and sensory description...",
+      "dangers": ["Bandits", "Wild beasts", "Magical anomalies"],
+      "story_relevance": "Why this place matters to the plot...",
+      "scenes_set_here": ["Chapter 3", "Chapter 7"],
+      "notes": ""
+    }
+  ]
+}
+```
+
+Notes:
+- "place_type" determines how the place is categorized and displayed
+- "planet" should reference existing planets in your Star Systems
+- "controlling_faction" can be a faction ID or name
+- "strategic_value" and "economic_value" are 0-100 scales
+- "connected_places" links to other place IDs for mapping travel routes
+
+Generate at least 5-10 places with varied types (cities, ruins, natural landmarks, etc.).""",
+            "Generate places with faction control, resources, and strategic importance.",
+            "JSON Export"
+        ))
+
+        widgets.append(self._create_prompt_widget(
             "Historical Timeline JSON Export",
             """Based on the following historical information, generate JSON for Writer Platform:
 
 [PASTE YOUR HISTORY/TIMELINE NOTES]
+[LIST KEY FACTIONS AND CHARACTERS]
 
 Generate JSON with this structure:
 ```json
@@ -1612,7 +1698,7 @@ Generate JSON with this structure:
       "name": "Event Name",
       "date": "Year 500 of the Third Age",
       "timestamp": 500,
-      "event_type": "war|treaty|discovery|disaster|founding|revolution|assassination|coronation|other",
+      "event_type": "war|treaty|discovery|disaster|founding|revolution|assassination|coronation|general|other",
       "key_figures": ["Character Name 1", "Character Name 2"],
       "factions_involved": ["faction_id1", "faction_id2"],
       "location": "Planet or place name",
@@ -1625,12 +1711,19 @@ Generate JSON with this structure:
 ```
 
 Notes:
+- "id" must be unique (format: event_randomstring, e.g., "event_a1b2c3d4")
+- "name" is the event title (required)
 - "date" is a string in any format (e.g., "500 BCE", "Year 1 of the Empire", "3045 CE")
 - "timestamp" is an optional numeric value for sorting (higher = later in time)
-- "event_type" categorizes the event for filtering
-- "key_figures" are character names involved
-- "factions_involved" are faction IDs (reference existing factions)
-- "related_events" links events in cause-effect chains
+- "event_type" categorizes the event: war, treaty, discovery, disaster, founding, revolution, assassination, coronation, general, or other
+- "key_figures" are character names involved (can be empty array [])
+- "factions_involved" are faction IDs that participated (can be empty array [])
+- "location" is where the event occurred (can be null)
+- "description" explains what happened (can be empty string "")
+- "consequences" describes the aftermath (can be empty string "")
+- "related_events" links events in cause-effect chains (can be empty array [])
+
+IMPORTANT: All fields are optional except "id", "name", and "date". Use empty arrays [] for list fields and empty strings "" for text fields if no data.
 
 Generate at least 15-20 events covering ancient history to recent events.""",
             "Generate historical timeline events with dates, figures, and consequences.",
@@ -1724,6 +1817,7 @@ Genre: [YOUR GENRE]
 Planets/Locations: [LIST KEY PLANETS OR LOCATIONS]
 Factions: [LIST MAJOR FACTIONS/NATIONS]
 Cultures: [DESCRIBE ANY DISTINCT CULTURES]
+Historical Events: [LIST KEY HISTORICAL EVENTS]
 
 Generate a complete project JSON with this structure:
 ```json
@@ -1738,7 +1832,8 @@ Generate a complete project JSON with this structure:
     "fauna": [ ... ],
     "star_systems": [ ... ],
     "cultures": [ ... ],
-    "places": [ ... ]
+    "places": [ ... ],
+    "historical_events": [ ... ]
   },
   "characters": [ ... ],
   "story_planning": { ... },
@@ -1756,15 +1851,17 @@ Generate a complete project JSON with this structure:
 }
 ```
 
-Populate worldbuilding (including factions, cultures, flora, fauna with planet associations), characters, and story_planning based on the provided information.
+Populate worldbuilding (including factions, cultures, flora, fauna, places, historical_events), characters, and story_planning based on the provided information.
 Leave manuscript.chapters empty (the user will add their own text).
-Generate unique IDs for all elements (format: type_randomstring, e.g., "char_a1b2c3d4").
+Generate unique IDs for all elements (format: type_randomstring, e.g., "char_a1b2c3d4", "place_a1b2c3d4", "event_a1b2c3d4").
 
 Key requirements:
 - Flora and fauna must have "native_planets" arrays with valid planet names
 - Cultures must have "associated_factions" and "associated_planets" arrays
 - Include at least one culture with rituals, languages, music, art, and traditions
-- Factions can be: nation, organization, religion, tribe, corporation, economic_class, minority_group, political_party, guild, military, criminal, resistance, individual, or other""",
+- Factions can be: nation, organization, religion, tribe, corporation, economic_class, minority_group, political_party, guild, military, criminal, resistance, individual, or other
+- Places must have "place_type" from: settlement, city, town, village, fortress, castle, temple, ruins, natural_landmark, mountain, forest, lake, river, cave, island, battlefield, monument, port, market, academy, prison, sacred_site, hidden_location, region, territory, district, other
+- Historical events must have "id", "name", "date", and optionally "event_type" (war, treaty, discovery, disaster, founding, etc.)""",
             "Generate a complete project file with all worldbuilding elements.",
             "JSON Export"
         ))

@@ -967,6 +967,12 @@ class EconomyBuilderWidget(QWidget):
         view_network_btn.clicked.connect(self._show_trade_network)
         toolbar.addWidget(view_network_btn)
 
+        # Import button
+        import_btn = QPushButton("Import")
+        import_btn.setToolTip("Import economies from JSON file")
+        import_btn.clicked.connect(self._import_economies)
+        toolbar.addWidget(import_btn)
+
         toolbar.addStretch()
 
         layout.addLayout(toolbar)
@@ -1095,3 +1101,16 @@ class EconomyBuilderWidget(QWidget):
     def get_economies(self) -> List[Economy]:
         """Get economies list."""
         return self.economies
+
+    def _import_economies(self):
+        """Import economies from JSON file."""
+        from src.ui.worldbuilding.worldbuilding_importer import show_import_dialog
+        from src.models.worldbuilding_objects import CompleteWorldBuilding
+
+        temp_wb = CompleteWorldBuilding(economies=self.economies)
+        result = show_import_dialog(self, temp_wb, target_section="economies")
+
+        if result and result.imported_counts.get("economies", 0) > 0:
+            self.economies = temp_wb.economies
+            self._update_list()
+            self.content_changed.emit()

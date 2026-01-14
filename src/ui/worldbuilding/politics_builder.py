@@ -528,6 +528,11 @@ class PoliticsBuilderWidget(QWidget):
         remove_btn.clicked.connect(self._remove_system)
         btn_layout.addWidget(remove_btn)
 
+        import_btn = QPushButton("📥 Import")
+        import_btn.setToolTip("Import political systems from JSON file")
+        import_btn.clicked.connect(self._import_systems)
+        btn_layout.addWidget(import_btn)
+
         left_layout.addLayout(btn_layout)
 
         left_panel.setMaximumWidth(250)
@@ -547,9 +552,9 @@ class PoliticsBuilderWidget(QWidget):
 
     def _add_system(self):
         """Add new political system."""
-        faction_id, ok = QInputDialog.getText(self, "New Political System", "Enter faction ID:")
+        system_name, ok = QInputDialog.getText(self, "New Political System", "Enter political system name:")
 
-        if ok and faction_id:
+        if ok and system_name:
             # Create default branches
             executive = GovernmentBranch(
                 id=str(uuid.uuid4()),
@@ -569,15 +574,16 @@ class PoliticsBuilderWidget(QWidget):
                 branch_type="Judicial"
             )
 
+            # Use political system name as the ID
             political_system = PoliticalSystem(
-                id=str(uuid.uuid4()),
-                faction_id=faction_id,
+                id=system_name,
+                faction_id="",  # Can be linked to faction in editor
                 system_type="",
                 branches=[executive, legislative, judicial]
             )
             self.political_systems.append(political_system)
 
-            item = QListWidgetItem(faction_id)
+            item = QListWidgetItem(system_name)
             item.setData(Qt.ItemDataRole.UserRole, political_system.id)
             self.system_list.addItem(item)
 
@@ -590,6 +596,9 @@ class PoliticsBuilderWidget(QWidget):
             system_id = current.data(Qt.ItemDataRole.UserRole)
             self.political_systems = [s for s in self.political_systems if s.id != system_id]
             self.system_list.takeItem(self.system_list.row(current))
+
+            # Clear current editor reference before replacing widget
+            self.current_editor = None
 
             # Show placeholder
             placeholder = QLabel("Add or select a political system")
@@ -621,12 +630,26 @@ class PoliticsBuilderWidget(QWidget):
             self.current_editor.save_to_model()
         return self.political_systems
 
+    def _import_systems(self):
+        """Import political systems from JSON file."""
+        from src.ui.worldbuilding.worldbuilding_importer import show_import_dialog
+        from src.models.worldbuilding_objects import CompleteWorldBuilding
+
+        temp_wb = CompleteWorldBuilding(political_systems=self.political_systems)
+        result = show_import_dialog(self, temp_wb, target_section="political_systems")
+
+        if result and result.imported_counts.get("political_systems", 0) > 0:
+            self.political_systems = temp_wb.political_systems
+            self.load_political_systems(self.political_systems)
+            self.content_changed.emit()
+
     def load_political_systems(self, systems: List[PoliticalSystem]):
         """Load political systems."""
         self.political_systems = systems
         self.system_list.clear()
 
         for system in systems:
-            item = QListWidgetItem(system.faction_id)
+            # Display the system ID (which is the political system name)
+            item = QListWidgetItem(system.id)
             item.setData(Qt.ItemDataRole.UserRole, system.id)
             self.system_list.addItem(item)

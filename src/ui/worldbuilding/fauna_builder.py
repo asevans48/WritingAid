@@ -431,6 +431,10 @@ class FaunaBuilderWidget(QWidget):
 
         toolbar.addStretch()
 
+        import_btn = QPushButton("📥 Import")
+        import_btn.clicked.connect(self._import_fauna)
+        toolbar.addWidget(import_btn)
+
         layout.addLayout(toolbar)
 
         # Fauna list
@@ -571,3 +575,15 @@ class FaunaBuilderWidget(QWidget):
     def get_fauna(self) -> List[Fauna]:
         """Get fauna list."""
         return self.fauna_list
+
+    def _import_fauna(self):
+        """Import fauna from JSON file."""
+        from src.ui.worldbuilding.worldbuilding_importer import show_import_dialog
+        from src.models.worldbuilding_objects import CompleteWorldBuilding
+
+        temp_wb = CompleteWorldBuilding(fauna=self.fauna_list)
+        result = show_import_dialog(self, temp_wb, target_section="fauna")
+        if result and result.imported_counts.get("fauna", 0) > 0:
+            self.fauna_list = temp_wb.fauna
+            self._update_list()
+            self.content_changed.emit()

@@ -757,6 +757,10 @@ class EnhancedStarSystemBuilderWidget(QWidget):
 
         toolbar.addStretch()
 
+        import_btn = QPushButton("📥 Import")
+        import_btn.clicked.connect(self._import_star_systems)
+        toolbar.addWidget(import_btn)
+
         layout.addLayout(toolbar)
 
         # System list
@@ -854,3 +858,15 @@ class EnhancedStarSystemBuilderWidget(QWidget):
     def get_star_systems(self) -> List[StarSystem]:
         """Get star systems list."""
         return self.star_systems
+
+    def _import_star_systems(self):
+        """Import star systems from JSON file."""
+        from src.ui.worldbuilding.worldbuilding_importer import show_import_dialog
+        from src.models.worldbuilding_objects import CompleteWorldBuilding
+
+        temp_wb = CompleteWorldBuilding(star_systems=self.star_systems)
+        result = show_import_dialog(self, temp_wb, target_section="star_systems")
+        if result and result.imported_counts.get("star_systems", 0) > 0:
+            self.star_systems = temp_wb.star_systems
+            self._update_list()
+            self.content_changed.emit()

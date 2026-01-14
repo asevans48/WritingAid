@@ -364,6 +364,10 @@ class FloraBuilderWidget(QWidget):
 
         toolbar.addStretch()
 
+        import_btn = QPushButton("📥 Import")
+        import_btn.clicked.connect(self._import_flora)
+        toolbar.addWidget(import_btn)
+
         layout.addLayout(toolbar)
 
         # Flora list
@@ -500,3 +504,15 @@ class FloraBuilderWidget(QWidget):
     def get_flora(self) -> List[Flora]:
         """Get flora list."""
         return self.flora_list
+
+    def _import_flora(self):
+        """Import flora from JSON file."""
+        from src.ui.worldbuilding.worldbuilding_importer import show_import_dialog
+        from src.models.worldbuilding_objects import CompleteWorldBuilding
+
+        temp_wb = CompleteWorldBuilding(flora=self.flora_list)
+        result = show_import_dialog(self, temp_wb, target_section="flora")
+        if result and result.imported_counts.get("flora", 0) > 0:
+            self.flora_list = temp_wb.flora
+            self._update_list()
+            self.content_changed.emit()

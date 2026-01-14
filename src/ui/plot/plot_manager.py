@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget,
     QLabel, QTabWidget, QSplitter, QListWidgetItem, QInputDialog,
     QTextEdit, QGroupBox, QDialog, QDialogButtonBox, QLineEdit, QFormLayout,
-    QScrollArea, QFrame, QToolButton
+    QScrollArea, QFrame, QToolButton, QSpinBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QPropertyAnimation, QEasingCurve
 from PyQt6.QtGui import QFont
@@ -226,7 +226,33 @@ class PlotManagerWidget(QWidget):
 
         # Visual pyramid at top - collapsible
         pyramid_section = CollapsibleSection("📊 Freytag's Pyramid")
+
+        # Act configuration controls
+        act_config_layout = QHBoxLayout()
+        act_config_layout.addWidget(QLabel("Acts:"))
+
+        self.num_acts_spin = QSpinBox()
+        self.num_acts_spin.setMinimum(1)
+        self.num_acts_spin.setMaximum(7)
+        self.num_acts_spin.setValue(3)
+        self.num_acts_spin.setToolTip("Number of acts in your story structure")
+        self.num_acts_spin.valueChanged.connect(self._on_num_acts_changed)
+        act_config_layout.addWidget(self.num_acts_spin)
+
+        act_config_layout.addSpacing(20)
+
+        edit_acts_btn = QPushButton("Edit Act Names")
+        edit_acts_btn.clicked.connect(self._edit_act_names)
+        act_config_layout.addWidget(edit_acts_btn)
+
+        act_config_layout.addStretch()
+
+        act_config_widget = QWidget()
+        act_config_widget.setLayout(act_config_layout)
+        pyramid_section.add_widget(act_config_widget)
+
         self.pyramid_visual = FreytagPyramidVisual()
+        self.pyramid_visual.event_clicked.connect(self._on_pyramid_event_clicked)
         pyramid_section.add_widget(self.pyramid_visual)
 
         layout.addWidget(pyramid_section)
@@ -305,7 +331,7 @@ class PlotManagerWidget(QWidget):
         # Event list
         self.event_list = QListWidget()
         self.event_list.itemSelectionChanged.connect(self._on_event_selection_changed)
-        self.event_list.itemDoubleClicked.connect(self._edit_event)
+        self.event_list.itemDoubleClicked.connect(self._on_event_list_double_clicked)
         layout.addWidget(self.event_list)
 
         return widget
@@ -377,13 +403,27 @@ class PlotManagerWidget(QWidget):
         editor = PlotEventEditor(
             available_characters=self.available_characters,
             available_subplots=self.subplots,
+            num_acts=self.freytag_pyramid.num_acts,
+            act_names=self.freytag_pyramid.act_names,
             parent=self
         )
         if editor.exec() == QDialog.DialogCode.Accepted:
             event = editor.get_event()
+
+            # Set sort_order to next available value for this act/stage if not explicitly set
+            # (default from editor is 0, so we check if there are other events with sort_order >= 0)
+            same_group_events = [
+                e for e in self.freytag_pyramid.events
+                if e.act == event.act and e.stage == event.stage
+            ]
+            if same_group_events:
+                max_sort_order = max(e.sort_order for e in same_group_events)
+                # Only auto-increment if the user left it at default (0) and there are existing events
+                if event.sort_order == 0:
+                    event.sort_order = max_sort_order + 1
+
             self.freytag_pyramid.events.append(event)
             self._update_event_list()
-            self._update_pyramid()
             self.content_changed.emit()
 
     def _edit_event(self):
@@ -401,11 +441,12 @@ class PlotManagerWidget(QWidget):
             event=event,
             available_characters=self.available_characters,
             available_subplots=self.subplots,
+            num_acts=self.freytag_pyramid.num_acts,
+            act_names=self.freytag_pyramid.act_names,
             parent=self
         )
         if editor.exec() == QDialog.DialogCode.Accepted:
             self._update_event_list()
-            self._update_pyramid()
             self.content_changed.emit()
 
     def _remove_event(self):
@@ -417,35 +458,40 @@ class PlotManagerWidget(QWidget):
         event_id = items[0].data(Qt.ItemDataRole.UserRole)
         self.freytag_pyramid.events = [e for e in self.freytag_pyramid.events if e.id != event_id]
         self._update_event_list()
-        self._update_pyramid()
         self.content_changed.emit()
 
     def _move_event_up(self):
-        """Move selected event up in sort order."""
+        """Move selected event up in sort order (within same act and stage)."""
         items = self.event_list.selectedItems()
         if not items:
             return
 
         event_id = items[0].data(Qt.ItemDataRole.UserRole)
         event = next((e for e in self.freytag_pyramid.events if e.id == event_id), None)
-        if not event or event.sort_order <= 0:
+        if not event:
             return
 
-        # Find events in the same stage
-        same_stage_events = [e for e in self.freytag_pyramid.events if e.stage == event.stage]
-        same_stage_events.sort(key=lambda e: e.sort_order)
+        # Find events in the same act AND stage
+        same_group_events = [
+            e for e in self.freytag_pyramid.events
+            if e.act == event.act and e.stage == event.stage
+        ]
+        same_group_events.sort(key=lambda e: e.sort_order)
 
         # Find current position
-        current_index = next((i for i, e in enumerate(same_stage_events) if e.id == event_id), None)
+        current_index = next((i for i, e in enumerate(same_group_events) if e.id == event_id), None)
         if current_index is None or current_index == 0:
             return
 
-        # Swap sort orders
-        prev_event = same_stage_events[current_index - 1]
+        # Swap sort orders with the previous event
+        prev_event = same_group_events[current_index - 1]
         event.sort_order, prev_event.sort_order = prev_event.sort_order, event.sort_order
 
+        # If they ended up with the same sort_order (both were 0), fix it
+        if event.sort_order == prev_event.sort_order:
+            prev_event.sort_order = event.sort_order + 1
+
         self._update_event_list()
-        self._update_pyramid()
         self.content_changed.emit()
 
         # Re-select the event
@@ -456,7 +502,7 @@ class PlotManagerWidget(QWidget):
                 break
 
     def _move_event_down(self):
-        """Move selected event down in sort order."""
+        """Move selected event down in sort order (within same act and stage)."""
         items = self.event_list.selectedItems()
         if not items:
             return
@@ -466,21 +512,27 @@ class PlotManagerWidget(QWidget):
         if not event:
             return
 
-        # Find events in the same stage
-        same_stage_events = [e for e in self.freytag_pyramid.events if e.stage == event.stage]
-        same_stage_events.sort(key=lambda e: e.sort_order)
+        # Find events in the same act AND stage
+        same_group_events = [
+            e for e in self.freytag_pyramid.events
+            if e.act == event.act and e.stage == event.stage
+        ]
+        same_group_events.sort(key=lambda e: e.sort_order)
 
         # Find current position
-        current_index = next((i for i, e in enumerate(same_stage_events) if e.id == event_id), None)
-        if current_index is None or current_index >= len(same_stage_events) - 1:
+        current_index = next((i for i, e in enumerate(same_group_events) if e.id == event_id), None)
+        if current_index is None or current_index >= len(same_group_events) - 1:
             return
 
-        # Swap sort orders
-        next_event = same_stage_events[current_index + 1]
+        # Swap sort orders with the next event
+        next_event = same_group_events[current_index + 1]
         event.sort_order, next_event.sort_order = next_event.sort_order, event.sort_order
 
+        # If they ended up with the same sort_order (both were 0), fix it
+        if event.sort_order == next_event.sort_order:
+            event.sort_order = next_event.sort_order + 1
+
         self._update_event_list()
-        self._update_pyramid()
         self.content_changed.emit()
 
         # Re-select the event
@@ -580,15 +632,19 @@ class PlotManagerWidget(QWidget):
                 self.subplot_list.setCurrentItem(item)
                 break
 
-    def _update_event_list(self):
-        """Update event list display."""
+    def _update_event_list(self, update_pyramid: bool = True):
+        """Update event list display.
+
+        Args:
+            update_pyramid: If True, also update the visual pyramid (default True)
+        """
         self.event_list.clear()
 
-        # Sort events by stage and sort_order
+        # Sort events by act, then stage, then sort_order
         stage_order = {"exposition": 0, "rising_action": 1, "climax": 2, "falling_action": 3, "resolution": 4}
         sorted_events = sorted(
             self.freytag_pyramid.events,
-            key=lambda e: (stage_order.get(e.stage, 1), e.sort_order)
+            key=lambda e: (e.act, stage_order.get(e.stage, 1), e.sort_order)
         )
 
         for event in sorted_events:
@@ -601,10 +657,19 @@ class PlotManagerWidget(QWidget):
             }
             stage_display = stage_names.get(event.stage, event.stage)
 
-            item_text = f"{event.title} ({stage_display}, Intensity: {event.intensity})"
+            # Get act name
+            act_name = (self.freytag_pyramid.act_names[event.act - 1]
+                       if event.act <= len(self.freytag_pyramid.act_names)
+                       else f"Act {event.act}")
+
+            item_text = f"[{act_name}] {event.title} ({stage_display}, Intensity: {event.intensity})"
             item = QListWidgetItem(item_text)
             item.setData(Qt.ItemDataRole.UserRole, event.id)
             self.event_list.addItem(item)
+
+        # Also update the visual pyramid to stay in sync
+        if update_pyramid:
+            self._update_pyramid()
 
     def _update_subplot_list(self):
         """Update subplot list display."""
@@ -647,9 +712,17 @@ class PlotManagerWidget(QWidget):
         """
         self.freytag_pyramid = freytag_pyramid
         self.subplots = subplots
+
+        # Sync act configuration UI
+        self.num_acts_spin.blockSignals(True)
+        self.num_acts_spin.setValue(freytag_pyramid.num_acts)
+        self.num_acts_spin.blockSignals(False)
+
+        # Update pyramid with acts
+        self.pyramid_visual.set_acts(freytag_pyramid.num_acts, freytag_pyramid.act_names)
+
         self._update_event_list()
         self._update_subplot_list()
-        self._update_pyramid()
 
     def get_plot_data(self):
         """Get plot data.
@@ -666,3 +739,270 @@ class PlotManagerWidget(QWidget):
             characters: List of character names
         """
         self.available_characters = characters
+
+    def _on_num_acts_changed(self, value: int):
+        """Handle number of acts change."""
+        self.freytag_pyramid.num_acts = value
+
+        # Ensure act_names list has the right length
+        while len(self.freytag_pyramid.act_names) < value:
+            self.freytag_pyramid.act_names.append(f"Act {len(self.freytag_pyramid.act_names) + 1}")
+        self.freytag_pyramid.act_names = self.freytag_pyramid.act_names[:value]
+
+        # Update visual
+        self.pyramid_visual.set_acts(value, self.freytag_pyramid.act_names)
+        self.content_changed.emit()
+
+    def _edit_act_names(self):
+        """Open dialog to edit act names."""
+        dialog = ActNamesDialog(
+            self.freytag_pyramid.num_acts,
+            self.freytag_pyramid.act_names,
+            parent=self
+        )
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.freytag_pyramid.act_names = dialog.get_act_names()
+            self.pyramid_visual.set_acts(
+                self.freytag_pyramid.num_acts,
+                self.freytag_pyramid.act_names
+            )
+            self.content_changed.emit()
+
+    def _on_event_list_double_clicked(self, item: QListWidgetItem):
+        """Handle double-click on event list item."""
+        event_id = item.data(Qt.ItemDataRole.UserRole)
+        if event_id:
+            self._show_event_popup(event_id)
+
+    def _on_pyramid_event_clicked(self, event_id: str):
+        """Handle click on event in pyramid visual."""
+        event = next((e for e in self.freytag_pyramid.events if e.id == event_id), None)
+        if not event:
+            return
+
+        self._show_event_popup(event_id)
+
+    def _show_event_popup(self, event_id: str):
+        """Show the event description popup.
+
+        Args:
+            event_id: ID of the event to show
+        """
+        event = next((e for e in self.freytag_pyramid.events if e.id == event_id), None)
+        if not event:
+            return
+
+        popup = EventDescriptionPopup(event, parent=self)
+        result = popup.exec()
+
+        if result == QDialog.DialogCode.Accepted:
+            # Description was saved
+            self._update_pyramid()
+            self.content_changed.emit()
+        elif result == 2:  # Custom code for "open full editor"
+            # Open the full event editor
+            self._edit_event_by_id(event_id)
+
+    def _edit_event_by_id(self, event_id: str):
+        """Edit an event by its ID.
+
+        Args:
+            event_id: ID of the event to edit
+        """
+        event = next((e for e in self.freytag_pyramid.events if e.id == event_id), None)
+        if not event:
+            return
+
+        editor = PlotEventEditor(
+            event=event,
+            available_characters=self.available_characters,
+            available_subplots=self.subplots,
+            num_acts=self.freytag_pyramid.num_acts,
+            act_names=self.freytag_pyramid.act_names,
+            parent=self
+        )
+        if editor.exec() == QDialog.DialogCode.Accepted:
+            self._update_event_list()
+            self.content_changed.emit()
+
+
+class ActNamesDialog(QDialog):
+    """Dialog for editing act names."""
+
+    def __init__(self, num_acts: int, act_names: List[str], parent=None):
+        """Initialize act names dialog."""
+        super().__init__(parent)
+        self.num_acts = num_acts
+        self.act_names = act_names.copy() if act_names else []
+        self.name_edits = []
+        self._init_ui()
+
+    def _init_ui(self):
+        """Initialize UI."""
+        self.setWindowTitle("Edit Act Names")
+        self.setMinimumWidth(350)
+
+        layout = QVBoxLayout(self)
+
+        label = QLabel("Customize the names for each act:")
+        layout.addWidget(label)
+
+        # Create input fields for each act
+        form_layout = QFormLayout()
+        for i in range(self.num_acts):
+            edit = QLineEdit()
+            default_name = self.act_names[i] if i < len(self.act_names) else f"Act {i+1}"
+            edit.setText(default_name)
+            edit.setPlaceholderText(f"Act {i+1}")
+            form_layout.addRow(f"Act {i+1}:", edit)
+            self.name_edits.append(edit)
+
+        layout.addLayout(form_layout)
+
+        # Preset buttons
+        preset_layout = QHBoxLayout()
+        preset_layout.addWidget(QLabel("Presets:"))
+
+        three_act_btn = QPushButton("3-Act Classic")
+        three_act_btn.clicked.connect(lambda: self._apply_preset([
+            "Act I: Setup", "Act II: Confrontation", "Act III: Resolution"
+        ]))
+        preset_layout.addWidget(three_act_btn)
+
+        five_act_btn = QPushButton("5-Act Drama")
+        five_act_btn.clicked.connect(lambda: self._apply_preset([
+            "Act I: Exposition", "Act II: Rising Action", "Act III: Climax",
+            "Act IV: Falling Action", "Act V: Denouement"
+        ]))
+        preset_layout.addWidget(five_act_btn)
+
+        preset_layout.addStretch()
+        layout.addLayout(preset_layout)
+
+        layout.addStretch()
+
+        # Buttons
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _apply_preset(self, names: List[str]):
+        """Apply preset act names."""
+        for i, edit in enumerate(self.name_edits):
+            if i < len(names):
+                edit.setText(names[i])
+
+    def get_act_names(self) -> List[str]:
+        """Get the edited act names."""
+        return [edit.text().strip() or f"Act {i+1}" for i, edit in enumerate(self.name_edits)]
+
+
+class EventDescriptionPopup(QDialog):
+    """Popup dialog for viewing and editing event description."""
+
+    description_changed = pyqtSignal()
+
+    def __init__(self, event: PlotEvent, parent=None):
+        """Initialize event description popup.
+
+        Args:
+            event: PlotEvent to display/edit
+            parent: Parent widget
+        """
+        super().__init__(parent)
+        self.event = event
+        self._init_ui()
+
+    def _init_ui(self):
+        """Initialize UI."""
+        self.setWindowTitle(f"Event: {self.event.title}")
+        self.setMinimumWidth(500)
+        self.setMinimumHeight(400)
+
+        layout = QVBoxLayout(self)
+
+        # Event info header
+        info_layout = QFormLayout()
+
+        # Title (read-only display)
+        title_label = QLabel(self.event.title)
+        title_label.setStyleSheet("font-weight: bold; font-size: 14px;")
+        info_layout.addRow("Title:", title_label)
+
+        # Stage and Act
+        stage_names = {
+            "exposition": "Exposition",
+            "rising_action": "Rising Action",
+            "climax": "Climax",
+            "falling_action": "Falling Action",
+            "resolution": "Resolution"
+        }
+        stage_display = stage_names.get(self.event.stage, self.event.stage)
+        info_layout.addRow("Stage:", QLabel(stage_display))
+        info_layout.addRow("Act:", QLabel(f"Act {self.event.act}"))
+        info_layout.addRow("Intensity:", QLabel(f"{self.event.intensity}%"))
+
+        layout.addLayout(info_layout)
+
+        # Description editor
+        desc_group = QGroupBox("Description")
+        desc_layout = QVBoxLayout(desc_group)
+        self.description_edit = QTextEdit()
+        self.description_edit.setPlainText(self.event.description)
+        self.description_edit.setPlaceholderText("What happens in this event...")
+        desc_layout.addWidget(self.description_edit)
+        layout.addWidget(desc_group)
+
+        # Outcome editor
+        outcome_group = QGroupBox("Outcome")
+        outcome_layout = QVBoxLayout(outcome_group)
+        self.outcome_edit = QTextEdit()
+        self.outcome_edit.setPlainText(self.event.outcome)
+        self.outcome_edit.setPlaceholderText("What changes as a result...")
+        self.outcome_edit.setMaximumHeight(100)
+        outcome_layout.addWidget(self.outcome_edit)
+        layout.addWidget(outcome_group)
+
+        # Characters involved
+        if self.event.related_characters:
+            chars_label = QLabel(f"Characters: {', '.join(self.event.related_characters)}")
+            chars_label.setWordWrap(True)
+            chars_label.setStyleSheet("color: #6b7280; font-size: 11px;")
+            layout.addWidget(chars_label)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+
+        edit_full_btn = QPushButton("Edit Full Event...")
+        edit_full_btn.clicked.connect(self._open_full_editor)
+        button_layout.addWidget(edit_full_btn)
+
+        button_layout.addStretch()
+
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(self._save_and_close)
+        save_btn.setDefault(True)
+        button_layout.addWidget(save_btn)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        button_layout.addWidget(cancel_btn)
+
+        layout.addLayout(button_layout)
+
+    def _save_and_close(self):
+        """Save description changes and close."""
+        self.event.description = self.description_edit.toPlainText().strip()
+        self.event.outcome = self.outcome_edit.toPlainText().strip()
+        self.description_changed.emit()
+        self.accept()
+
+    def _open_full_editor(self):
+        """Signal that full editor should be opened."""
+        # Save any changes first
+        self.event.description = self.description_edit.toPlainText().strip()
+        self.event.outcome = self.outcome_edit.toPlainText().strip()
+        self.done(2)  # Custom return code for "open full editor"

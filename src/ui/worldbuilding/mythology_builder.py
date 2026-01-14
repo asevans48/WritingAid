@@ -291,6 +291,11 @@ class MythologyBuilderWidget(QWidget):
         self.remove_btn.setEnabled(False)
         toolbar.addWidget(self.remove_btn)
 
+        self.import_btn = QPushButton("📥 Import")
+        self.import_btn.setToolTip("Import myths from JSON file")
+        self.import_btn.clicked.connect(self._import_myths)
+        toolbar.addWidget(self.import_btn)
+
         toolbar.addStretch()
 
         layout.addLayout(toolbar)
@@ -325,6 +330,19 @@ class MythologyBuilderWidget(QWidget):
             List of myths
         """
         return self.myths
+
+    def _import_myths(self):
+        """Import myths from JSON file."""
+        from src.ui.worldbuilding.worldbuilding_importer import show_import_dialog
+        from src.models.worldbuilding_objects import CompleteWorldBuilding
+
+        temp_wb = CompleteWorldBuilding(myths=self.myths)
+        result = show_import_dialog(self, temp_wb, target_section="myths")
+
+        if result and result.imported_counts.get("myths", 0) > 0:
+            self.myths = temp_wb.myths
+            self._update_list()
+            self.content_changed.emit()
 
     def _update_list(self):
         """Update myth list display."""

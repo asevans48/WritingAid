@@ -427,9 +427,9 @@ class GovernmentBranch(BaseModel):
 
 class PoliticalSystem(BaseModel):
     """A political system for a faction."""
-    id: str
-    faction_id: str
-    system_type: str  # Democracy, Monarchy, Dictatorship, etc.
+    id: str  # Name of the political system (e.g., "The Republic of Valoria")
+    faction_id: str = ""  # Reference to associated faction
+    system_type: str = ""  # Democracy, Monarchy, Dictatorship, etc.
     constitution: str = ""
     branches: List[GovernmentBranch] = Field(default_factory=list)
     ruling_party: Optional[str] = None
@@ -490,6 +490,7 @@ class Technology(BaseModel):
 # ===== PLACES & LANDMARKS =====
 class PlaceType(str, Enum):
     """Type of place or landmark."""
+    SETTLEMENT = "settlement"
     CITY = "city"
     TOWN = "town"
     VILLAGE = "village"
@@ -512,6 +513,9 @@ class PlaceType(str, Enum):
     PRISON = "prison"
     SACRED_SITE = "sacred_site"
     HIDDEN_LOCATION = "hidden_location"
+    REGION = "region"
+    TERRITORY = "territory"
+    DISTRICT = "district"
     OTHER = "other"
 
 
@@ -1051,6 +1055,7 @@ class CompleteWorldBuilding(BaseModel):
     # Planets & Space
     planets: List[Planet] = Field(default_factory=list)
     stars: List[Star] = Field(default_factory=list)
+    star_systems: List[StarSystem] = Field(default_factory=list)
 
     # History
     historical_events: List[HistoricalEvent] = Field(default_factory=list)
@@ -1071,6 +1076,22 @@ class CompleteWorldBuilding(BaseModel):
 
     # Mythology
     myths: List[Myth] = Field(default_factory=list)
+
+    # Places & Locations
+    places: List[Place] = Field(default_factory=list)
+
+    # Cultures
+    cultures: List[Culture] = Field(default_factory=list)
+
+    # Biology
+    flora: List[Flora] = Field(default_factory=list)
+    fauna: List[Fauna] = Field(default_factory=list)
+
+    # Technology
+    technologies: List[Technology] = Field(default_factory=list)
+
+    # Climate
+    climate_presets: List[ClimatePreset] = Field(default_factory=list)
 
     # Maps
     maps: List[WorldMap] = Field(default_factory=list)

@@ -630,6 +630,13 @@ class MapBuilderWidget(QWidget):
         redo_action.triggered.connect(self._redo)
         toolbar.addAction(redo_action)
 
+        toolbar.addSeparator()
+
+        import_action = QAction("Import Maps", self)
+        import_action.setToolTip("Import maps from JSON file")
+        import_action.triggered.connect(self._import_maps)
+        toolbar.addAction(import_action)
+
         map_layout.addWidget(toolbar)
 
         # Splitter for canvas and sidebar
@@ -1093,3 +1100,16 @@ class MapBuilderWidget(QWidget):
         """Get maps list."""
         # Ensure we always return a list (backward compatibility)
         return self.maps if self.maps is not None else []
+
+    def _import_maps(self):
+        """Import maps from JSON file."""
+        from src.ui.worldbuilding.worldbuilding_importer import show_import_dialog
+        from src.models.worldbuilding_objects import CompleteWorldBuilding
+
+        temp_wb = CompleteWorldBuilding(maps=self.maps)
+        result = show_import_dialog(self, temp_wb, target_section="maps")
+
+        if result and result.imported_counts.get("maps", 0) > 0:
+            self.maps = temp_wb.maps
+            self.load_maps(self.maps)
+            self.content_changed.emit()

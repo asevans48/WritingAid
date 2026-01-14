@@ -500,6 +500,11 @@ class HierarchyBuilderWidget(QWidget):
         remove_btn.clicked.connect(self._remove_hierarchy)
         btn_layout.addWidget(remove_btn)
 
+        import_btn = QPushButton("📥 Import")
+        import_btn.setToolTip("Import hierarchies from JSON file")
+        import_btn.clicked.connect(self._import_hierarchies)
+        btn_layout.addWidget(import_btn)
+
         left_layout.addLayout(btn_layout)
 
         left_panel.setMaximumWidth(250)
@@ -581,6 +586,19 @@ class HierarchyBuilderWidget(QWidget):
         if self.current_editor:
             self.current_editor.save_to_model()
         return self.hierarchies
+
+    def _import_hierarchies(self):
+        """Import hierarchies from JSON file."""
+        from src.ui.worldbuilding.worldbuilding_importer import show_import_dialog
+        from src.models.worldbuilding_objects import CompleteWorldBuilding
+
+        temp_wb = CompleteWorldBuilding(power_hierarchies=self.hierarchies)
+        result = show_import_dialog(self, temp_wb, target_section="power_hierarchies")
+
+        if result and result.imported_counts.get("power_hierarchies", 0) > 0:
+            self.hierarchies = temp_wb.power_hierarchies
+            self.load_hierarchies(self.hierarchies)
+            self.content_changed.emit()
 
     def load_hierarchies(self, hierarchies: List[PowerHierarchy]):
         """Load hierarchies."""
