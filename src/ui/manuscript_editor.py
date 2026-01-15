@@ -900,36 +900,34 @@ class ManuscriptEditor(QWidget):
 
         self.chapter_list = QListWidget()
         self.chapter_list.currentItemChanged.connect(self._on_chapter_selected)
+        self.chapter_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.chapter_list.customContextMenuRequested.connect(self._show_chapter_context_menu)
         left_layout.addWidget(self.chapter_list)
 
-        # Chapter buttons
-        button_layout = QVBoxLayout()
+        # Chapter buttons (simplified - just add and reorder)
+        button_layout = QHBoxLayout()
 
-        add_button = QPushButton("Add Chapter")
+        add_button = QPushButton("+ Add")
+        add_button.setToolTip("Add new chapter at end")
         add_button.clicked.connect(self._add_chapter)
         button_layout.addWidget(add_button)
 
-        insert_button = QPushButton("Insert Chapter")
-        insert_button.clicked.connect(self._insert_chapter)
-        button_layout.addWidget(insert_button)
-
-        rename_button = QPushButton("Rename Chapter")
-        rename_button.clicked.connect(self._rename_chapter)
-        button_layout.addWidget(rename_button)
-
-        remove_button = QPushButton("Remove Chapter")
-        remove_button.clicked.connect(self._remove_chapter)
-        button_layout.addWidget(remove_button)
-
-        move_up_button = QPushButton("Move Up")
+        move_up_button = QPushButton("Up")
+        move_up_button.setToolTip("Move chapter up")
         move_up_button.clicked.connect(self._move_chapter_up)
         button_layout.addWidget(move_up_button)
 
-        move_down_button = QPushButton("Move Down")
+        move_down_button = QPushButton("Down")
+        move_down_button.setToolTip("Move chapter down")
         move_down_button.clicked.connect(self._move_chapter_down)
         button_layout.addWidget(move_down_button)
 
         left_layout.addLayout(button_layout)
+
+        # Hint label
+        hint_label = QLabel("Right-click chapter for more options")
+        hint_label.setStyleSheet("color: #999; font-size: 10px; font-style: italic;")
+        left_layout.addWidget(hint_label)
 
         left_panel.setMaximumWidth(250)
         splitter.addWidget(left_panel)
@@ -951,6 +949,30 @@ class ManuscriptEditor(QWidget):
         splitter.setStretchFactor(1, 1)
 
         layout.addWidget(splitter, stretch=1)
+
+    def _show_chapter_context_menu(self, position):
+        """Show context menu for chapter list."""
+        item = self.chapter_list.itemAt(position)
+        if not item:
+            return
+
+        menu = QMenu(self)
+
+        # Rename action
+        rename_action = menu.addAction("✏️ Rename")
+        rename_action.triggered.connect(self._rename_chapter)
+
+        # Insert before action
+        insert_action = menu.addAction("📄 Insert Before")
+        insert_action.triggered.connect(self._insert_chapter)
+
+        menu.addSeparator()
+
+        # Delete action
+        delete_action = menu.addAction("🗑️ Delete")
+        delete_action.triggered.connect(self._remove_chapter)
+
+        menu.exec(self.chapter_list.mapToGlobal(position))
 
     def _add_chapter(self):
         """Add new chapter at the end."""
@@ -1093,16 +1115,26 @@ class ManuscriptEditor(QWidget):
         if current_row <= 0:
             return
 
+        # Save current editor content before reordering
+        if self.current_chapter_editor:
+            self.current_chapter_editor.save_to_model()
+
+        # Block signals during reorder to prevent spurious chapter switches
+        self.chapter_list.blockSignals(True)
+
         # Swap in manuscript
         self.manuscript.chapters[current_row], self.manuscript.chapters[current_row - 1] = \
             self.manuscript.chapters[current_row - 1], self.manuscript.chapters[current_row]
 
-        # Swap in list
-        current_item = self.chapter_list.takeItem(current_row)
-        self.chapter_list.insertItem(current_row - 1, current_item)
-        self.chapter_list.setCurrentItem(current_item)
+        # Rebuild list items to ensure IDs match manuscript order
+        self._rebuild_chapter_list()
 
-        self._renumber_chapters()
+        # Select the moved chapter (now at new position)
+        self.chapter_list.setCurrentRow(current_row - 1)
+
+        # Re-enable signals
+        self.chapter_list.blockSignals(False)
+
         self.content_changed.emit()
 
     def _move_chapter_down(self):
@@ -1111,17 +1143,36 @@ class ManuscriptEditor(QWidget):
         if current_row < 0 or current_row >= self.chapter_list.count() - 1:
             return
 
+        # Save current editor content before reordering
+        if self.current_chapter_editor:
+            self.current_chapter_editor.save_to_model()
+
+        # Block signals during reorder to prevent spurious chapter switches
+        self.chapter_list.blockSignals(True)
+
         # Swap in manuscript
         self.manuscript.chapters[current_row], self.manuscript.chapters[current_row + 1] = \
             self.manuscript.chapters[current_row + 1], self.manuscript.chapters[current_row]
 
-        # Swap in list
-        current_item = self.chapter_list.takeItem(current_row)
-        self.chapter_list.insertItem(current_row + 1, current_item)
-        self.chapter_list.setCurrentItem(current_item)
+        # Rebuild list items to ensure IDs match manuscript order
+        self._rebuild_chapter_list()
 
-        self._renumber_chapters()
+        # Select the moved chapter (now at new position)
+        self.chapter_list.setCurrentRow(current_row + 1)
+
+        # Re-enable signals
+        self.chapter_list.blockSignals(False)
+
         self.content_changed.emit()
+
+    def _rebuild_chapter_list(self):
+        """Rebuild the chapter list from manuscript.chapters to ensure sync."""
+        self.chapter_list.clear()
+        for i, chapter in enumerate(self.manuscript.chapters, 1):
+            chapter.number = i
+            item = QListWidgetItem(f"{i}. {chapter.title}")
+            item.setData(Qt.ItemDataRole.UserRole, chapter.id)
+            self.chapter_list.addItem(item)
 
     def _renumber_chapters(self):
         """Renumber all chapters sequentially."""

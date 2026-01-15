@@ -185,9 +185,9 @@ class Chapter(BaseModel):
 
     def save_content_to_file(self, project_dir: Path) -> bool:
         """Save chapter content to external file."""
-        if not self.file_path:
-            # Auto-generate file path
-            self.file_path = f"chapters/chapter_{self.number:03d}.md"
+        # Always regenerate file path based on current chapter number
+        # This ensures reordered chapters save to the correct files
+        self.file_path = f"chapters/chapter_{self.number:03d}.md"
 
         full_path = project_dir / self.file_path
         full_path.parent.mkdir(parents=True, exist_ok=True)
