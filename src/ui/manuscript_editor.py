@@ -258,6 +258,12 @@ class ChapterEditor(QWidget):
         hints_button.clicked.connect(self._request_ai_hints)
         bottom_toolbar.addWidget(hints_button)
 
+        # Check Promises button (AI)
+        check_promises_button = QPushButton("Check Promises")
+        check_promises_button.setToolTip("Check chapter against story promises and character consistency")
+        check_promises_button.clicked.connect(self._check_promises)
+        bottom_toolbar.addWidget(check_promises_button)
+
         # Save revision button
         save_revision_button = QPushButton("Save Revision")
         save_revision_button.clicked.connect(self._save_revision)
@@ -429,6 +435,69 @@ class ChapterEditor(QWidget):
             "AI Hints",
             "AI chapter hints will be integrated soon."
         )
+
+    def _check_promises(self):
+        """Check chapter against story promises and character consistency."""
+        if not self.project:
+            QMessageBox.warning(
+                self,
+                "No Project",
+                "Please save the project first to enable promise checking."
+            )
+            return
+
+        # Get promises and characters from project
+        promises = []
+        if hasattr(self.project, 'story_planning') and self.project.story_planning:
+            for p in self.project.story_planning.promises:
+                promises.append({
+                    'promise_type': p.promise_type,
+                    'title': p.title,
+                    'description': p.description,
+                    'related_characters': p.related_characters
+                })
+
+        characters = []
+        if hasattr(self.project, 'characters'):
+            for c in self.project.characters:
+                characters.append({
+                    'name': c.name,
+                    'character_type': c.character_type,
+                    'personality': c.personality,
+                    'backstory': c.backstory
+                })
+
+        if not promises and not characters:
+            QMessageBox.information(
+                self,
+                "No Promises Defined",
+                "No story promises or characters defined.\n\n"
+                "Add promises in Story Planning > Promises tab,\n"
+                "and add characters in the Characters section."
+            )
+            return
+
+        # Get chapter content
+        chapter_content = self.editor.toPlainText()
+        if not chapter_content.strip():
+            QMessageBox.warning(self, "Empty Chapter", "Please write some content first.")
+            return
+
+        # Get plot outline if available
+        plot_outline = ""
+        if hasattr(self.project, 'story_planning') and self.project.story_planning:
+            plot_outline = self.project.story_planning.main_plot
+
+        # Show the promise check dialog
+        dialog = PromiseCheckDialog(
+            chapter_title=self.chapter.title,
+            chapter_content=chapter_content,
+            promises=promises,
+            characters=characters,
+            plot_outline=plot_outline,
+            parent=self
+        )
+        dialog.exec()
 
     def _lookup_selected_text(self, text: str):
         """Look up context for selected text."""
@@ -1291,3 +1360,197 @@ class ManuscriptEditor(QWidget):
     def search_key_points(self, query: str, point_types=None):
         """Search key points across all chapters."""
         return self.memory_manager.search_key_points(query, point_types)
+
+
+class PromiseCheckDialog(QDialog):
+    """Dialog for showing promise check results."""
+
+    def __init__(
+        self,
+        chapter_title: str,
+        chapter_content: str,
+        promises: List[dict],
+        characters: List[dict],
+        plot_outline: str = "",
+        parent=None
+    ):
+        """Initialize promise check dialog.
+
+        Args:
+            chapter_title: Title of the chapter being checked
+            chapter_content: Content of the chapter
+            promises: List of promise dicts
+            characters: List of character dicts
+            plot_outline: Optional plot outline
+            parent: Parent widget
+        """
+        super().__init__(parent)
+        self.chapter_title = chapter_title
+        self.chapter_content = chapter_content
+        self.promises = promises
+        self.characters = characters
+        self.plot_outline = plot_outline
+        self.result = None
+        self._init_ui()
+
+    def _init_ui(self):
+        """Initialize UI."""
+        self.setWindowTitle(f"Promise Check: {self.chapter_title}")
+        self.setMinimumWidth(700)
+        self.setMinimumHeight(500)
+
+        layout = QVBoxLayout(self)
+
+        # Header
+        header = QLabel(f"<h3>Checking: {self.chapter_title}</h3>")
+        layout.addWidget(header)
+
+        # Info about what's being checked
+        info_text = []
+        if self.promises:
+            info_text.append(f"• {len(self.promises)} story promises")
+        if self.characters:
+            info_text.append(f"• {len(self.characters)} character profiles")
+        info_label = QLabel("Checking against: " + ", ".join(info_text) if info_text else "No data to check against")
+        info_label.setStyleSheet("color: #6b7280; margin-bottom: 10px;")
+        layout.addWidget(info_label)
+
+        # Results area (scrollable)
+        self.results_text = QTextEdit()
+        self.results_text.setReadOnly(True)
+        self.results_text.setPlaceholderText("Click 'Run Check' to analyze the chapter...")
+        layout.addWidget(self.results_text, stretch=1)
+
+        # Button layout
+        button_layout = QHBoxLayout()
+
+        self.run_button = QPushButton("🔍 Run Check")
+        self.run_button.clicked.connect(self._run_check)
+        button_layout.addWidget(self.run_button)
+
+        button_layout.addStretch()
+
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.accept)
+        button_layout.addWidget(close_button)
+
+        layout.addLayout(button_layout)
+
+    def _run_check(self):
+        """Run the promise check."""
+        self.run_button.setEnabled(False)
+        self.run_button.setText("Checking...")
+        self.results_text.setPlainText("Analyzing chapter against promises and character profiles...\n\nThis may take a moment.")
+
+        # Force UI update
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()
+
+        try:
+            # Try to get the LLM client
+            from src.ai.llm_client import LLMClient
+            from src.ai.chapter_analysis_agent import PromiseChecker
+
+            # Get AI config
+            from src.config import get_settings
+            settings = get_settings()
+
+            if not settings.get('ai', {}).get('api_key'):
+                self.results_text.setPlainText(
+                    "⚠️ No AI API key configured.\n\n"
+                    "Please configure an API key in Settings > AI Configuration\n"
+                    "to use the promise checking feature."
+                )
+                self.run_button.setEnabled(True)
+                self.run_button.setText("🔍 Run Check")
+                return
+
+            # Initialize LLM client
+            llm = LLMClient(
+                api_key=settings['ai']['api_key'],
+                provider=settings['ai'].get('provider', 'openai'),
+                model=settings['ai'].get('model', 'gpt-4o-mini')
+            )
+
+            # Run the check
+            checker = PromiseChecker(llm)
+            result = checker.check_chapter(
+                chapter_content=self.chapter_content,
+                chapter_title=self.chapter_title,
+                promises=self.promises,
+                characters=self.characters,
+                plot_outline=self.plot_outline
+            )
+
+            # Display results
+            self._display_results(result)
+
+        except ImportError as e:
+            self.results_text.setPlainText(
+                f"⚠️ AI module not available: {e}\n\n"
+                "Please ensure AI dependencies are installed."
+            )
+        except Exception as e:
+            self.results_text.setPlainText(
+                f"⚠️ Error running check: {e}\n\n"
+                "Please check your AI configuration and try again."
+            )
+        finally:
+            self.run_button.setEnabled(True)
+            self.run_button.setText("🔍 Run Check")
+
+    def _display_results(self, result):
+        """Display the check results."""
+        lines = []
+
+        # Overall assessment
+        adherence_icons = {
+            'excellent': '✅',
+            'good': '👍',
+            'needs_attention': '⚠️',
+            'problematic': '❌'
+        }
+        icon = adherence_icons.get(result.overall_adherence, '📝')
+        lines.append(f"<h3>{icon} Overall: {result.overall_adherence.replace('_', ' ').title()}</h3>")
+        lines.append(f"<p>{result.summary}</p>")
+
+        lines.append("<hr/>")
+
+        # Tone and Plot assessment
+        lines.append(f"<p><b>Tone Assessment:</b> {result.tone_assessment}</p>")
+        lines.append(f"<p><b>Plot Alignment:</b> {result.plot_alignment}</p>")
+
+        # Promise violations
+        if result.promise_violations:
+            lines.append("<h4>⚠️ Promise Violations</h4>")
+            for v in result.promise_violations:
+                severity_icon = {'high': '🔴', 'medium': '🟡', 'low': '🟢'}.get(v.severity, '⚪')
+                lines.append(f"<div style='margin-left: 10px; margin-bottom: 10px;'>")
+                lines.append(f"<b>{severity_icon} {v.promise_title}</b> ({v.promise_type})")
+                if v.quote:
+                    lines.append(f"<br/><i>\"{v.quote}\"</i>")
+                if v.violation_description:
+                    lines.append(f"<br/>Issue: {v.violation_description}")
+                if v.suggestion:
+                    lines.append(f"<br/><span style='color: #059669;'>💡 {v.suggestion}</span>")
+                lines.append("</div>")
+        else:
+            lines.append("<p>✅ No promise violations detected</p>")
+
+        # Character inconsistencies
+        if result.character_inconsistencies:
+            lines.append("<h4>👤 Character Inconsistencies</h4>")
+            for c in result.character_inconsistencies:
+                lines.append(f"<div style='margin-left: 10px; margin-bottom: 10px;'>")
+                lines.append(f"<b>{c.character_name}</b> ({c.inconsistency_type})")
+                if c.quote:
+                    lines.append(f"<br/><i>\"{c.quote}\"</i>")
+                if c.expected_behavior:
+                    lines.append(f"<br/>Expected: {c.expected_behavior}")
+                if c.suggestion:
+                    lines.append(f"<br/><span style='color: #059669;'>💡 {c.suggestion}</span>")
+                lines.append("</div>")
+        else:
+            lines.append("<p>✅ No character inconsistencies detected</p>")
+
+        self.results_text.setHtml("\n".join(lines))

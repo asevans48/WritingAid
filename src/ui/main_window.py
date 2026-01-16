@@ -27,6 +27,7 @@ from src.ui.import_guide_dialog import ImportGuideDialog
 from src.ui.json_import_dialog import JSONImportDialog
 from src.export.manuscript_exporter import ManuscriptExporter
 from src.export.llm_context_exporter import LLMContextExporter
+from src.ui.export_summary_dialog import ExportSummaryDialog
 from src.ui.styles import get_modern_style, get_icon
 from src.config import get_ai_config
 
@@ -210,6 +211,11 @@ class MainWindow(QMainWindow):
         export_llm_action.setToolTip("Export worldbuilding, plot, and characters as markdown for AI context")
         export_llm_action.triggered.connect(self._export_llm_context)
         export_menu.addAction(export_llm_action)
+
+        export_summary_action = QAction("Export Project &Summary...", self)
+        export_summary_action.setToolTip("Export comprehensive project summary with optional AI/ML summarization")
+        export_summary_action.triggered.connect(self._export_project_summary)
+        export_menu.addAction(export_summary_action)
 
         # Help menu
         help_menu = menubar.addMenu("&Help")
@@ -601,6 +607,20 @@ class MainWindow(QMainWindow):
                     "Export Error",
                     f"An error occurred during export:\n{str(e)}"
                 )
+
+    def _export_project_summary(self):
+        """Export project as a comprehensive summary with optional AI/ML summarization."""
+        if not self.current_project:
+            QMessageBox.warning(
+                self,
+                "No Project",
+                "No project loaded to export."
+            )
+            return
+
+        # Show export dialog
+        dialog = ExportSummaryDialog(self.current_project, self)
+        dialog.exec()
 
     def _show_import_guide(self):
         """Show the import guide dialog with AI prompts."""

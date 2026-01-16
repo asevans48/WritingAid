@@ -503,3 +503,298 @@ Be brief and specific.
     def reset_cost(self):
         """Reset cost tracking."""
         self.total_cost = 0.0
+
+
+@dataclass
+class PromiseViolation:
+    """A detected violation of a story promise."""
+    promise_title: str
+    promise_type: str  # tone, plot, genre, character
+    violation_description: str
+    quote: str  # The text that violates the promise
+    severity: str  # "high", "medium", "low"
+    suggestion: str  # How to fix it
+
+
+@dataclass
+class CharacterInconsistency:
+    """A detected character inconsistency."""
+    character_name: str
+    inconsistency_type: str  # voice, behavior, knowledge, motivation
+    description: str
+    quote: str
+    expected_behavior: str
+    suggestion: str
+
+
+@dataclass
+class PromiseCheckResult:
+    """Result of checking a chapter against story promises."""
+    chapter_title: str
+    overall_adherence: str  # "excellent", "good", "needs_attention", "problematic"
+    promise_violations: List[PromiseViolation]
+    character_inconsistencies: List[CharacterInconsistency]
+    tone_assessment: str
+    plot_alignment: str
+    summary: str
+
+
+class PromiseChecker:
+    """Agent for checking chapters against story promises and character consistency."""
+
+    PROMISE_CHECK_SYSTEM = """You are a continuity editor ensuring consistency in storytelling.
+Your job is to check if chapter content adheres to the author's stated promises and maintains character consistency.
+
+Be thorough but fair. Not every deviation is a violation - stories can have nuance.
+Only flag genuine issues that would confuse or disappoint readers.
+
+For each issue you find:
+1. Quote the specific problematic text
+2. Explain why it's an issue
+3. Suggest how to address it
+"""
+
+    def __init__(self, llm_client: 'LLMClient'):
+        """Initialize promise checker.
+
+        Args:
+            llm_client: LLM client for API calls
+        """
+        self.llm = llm_client
+
+    def check_chapter(
+        self,
+        chapter_content: str,
+        chapter_title: str,
+        promises: List[Dict[str, Any]],
+        characters: List[Dict[str, Any]],
+        plot_outline: str = "",
+        previous_chapters_summary: str = ""
+    ) -> PromiseCheckResult:
+        """Check a chapter against story promises and character consistency.
+
+        Args:
+            chapter_content: The chapter text to check
+            chapter_title: Title of the chapter
+            promises: List of story promises (dicts with type, title, description)
+            characters: List of characters (dicts with name, personality, backstory)
+            plot_outline: Optional plot outline for context
+            previous_chapters_summary: Summary of previous chapters for continuity
+
+        Returns:
+            PromiseCheckResult with violations and inconsistencies
+        """
+        # Format promises for the prompt
+        promises_text = self._format_promises(promises)
+        characters_text = self._format_characters(characters)
+
+        prompt = f"""
+STORY PROMISES TO CHECK AGAINST:
+{promises_text}
+
+CHARACTER PROFILES:
+{characters_text}
+
+{f"PLOT OUTLINE:{chr(10)}{plot_outline}{chr(10)}" if plot_outline else ""}
+{f"PREVIOUS CHAPTERS SUMMARY:{chr(10)}{previous_chapters_summary}{chr(10)}" if previous_chapters_summary else ""}
+
+CHAPTER TO ANALYZE: {chapter_title}
+---
+{chapter_content[:6000]}  # Truncate if too long
+---
+
+Analyze this chapter for:
+
+1. PROMISE VIOLATIONS
+Check each promise type (tone, plot, genre, character) and identify any violations.
+For each violation found, provide:
+- Promise: [which promise was violated]
+- Type: [tone/plot/genre/character]
+- Quote: "[exact text that violates]"
+- Issue: [what's wrong]
+- Severity: [high/medium/low]
+- Suggestion: [how to fix]
+
+2. CHARACTER INCONSISTENCIES
+Check if characters behave consistently with their established profiles.
+For each inconsistency found, provide:
+- Character: [name]
+- Type: [voice/behavior/knowledge/motivation]
+- Quote: "[text showing inconsistency]"
+- Expected: [what would be consistent]
+- Suggestion: [how to fix]
+
+3. OVERALL ASSESSMENT
+- Tone Assessment: [Does the chapter maintain the promised tone?]
+- Plot Alignment: [Does it align with the story's plot promises?]
+- Overall Adherence: [excellent/good/needs_attention/problematic]
+- Summary: [2-3 sentence summary of findings]
+
+If no issues are found in a category, explicitly state "No issues found."
+"""
+
+        response = self.llm.generate_text(
+            prompt,
+            self.PROMISE_CHECK_SYSTEM,
+            max_tokens=2000,
+            temperature=0.3
+        )
+
+        return self._parse_check_result(response, chapter_title)
+
+    def _format_promises(self, promises: List[Dict[str, Any]]) -> str:
+        """Format promises for the prompt."""
+        if not promises:
+            return "No explicit promises defined."
+
+        lines = []
+        type_labels = {
+            "tone": "🎭 TONE",
+            "plot": "📖 PLOT",
+            "genre": "📚 GENRE",
+            "character": "👤 CHARACTER"
+        }
+
+        for p in promises:
+            label = type_labels.get(p.get("promise_type", ""), "📝")
+            lines.append(f"{label}: {p.get('title', 'Untitled')}")
+            if p.get("description"):
+                lines.append(f"   {p.get('description')}")
+            if p.get("related_characters"):
+                lines.append(f"   Related characters: {', '.join(p.get('related_characters', []))}")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    def _format_characters(self, characters: List[Dict[str, Any]]) -> str:
+        """Format characters for the prompt."""
+        if not characters:
+            return "No character profiles available."
+
+        lines = []
+        for c in characters:
+            lines.append(f"• {c.get('name', 'Unknown')} ({c.get('character_type', 'unknown')})")
+            if c.get("personality"):
+                lines.append(f"  Personality: {c.get('personality')[:200]}")
+            if c.get("backstory"):
+                lines.append(f"  Background: {c.get('backstory')[:200]}")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    def _parse_check_result(self, response: str, chapter_title: str) -> PromiseCheckResult:
+        """Parse the LLM response into structured result."""
+        violations = []
+        inconsistencies = []
+        tone_assessment = ""
+        plot_alignment = ""
+        overall_adherence = "good"
+        summary = ""
+
+        lines = response.split('\n')
+        current_section = None
+        current_item = {}
+
+        for line in lines:
+            line = line.strip()
+            line_lower = line.lower()
+
+            # Section headers
+            if 'promise violation' in line_lower:
+                current_section = 'violations'
+            elif 'character inconsistenc' in line_lower:
+                current_section = 'inconsistencies'
+            elif 'overall assessment' in line_lower:
+                current_section = 'assessment'
+            elif 'no issues found' in line_lower:
+                continue
+
+            # Parse violations
+            elif current_section == 'violations':
+                if line.startswith('- Promise:') or line.startswith('Promise:'):
+                    if current_item and 'promise' in current_item:
+                        violations.append(self._create_violation(current_item))
+                    current_item = {'promise': line.split(':', 1)[1].strip()}
+                elif line.startswith('- Type:') or line.startswith('Type:'):
+                    current_item['type'] = line.split(':', 1)[1].strip().lower()
+                elif line.startswith('- Quote:') or line.startswith('Quote:'):
+                    current_item['quote'] = line.split(':', 1)[1].strip().strip('"')
+                elif line.startswith('- Issue:') or line.startswith('Issue:'):
+                    current_item['issue'] = line.split(':', 1)[1].strip()
+                elif line.startswith('- Severity:') or line.startswith('Severity:'):
+                    current_item['severity'] = line.split(':', 1)[1].strip().lower()
+                elif line.startswith('- Suggestion:') or line.startswith('Suggestion:'):
+                    current_item['suggestion'] = line.split(':', 1)[1].strip()
+
+            # Parse inconsistencies
+            elif current_section == 'inconsistencies':
+                if line.startswith('- Character:') or line.startswith('Character:'):
+                    if current_item and 'character' in current_item:
+                        inconsistencies.append(self._create_inconsistency(current_item))
+                    current_item = {'character': line.split(':', 1)[1].strip()}
+                elif line.startswith('- Type:') or line.startswith('Type:'):
+                    current_item['type'] = line.split(':', 1)[1].strip().lower()
+                elif line.startswith('- Quote:') or line.startswith('Quote:'):
+                    current_item['quote'] = line.split(':', 1)[1].strip().strip('"')
+                elif line.startswith('- Expected:') or line.startswith('Expected:'):
+                    current_item['expected'] = line.split(':', 1)[1].strip()
+                elif line.startswith('- Suggestion:') or line.startswith('Suggestion:'):
+                    current_item['suggestion'] = line.split(':', 1)[1].strip()
+
+            # Parse assessment
+            elif current_section == 'assessment':
+                if 'tone assessment' in line_lower:
+                    tone_assessment = line.split(':', 1)[1].strip() if ':' in line else ""
+                elif 'plot alignment' in line_lower:
+                    plot_alignment = line.split(':', 1)[1].strip() if ':' in line else ""
+                elif 'overall adherence' in line_lower:
+                    adherence = line.split(':', 1)[1].strip().lower() if ':' in line else "good"
+                    if 'excellent' in adherence:
+                        overall_adherence = 'excellent'
+                    elif 'problematic' in adherence:
+                        overall_adherence = 'problematic'
+                    elif 'needs' in adherence or 'attention' in adherence:
+                        overall_adherence = 'needs_attention'
+                    else:
+                        overall_adherence = 'good'
+                elif 'summary' in line_lower:
+                    summary = line.split(':', 1)[1].strip() if ':' in line else ""
+
+        # Add last items if present
+        if current_item:
+            if current_section == 'violations' and 'promise' in current_item:
+                violations.append(self._create_violation(current_item))
+            elif current_section == 'inconsistencies' and 'character' in current_item:
+                inconsistencies.append(self._create_inconsistency(current_item))
+
+        return PromiseCheckResult(
+            chapter_title=chapter_title,
+            overall_adherence=overall_adherence,
+            promise_violations=violations,
+            character_inconsistencies=inconsistencies,
+            tone_assessment=tone_assessment or "Not assessed",
+            plot_alignment=plot_alignment or "Not assessed",
+            summary=summary or "Analysis complete."
+        )
+
+    def _create_violation(self, data: Dict[str, str]) -> PromiseViolation:
+        """Create a PromiseViolation from parsed data."""
+        return PromiseViolation(
+            promise_title=data.get('promise', 'Unknown'),
+            promise_type=data.get('type', 'unknown'),
+            violation_description=data.get('issue', ''),
+            quote=data.get('quote', '')[:200],
+            severity=data.get('severity', 'medium'),
+            suggestion=data.get('suggestion', '')
+        )
+
+    def _create_inconsistency(self, data: Dict[str, str]) -> CharacterInconsistency:
+        """Create a CharacterInconsistency from parsed data."""
+        return CharacterInconsistency(
+            character_name=data.get('character', 'Unknown'),
+            inconsistency_type=data.get('type', 'behavior'),
+            description=data.get('issue', ''),
+            quote=data.get('quote', '')[:200],
+            expected_behavior=data.get('expected', ''),
+            suggestion=data.get('suggestion', '')
+        )

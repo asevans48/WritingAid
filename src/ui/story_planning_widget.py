@@ -77,7 +77,8 @@ class StoryPlanningWidget(QWidget):
         self.main_plot_edit.setPlainText(story_planning.main_plot)
         self.plot_manager.load_plot_data(
             story_planning.freytag_pyramid,
-            story_planning.subplots
+            story_planning.subplots,
+            story_planning.promises
         )
 
     def get_data(self) -> StoryPlanning:
@@ -86,12 +87,13 @@ class StoryPlanningWidget(QWidget):
         Returns:
             StoryPlanning object with all data
         """
-        freytag_pyramid, subplots = self.plot_manager.get_plot_data()
+        freytag_pyramid, subplots, promises = self.plot_manager.get_plot_data()
 
         return StoryPlanning(
             main_plot=self.main_plot_edit.toPlainText(),
             freytag_pyramid=freytag_pyramid,
-            subplots=subplots
+            subplots=subplots,
+            promises=promises
         )
 
     def set_available_characters(self, characters: List[str]):

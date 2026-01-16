@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal, QPropertyAnimation, QEasingCurve
 from PyQt6.QtGui import QFont
 
-from src.models.project import FreytagPyramid, PlotEvent, Subplot
+from src.models.project import FreytagPyramid, PlotEvent, Subplot, StoryPromise
 from src.ui.plot.freytag_pyramid_visual import FreytagPyramidVisual
 from src.ui.plot.plot_event_editor import PlotEventEditor
 
@@ -204,6 +204,7 @@ class PlotManagerWidget(QWidget):
         super().__init__()
         self.freytag_pyramid = FreytagPyramid()
         self.subplots: List[Subplot] = []
+        self.promises: List[StoryPromise] = []
         self.available_characters: List[str] = []
         self._init_ui()
 
@@ -267,6 +268,10 @@ class PlotManagerWidget(QWidget):
         # Subplots tab
         subplots_tab = self._create_subplots_tab()
         tabs.addTab(subplots_tab, "🔀 Subplots")
+
+        # Promises tab
+        promises_tab = self._create_promises_tab()
+        tabs.addTab(promises_tab, "🤝 Promises")
 
         layout.addWidget(tabs)
 
@@ -397,6 +402,142 @@ class PlotManagerWidget(QWidget):
         layout.addWidget(self.subplot_list)
 
         return widget
+
+    def _create_promises_tab(self) -> QWidget:
+        """Create promises management tab."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        # Header
+        header = QHBoxLayout()
+        title = QLabel("Story Promises")
+        title.setStyleSheet("font-size: 14px; font-weight: 600;")
+        header.addWidget(title)
+
+        header.addStretch()
+
+        help_text = QLabel("Commitments to readers about tone, plot, genre, and characters")
+        help_text.setStyleSheet("font-size: 11px; color: #6b7280;")
+        header.addWidget(help_text)
+
+        layout.addLayout(header)
+
+        # Toolbar
+        toolbar = QHBoxLayout()
+
+        add_promise_btn = QPushButton("➕ Add Promise")
+        add_promise_btn.clicked.connect(self._add_promise)
+        toolbar.addWidget(add_promise_btn)
+
+        self.edit_promise_btn = QPushButton("✏️ Edit")
+        self.edit_promise_btn.clicked.connect(self._edit_promise)
+        self.edit_promise_btn.setEnabled(False)
+        toolbar.addWidget(self.edit_promise_btn)
+
+        self.remove_promise_btn = QPushButton("🗑️ Remove")
+        self.remove_promise_btn.clicked.connect(self._remove_promise)
+        self.remove_promise_btn.setEnabled(False)
+        toolbar.addWidget(self.remove_promise_btn)
+
+        toolbar.addStretch()
+
+        layout.addLayout(toolbar)
+
+        # Promise type sections
+        promise_sections_widget = QWidget()
+        promise_sections_layout = QVBoxLayout(promise_sections_widget)
+        promise_sections_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Info labels about each type
+        type_info = QLabel(
+            "<b>Types of promises:</b><br/>"
+            "• <b>Tone</b> - Emotional atmosphere (dark, humorous, hopeful)<br/>"
+            "• <b>Plot</b> - Story structure expectations (mystery solved, hero wins)<br/>"
+            "• <b>Genre</b> - Genre conventions (romance will bloom, justice served)<br/>"
+            "• <b>Character</b> - Character arcs and consistency (growth, motivations)"
+        )
+        type_info.setWordWrap(True)
+        type_info.setStyleSheet("background-color: #f3f4f6; padding: 10px; border-radius: 6px; font-size: 11px;")
+        promise_sections_layout.addWidget(type_info)
+
+        layout.addWidget(promise_sections_widget)
+
+        # Promise list
+        self.promise_list = QListWidget()
+        self.promise_list.itemSelectionChanged.connect(self._on_promise_selection_changed)
+        self.promise_list.itemDoubleClicked.connect(self._edit_promise)
+        layout.addWidget(self.promise_list)
+
+        return widget
+
+    def _add_promise(self):
+        """Add new story promise."""
+        dialog = PromiseEditor(
+            available_characters=self.available_characters,
+            parent=self
+        )
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            promise = dialog.get_promise()
+            self.promises.append(promise)
+            self._update_promise_list()
+            self.content_changed.emit()
+
+    def _edit_promise(self):
+        """Edit selected promise."""
+        items = self.promise_list.selectedItems()
+        if not items:
+            return
+
+        promise_id = items[0].data(Qt.ItemDataRole.UserRole)
+        promise = next((p for p in self.promises if p.id == promise_id), None)
+        if not promise:
+            return
+
+        dialog = PromiseEditor(
+            promise=promise,
+            available_characters=self.available_characters,
+            parent=self
+        )
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._update_promise_list()
+            self.content_changed.emit()
+
+    def _remove_promise(self):
+        """Remove selected promise."""
+        items = self.promise_list.selectedItems()
+        if not items:
+            return
+
+        promise_id = items[0].data(Qt.ItemDataRole.UserRole)
+        self.promises = [p for p in self.promises if p.id != promise_id]
+        self._update_promise_list()
+        self.content_changed.emit()
+
+    def _on_promise_selection_changed(self):
+        """Handle promise selection change."""
+        has_selection = bool(self.promise_list.selectedItems())
+        self.edit_promise_btn.setEnabled(has_selection)
+        self.remove_promise_btn.setEnabled(has_selection)
+
+    def _update_promise_list(self):
+        """Update the promise list widget."""
+        self.promise_list.clear()
+
+        # Group promises by type
+        type_icons = {
+            "tone": "🎭",
+            "plot": "📖",
+            "genre": "📚",
+            "character": "👤"
+        }
+
+        for promise in self.promises:
+            icon = type_icons.get(promise.promise_type, "📝")
+            item = QListWidgetItem(f"{icon} [{promise.promise_type.title()}] {promise.title}")
+            item.setData(Qt.ItemDataRole.UserRole, promise.id)
+            if promise.description:
+                item.setToolTip(promise.description)
+            self.promise_list.addItem(item)
 
     def _add_event(self):
         """Add new plot event."""
@@ -703,15 +844,22 @@ class PlotManagerWidget(QWidget):
         self.move_subplot_up_btn.setEnabled(has_selection)
         self.move_subplot_down_btn.setEnabled(has_selection)
 
-    def load_plot_data(self, freytag_pyramid: FreytagPyramid, subplots: List[Subplot]):
+    def load_plot_data(
+        self,
+        freytag_pyramid: FreytagPyramid,
+        subplots: List[Subplot],
+        promises: List[StoryPromise] = None
+    ):
         """Load plot data.
 
         Args:
             freytag_pyramid: FreytagPyramid object with events
             subplots: List of Subplot objects
+            promises: List of StoryPromise objects
         """
         self.freytag_pyramid = freytag_pyramid
         self.subplots = subplots
+        self.promises = promises or []
 
         # Sync act configuration UI
         self.num_acts_spin.blockSignals(True)
@@ -723,14 +871,15 @@ class PlotManagerWidget(QWidget):
 
         self._update_event_list()
         self._update_subplot_list()
+        self._update_promise_list()
 
     def get_plot_data(self):
         """Get plot data.
 
         Returns:
-            Tuple of (FreytagPyramid, List[Subplot])
+            Tuple of (FreytagPyramid, List[Subplot], List[StoryPromise])
         """
-        return self.freytag_pyramid, self.subplots
+        return self.freytag_pyramid, self.subplots, self.promises
 
     def set_available_characters(self, characters: List[str]):
         """Set available characters for event association.
@@ -1006,3 +1155,176 @@ class EventDescriptionPopup(QDialog):
         self.event.description = self.description_edit.toPlainText().strip()
         self.event.outcome = self.outcome_edit.toPlainText().strip()
         self.done(2)  # Custom return code for "open full editor"
+
+
+class PromiseEditor(QDialog):
+    """Dialog for editing a story promise."""
+
+    PROMISE_TYPES = [
+        ("tone", "Tone", "Emotional atmosphere and mood"),
+        ("plot", "Plot", "Story structure and events"),
+        ("genre", "Genre", "Genre conventions and expectations"),
+        ("character", "Character", "Character arcs and consistency"),
+    ]
+
+    def __init__(
+        self,
+        promise: StoryPromise = None,
+        available_characters: List[str] = None,
+        parent=None
+    ):
+        """Initialize promise editor.
+
+        Args:
+            promise: Existing promise to edit, or None for new promise
+            available_characters: List of character names for character promises
+            parent: Parent widget
+        """
+        super().__init__(parent)
+        self.promise = promise
+        self.available_characters = available_characters or []
+        self.is_new = promise is None
+        self._init_ui()
+        if not self.is_new:
+            self._load_promise()
+
+    def _init_ui(self):
+        """Initialize UI."""
+        self.setWindowTitle("Edit Promise" if not self.is_new else "New Story Promise")
+        self.setMinimumWidth(500)
+        self.setMinimumHeight(400)
+
+        layout = QVBoxLayout(self)
+
+        # Create scroll area
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        form_widget = QWidget()
+        form_layout = QFormLayout(form_widget)
+
+        # Promise type selector
+        self.type_combo = QListWidget()
+        self.type_combo.setMaximumHeight(100)
+        for type_id, type_name, type_desc in self.PROMISE_TYPES:
+            item = QListWidgetItem(f"{type_name} - {type_desc}")
+            item.setData(Qt.ItemDataRole.UserRole, type_id)
+            self.type_combo.addItem(item)
+        self.type_combo.setCurrentRow(0)
+        self.type_combo.currentItemChanged.connect(self._on_type_changed)
+        form_layout.addRow("Type:*", self.type_combo)
+
+        # Title
+        self.title_edit = QLineEdit()
+        self.title_edit.setPlaceholderText("Brief summary of the promise")
+        form_layout.addRow("Title:*", self.title_edit)
+
+        # Description
+        self.description_edit = QTextEdit()
+        self.description_edit.setPlaceholderText(
+            "Detailed description of what you're committing to...\n\n"
+            "Examples:\n"
+            "• Tone: The story will maintain a hopeful undertone despite dark themes\n"
+            "• Plot: The central mystery will be fully resolved by the end\n"
+            "• Genre: Romance will develop gradually with satisfying payoff\n"
+            "• Character: Sarah will complete her arc from self-doubt to confidence"
+        )
+        self.description_edit.setMaximumHeight(150)
+        form_layout.addRow("Description:", self.description_edit)
+
+        # Related characters (for character promises)
+        self.characters_group = QGroupBox("Related Characters")
+        chars_layout = QVBoxLayout(self.characters_group)
+
+        self.characters_list = QListWidget()
+        self.characters_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
+        self.characters_list.setMaximumHeight(100)
+        for char in self.available_characters:
+            self.characters_list.addItem(char)
+        chars_layout.addWidget(self.characters_list)
+
+        form_layout.addRow(self.characters_group)
+        self._update_characters_visibility()
+
+        scroll_area.setWidget(form_widget)
+        layout.addWidget(scroll_area)
+
+        # Buttons
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._save_and_close)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _on_type_changed(self, current, previous):
+        """Handle promise type change."""
+        self._update_characters_visibility()
+
+    def _update_characters_visibility(self):
+        """Show/hide characters group based on promise type."""
+        current = self.type_combo.currentItem()
+        if current:
+            promise_type = current.data(Qt.ItemDataRole.UserRole)
+            self.characters_group.setVisible(promise_type == "character")
+
+    def _load_promise(self):
+        """Load existing promise data into form."""
+        if not self.promise:
+            return
+
+        # Set type
+        for i in range(self.type_combo.count()):
+            item = self.type_combo.item(i)
+            if item.data(Qt.ItemDataRole.UserRole) == self.promise.promise_type:
+                self.type_combo.setCurrentRow(i)
+                break
+
+        self.title_edit.setText(self.promise.title)
+        self.description_edit.setPlainText(self.promise.description)
+
+        # Select related characters
+        for i in range(self.characters_list.count()):
+            item = self.characters_list.item(i)
+            if item.text() in self.promise.related_characters:
+                item.setSelected(True)
+
+    def _save_and_close(self):
+        """Validate and save the promise."""
+        title = self.title_edit.text().strip()
+        if not title:
+            self.title_edit.setFocus()
+            return
+
+        current_type_item = self.type_combo.currentItem()
+        if not current_type_item:
+            return
+
+        promise_type = current_type_item.data(Qt.ItemDataRole.UserRole)
+
+        # Get selected characters
+        related_characters = [
+            item.text() for item in self.characters_list.selectedItems()
+        ]
+
+        if self.is_new:
+            import uuid
+            self.promise = StoryPromise(
+                id=str(uuid.uuid4()),
+                promise_type=promise_type,
+                title=title,
+                description=self.description_edit.toPlainText().strip(),
+                related_characters=related_characters
+            )
+        else:
+            self.promise.promise_type = promise_type
+            self.promise.title = title
+            self.promise.description = self.description_edit.toPlainText().strip()
+            self.promise.related_characters = related_characters
+
+        self.accept()
+
+    def get_promise(self) -> StoryPromise:
+        """Get the edited promise."""
+        return self.promise

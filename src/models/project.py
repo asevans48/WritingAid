@@ -72,6 +72,16 @@ class Character(BaseModel):
     updated_at: datetime = Field(default_factory=datetime.now)
 
 
+class StoryPromise(BaseModel):
+    """A promise/commitment made to readers about the story."""
+    id: str
+    promise_type: str  # tone, plot, genre, character
+    title: str  # Brief summary of the promise
+    description: str = ""  # Detailed description
+    related_characters: List[str] = Field(default_factory=list)  # For character promises
+    created_at: datetime = Field(default_factory=datetime.now)
+
+
 class PlotEvent(BaseModel):
     """Individual event in the plot structure."""
     id: str
@@ -123,6 +133,7 @@ class StoryPlanning(BaseModel):
     main_plot: str = ""
     subplots: List[Subplot] = Field(default_factory=list)
     themes: List[str] = Field(default_factory=list)
+    promises: List[StoryPromise] = Field(default_factory=list)  # Commitments to readers
 
 
 class ChapterRevision(BaseModel):
