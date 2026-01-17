@@ -5,10 +5,10 @@ from PyQt6.QtWidgets import (
     QLabel, QSplitter, QGroupBox, QComboBox, QMessageBox,
     QProgressBar, QScrollArea, QFrame, QTabWidget, QListWidget,
     QListWidgetItem, QLineEdit, QCheckBox, QSlider, QSpinBox,
-    QSizePolicy
+    QSizePolicy, QApplication
 )
-from PyQt6.QtCore import pyqtSignal, Qt, QRectF, QPointF
-from PyQt6.QtGui import QFont, QTextCursor, QPainter, QPen, QBrush, QColor, QPainterPath
+from PyQt6.QtCore import pyqtSignal, Qt, QRectF, QPointF, QMimeData
+from PyQt6.QtGui import QFont, QTextCursor, QPainter, QPen, QBrush, QColor, QPainterPath, QDrag, QPixmap
 from typing import Optional, Callable, List
 import threading
 import uuid
@@ -90,6 +90,7 @@ class StoryEventWidget(QWidget):
     changed = pyqtSignal()
     delete_requested = pyqtSignal(str)  # event_id
     arc_position_changed = pyqtSignal(str, int)  # event_id, position
+    drag_started = pyqtSignal(str)  # event_id - for drag and drop reordering
 
     # Arc stage constants
     STAGES = ["exposition", "rising", "climax", "falling", "resolution"]
@@ -107,7 +108,9 @@ class StoryEventWidget(QWidget):
         self.event_id = event_id
         self.order = order
         self._description_visible = False
+        self._drag_start_pos = None
         self._init_ui(text, description, completed, stage, arc_position)
+        self.setAcceptDrops(True)
 
     def _init_ui(self, text: str, description: str, completed: bool, stage: str, arc_position: int):
         # Main vertical layout - tight spacing
@@ -115,16 +118,24 @@ class StoryEventWidget(QWidget):
         main_layout.setContentsMargins(4, 2, 4, 2)
         main_layout.setSpacing(0)
 
-        # Top row with event controls
+        # Top row with event controls - compact for small screens
         top_row = QWidget()
         layout = QHBoxLayout(top_row)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
+        layout.setSpacing(3)  # Tighter spacing for small screens
+
+        # Drag handle
+        self.drag_handle = QLabel("⋮")
+        self.drag_handle.setStyleSheet("color: #9ca3af; font-size: 11px;")
+        self.drag_handle.setToolTip("Drag to reorder")
+        self.drag_handle.setFixedWidth(12)
+        self.drag_handle.setCursor(Qt.CursorShape.OpenHandCursor)
+        layout.addWidget(self.drag_handle)
 
         # Order/number label
         self.order_label = QLabel(f"{self.order + 1}.")
-        self.order_label.setMinimumWidth(25)
-        self.order_label.setStyleSheet("font-weight: bold; color: #6366f1;")
+        self.order_label.setFixedWidth(18)
+        self.order_label.setStyleSheet("font-weight: bold; color: #6366f1; font-size: 11px;")
         layout.addWidget(self.order_label)
 
         # Checkbox for completion
@@ -134,40 +145,49 @@ class StoryEventWidget(QWidget):
         self.checkbox.stateChanged.connect(self._on_changed)
         layout.addWidget(self.checkbox)
 
-        # Expand/collapse indicator
+        # Expand/collapse indicator (combined with text field styling)
         self.expand_indicator = QLabel("▶")
-        self.expand_indicator.setStyleSheet("color: #9ca3af; font-size: 10px;")
-        self.expand_indicator.setMinimumWidth(15)
+        self.expand_indicator.setStyleSheet("color: #9ca3af; font-size: 8px;")
+        self.expand_indicator.setFixedWidth(10)
         layout.addWidget(self.expand_indicator)
 
         # Event text (clickable to expand description)
         self.text_edit = QLineEdit(text)
-        self.text_edit.setPlaceholderText("Event name (click to expand details)...")
+        self.text_edit.setPlaceholderText("Event name...")
         self.text_edit.textChanged.connect(self._on_changed)
         self.text_edit.setStyleSheet("""
             QLineEdit {
                 border: 1px solid #e5e7eb;
-                border-radius: 4px;
-                padding: 4px 8px;
+                border-radius: 3px;
+                padding: 2px 4px;
+                font-size: 11px;
             }
             QLineEdit:hover {
                 border-color: #6366f1;
-                cursor: pointer;
             }
             QLineEdit:focus {
                 border-color: #6366f1;
             }
         """)
+        self.text_edit.setMinimumWidth(80)
         layout.addWidget(self.text_edit, 1)
 
-        # Stage selector
+        # Stage selector - abbreviated for small screens
         self.stage_combo = QComboBox()
+        stage_abbrev = {
+            "exposition": "Expo",
+            "rising": "Rise",
+            "climax": "Climax",
+            "falling": "Fall",
+            "resolution": "Resol"
+        }
         for s in self.STAGES:
-            self.stage_combo.addItem(self.STAGE_NAMES[s], s)
+            self.stage_combo.addItem(stage_abbrev[s], s)
         idx = self.STAGES.index(stage) if stage in self.STAGES else 1
         self.stage_combo.setCurrentIndex(idx)
-        self.stage_combo.setMaximumWidth(120)
+        self.stage_combo.setMaximumWidth(70)
         self.stage_combo.setToolTip("Arc stage")
+        self.stage_combo.setStyleSheet("font-size: 10px;")
         self.stage_combo.currentIndexChanged.connect(self._on_stage_changed)
         layout.addWidget(self.stage_combo)
 
@@ -175,23 +195,25 @@ class StoryEventWidget(QWidget):
         self.arc_slider = QSlider(Qt.Orientation.Horizontal)
         self.arc_slider.setRange(0, 100)
         self.arc_slider.setValue(arc_position)
-        self.arc_slider.setMaximumWidth(80)
-        self.arc_slider.setToolTip("Position on the chapter arc (left=start, right=end)")
+        self.arc_slider.setFixedWidth(50)
+        self.arc_slider.setToolTip("Position on arc")
         self.arc_slider.valueChanged.connect(self._on_arc_changed)
         layout.addWidget(self.arc_slider)
 
         # Delete button
-        delete_btn = QPushButton("🗑")
-        delete_btn.setMaximumWidth(30)
+        delete_btn = QPushButton("×")
+        delete_btn.setFixedWidth(20)
         delete_btn.setStyleSheet("""
             QPushButton {
                 background-color: transparent;
                 border: none;
                 font-size: 14px;
+                color: #9ca3af;
             }
             QPushButton:hover {
                 background-color: #fee2e2;
-                border-radius: 3px;
+                color: #dc2626;
+                border-radius: 2px;
             }
         """)
         delete_btn.setToolTip("Remove event")
@@ -203,7 +225,7 @@ class StoryEventWidget(QWidget):
         # Description area (hidden by default) - inline compact design
         self.description_container = QWidget()
         desc_layout = QHBoxLayout(self.description_container)
-        desc_layout.setContentsMargins(42, 0, 30, 0)  # Align with text field
+        desc_layout.setContentsMargins(45, 0, 25, 0)  # Align with text field (compact layout)
         desc_layout.setSpacing(0)
 
         self.description_edit = QTextEdit()
@@ -320,6 +342,73 @@ class StoryEventWidget(QWidget):
             'order': self.order
         }
 
+    def mousePressEvent(self, event):
+        """Start drag operation if on drag handle."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            # Check if click is on the drag handle area
+            handle_rect = self.drag_handle.geometry()
+            if handle_rect.contains(event.pos()):
+                self._drag_start_pos = event.pos()
+                self.drag_handle.setCursor(Qt.CursorShape.ClosedHandCursor)
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        """Handle drag movement."""
+        if self._drag_start_pos is not None:
+            # Check if we've moved enough to start a drag
+            if (event.pos() - self._drag_start_pos).manhattanLength() > 10:
+                self._start_drag()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        """End potential drag."""
+        self._drag_start_pos = None
+        self.drag_handle.setCursor(Qt.CursorShape.OpenHandCursor)
+        super().mouseReleaseEvent(event)
+
+    def _start_drag(self):
+        """Initiate the drag operation."""
+        self._drag_start_pos = None
+        self.drag_handle.setCursor(Qt.CursorShape.OpenHandCursor)
+
+        drag = QDrag(self)
+        mime_data = QMimeData()
+        mime_data.setText(self.event_id)
+        drag.setMimeData(mime_data)
+
+        # Create a visual representation
+        pixmap = QPixmap(self.size())
+        pixmap.fill(Qt.GlobalColor.transparent)
+        self.render(pixmap)
+        drag.setPixmap(pixmap.scaled(self.width(), 40, Qt.AspectRatioMode.KeepAspectRatio))
+        drag.setHotSpot(self.rect().center())
+
+        self.drag_started.emit(self.event_id)
+        drag.exec(Qt.DropAction.MoveAction)
+
+    def dragEnterEvent(self, event):
+        """Accept drag if it's from another event widget."""
+        if event.mimeData().hasText():
+            source_id = event.mimeData().text()
+            if source_id != self.event_id:  # Don't accept drops on self
+                event.acceptProposedAction()
+                self.setStyleSheet("background-color: #e0e7ff; border-radius: 4px;")
+
+    def dragLeaveEvent(self, event):
+        """Reset styling when drag leaves."""
+        self.setStyleSheet("")
+
+    def dropEvent(self, event):
+        """Handle drop - emit signal to reorder events."""
+        self.setStyleSheet("")
+        if event.mimeData().hasText():
+            source_id = event.mimeData().text()
+            if source_id != self.event_id:
+                event.acceptProposedAction()
+                # The parent widget will handle the actual reordering
+                # We emit our event_id as the drop target
+                self.drag_started.emit(f"drop:{source_id}:{self.event_id}")
+
 
 class ChapterArcWidget(QWidget):
     """Visual representation of the chapter's narrative arc with event markers."""
@@ -329,8 +418,8 @@ class ChapterArcWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.events = []  # List of event dicts with arc_position
-        self.setMinimumHeight(120)
-        self.setMaximumHeight(150)
+        self.setMinimumHeight(90)  # Compact for small screens
+        self.setMaximumHeight(130)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     def set_events(self, events: List[dict]):
@@ -345,8 +434,8 @@ class ChapterArcWidget(QWidget):
 
         width = self.width()
         height = self.height()
-        padding = 20
-        arc_height = height - 50
+        padding = 15  # Reduced padding for small screens
+        arc_height = height - 40
 
         # Draw background
         painter.fillRect(self.rect(), QColor("#fafafa"))
@@ -358,8 +447,8 @@ class ChapterArcWidget(QWidget):
         arc_width = end_x - start_x
 
         # Define the arc shape (rises to climax at center, then falls)
-        base_y = height - 25
-        peak_y = 25
+        base_y = height - 20  # Reduced bottom margin
+        peak_y = 20  # Reduced top margin
 
         # Create smooth arc using quadratic curves
         path.moveTo(start_x, base_y)
@@ -389,23 +478,23 @@ class ChapterArcWidget(QWidget):
         fill_path.closeSubpath()
         painter.fillPath(fill_path, QBrush(QColor("#f3f4f6")))
 
-        # Draw stage labels
+        # Draw stage labels - abbreviated for compact display
         painter.setPen(QPen(QColor("#9ca3af")))
         font = painter.font()
-        font.setPointSize(8)
+        font.setPointSize(7)  # Smaller font for small screens
         painter.setFont(font)
 
         labels = [
-            ("Exposition", 0.08),
-            ("Rising", 0.30),
+            ("Expo", 0.08),
+            ("Rise", 0.30),
             ("Climax", 0.50),
-            ("Falling", 0.70),
-            ("Resolution", 0.92)
+            ("Fall", 0.70),
+            ("End", 0.92)
         ]
 
         for label, pos in labels:
             x = start_x + arc_width * pos
-            painter.drawText(int(x - 30), height - 5, 60, 15,
+            painter.drawText(int(x - 25), height - 3, 50, 12,
                            Qt.AlignmentFlag.AlignCenter, label)
 
         # Draw event markers
@@ -443,16 +532,16 @@ class ChapterArcWidget(QWidget):
             painter.setPen(QPen(color.darker(120), 2))
             painter.setBrush(QBrush(color if not completed else QColor("#d1d5db")))
 
-            radius = 8 if not completed else 6
+            radius = 7 if not completed else 5  # Slightly smaller for compact arc
             painter.drawEllipse(QPointF(x, y), radius, radius)
 
             # Draw event number
             order = event.get('order', 0)
             painter.setPen(QPen(QColor("white" if not completed else "#666")))
-            font.setPointSize(7)
+            font.setPointSize(6)  # Smaller font for compact markers
             font.setBold(True)
             painter.setFont(font)
-            painter.drawText(int(x - 10), int(y - 10), 20, 20,
+            painter.drawText(int(x - 8), int(y - 8), 16, 16,
                            Qt.AlignmentFlag.AlignCenter, str(order + 1))
 
         painter.end()
@@ -531,14 +620,16 @@ class ChapterPlannerWidget(QWidget):
         events_list_group = QGroupBox("Story Events (in order)")
         events_list_layout = QVBoxLayout(events_list_group)
 
-        # Events header with add button
+        # Events header with add button - compact for small screens
         events_header = QHBoxLayout()
-        events_label = QLabel("Add events that happen in this chapter:")
+        events_header.setSpacing(4)
+        events_label = QLabel("Chapter events:")
         events_label.setStyleSheet("font-size: 11px; color: #666;")
         events_header.addWidget(events_label)
         events_header.addStretch()
 
-        add_event_btn = QPushButton("+ Add Event")
+        add_event_btn = QPushButton("+ Add")
+        add_event_btn.setStyleSheet("font-size: 11px; padding: 2px 6px;")
         add_event_btn.clicked.connect(lambda: self._add_event_item())
         events_header.addWidget(add_event_btn)
 
@@ -560,16 +651,19 @@ class ChapterPlannerWidget(QWidget):
 
         events_layout.addWidget(events_list_group)
 
-        # Quick actions for events
+        # Quick actions for events - compact buttons for small screens
         events_actions = QHBoxLayout()
+        events_actions.setSpacing(4)
 
-        self.generate_events_btn = QPushButton("Generate Events with AI")
-        self.generate_events_btn.setToolTip("Use AI to suggest story events")
+        self.generate_events_btn = QPushButton("AI Generate")
+        self.generate_events_btn.setToolTip("Generate story events with AI")
+        self.generate_events_btn.setStyleSheet("font-size: 11px; padding: 3px 6px;")
         self.generate_events_btn.clicked.connect(self._generate_events)
         events_actions.addWidget(self.generate_events_btn)
 
-        self.reorder_events_btn = QPushButton("Auto-Order by Arc")
-        self.reorder_events_btn.setToolTip("Reorder events by their arc position")
+        self.reorder_events_btn = QPushButton("Auto-Order")
+        self.reorder_events_btn.setToolTip("Reorder events by arc position")
+        self.reorder_events_btn.setStyleSheet("font-size: 11px; padding: 3px 6px;")
         self.reorder_events_btn.clicked.connect(self._reorder_events_by_arc)
         events_actions.addWidget(self.reorder_events_btn)
 
@@ -581,56 +675,67 @@ class ChapterPlannerWidget(QWidget):
         # === TAB 2: Description ===
         description_tab = QWidget()
         description_layout = QVBoxLayout(description_tab)
+        description_layout.setSpacing(4)
 
-        desc_label = QLabel("Brief description of what happens in this chapter:")
-        desc_label.setStyleSheet("font-weight: 500;")
+        desc_label = QLabel("Chapter summary:")
+        desc_label.setStyleSheet("font-weight: 500; font-size: 11px;")
         description_layout.addWidget(desc_label)
 
         self.description_editor = QTextEdit()
         self.description_editor.setPlaceholderText(
-            "Write a brief summary of this chapter...\n\n"
-            "Example: \"Sarah discovers the hidden letter in her grandmother's attic, "
-            "leading to a confrontation with her estranged uncle about the family secret.\""
+            "Brief summary of what happens in this chapter..."
         )
-        self.description_editor.setFont(QFont("Segoe UI", 11))
-        self.description_editor.setMaximumHeight(150)
+        self.description_editor.setFont(QFont("Segoe UI", 10))
+        self.description_editor.setMaximumHeight(100)  # Reduced for small screens
         self.description_editor.textChanged.connect(self._on_plan_changed)
         description_layout.addWidget(self.description_editor)
 
-        # POV and Timeline
+        # POV and Timeline - compact layout
         meta_layout = QHBoxLayout()
+        meta_layout.setSpacing(4)
 
-        pov_label = QLabel("POV Character:")
+        pov_label = QLabel("POV:")
+        pov_label.setStyleSheet("font-size: 11px;")
         meta_layout.addWidget(pov_label)
         self.pov_edit = QLineEdit()
-        self.pov_edit.setPlaceholderText("Who's perspective?")
+        self.pov_edit.setPlaceholderText("Perspective")
+        self.pov_edit.setStyleSheet("font-size: 11px;")
         self.pov_edit.textChanged.connect(self._on_plan_changed)
         meta_layout.addWidget(self.pov_edit)
 
-        timeline_label = QLabel("Timeline:")
+        timeline_label = QLabel("When:")
+        timeline_label.setStyleSheet("font-size: 11px;")
         meta_layout.addWidget(timeline_label)
         self.timeline_edit = QLineEdit()
-        self.timeline_edit.setPlaceholderText("When does this occur?")
+        self.timeline_edit.setPlaceholderText("Timeline")
+        self.timeline_edit.setStyleSheet("font-size: 11px;")
         self.timeline_edit.textChanged.connect(self._on_plan_changed)
         meta_layout.addWidget(self.timeline_edit)
 
         description_layout.addLayout(meta_layout)
 
-        # Characters and Locations
+        # Characters and Locations - compact layout
         chars_locs_layout = QHBoxLayout()
+        chars_locs_layout.setSpacing(4)
 
-        chars_group = QGroupBox("Characters Featured")
+        chars_group = QGroupBox("Characters")
+        chars_group.setStyleSheet("QGroupBox { font-size: 11px; }")
         chars_layout = QVBoxLayout(chars_group)
+        chars_layout.setContentsMargins(4, 8, 4, 4)
         self.characters_edit = QLineEdit()
-        self.characters_edit.setPlaceholderText("Character names, comma-separated")
+        self.characters_edit.setPlaceholderText("Names, comma-separated")
+        self.characters_edit.setStyleSheet("font-size: 11px;")
         self.characters_edit.textChanged.connect(self._on_plan_changed)
         chars_layout.addWidget(self.characters_edit)
         chars_locs_layout.addWidget(chars_group)
 
         locs_group = QGroupBox("Locations")
+        locs_group.setStyleSheet("QGroupBox { font-size: 11px; }")
         locs_layout = QVBoxLayout(locs_group)
+        locs_layout.setContentsMargins(4, 8, 4, 4)
         self.locations_edit = QLineEdit()
-        self.locations_edit.setPlaceholderText("Locations, comma-separated")
+        self.locations_edit.setPlaceholderText("Places, comma-separated")
+        self.locations_edit.setStyleSheet("font-size: 11px;")
         self.locations_edit.textChanged.connect(self._on_plan_changed)
         locs_layout.addWidget(self.locations_edit)
         chars_locs_layout.addWidget(locs_group)
@@ -643,13 +748,16 @@ class ChapterPlannerWidget(QWidget):
         # === TAB 3: Todo List ===
         todo_tab = QWidget()
         todo_layout = QVBoxLayout(todo_tab)
+        todo_layout.setSpacing(4)
 
         todo_header = QHBoxLayout()
-        todo_label = QLabel("Writing Tasks for this Chapter:")
-        todo_label.setStyleSheet("font-weight: 500;")
+        todo_header.setSpacing(4)
+        todo_label = QLabel("Writing Tasks:")
+        todo_label.setStyleSheet("font-weight: 500; font-size: 11px;")
         todo_header.addWidget(todo_label)
 
-        add_todo_btn = QPushButton("+ Add Task")
+        add_todo_btn = QPushButton("+ Add")
+        add_todo_btn.setStyleSheet("font-size: 11px; padding: 2px 6px;")
         add_todo_btn.clicked.connect(self._add_todo_item)
         todo_header.addWidget(add_todo_btn)
 
@@ -674,34 +782,42 @@ class ChapterPlannerWidget(QWidget):
         # === TAB 4: Notes ===
         notes_tab = QWidget()
         notes_layout = QVBoxLayout(notes_tab)
+        notes_layout.setSpacing(4)
 
-        notes_label = QLabel("Research, ideas, and reminders:")
-        notes_label.setStyleSheet("font-weight: 500;")
+        notes_label = QLabel("Notes & ideas:")
+        notes_label.setStyleSheet("font-weight: 500; font-size: 11px;")
         notes_layout.addWidget(notes_label)
 
         self.notes_editor = QTextEdit()
         self.notes_editor.setPlaceholderText(
-            "Add any notes for this chapter...\n\n"
-            "- Research needed\n"
-            "- Ideas to explore\n"
-            "- Things to remember\n"
-            "- Questions to resolve"
+            "Research, ideas, reminders..."
         )
-        self.notes_editor.setFont(QFont("Segoe UI", 11))
+        self.notes_editor.setFont(QFont("Segoe UI", 10))
         self.notes_editor.textChanged.connect(self._on_plan_changed)
         notes_layout.addWidget(self.notes_editor)
 
         self.tab_widget.addTab(notes_tab, "Notes")
 
-        # === TAB 5: AI Assistant ===
+        # === TAB 5: AI Assistant === (compact for small screens)
         ai_tab = QWidget()
         ai_layout = QVBoxLayout(ai_tab)
+        ai_layout.setSpacing(4)
 
-        # Model selector
+        # Model selector - compact with tooltips for full names
         model_layout = QHBoxLayout()
-        model_layout.addWidget(QLabel("Model:"))
+        model_layout.setSpacing(4)
+        model_label = QLabel("Model:")
+        model_label.setStyleSheet("font-size: 11px;")
+        model_layout.addWidget(model_label)
         self.model_combo = QComboBox()
-        self.model_combo.addItems(["Claude (Anthropic)", "GPT-4 (OpenAI)", "Gemini (Google)", "Local SLM"])
+        # Store full names as data, display abbreviated
+        self.model_combo.addItem("Claude", "Claude (Anthropic)")
+        self.model_combo.addItem("GPT-4", "GPT-4 (OpenAI)")
+        self.model_combo.addItem("Gemini", "Gemini (Google)")
+        self.model_combo.addItem("Local", "Local SLM")
+        self.model_combo.setStyleSheet("font-size: 11px;")
+        self.model_combo.setMaximumWidth(80)
+        self.model_combo.setToolTip("Select AI model")
         model_layout.addWidget(self.model_combo)
         model_layout.addStretch()
         ai_layout.addLayout(model_layout)
@@ -709,24 +825,24 @@ class ChapterPlannerWidget(QWidget):
         # Chat history
         self.chat_history = QTextEdit()
         self.chat_history.setReadOnly(True)
-        self.chat_history.setFont(QFont("Segoe UI", 10))
+        self.chat_history.setFont(QFont("Segoe UI", 9))
         self.chat_history.setStyleSheet("background-color: #f8f9fa;")
-        self.chat_history.setPlaceholderText("AI responses will appear here...")
+        self.chat_history.setPlaceholderText("AI responses...")
         ai_layout.addWidget(self.chat_history)
 
-        # Chat input
+        # Chat input - compact
         input_layout = QHBoxLayout()
+        input_layout.setSpacing(4)
         self.chat_input = QTextEdit()
-        self.chat_input.setPlaceholderText("Ask AI about your chapter plan...")
-        self.chat_input.setMaximumHeight(60)
+        self.chat_input.setPlaceholderText("Ask about your plan...")
+        self.chat_input.setMaximumHeight(50)
+        self.chat_input.setFont(QFont("Segoe UI", 10))
         input_layout.addWidget(self.chat_input)
 
-        send_btn_layout = QVBoxLayout()
         self.send_btn = QPushButton("Send")
+        self.send_btn.setStyleSheet("font-size: 11px; padding: 3px 8px;")
         self.send_btn.clicked.connect(self._send_chat_message)
-        send_btn_layout.addWidget(self.send_btn)
-        send_btn_layout.addStretch()
-        input_layout.addLayout(send_btn_layout)
+        input_layout.addWidget(self.send_btn)
 
         ai_layout.addLayout(input_layout)
 
@@ -735,22 +851,23 @@ class ChapterPlannerWidget(QWidget):
         self.progress_bar.setVisible(False)
         self.progress_bar.setTextVisible(False)
         self.progress_bar.setMaximum(0)
+        self.progress_bar.setMaximumHeight(8)
         ai_layout.addWidget(self.progress_bar)
 
-        self.tab_widget.addTab(ai_tab, "AI Assistant")
+        self.tab_widget.addTab(ai_tab, "AI")
 
         layout.addWidget(self.tab_widget)
 
-        # Consistency check section at bottom
+        # Consistency check section at bottom - compact for small screens
         check_frame = QFrame()
-        check_frame.setStyleSheet("background-color: #fff3cd; border-radius: 4px; padding: 4px;")
+        check_frame.setStyleSheet("background-color: #fff3cd; border-radius: 3px;")
         check_layout = QHBoxLayout(check_frame)
-        check_layout.setContentsMargins(8, 4, 8, 4)
+        check_layout.setContentsMargins(6, 3, 6, 3)
 
-        self.check_plan_btn = QPushButton("Check Plan vs Chapter")
-        self.check_plan_btn.setToolTip("Verify if your chapter content follows the plan")
+        self.check_plan_btn = QPushButton("Check vs Chapter")
+        self.check_plan_btn.setToolTip("Verify if chapter content follows the plan")
         self.check_plan_btn.clicked.connect(self._check_plan_consistency)
-        self.check_plan_btn.setStyleSheet("background-color: #ffc107; color: black;")
+        self.check_plan_btn.setStyleSheet("background-color: #ffc107; color: black; font-size: 11px; padding: 3px 8px;")
         check_layout.addWidget(self.check_plan_btn)
 
         check_layout.addStretch()
@@ -785,6 +902,7 @@ class ChapterPlannerWidget(QWidget):
         item.changed.connect(self._on_plan_changed)
         item.delete_requested.connect(self._remove_event_item)
         item.arc_position_changed.connect(self._on_event_arc_changed)
+        item.drag_started.connect(self._on_event_drag)
 
         self._event_widgets.append(item)
         self.events_list_layout.addWidget(item)
@@ -805,6 +923,49 @@ class ChapterPlannerWidget(QWidget):
         """Update order numbers for all events."""
         for i, widget in enumerate(self._event_widgets):
             widget.set_order(i)
+
+    def _on_event_drag(self, signal_data: str):
+        """Handle drag and drop reordering of events."""
+        if signal_data.startswith("drop:"):
+            # Parse the drop signal: "drop:source_id:target_id"
+            parts = signal_data.split(":")
+            if len(parts) == 3:
+                source_id = parts[1]
+                target_id = parts[2]
+                self._move_event(source_id, target_id)
+
+    def _move_event(self, source_id: str, target_id: str):
+        """Move source event to the position of target event."""
+        source_widget = None
+        target_widget = None
+        source_idx = -1
+        target_idx = -1
+
+        for i, widget in enumerate(self._event_widgets):
+            if widget.event_id == source_id:
+                source_widget = widget
+                source_idx = i
+            if widget.event_id == target_id:
+                target_widget = widget
+                target_idx = i
+
+        if source_widget and target_widget and source_idx != target_idx:
+            # Remove from current position
+            self._event_widgets.pop(source_idx)
+            self.events_list_layout.removeWidget(source_widget)
+
+            # Recalculate target index after removal
+            if source_idx < target_idx:
+                target_idx -= 1
+
+            # Insert at new position
+            self._event_widgets.insert(target_idx, source_widget)
+            self.events_list_layout.insertWidget(target_idx, source_widget)
+
+            # Update order numbers and arc
+            self._renumber_events()
+            self._update_arc_widget()
+            self._on_plan_changed()
 
     def _on_event_arc_changed(self, event_id: str, position: int):
         """Handle arc position change for an event."""
@@ -1283,7 +1444,7 @@ Provide:
                 full_context = "\n\n".join(context_parts)
                 full_prompt = f"{full_context}\n\n---\n\n{prompt}" if full_context else prompt
 
-                result = self._ai_handler(full_prompt, self.model_combo.currentText())
+                result = self._ai_handler(full_prompt, self.model_combo.currentData())
 
                 from PyQt6.QtCore import QTimer
                 QTimer.singleShot(0, lambda: callback(result))

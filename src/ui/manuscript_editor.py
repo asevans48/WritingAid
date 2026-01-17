@@ -136,53 +136,57 @@ class ChapterEditor(QWidget):
         editor_layout = QVBoxLayout(editor_widget)
         editor_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Toolbar
+        # Toolbar - compact for small screens
         toolbar = QToolBar()
         toolbar.setMovable(False)
+        toolbar.setStyleSheet("QToolBar { spacing: 2px; }")
 
-        # Font family
+        # Font family - compact
         self.font_combo = QComboBox()
         self.font_combo.addItems(["Arial", "Times New Roman", "Courier New", "Georgia", "Verdana"])
+        self.font_combo.setMaximumWidth(100)
         self.font_combo.currentTextChanged.connect(self._change_font_family)
-        toolbar.addWidget(QLabel("Font: "))
         toolbar.addWidget(self.font_combo)
 
-        # Font size
+        # Font size - compact
         self.font_size_spin = QSpinBox()
         self.font_size_spin.setRange(8, 72)
         self.font_size_spin.setValue(12)
+        self.font_size_spin.setMaximumWidth(50)
         # Block signals initially to prevent spurious valueChanged during initialization
         self.font_size_spin.blockSignals(True)
         self.font_size_spin.valueChanged.connect(self._change_font_size)
         self.font_size_spin.blockSignals(False)
-        toolbar.addWidget(QLabel("Size: "))
         toolbar.addWidget(self.font_size_spin)
 
         toolbar.addSeparator()
 
-        # Formatting buttons
-        bold_action = QAction("Bold", self)
+        # Formatting buttons - compact with single letter + styling
+        bold_action = QAction("B", self)
         bold_action.setShortcut("Ctrl+B")
+        bold_action.setToolTip("Bold (Ctrl+B)")
         bold_action.triggered.connect(self._toggle_bold)
         toolbar.addAction(bold_action)
 
-        italic_action = QAction("Italic", self)
+        italic_action = QAction("I", self)
         italic_action.setShortcut("Ctrl+I")
+        italic_action.setToolTip("Italic (Ctrl+I)")
         italic_action.triggered.connect(self._toggle_italic)
         toolbar.addAction(italic_action)
 
-        underline_action = QAction("Underline", self)
+        underline_action = QAction("U", self)
         underline_action.setShortcut("Ctrl+U")
+        underline_action.setToolTip("Underline (Ctrl+U)")
         underline_action.triggered.connect(self._toggle_underline)
         toolbar.addAction(underline_action)
 
         toolbar.addSeparator()
 
-        # Heading style dropdown
-        toolbar.addWidget(QLabel("Style: "))
+        # Heading style dropdown - compact
         self.heading_combo = QComboBox()
-        self.heading_combo.addItems(["Normal", "Title", "Heading 1", "Heading 2", "Heading 3", "Heading 4"])
+        self.heading_combo.addItems(["Normal", "Title", "H1", "H2", "H3", "H4"])
         self.heading_combo.setToolTip("Apply heading style (exports properly to Word, HTML, Markdown)")
+        self.heading_combo.setMaximumWidth(70)
         # Use activated instead of currentTextChanged so we can apply the same style multiple times
         self.heading_combo.activated.connect(self._on_heading_combo_activated)
         toolbar.addWidget(self.heading_combo)
@@ -215,50 +219,54 @@ class ChapterEditor(QWidget):
         self._update_check_button_style(self.overuse_check_btn, CheckMode.ON_DEMAND)
         toolbar.addWidget(self.overuse_check_btn)
 
-        # Recheck button
-        self.recheck_btn = QPushButton("🔄 Recheck")
+        # Recheck button - compact
+        self.recheck_btn = QPushButton("🔄")
         self.recheck_btn.setToolTip("Rerun all on-demand checks on this chapter")
+        self.recheck_btn.setMaximumWidth(30)
         self.recheck_btn.clicked.connect(self._recheck_writing)
         toolbar.addWidget(self.recheck_btn)
 
         toolbar.addSeparator()
 
-        # AI Rephrase action
-        rephrase_action = QAction("Rephrase", self)
+        # AI Rephrase action - compact
+        rephrase_action = QAction("✨", self)
         rephrase_action.setShortcut("Ctrl+R")
-        rephrase_action.setToolTip("Rephrase selected text using AI (Ctrl+R)")
+        rephrase_action.setToolTip("AI Rephrase selected text (Ctrl+R)")
         rephrase_action.triggered.connect(self._rephrase_selection)
         toolbar.addAction(rephrase_action)
 
         toolbar.addSeparator()
 
-        # Annotation actions
-        annotation_action = QAction("📝 Add Note", self)
+        # Annotation actions - compact
+        annotation_action = QAction("📝", self)
         annotation_action.setShortcut("Ctrl+Shift+N")
         annotation_action.triggered.connect(lambda: self._add_annotation())
         annotation_action.setToolTip("Add annotation at current line (Ctrl+Shift+N)")
         toolbar.addAction(annotation_action)
 
-        view_annotations_action = QAction("📋 View All", self)
+        view_annotations_action = QAction("📋", self)
         view_annotations_action.triggered.connect(self._view_annotations_list)
         view_annotations_action.setToolTip("View all annotations")
         toolbar.addAction(view_annotations_action)
 
         toolbar.addSeparator()
 
-        # Text-to-Speech actions
-        self.tts_speak_btn = QPushButton("🔊 Read")
+        # Text-to-Speech actions - compact
+        self.tts_speak_btn = QPushButton("🔊")
         self.tts_speak_btn.setToolTip("Read chapter aloud (or selection if text is selected)")
+        self.tts_speak_btn.setMaximumWidth(30)
         self.tts_speak_btn.clicked.connect(self._tts_speak_chapter)
         toolbar.addWidget(self.tts_speak_btn)
 
-        self.tts_stop_btn = QPushButton("⏹ Stop")
+        self.tts_stop_btn = QPushButton("⏹")
         self.tts_stop_btn.setToolTip("Stop reading")
+        self.tts_stop_btn.setMaximumWidth(30)
         self.tts_stop_btn.clicked.connect(self._tts_stop)
         toolbar.addWidget(self.tts_stop_btn)
 
-        self.tts_generate_btn = QPushButton("🎙 Generate TTS")
-        self.tts_generate_btn.setToolTip("Generate TTS document for this chapter with voice configuration")
+        self.tts_generate_btn = QPushButton("🎙")
+        self.tts_generate_btn.setToolTip("Generate TTS document for this chapter")
+        self.tts_generate_btn.setMaximumWidth(30)
         self.tts_generate_btn.clicked.connect(self._tts_generate_document)
         toolbar.addWidget(self.tts_generate_btn)
 
@@ -325,57 +333,74 @@ class ChapterEditor(QWidget):
 
         editor_layout.addLayout(editor_container)
 
-        # Bottom toolbar
+        # Bottom toolbar - compact buttons for small screens
         bottom_toolbar = QHBoxLayout()
+        bottom_toolbar.setSpacing(4)
 
         # Word count
         self.word_count_label = QLabel("Words: 0")
+        self.word_count_label.setStyleSheet("font-size: 11px;")
         bottom_toolbar.addWidget(self.word_count_label)
 
         bottom_toolbar.addStretch()
 
+        # Compact button style
+        compact_btn_style = "font-size: 11px; padding: 3px 6px;"
+
         # Import from Word button
-        import_word_button = QPushButton("Import from Word")
+        import_word_button = QPushButton("Import")
+        import_word_button.setToolTip("Import from Word document")
+        import_word_button.setStyleSheet(compact_btn_style)
         import_word_button.clicked.connect(self._import_from_word)
         bottom_toolbar.addWidget(import_word_button)
 
         # Export to Word button
-        export_word_button = QPushButton("Export to Word")
+        export_word_button = QPushButton("Export")
+        export_word_button.setToolTip("Export to Word document")
+        export_word_button.setStyleSheet(compact_btn_style)
         export_word_button.clicked.connect(self._export_to_word)
         bottom_toolbar.addWidget(export_word_button)
 
         # AI Hints button
-        hints_button = QPushButton("Get AI Hints")
+        hints_button = QPushButton("Hints")
+        hints_button.setToolTip("Get AI writing hints")
+        hints_button.setStyleSheet(compact_btn_style)
         hints_button.clicked.connect(self._request_ai_hints)
         bottom_toolbar.addWidget(hints_button)
 
         # Check Promises button (AI)
-        check_promises_button = QPushButton("Check Promises")
+        check_promises_button = QPushButton("Check")
         check_promises_button.setToolTip("Check chapter against story promises and character consistency")
+        check_promises_button.setStyleSheet(compact_btn_style)
         check_promises_button.clicked.connect(self._check_promises)
         bottom_toolbar.addWidget(check_promises_button)
 
         # Save revision button
-        save_revision_button = QPushButton("Save Revision")
+        save_revision_button = QPushButton("Save Rev")
+        save_revision_button.setToolTip("Save revision")
+        save_revision_button.setStyleSheet(compact_btn_style)
         save_revision_button.clicked.connect(self._save_revision)
         bottom_toolbar.addWidget(save_revision_button)
 
         # View revisions button
-        view_revisions_button = QPushButton("View Revisions")
+        view_revisions_button = QPushButton("Revisions")
+        view_revisions_button.setToolTip("View revisions")
+        view_revisions_button.setStyleSheet(compact_btn_style)
         view_revisions_button.clicked.connect(self._view_revisions)
         bottom_toolbar.addWidget(view_revisions_button)
 
-        # Toggle planner button - make it stand out
-        self.toggle_planner_btn = QPushButton("📋 Plan Chapter")
+        # Toggle planner button - make it stand out but compact
+        self.toggle_planner_btn = QPushButton("📋 Plan")
         self.toggle_planner_btn.setCheckable(True)
-        self.toggle_planner_btn.setToolTip("Show/hide chapter planner panel - plan your chapter before writing")
+        self.toggle_planner_btn.setToolTip("Show/hide chapter planner panel")
         self.toggle_planner_btn.setStyleSheet("""
             QPushButton {
                 background-color: #8b5cf6;
                 color: white;
                 font-weight: bold;
-                padding: 5px 15px;
-                border-radius: 4px;
+                padding: 3px 8px;
+                border-radius: 3px;
+                font-size: 11px;
             }
             QPushButton:checked {
                 background-color: #7c3aed;
@@ -1626,21 +1651,27 @@ class ManuscriptEditor(QWidget):
         self.chapter_list.customContextMenuRequested.connect(self._show_chapter_context_menu)
         left_layout.addWidget(self.chapter_list)
 
-        # Chapter buttons (simplified - just add and reorder)
+        # Chapter buttons (simplified - compact for small screens)
         button_layout = QHBoxLayout()
+        button_layout.setSpacing(2)
 
-        add_button = QPushButton("+ Add")
+        compact_ch_btn_style = "font-size: 11px; padding: 2px 5px;"
+
+        add_button = QPushButton("+")
         add_button.setToolTip("Add new chapter at end")
+        add_button.setStyleSheet(compact_ch_btn_style)
         add_button.clicked.connect(self._add_chapter)
         button_layout.addWidget(add_button)
 
-        move_up_button = QPushButton("Up")
+        move_up_button = QPushButton("↑")
         move_up_button.setToolTip("Move chapter up")
+        move_up_button.setStyleSheet(compact_ch_btn_style)
         move_up_button.clicked.connect(self._move_chapter_up)
         button_layout.addWidget(move_up_button)
 
-        move_down_button = QPushButton("Down")
+        move_down_button = QPushButton("↓")
         move_down_button.setToolTip("Move chapter down")
+        move_down_button.setStyleSheet(compact_ch_btn_style)
         move_down_button.clicked.connect(self._move_chapter_down)
         button_layout.addWidget(move_down_button)
 
