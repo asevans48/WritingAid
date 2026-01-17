@@ -66,6 +66,7 @@ class JSONImportDialog(QDialog):
             "- Characters JSON\n"
             "- Story Planning JSON\n"
             "- Worldbuilding JSON\n"
+            "- Chapter Planning JSON\n"
             "- Complete Project JSON\n\n"
             "The importer will automatically detect the format."
         )
@@ -457,6 +458,49 @@ class JSONImportDialog(QDialog):
             self.preview_tree.addTopLevelItem(wb_item)
             wb_item.setExpanded(True)
 
+        # Check for chapter planning
+        if 'chapter_planning' in data and isinstance(data['chapter_planning'], (list, dict)):
+            cp = data['chapter_planning']
+            detected_sections.append('Chapter Planning')
+
+            # Handle both list of chapters and single chapter planning
+            if isinstance(cp, dict):
+                cp = [cp]  # Wrap single chapter in a list
+
+            cp_item = QTreeWidgetItem(["Chapter Planning", f"{len(cp)} chapters", ""])
+
+            for chapter_plan in cp:
+                if isinstance(chapter_plan, dict):
+                    chapter_title = chapter_plan.get('chapter_title', chapter_plan.get('title', 'Unnamed'))
+                    chapter_num = chapter_plan.get('chapter_number', '?')
+                    child = QTreeWidgetItem([f"Chapter {chapter_num}: {chapter_title}", "", ""])
+
+                    # Show planning details
+                    if chapter_plan.get('outline'):
+                        outline_text = chapter_plan['outline'][:40] + "..." if len(chapter_plan.get('outline', '')) > 40 else chapter_plan.get('outline', '')
+                        outline_child = QTreeWidgetItem(["Outline", "text", outline_text])
+                        child.addChild(outline_child)
+
+                    if chapter_plan.get('description'):
+                        desc_text = chapter_plan['description'][:40] + "..." if len(chapter_plan.get('description', '')) > 40 else chapter_plan.get('description', '')
+                        desc_child = QTreeWidgetItem(["Description", "text", desc_text])
+                        child.addChild(desc_child)
+
+                    if chapter_plan.get('todos') and isinstance(chapter_plan['todos'], list):
+                        todos_count = len(chapter_plan['todos'])
+                        completed = sum(1 for t in chapter_plan['todos'] if isinstance(t, dict) and t.get('completed'))
+                        todos_child = QTreeWidgetItem(["Todos", f"{completed}/{todos_count} done", ""])
+                        child.addChild(todos_child)
+
+                    if chapter_plan.get('notes'):
+                        notes_child = QTreeWidgetItem(["Notes", "text", "..."])
+                        child.addChild(notes_child)
+
+                    cp_item.addChild(child)
+
+            self.preview_tree.addTopLevelItem(cp_item)
+            cp_item.setExpanded(True)
+
         # Check for complete project
         if 'name' in data and ('worldbuilding' in data or 'characters' in data or 'story_planning' in data):
             if 'name' not in detected_sections:
@@ -578,6 +622,14 @@ class JSONImportDialog(QDialog):
                     )
                     import_stats.update(stats)
 
+            # Import chapter planning
+            if 'chapter_planning' in self._parsed_data:
+                count = self._import_chapter_planning(
+                    self._parsed_data['chapter_planning'],
+                    merge, generate_ids
+                )
+                import_stats['chapter_plans'] = count
+
             # Show summary
             summary_lines = []
 
@@ -606,6 +658,9 @@ class JSONImportDialog(QDialog):
 
             if import_stats['text_fields']:
                 summary_lines.append(f"- {import_stats['text_fields']} text fields updated")
+
+            if import_stats.get('chapter_plans'):
+                summary_lines.append(f"- {import_stats['chapter_plans']} chapter plans updated")
 
             if summary_lines:
                 msg = "Successfully imported:\n\n" + "\n".join(summary_lines)
@@ -1177,3 +1232,171 @@ class JSONImportDialog(QDialog):
                 stats['places'] += 1
 
         return stats
+
+    def _import_chapter_planning(self, cp_data, merge: bool, generate_ids: bool) -> int:
+        """Import chapter planning data into existing chapters.
+
+        Matches chapters by number or title and updates their planning data.
+        This does NOT create new chapters - only updates existing ones.
+
+        Args:
+            cp_data: Chapter planning data (list of dicts or single dict)
+            merge: Whether to merge with existing planning (vs replace)
+            generate_ids: Whether to generate new IDs for todos
+
+        Returns:
+            Number of chapters updated
+        """
+        from src.models.project import ChapterTodo
+
+        # Ensure we have a list
+        if isinstance(cp_data, dict):
+            cp_data = [cp_data]
+
+        if not isinstance(cp_data, list):
+            return 0
+
+        # Get existing chapters from manuscript
+        if not self.current_project.manuscript or not self.current_project.manuscript.chapters:
+            return 0
+
+        chapters = self.current_project.manuscript.chapters
+        updated = 0
+
+        for plan_data in cp_data:
+            if not isinstance(plan_data, dict):
+                continue
+
+            # Find matching chapter by number or title
+            chapter_num = plan_data.get('chapter_number')
+            chapter_title = plan_data.get('chapter_title', plan_data.get('title', ''))
+
+            target_chapter = None
+
+            # First try to match by chapter number
+            if chapter_num is not None:
+                for ch in chapters:
+                    if ch.number == chapter_num:
+                        target_chapter = ch
+                        break
+
+            # Fall back to matching by title
+            if not target_chapter and chapter_title:
+                chapter_title_lower = chapter_title.lower().strip()
+                for ch in chapters:
+                    if ch.title.lower().strip() == chapter_title_lower:
+                        target_chapter = ch
+                        break
+
+            if not target_chapter:
+                continue
+
+            # Update planning data
+            planning = target_chapter.planning
+
+            # Outline
+            if 'outline' in plan_data:
+                if merge and planning.outline:
+                    planning.outline += "\n\n--- Imported ---\n\n" + plan_data['outline']
+                else:
+                    planning.outline = plan_data['outline']
+                # Also update legacy plan field
+                target_chapter.plan = planning.outline
+
+            # Description
+            if 'description' in plan_data:
+                if merge and planning.description:
+                    planning.description += "\n\n--- Imported ---\n\n" + plan_data['description']
+                else:
+                    planning.description = plan_data['description']
+
+            # Notes
+            if 'notes' in plan_data:
+                if merge and planning.notes:
+                    planning.notes += "\n\n--- Imported ---\n\n" + plan_data['notes']
+                else:
+                    planning.notes = plan_data['notes']
+
+            # Todos
+            if 'todos' in plan_data and isinstance(plan_data['todos'], list):
+                if not merge:
+                    planning.todos.clear()
+
+                existing_texts = {t.text.lower().strip() for t in planning.todos} if merge else set()
+
+                for todo_data in plan_data['todos']:
+                    if isinstance(todo_data, str):
+                        # Simple string todo
+                        if todo_data.lower().strip() not in existing_texts:
+                            todo = ChapterTodo(
+                                id=self._generate_id('todo') if generate_ids else str(uuid.uuid4()),
+                                text=todo_data,
+                                completed=False,
+                                priority='normal'
+                            )
+                            planning.todos.append(todo)
+                            existing_texts.add(todo_data.lower().strip())
+                    elif isinstance(todo_data, dict):
+                        text = todo_data.get('text', '')
+                        if text and text.lower().strip() not in existing_texts:
+                            todo_id = self._generate_id('todo') if generate_ids else todo_data.get('id', str(uuid.uuid4()))
+                            todo = ChapterTodo(
+                                id=todo_id,
+                                text=text,
+                                completed=todo_data.get('completed', False),
+                                priority=todo_data.get('priority', 'normal')
+                            )
+                            planning.todos.append(todo)
+                            existing_texts.add(text.lower().strip())
+
+            # Scene list
+            if 'scene_list' in plan_data and isinstance(plan_data['scene_list'], list):
+                if merge:
+                    existing = set(planning.scene_list)
+                    for scene in plan_data['scene_list']:
+                        if scene not in existing:
+                            planning.scene_list.append(scene)
+                else:
+                    planning.scene_list = list(plan_data['scene_list'])
+
+            # Characters featured
+            if 'characters_featured' in plan_data and isinstance(plan_data['characters_featured'], list):
+                if merge:
+                    existing = set(planning.characters_featured)
+                    for char in plan_data['characters_featured']:
+                        if char not in existing:
+                            planning.characters_featured.append(char)
+                else:
+                    planning.characters_featured = list(plan_data['characters_featured'])
+
+            # Locations
+            if 'locations' in plan_data and isinstance(plan_data['locations'], list):
+                if merge:
+                    existing = set(planning.locations)
+                    for loc in plan_data['locations']:
+                        if loc not in existing:
+                            planning.locations.append(loc)
+                else:
+                    planning.locations = list(plan_data['locations'])
+
+            # Themes
+            if 'themes' in plan_data and isinstance(plan_data['themes'], list):
+                if merge:
+                    existing = set(planning.themes)
+                    for theme in plan_data['themes']:
+                        if theme not in existing:
+                            planning.themes.append(theme)
+                else:
+                    planning.themes = list(plan_data['themes'])
+
+            # POV character
+            if 'pov_character' in plan_data:
+                planning.pov_character = plan_data['pov_character']
+
+            # Timeline position
+            if 'timeline_position' in plan_data:
+                planning.timeline_position = plan_data['timeline_position']
+
+            updated += 1
+
+        return updated

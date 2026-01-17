@@ -225,6 +225,13 @@ class MainWindow(QMainWindow):
 
         export_menu.addSeparator()
 
+        export_outline_action = QAction("Export Book &Outline (Chapter Plans)", self)
+        export_outline_action.setToolTip("Export all chapter plans as a book outline document")
+        export_outline_action.triggered.connect(self._export_book_outline)
+        export_menu.addAction(export_outline_action)
+
+        export_menu.addSeparator()
+
         export_llm_action = QAction("Export for &LLM Context (Markdown)", self)
         export_llm_action.setToolTip("Export worldbuilding, plot, and characters as markdown for AI context")
         export_llm_action.triggered.connect(self._export_llm_context)
@@ -681,6 +688,78 @@ class MainWindow(QMainWindow):
                     "Save Error",
                     "Failed to save AI settings. Check permissions."
                 )
+
+    def _export_book_outline(self):
+        """Export all chapter plans as a book outline document."""
+        if not self.current_project or not self.current_project.manuscript.chapters:
+            QMessageBox.warning(
+                self,
+                "No Chapters",
+                "No chapters available to export outline."
+            )
+            return
+
+        # Collect current manuscript data (includes saving current chapter plans)
+        self._collect_project_data()
+
+        # Check if there are any chapter plans
+        chapters_with_plans = sum(
+            1 for ch in self.current_project.manuscript.chapters
+            if ch.plan and ch.plan.strip()
+        )
+
+        if chapters_with_plans == 0:
+            result = QMessageBox.question(
+                self,
+                "No Chapter Plans",
+                "No chapter plans have been written yet.\n\n"
+                "Would you like to export an outline template with chapter titles only?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if result != QMessageBox.StandardButton.Yes:
+                return
+
+        # Get output file path
+        default_name = f"{self.current_project.manuscript.title}_Outline.docx"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Book Outline",
+            default_name,
+            "Word Documents (*.docx)"
+        )
+
+        if not file_path:
+            return
+
+        # Export outline
+        exporter = ManuscriptExporter(self.current_project.manuscript)
+
+        try:
+            success = exporter.export_outline_to_docx(file_path, include_notes=True)
+
+            if success:
+                total_chapters = len(self.current_project.manuscript.chapters)
+                QMessageBox.information(
+                    self,
+                    "Export Successful",
+                    f"Book outline exported successfully!\n\n"
+                    f"File: {file_path}\n"
+                    f"Total Chapters: {total_chapters}\n"
+                    f"Chapters with Plans: {chapters_with_plans}"
+                )
+            else:
+                QMessageBox.critical(
+                    self,
+                    "Export Failed",
+                    "Failed to export outline. Check the console for details."
+                )
+
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Export Error",
+                f"An error occurred during export:\n{str(e)}"
+            )
 
     def _export_manuscript(self, format_type: str):
         """Export manuscript in specified format."""

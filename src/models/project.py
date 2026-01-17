@@ -160,6 +160,40 @@ class Annotation(BaseModel):
     updated_at: datetime = Field(default_factory=datetime.now)
 
 
+class ChapterTodo(BaseModel):
+    """Todo item for chapter planning."""
+    id: str
+    text: str
+    completed: bool = False
+    priority: str = "normal"  # low, normal, high
+    created_at: datetime = Field(default_factory=datetime.now)
+
+
+class StoryEvent(BaseModel):
+    """A story event/beat for chapter planning with arc positioning."""
+    id: str
+    text: str  # Description of what happens
+    completed: bool = False  # Has this event been written?
+    stage: str = "rising"  # exposition, rising, climax, falling, resolution
+    arc_position: int = 50  # 0-100, position on the chapter's narrative arc
+    order: int = 0  # Order in the event list
+
+
+class ChapterPlanning(BaseModel):
+    """Planning data for a chapter - separate from content."""
+    outline: str = ""  # Legacy: text-based outline (auto-generated from events)
+    events: List[StoryEvent] = Field(default_factory=list)  # Story events on the arc
+    description: str = ""  # Brief description/summary of what happens
+    todos: List[ChapterTodo] = Field(default_factory=list)  # Writing tasks for this chapter
+    notes: str = ""  # Additional notes (research, ideas, reminders)
+    scene_list: List[str] = Field(default_factory=list)  # List of scenes in order
+    characters_featured: List[str] = Field(default_factory=list)  # Character names/IDs
+    locations: List[str] = Field(default_factory=list)  # Locations used
+    themes: List[str] = Field(default_factory=list)  # Themes explored
+    pov_character: str = ""  # Point of view character
+    timeline_position: str = ""  # When this chapter occurs in story timeline
+
+
 class Chapter(BaseModel):
     """Chapter unit for manuscript."""
     id: str
@@ -168,11 +202,12 @@ class Chapter(BaseModel):
     content: str = ""  # Plain text content (for word count, search, AI analysis)
     html_content: str = ""  # Rich text HTML content (for formatting preservation)
     file_path: Optional[str] = None  # Relative path to chapter file within project
-    plan: str = ""  # Chapter plan/outline (NOT exported with manuscript)
+    plan: str = ""  # Legacy: Chapter plan/outline (kept for backward compatibility)
     plan_file_path: Optional[str] = None  # Relative path to plan file within project
+    planning: ChapterPlanning = Field(default_factory=ChapterPlanning)  # Full planning data
     revisions: List[ChapterRevision] = Field(default_factory=list)
     annotations: List[Annotation] = Field(default_factory=list)  # Line-specific notes and attributions
-    notes: str = ""
+    notes: str = ""  # Legacy notes field (kept for backward compatibility)
     word_count: int = 0
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)

@@ -12,7 +12,7 @@ from PyQt6.QtGui import QFont, QTextCursor, QAction, QTextCharFormat, QColor, QP
 from typing import List, Optional
 import uuid
 
-from src.models.project import Manuscript, Chapter, Annotation
+from src.models.project import Manuscript, Chapter, Annotation, ChapterTodo, ChapterPlanning, StoryEvent
 from src.ui.enhanced_text_editor import EnhancedTextEditor, CheckMode
 from src.ui.annotations import AnnotationDialog
 from src.ui.annotation_list_dialog import AnnotationListDialog
@@ -532,8 +532,37 @@ class ChapterEditor(QWidget):
         self.title_edit.setPlainText(self.chapter.title)
         # Load plain text content (now with Markdown formatting)
         self.editor.setPlainText(self.chapter.content)
-        # Load chapter plan (separate from content)
-        self.planner_widget.set_plan(self.chapter.plan)
+        # Load chapter planning data (separate from content)
+        planning_data = {
+            'outline': self.chapter.planning.outline or self.chapter.plan,  # Fall back to legacy plan
+            'events': [
+                {
+                    'id': event.id,
+                    'text': event.text,
+                    'completed': event.completed,
+                    'stage': event.stage,
+                    'arc_position': event.arc_position,
+                    'order': event.order
+                }
+                for event in self.chapter.planning.events
+            ],
+            'description': self.chapter.planning.description,
+            'todos': [
+                {
+                    'id': todo.id,
+                    'text': todo.text,
+                    'completed': todo.completed,
+                    'priority': todo.priority
+                }
+                for todo in self.chapter.planning.todos
+            ],
+            'notes': self.chapter.planning.notes,
+            'characters_featured': self.chapter.planning.characters_featured,
+            'locations': self.chapter.planning.locations,
+            'pov_character': self.chapter.planning.pov_character,
+            'timeline_position': self.chapter.planning.timeline_position,
+        }
+        self.planner_widget.set_planning_data(planning_data)
         self._update_word_count()
         self._update_margin_annotations()
         self._highlight_annotated_lines()
@@ -1479,13 +1508,53 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
         """Save editor content to chapter model.
 
         Content is stored as plain text with Markdown formatting.
-        Plan is saved separately and NOT exported with manuscript.
+        Planning data is saved separately and NOT exported with manuscript.
         """
         self.chapter.title = self.title_edit.toPlainText()
         # Save plain text content (contains Markdown formatting)
         self.chapter.content = self.editor.toPlainText()
-        # Save plan (separate from content, not exported)
-        self.chapter.plan = self.planner_widget.get_plan()
+
+        # Save planning data (separate from content, not exported)
+        planning_data = self.planner_widget.get_planning_data()
+
+        # Update the planning object
+        self.chapter.planning.outline = planning_data.get('outline', '')
+        self.chapter.planning.description = planning_data.get('description', '')
+        self.chapter.planning.notes = planning_data.get('notes', '')
+        self.chapter.planning.pov_character = planning_data.get('pov_character', '')
+        self.chapter.planning.timeline_position = planning_data.get('timeline_position', '')
+        self.chapter.planning.characters_featured = planning_data.get('characters_featured', [])
+        self.chapter.planning.locations = planning_data.get('locations', [])
+
+        # Convert event dicts back to StoryEvent objects
+        events_data = planning_data.get('events', [])
+        self.chapter.planning.events = [
+            StoryEvent(
+                id=event.get('id', str(uuid.uuid4())),
+                text=event.get('text', ''),
+                completed=event.get('completed', False),
+                stage=event.get('stage', 'rising'),
+                arc_position=event.get('arc_position', 50),
+                order=event.get('order', i)
+            )
+            for i, event in enumerate(events_data)
+        ]
+
+        # Convert todo dicts back to ChapterTodo objects
+        todos_data = planning_data.get('todos', [])
+        self.chapter.planning.todos = [
+            ChapterTodo(
+                id=todo.get('id', str(uuid.uuid4())),
+                text=todo.get('text', ''),
+                completed=todo.get('completed', False),
+                priority=todo.get('priority', 'normal')
+            )
+            for todo in todos_data
+        ]
+
+        # Also update legacy plan field for backward compatibility
+        self.chapter.plan = planning_data.get('outline', '')
+
         self._update_word_count()
 
 

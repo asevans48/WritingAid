@@ -27,6 +27,7 @@ class AgentMode(Enum):
     WORLDBUILDING = "worldbuilding"
     CHARACTER_DEVELOPMENT = "character_development"
     CHAPTER_ANALYSIS = "chapter_analysis"
+    CHAPTER_PLANNING = "chapter_planning"
     GENERAL_CHAT = "general_chat"
     RECOMMENDATIONS = "recommendations"
     TEXT_TO_SPEECH = "text_to_speech"
@@ -236,6 +237,8 @@ class AgentSuite:
             return self._handle_place_creation(message)
         elif any(word in message_lower for word in ["analyze chapter", "review chapter", "feedback on"]):
             return self._handle_chapter_analysis(message)
+        elif any(word in message_lower for word in ["plan chapter", "chapter plan", "outline chapter", "chapter outline", "plan this chapter"]):
+            return self._handle_chapter_planning(message)
         elif any(word in message_lower for word in ["suggest", "recommend", "ideas for", "help with"]):
             return self._handle_recommendations(message)
         elif any(word in message_lower for word in ["read aloud", "speak text", "text to speech", "tts", "read this", "generate tts", "convert to speech", "audio", "narrate"]):
@@ -244,6 +247,8 @@ class AgentSuite:
             return self._handle_worldbuilding_chat(message)
         elif self.current_mode == AgentMode.CHAPTER_ANALYSIS:
             return self._handle_chapter_analysis(message)
+        elif self.current_mode == AgentMode.CHAPTER_PLANNING:
+            return self._handle_chapter_planning(message)
         elif self.current_mode == AgentMode.TEXT_TO_SPEECH:
             return self._handle_tts_request(message)
         else:
@@ -360,6 +365,195 @@ What would you like to do next?
 Please select a chapter from your manuscript, and let me know if you want a quick review or detailed analysis.
 """
         return response
+
+    def _handle_chapter_planning(self, message: str, chapter_data: dict = None) -> str:
+        """Handle chapter planning assistance.
+
+        Args:
+            message: User's request about chapter planning
+            chapter_data: Optional dict with chapter planning data including:
+                - chapter_title: Title of the chapter
+                - chapter_number: Chapter number
+                - outline: Current chapter outline
+                - description: Chapter description
+                - todos: List of todo items
+                - notes: Planning notes
+
+        Returns:
+            AI response with planning assistance
+        """
+        if not self.project:
+            return "Please open a project first to get chapter planning assistance."
+
+        # Get world and story context for consistency
+        world_context = self._get_world_context(message)
+        story_context = self._get_story_planning_context()
+
+        # Build context about current chapter planning
+        chapter_context = ""
+        if chapter_data:
+            chapter_context = f"""
+**Current Chapter: {chapter_data.get('chapter_title', 'Untitled')} (Chapter {chapter_data.get('chapter_number', '?')})**
+
+Outline:
+{chapter_data.get('outline', '(No outline yet)')}
+
+Description:
+{chapter_data.get('description', '(No description yet)')}
+
+Current Todos:
+{self._format_todos(chapter_data.get('todos', []))}
+
+Notes:
+{chapter_data.get('notes', '(No notes yet)')}
+"""
+
+        system_prompt = """You are a writing planning assistant helping an author develop their chapter plans.
+You help with:
+- Creating chapter outlines that fit the overall story arc
+- Suggesting scenes and plot points
+- Identifying what needs to happen for story consistency
+- Breaking down complex chapters into manageable todos
+- Ensuring character arcs progress appropriately
+- Checking for plot consistency
+
+IMPORTANT: Do NOT write the actual chapter content. Only provide planning assistance, suggestions,
+and structural guidance. The author writes the prose themselves.
+
+Keep responses focused and actionable. Suggest specific tasks the author can add to their todo list.
+"""
+
+        prompt = f"""
+{story_context}
+
+{world_context}
+
+{chapter_context}
+
+User Request:
+{message}
+
+Provide planning assistance for this chapter. Be specific and actionable.
+If suggesting todos, format them as a bulleted list that the author can add to their planning.
+"""
+
+        llm = self.local_llm if self.local_llm and len(message) < 300 else self.primary_llm
+        response = llm.generate_text(
+            prompt,
+            system_prompt,
+            max_tokens=600,
+            temperature=0.7
+        )
+
+        return response
+
+    def _format_todos(self, todos: list) -> str:
+        """Format todos for display in context."""
+        if not todos:
+            return "(No todos yet)"
+
+        formatted = []
+        for todo in todos:
+            if isinstance(todo, dict):
+                check = "☑" if todo.get('completed') else "☐"
+                priority = todo.get('priority', 'normal')
+                priority_marker = " [HIGH]" if priority == 'high' else (" [low]" if priority == 'low' else "")
+                formatted.append(f"{check} {todo.get('text', '')}{priority_marker}")
+            elif isinstance(todo, str):
+                formatted.append(f"☐ {todo}")
+
+        return "\n".join(formatted) if formatted else "(No todos yet)"
+
+    def _get_story_planning_context(self) -> str:
+        """Get story planning context for chapter planning assistance."""
+        if not self.project:
+            return ""
+
+        sp = self.project.story_planning
+        context_parts = ["**Story Context:**"]
+
+        if sp.main_plot:
+            context_parts.append(f"Main Plot: {sp.main_plot[:400]}")
+
+        if sp.themes:
+            context_parts.append(f"Themes: {', '.join(sp.themes[:5])}")
+
+        # Freytag pyramid stages
+        fp = sp.freytag_pyramid
+        if fp.exposition:
+            context_parts.append(f"Exposition: {fp.exposition[:150]}")
+        if fp.rising_action:
+            context_parts.append(f"Rising Action: {fp.rising_action[:150]}")
+        if fp.climax:
+            context_parts.append(f"Climax: {fp.climax[:150]}")
+
+        # Key plot events
+        if fp.events:
+            events_summary = [f"- {e.title}" for e in fp.events[:5]]
+            context_parts.append(f"Key Events:\n" + "\n".join(events_summary))
+
+        # Subplots
+        if sp.subplots:
+            subplot_summary = [f"- {s.title}" for s in sp.subplots[:3]]
+            context_parts.append(f"Subplots:\n" + "\n".join(subplot_summary))
+
+        return "\n\n".join(context_parts)
+
+    def get_chapter_planning_context(self, chapter) -> str:
+        """Get full context for chapter planning AI assistance.
+
+        Args:
+            chapter: Chapter object with planning data
+
+        Returns:
+            Formatted context string for AI
+        """
+        if not chapter:
+            return ""
+
+        context_parts = []
+
+        # Chapter info
+        context_parts.append(f"**Chapter {chapter.number}: {chapter.title}**")
+
+        if chapter.word_count:
+            context_parts.append(f"Current word count: {chapter.word_count}")
+
+        # Planning data
+        planning = chapter.planning
+
+        if planning.outline:
+            context_parts.append(f"\n**Outline:**\n{planning.outline}")
+
+        if planning.description:
+            context_parts.append(f"\n**Description:**\n{planning.description}")
+
+        if planning.todos:
+            todos_text = self._format_todos([
+                {'text': t.text, 'completed': t.completed, 'priority': t.priority}
+                for t in planning.todos
+            ])
+            context_parts.append(f"\n**Writing Tasks:**\n{todos_text}")
+
+        if planning.notes:
+            context_parts.append(f"\n**Notes:**\n{planning.notes}")
+
+        if planning.scene_list:
+            context_parts.append(f"\n**Scenes:**\n" + "\n".join(f"- {s}" for s in planning.scene_list))
+
+        if planning.characters_featured:
+            context_parts.append(f"\n**Characters Featured:** {', '.join(planning.characters_featured)}")
+
+        if planning.locations:
+            context_parts.append(f"\n**Locations:** {', '.join(planning.locations)}")
+
+        if planning.pov_character:
+            context_parts.append(f"\n**POV Character:** {planning.pov_character}")
+
+        if planning.timeline_position:
+            context_parts.append(f"\n**Timeline Position:** {planning.timeline_position}")
+
+        return "\n".join(context_parts)
 
     def _handle_recommendations(self, message: str) -> str:
         """Handle recommendation requests."""
@@ -735,7 +929,8 @@ Would you like me to explain more about speaker configuration or dialogue detect
         self,
         chapter_text: str,
         chapter_title: str,
-        detailed: bool = True
+        detailed: bool = True,
+        chapter=None
     ) -> ChapterAnalysis:
         """Analyze chapter and return structured analysis.
 
@@ -743,6 +938,7 @@ Would you like me to explain more about speaker configuration or dialogue detect
             chapter_text: Full chapter text
             chapter_title: Chapter title
             detailed: If True, provides detailed line-item analysis
+            chapter: Optional Chapter object for planning context
 
         Returns:
             ChapterAnalysis object
@@ -753,6 +949,18 @@ Would you like me to explain more about speaker configuration or dialogue detect
             sp = self.project.story_planning
             if sp.main_plot:
                 manuscript_context = f"Main Plot: {sp.main_plot[:300]}"
+
+            # Add chapter planning context if available
+            if chapter and hasattr(chapter, 'planning'):
+                planning = chapter.planning
+                if planning.outline:
+                    manuscript_context += f"\n\nChapter Plan: {planning.outline[:300]}"
+                if planning.description:
+                    manuscript_context += f"\n\nChapter Description: {planning.description[:200]}"
+                if planning.todos:
+                    incomplete = [t for t in planning.todos if not t.completed]
+                    if incomplete:
+                        manuscript_context += f"\n\nRemaining Tasks: " + ", ".join(t.text for t in incomplete[:5])
 
         analysis = self.chapter_agent.analyze_chapter(
             chapter_text=chapter_text,
