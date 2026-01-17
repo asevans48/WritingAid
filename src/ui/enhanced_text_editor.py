@@ -2269,6 +2269,10 @@ class EnhancedTextEditor(QTextEdit):
             )
             return
 
+        # Stop any ongoing playback first
+        if self._tts_service.is_speaking:
+            self._tts_service.stop()
+
         if text is None:
             # Use selected text or entire document
             cursor = self.textCursor()
@@ -2289,6 +2293,10 @@ class EnhancedTextEditor(QTextEdit):
 
     def speak_selection(self):
         """Speak the currently selected text."""
+        # Stop any ongoing playback first
+        if self._tts_service and self._tts_service.is_speaking:
+            self._tts_service.stop()
+
         cursor = self.textCursor()
         if cursor.hasSelection():
             text = cursor.selectedText().replace('\u2029', '\n')
@@ -2303,6 +2311,10 @@ class EnhancedTextEditor(QTextEdit):
 
     def speak_document(self):
         """Speak the entire document."""
+        # Stop any ongoing playback first
+        if self._tts_service and self._tts_service.is_speaking:
+            self._tts_service.stop()
+
         text = self.toPlainText()
         if text.strip():
             # Strip Markdown formatting before speaking
@@ -2313,6 +2325,10 @@ class EnhancedTextEditor(QTextEdit):
 
     def speak_from_cursor(self):
         """Speak from cursor position to end of document."""
+        # Stop any ongoing playback first
+        if self._tts_service and self._tts_service.is_speaking:
+            self._tts_service.stop()
+
         cursor = self.textCursor()
         position = cursor.position()
         full_text = self.toPlainText()

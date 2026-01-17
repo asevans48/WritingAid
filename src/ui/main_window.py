@@ -3,10 +3,10 @@
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QMenuBar, QMenu, QFileDialog, QMessageBox,
-    QToolBar, QStatusBar, QSplitter, QLabel
+    QToolBar, QStatusBar, QSplitter, QLabel, QSystemTrayIcon
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QPoint
-from PyQt6.QtGui import QAction, QKeySequence
+from PyQt6.QtGui import QAction, QKeySequence, QIcon
 from pathlib import Path
 from typing import Optional
 
@@ -61,6 +61,7 @@ class MainWindow(QMainWindow):
         self._create_menus()
         self._create_minimal_toolbar()
         self._create_status_bar()
+        self._setup_system_tray()
 
         # Try to load last project, or prompt for new one
         self._startup_load_project()
@@ -291,6 +292,88 @@ class MainWindow(QMainWindow):
     def _create_status_bar(self):
         """Create status bar."""
         self.statusBar().showMessage("Ready")
+
+    def _setup_system_tray(self):
+        """Set up the system tray icon and menu."""
+        # Check if system tray is available
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            print("System tray is not available")
+            return
+
+        # Load icon - try PNG first (better compatibility), then ICO
+        assets_dir = Path(__file__).parent.parent.parent / "assets"
+        icon_path = assets_dir / "icon.png"
+        if not icon_path.exists():
+            icon_path = assets_dir / "icon.ico"
+
+        if icon_path.exists():
+            icon = QIcon(str(icon_path))
+        else:
+            # Fallback to application icon
+            icon = self.windowIcon()
+            print(f"Icon not found at {icon_path}, using window icon")
+
+        # Create system tray icon
+        self.tray_icon = QSystemTrayIcon(icon, self)
+        self.tray_icon.setToolTip("Writer Platform")
+
+        # Create tray menu
+        tray_menu = QMenu()
+
+        # Show/Hide action
+        show_action = QAction("Show/Hide", self)
+        show_action.triggered.connect(self._toggle_window_visibility)
+        tray_menu.addAction(show_action)
+
+        tray_menu.addSeparator()
+
+        # Quick actions
+        save_action = QAction("Save Project", self)
+        save_action.triggered.connect(self._save_project)
+        tray_menu.addAction(save_action)
+
+        tray_menu.addSeparator()
+
+        # Exit action
+        exit_action = QAction("Exit", self)
+        exit_action.triggered.connect(self._quit_application)
+        tray_menu.addAction(exit_action)
+
+        self.tray_icon.setContextMenu(tray_menu)
+
+        # Double-click to show/hide
+        self.tray_icon.activated.connect(self._on_tray_activated)
+
+        # Show the tray icon
+        self.tray_icon.show()
+
+    def _toggle_window_visibility(self):
+        """Toggle main window visibility."""
+        if self.isVisible():
+            self.hide()
+        else:
+            self.show()
+            self.raise_()
+            self.activateWindow()
+
+    def _on_tray_activated(self, reason):
+        """Handle tray icon activation."""
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self._toggle_window_visibility()
+
+    def _quit_application(self):
+        """Quit the application properly."""
+        # Check for unsaved changes
+        if self.current_project and not self._confirm_unsaved_changes():
+            return
+
+        # Hide tray icon
+        if hasattr(self, 'tray_icon'):
+            self.tray_icon.hide()
+
+        # Close the application
+        from PyQt6.QtWidgets import QApplication
+        QApplication.quit()
 
     def _connect_signals(self):
         """Connect signals between widgets."""
@@ -871,6 +954,9 @@ class MainWindow(QMainWindow):
         if self.current_project and not self._confirm_unsaved_changes():
             event.ignore()
         else:
+            # Hide tray icon before closing
+            if hasattr(self, 'tray_icon'):
+                self.tray_icon.hide()
             # Close all secondary windows
             self.window_manager.close_all_secondary_windows()
             event.accept()

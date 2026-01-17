@@ -5,9 +5,10 @@ A comprehensive platform for writers to organize books, short stories, and media
 
 import sys
 import os
+from pathlib import Path
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt, QtMsgType, qInstallMessageHandler
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QIcon
 from src.ui.main_window import MainWindow
 
 
@@ -44,6 +45,11 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Writer Platform")
     app.setOrganizationName("WriterPlatform")
+
+    # Set application icon
+    icon_path = Path(__file__).parent / "assets" / "icon.ico"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
 
     # Set default application font with valid point size
     default_font = QFont("Segoe UI", 10)

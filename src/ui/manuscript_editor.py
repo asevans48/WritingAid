@@ -1209,6 +1209,9 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
             )
             return
 
+        # Stop any ongoing playback first
+        self.editor.stop_speaking()
+
         # Check if there's selected text
         cursor = self.editor.textCursor()
         if cursor.hasSelection():
@@ -1250,6 +1253,9 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
                 "Install with: pip install pyttsx3 edge-tts"
             )
             return
+
+        # Stop any ongoing playback first
+        self.editor.stop_speaking()
 
         # Replace paragraph separator with newline
         text = selected_text.replace('\u2029', '\n')
