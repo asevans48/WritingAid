@@ -18,6 +18,7 @@ from src.ui.manuscript_editor import ManuscriptEditor
 from src.ui.image_generator_widget import ImageGeneratorWidget
 from src.ui.grader_widget import GraderWidget
 from src.ui.agent_manager_widget import AgentManagerWidget
+from src.ui.find_replace_dialog import FindReplaceDialog
 from src.ui.settings_dialog import SettingsDialog
 from src.ui.chat_widget import ChatWidget
 from src.ui.attributions_tab import AttributionsTab
@@ -44,6 +45,10 @@ class MainWindow(QMainWindow):
         self.current_project: Optional[WriterProject] = None
         self.ai_config = get_ai_config()
         self.settings = self.ai_config.get_settings()
+
+        # Find/Replace dialogs
+        self.find_dialog: Optional[FindReplaceDialog] = None
+        self.replace_dialog: Optional[FindReplaceDialog] = None
 
         # Register with window manager
         self.window_manager = WindowManager()
@@ -162,6 +167,18 @@ class MainWindow(QMainWindow):
 
         # Edit menu
         edit_menu = menubar.addMenu("&Edit")
+
+        find_action = QAction("&Find...", self)
+        find_action.setShortcut(QKeySequence.StandardKey.Find)
+        find_action.triggered.connect(self._show_find_dialog)
+        edit_menu.addAction(find_action)
+
+        replace_action = QAction("Find and &Replace...", self)
+        replace_action.setShortcut(QKeySequence.StandardKey.Replace)
+        replace_action.triggered.connect(self._show_replace_dialog)
+        edit_menu.addAction(replace_action)
+
+        edit_menu.addSeparator()
 
         settings_action = QAction("&Settings", self)
         settings_action.setShortcut(QKeySequence("Ctrl+,"))
@@ -494,6 +511,78 @@ class MainWindow(QMainWindow):
         """Handle chat message from user."""
         # TODO: Integrate with AI client
         self.chat_widget.add_message("Assistant", "AI integration pending...")
+
+    def _show_find_dialog(self):
+        """Show Find dialog."""
+        # Only work when on manuscript tab
+        if self.tab_widget.currentIndex() != 0:
+            self.statusBar().showMessage("Find is only available in the Manuscript tab", 3000)
+            return
+
+        if not self.find_dialog:
+            self.find_dialog = FindReplaceDialog(self, replace_mode=False)
+            self.find_dialog.find_next.connect(self._on_find_next)
+
+        # Pre-populate with selected text
+        selected = self.manuscript_editor.get_selected_text()
+        if selected:
+            self.find_dialog.set_find_text(selected)
+
+        self.find_dialog.show()
+        self.find_dialog.raise_()
+        self.find_dialog.activateWindow()
+
+    def _show_replace_dialog(self):
+        """Show Find and Replace dialog."""
+        # Only work when on manuscript tab
+        if self.tab_widget.currentIndex() != 0:
+            self.statusBar().showMessage("Find/Replace is only available in the Manuscript tab", 3000)
+            return
+
+        if not self.replace_dialog:
+            self.replace_dialog = FindReplaceDialog(self, replace_mode=True)
+            self.replace_dialog.find_next.connect(self._on_find_next)
+            self.replace_dialog.replace_next.connect(self._on_replace_next)
+            self.replace_dialog.replace_all.connect(self._on_replace_all)
+
+        # Pre-populate with selected text
+        selected = self.manuscript_editor.get_selected_text()
+        if selected:
+            self.replace_dialog.set_find_text(selected)
+
+        self.replace_dialog.show()
+        self.replace_dialog.raise_()
+        self.replace_dialog.activateWindow()
+
+    def _on_find_next(self, text: str, case_sensitive: bool, whole_word: bool):
+        """Handle find next from dialog."""
+        found = self.manuscript_editor.find_text(text, case_sensitive, whole_word)
+        dialog = self.find_dialog or self.replace_dialog
+        if dialog:
+            if found:
+                dialog.set_status("")
+            else:
+                dialog.set_status(f"'{text}' not found")
+
+    def _on_replace_next(self, find_text: str, replace_text: str,
+                         case_sensitive: bool, whole_word: bool):
+        """Handle replace from dialog."""
+        found = self.manuscript_editor.replace_text(find_text, replace_text, case_sensitive, whole_word)
+        if self.replace_dialog:
+            if not found:
+                self.replace_dialog.set_status(f"'{find_text}' not found")
+            else:
+                self.replace_dialog.set_status("")
+
+    def _on_replace_all(self, find_text: str, replace_text: str,
+                        case_sensitive: bool, whole_word: bool):
+        """Handle replace all from dialog."""
+        count = self.manuscript_editor.replace_all_text(find_text, replace_text, case_sensitive, whole_word)
+        if self.replace_dialog:
+            if count == 0:
+                self.replace_dialog.set_status(f"'{find_text}' not found")
+            else:
+                self.replace_dialog.set_status(f"Replaced {count} occurrence(s)")
 
     def _show_settings(self):
         """Show settings dialog."""

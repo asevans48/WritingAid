@@ -1766,6 +1766,130 @@ class ManuscriptEditor(QWidget):
         """Search key points across all chapters."""
         return self.memory_manager.search_key_points(query, point_types)
 
+    def get_current_editor(self) -> Optional['EnhancedTextEditor']:
+        """Get the current chapter's text editor, if any."""
+        if self.current_chapter_editor:
+            return self.current_chapter_editor.editor
+        return None
+
+    def get_selected_text(self) -> str:
+        """Get currently selected text from the editor."""
+        editor = self.get_current_editor()
+        if editor:
+            cursor = editor.textCursor()
+            return cursor.selectedText()
+        return ""
+
+    def find_text(self, text: str, case_sensitive: bool = False, whole_word: bool = False) -> bool:
+        """Find text in the current chapter editor.
+
+        Args:
+            text: Text to find
+            case_sensitive: Whether to match case
+            whole_word: Whether to match whole words only
+
+        Returns:
+            True if text was found, False otherwise
+        """
+        editor = self.get_current_editor()
+        if not editor or not text:
+            return False
+
+        # Build find flags
+        from PyQt6.QtGui import QTextDocument
+        flags = QTextDocument.FindFlag(0)
+        if case_sensitive:
+            flags |= QTextDocument.FindFlag.FindCaseSensitively
+        if whole_word:
+            flags |= QTextDocument.FindFlag.FindWholeWords
+
+        # Try to find from current cursor position
+        found = editor.find(text, flags)
+
+        # If not found, wrap around to beginning
+        if not found:
+            cursor = editor.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.Start)
+            editor.setTextCursor(cursor)
+            found = editor.find(text, flags)
+
+        return found
+
+    def replace_text(self, find_text: str, replace_text: str,
+                     case_sensitive: bool = False, whole_word: bool = False) -> bool:
+        """Replace current selection (if it matches) and find next.
+
+        Args:
+            find_text: Text to find
+            replace_text: Text to replace with
+            case_sensitive: Whether to match case
+            whole_word: Whether to match whole words only
+
+        Returns:
+            True if replacement was made, False otherwise
+        """
+        editor = self.get_current_editor()
+        if not editor or not find_text:
+            return False
+
+        cursor = editor.textCursor()
+        selected = cursor.selectedText()
+
+        # Check if current selection matches
+        if case_sensitive:
+            matches = selected == find_text
+        else:
+            matches = selected.lower() == find_text.lower()
+
+        if matches:
+            cursor.insertText(replace_text)
+            editor.setTextCursor(cursor)
+
+        # Find next occurrence
+        return self.find_text(find_text, case_sensitive, whole_word)
+
+    def replace_all_text(self, find_text: str, replace_text: str,
+                         case_sensitive: bool = False, whole_word: bool = False) -> int:
+        """Replace all occurrences of text.
+
+        Args:
+            find_text: Text to find
+            replace_text: Text to replace with
+            case_sensitive: Whether to match case
+            whole_word: Whether to match whole words only
+
+        Returns:
+            Number of replacements made
+        """
+        editor = self.get_current_editor()
+        if not editor or not find_text:
+            return 0
+
+        # Start from beginning
+        cursor = editor.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.Start)
+        editor.setTextCursor(cursor)
+
+        # Build find flags
+        from PyQt6.QtGui import QTextDocument
+        flags = QTextDocument.FindFlag(0)
+        if case_sensitive:
+            flags |= QTextDocument.FindFlag.FindCaseSensitively
+        if whole_word:
+            flags |= QTextDocument.FindFlag.FindWholeWords
+
+        count = 0
+
+        # Use document's find for efficiency
+        cursor.beginEditBlock()
+        while editor.find(find_text, flags):
+            cursor = editor.textCursor()
+            cursor.insertText(replace_text)
+            count += 1
+        cursor.endEditBlock()
+
+        return count
+
 
 class PromiseCheckDialog(QDialog):
     """Dialog for showing promise check results."""
