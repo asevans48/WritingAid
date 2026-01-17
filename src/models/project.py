@@ -172,7 +172,8 @@ class ChapterTodo(BaseModel):
 class StoryEvent(BaseModel):
     """A story event/beat for chapter planning with arc positioning."""
     id: str
-    text: str  # Description of what happens
+    text: str  # Brief title/name of what happens
+    description: str = ""  # Detailed description of the event
     completed: bool = False  # Has this event been written?
     stage: str = "rising"  # exposition, rising, climax, falling, resolution
     arc_position: int = 50  # 0-100, position on the chapter's narrative arc

@@ -101,16 +101,24 @@ class StoryEventWidget(QWidget):
         "resolution": "Resolution"
     }
 
-    def __init__(self, event_id: str, text: str = "", completed: bool = False,
-                 stage: str = "rising", arc_position: int = 50, order: int = 0):
+    def __init__(self, event_id: str, text: str = "", description: str = "",
+                 completed: bool = False, stage: str = "rising", arc_position: int = 50, order: int = 0):
         super().__init__()
         self.event_id = event_id
         self.order = order
-        self._init_ui(text, completed, stage, arc_position)
+        self._description_visible = False
+        self._init_ui(text, description, completed, stage, arc_position)
 
-    def _init_ui(self, text: str, completed: bool, stage: str, arc_position: int):
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
+    def _init_ui(self, text: str, description: str, completed: bool, stage: str, arc_position: int):
+        # Main vertical layout - tight spacing
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(4, 2, 4, 2)
+        main_layout.setSpacing(0)
+
+        # Top row with event controls
+        top_row = QWidget()
+        layout = QHBoxLayout(top_row)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
 
         # Order/number label
@@ -126,10 +134,30 @@ class StoryEventWidget(QWidget):
         self.checkbox.stateChanged.connect(self._on_changed)
         layout.addWidget(self.checkbox)
 
-        # Event text
+        # Expand/collapse indicator
+        self.expand_indicator = QLabel("▶")
+        self.expand_indicator.setStyleSheet("color: #9ca3af; font-size: 10px;")
+        self.expand_indicator.setMinimumWidth(15)
+        layout.addWidget(self.expand_indicator)
+
+        # Event text (clickable to expand description)
         self.text_edit = QLineEdit(text)
-        self.text_edit.setPlaceholderText("Describe what happens...")
+        self.text_edit.setPlaceholderText("Event name (click to expand details)...")
         self.text_edit.textChanged.connect(self._on_changed)
+        self.text_edit.setStyleSheet("""
+            QLineEdit {
+                border: 1px solid #e5e7eb;
+                border-radius: 4px;
+                padding: 4px 8px;
+            }
+            QLineEdit:hover {
+                border-color: #6366f1;
+                cursor: pointer;
+            }
+            QLineEdit:focus {
+                border-color: #6366f1;
+            }
+        """)
         layout.addWidget(self.text_edit, 1)
 
         # Stage selector
@@ -153,14 +181,74 @@ class StoryEventWidget(QWidget):
         layout.addWidget(self.arc_slider)
 
         # Delete button
-        delete_btn = QPushButton("×")
-        delete_btn.setMaximumWidth(25)
-        delete_btn.setStyleSheet("color: #ef4444;")
+        delete_btn = QPushButton("🗑")
+        delete_btn.setMaximumWidth(30)
+        delete_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                border: none;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #fee2e2;
+                border-radius: 3px;
+            }
+        """)
         delete_btn.setToolTip("Remove event")
         delete_btn.clicked.connect(lambda: self.delete_requested.emit(self.event_id))
         layout.addWidget(delete_btn)
 
+        main_layout.addWidget(top_row)
+
+        # Description area (hidden by default) - inline compact design
+        self.description_container = QWidget()
+        desc_layout = QHBoxLayout(self.description_container)
+        desc_layout.setContentsMargins(42, 0, 30, 0)  # Align with text field
+        desc_layout.setSpacing(0)
+
+        self.description_edit = QTextEdit()
+        self.description_edit.setPlaceholderText("Event details...")
+        self.description_edit.setPlainText(description)
+        self.description_edit.setFixedHeight(45)
+        self.description_edit.setStyleSheet("""
+            QTextEdit {
+                border: 1px solid #d1d5db;
+                border-top: none;
+                border-radius: 0 0 3px 3px;
+                padding: 2px 6px;
+                background-color: #f9fafb;
+                font-size: 11px;
+            }
+            QTextEdit:focus {
+                border-color: #6366f1;
+                background-color: white;
+            }
+        """)
+        self.description_edit.textChanged.connect(self._on_changed)
+        desc_layout.addWidget(self.description_edit)
+
+        self.description_container.setVisible(False)
+        main_layout.addWidget(self.description_container)
+
+        # Connect click on text to toggle description
+        self.text_edit.mousePressEvent = self._on_text_clicked
+
         self._update_style()
+
+    def _on_text_clicked(self, event):
+        """Handle click on event name to toggle description."""
+        # Call original behavior first (focus, selection, etc.)
+        QLineEdit.mousePressEvent(self.text_edit, event)
+        # Toggle description visibility
+        self._toggle_description()
+
+    def _toggle_description(self):
+        """Toggle the description area visibility."""
+        self._description_visible = not self._description_visible
+        self.description_container.setVisible(self._description_visible)
+        self.expand_indicator.setText("▼" if self._description_visible else "▶")
+        if self._description_visible:
+            self.description_edit.setFocus()
 
     def _on_changed(self):
         self._update_style()
@@ -187,8 +275,21 @@ class StoryEventWidget(QWidget):
         self.changed.emit()
 
     def _update_style(self):
+        base_style = """
+            QLineEdit {
+                border: 1px solid #e5e7eb;
+                border-radius: 4px;
+                padding: 4px 8px;
+            }
+            QLineEdit:hover {
+                border-color: #6366f1;
+            }
+            QLineEdit:focus {
+                border-color: #6366f1;
+            }
+        """
         if self.checkbox.isChecked():
-            self.text_edit.setStyleSheet("text-decoration: line-through; color: #9ca3af;")
+            self.text_edit.setStyleSheet(base_style + "QLineEdit { text-decoration: line-through; color: #9ca3af; }")
             self.order_label.setStyleSheet("font-weight: bold; color: #9ca3af;")
         else:
             stage = self.stage_combo.currentData()
@@ -200,7 +301,7 @@ class StoryEventWidget(QWidget):
                 "resolution": "#8b5cf6"  # purple
             }
             color = colors.get(stage, "#6366f1")
-            self.text_edit.setStyleSheet("")
+            self.text_edit.setStyleSheet(base_style)
             self.order_label.setStyleSheet(f"font-weight: bold; color: {color};")
 
     def set_order(self, order: int):
@@ -212,6 +313,7 @@ class StoryEventWidget(QWidget):
         return {
             'id': self.event_id,
             'text': self.text_edit.text(),
+            'description': self.description_edit.toPlainText(),
             'completed': self.checkbox.isChecked(),
             'stage': self.stage_combo.currentData(),
             'arc_position': self.arc_slider.value(),
@@ -664,7 +766,7 @@ class ChapterPlannerWidget(QWidget):
         events = [widget.get_data() for widget in self._event_widgets]
         self.arc_widget.set_events(events)
 
-    def _add_event_item(self, text: str = "", completed: bool = False,
+    def _add_event_item(self, text: str = "", description: str = "", completed: bool = False,
                        stage: str = "rising", arc_position: int = -1,
                        event_id: str = None, order: int = -1):
         """Add a new story event."""
@@ -679,7 +781,7 @@ class ChapterPlannerWidget(QWidget):
             total = len(self._event_widgets) + 1
             arc_position = int((order + 0.5) / total * 100)
 
-        item = StoryEventWidget(event_id, text, completed, stage, arc_position, order)
+        item = StoryEventWidget(event_id, text, description, completed, stage, arc_position, order)
         item.changed.connect(self._on_plan_changed)
         item.delete_requested.connect(self._remove_event_item)
         item.arc_position_changed.connect(self._on_event_arc_changed)
@@ -732,6 +834,7 @@ class ChapterPlannerWidget(QWidget):
         for i, event in enumerate(events_data):
             self._add_event_item(
                 text=event.get('text', ''),
+                description=event.get('description', ''),
                 completed=event.get('completed', False),
                 stage=event.get('stage', 'rising'),
                 arc_position=event.get('arc_position', 50),
@@ -775,6 +878,7 @@ class ChapterPlannerWidget(QWidget):
             for i, event in enumerate(events):
                 self._add_event_item(
                     text=event.get('text', ''),
+                    description=event.get('description', ''),
                     completed=event.get('completed', False),
                     stage=event.get('stage', 'rising'),
                     arc_position=event.get('arc_position', -1),
@@ -905,6 +1009,7 @@ class ChapterPlannerWidget(QWidget):
         for event in sorted(events, key=lambda e: e.get('arc_position', 50)):
             stage = event.get('stage', 'rising')
             text = event.get('text', '')
+            description = event.get('description', '')
             completed = event.get('completed', False)
 
             if stage != current_stage:
@@ -914,6 +1019,12 @@ class ChapterPlannerWidget(QWidget):
 
             check = "✓" if completed else "-"
             lines.append(f"{check} {text}")
+
+            # Include description if present
+            if description and description.strip():
+                # Indent the description under the event
+                for desc_line in description.strip().split('\n'):
+                    lines.append(f"    {desc_line}")
 
         return '\n'.join(lines)
 

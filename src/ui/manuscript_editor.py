@@ -539,6 +539,7 @@ class ChapterEditor(QWidget):
                 {
                     'id': event.id,
                     'text': event.text,
+                    'description': event.description,
                     'completed': event.completed,
                     'stage': event.stage,
                     'arc_position': event.arc_position,
@@ -1532,6 +1533,7 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
             StoryEvent(
                 id=event.get('id', str(uuid.uuid4())),
                 text=event.get('text', ''),
+                description=event.get('description', ''),
                 completed=event.get('completed', False),
                 stage=event.get('stage', 'rising'),
                 arc_position=event.get('arc_position', 50),
