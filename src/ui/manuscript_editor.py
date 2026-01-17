@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QTextEdit, QToolBar, QComboBox, QSpinBox,
     QMessageBox, QInputDialog, QGroupBox, QSplitter, QFileDialog,
     QDialog, QMenu, QCheckBox, QLineEdit, QScrollArea, QFrame,
-    QProgressBar, QRadioButton, QButtonGroup
+    QProgressBar, QRadioButton, QButtonGroup, QTabWidget
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QRect, QSize
 from PyQt6.QtGui import QFont, QTextCursor, QAction, QTextCharFormat, QColor, QPainter, QTextFormat
@@ -16,6 +16,7 @@ from src.models.project import Manuscript, Chapter, Annotation
 from src.ui.enhanced_text_editor import EnhancedTextEditor, CheckMode
 from src.ui.annotations import AnnotationDialog
 from src.ui.annotation_list_dialog import AnnotationListDialog
+from src.ui.chapter_planner_widget import ChapterPlannerWidget
 from src.ai.chapter_memory import ChapterMemoryManager
 from src.utils.markdown_editor import MarkdownStyle, toggle_inline_style
 
@@ -117,13 +118,23 @@ class ChapterEditor(QWidget):
         super().__init__()
         self.chapter = chapter
         self.project = project
+        self._llm_client = None
         self._init_ui()
+        self._init_ai()
         self._load_chapter()
 
     def _init_ui(self):
         """Initialize user interface."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+
+        # Main horizontal splitter - editor on left, planner on right
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # Left side - editor container
+        editor_widget = QWidget()
+        editor_layout = QVBoxLayout(editor_widget)
+        editor_layout.setContentsMargins(0, 0, 0, 0)
 
         # Toolbar
         toolbar = QToolBar()
@@ -251,7 +262,7 @@ class ChapterEditor(QWidget):
         self.tts_generate_btn.clicked.connect(self._tts_generate_document)
         toolbar.addWidget(self.tts_generate_btn)
 
-        layout.addWidget(toolbar)
+        editor_layout.addWidget(toolbar)
 
         # Chapter title
         title_layout = QHBoxLayout()
@@ -264,7 +275,7 @@ class ChapterEditor(QWidget):
         self.title_edit.textChanged.connect(self.content_changed.emit)
         title_layout.addWidget(self.title_edit)
 
-        layout.addLayout(title_layout)
+        editor_layout.addLayout(title_layout)
 
         # Main editor with annotation margin
         editor_container = QHBoxLayout()
@@ -312,7 +323,7 @@ class ChapterEditor(QWidget):
         editor_container.addWidget(self.annotation_margin)
         editor_container.addWidget(self.editor)
 
-        layout.addLayout(editor_container)
+        editor_layout.addLayout(editor_container)
 
         # Bottom toolbar
         bottom_toolbar = QHBoxLayout()
@@ -354,7 +365,164 @@ class ChapterEditor(QWidget):
         view_revisions_button.clicked.connect(self._view_revisions)
         bottom_toolbar.addWidget(view_revisions_button)
 
-        layout.addLayout(bottom_toolbar)
+        # Toggle planner button - make it stand out
+        self.toggle_planner_btn = QPushButton("📋 Plan Chapter")
+        self.toggle_planner_btn.setCheckable(True)
+        self.toggle_planner_btn.setToolTip("Show/hide chapter planner panel - plan your chapter before writing")
+        self.toggle_planner_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #8b5cf6;
+                color: white;
+                font-weight: bold;
+                padding: 5px 15px;
+                border-radius: 4px;
+            }
+            QPushButton:checked {
+                background-color: #7c3aed;
+            }
+            QPushButton:hover {
+                background-color: #7c3aed;
+            }
+        """)
+        self.toggle_planner_btn.clicked.connect(self._toggle_planner)
+        bottom_toolbar.addWidget(self.toggle_planner_btn)
+
+        editor_layout.addLayout(bottom_toolbar)
+
+        # Add editor widget to splitter
+        self.main_splitter.addWidget(editor_widget)
+
+        # Right side - Chapter Planner (initially hidden)
+        self.planner_widget = ChapterPlannerWidget()
+        self.planner_widget.plan_changed.connect(self._on_plan_changed)
+        self.planner_widget.setVisible(False)
+        self.planner_widget.setMinimumWidth(300)
+
+        # Set up planner callbacks
+        self.planner_widget.set_context_provider(self._get_planner_context)
+        self.planner_widget.set_chapter_content_provider(lambda: self.editor.toPlainText())
+
+        self.main_splitter.addWidget(self.planner_widget)
+
+        # Set initial splitter sizes (100% editor when planner hidden)
+        self.main_splitter.setSizes([1000, 0])
+
+        layout.addWidget(self.main_splitter)
+
+    def _toggle_planner(self):
+        """Toggle the chapter planner visibility."""
+        is_visible = self.planner_widget.isVisible()
+        self.planner_widget.setVisible(not is_visible)
+
+        if not is_visible:
+            # Show planner - set sizes to 60/40
+            self.main_splitter.setSizes([600, 400])
+            self.toggle_planner_btn.setText("📋 Hide Planner")
+            self.toggle_planner_btn.setChecked(True)
+        else:
+            # Hide planner
+            self.main_splitter.setSizes([1000, 0])
+            self.toggle_planner_btn.setText("📋 Plan Chapter")
+            self.toggle_planner_btn.setChecked(False)
+
+    def _on_plan_changed(self):
+        """Handle plan content changes."""
+        self.content_changed.emit()
+
+    def _get_planner_context(self) -> dict:
+        """Get context for the planner AI assistant."""
+        context = {
+            'chapter_title': self.chapter.title,
+            'plot': '',
+            'worldbuilding': '',
+            'characters': ''
+        }
+
+        if self.project:
+            # Get plot outline
+            if hasattr(self.project, 'story_planning') and self.project.story_planning:
+                plot_parts = []
+                if self.project.story_planning.get('premise'):
+                    plot_parts.append(f"Premise: {self.project.story_planning['premise']}")
+                if self.project.story_planning.get('themes'):
+                    plot_parts.append(f"Themes: {', '.join(self.project.story_planning['themes'])}")
+                if self.project.story_planning.get('outline'):
+                    plot_parts.append(f"Outline: {self.project.story_planning['outline']}")
+                context['plot'] = '\n'.join(plot_parts)
+
+            # Get worldbuilding summary
+            if hasattr(self.project, 'worldbuilding') and self.project.worldbuilding:
+                wb_parts = []
+                if self.project.worldbuilding.get('setting'):
+                    wb_parts.append(f"Setting: {self.project.worldbuilding['setting']}")
+                if self.project.worldbuilding.get('magic_system'):
+                    wb_parts.append(f"Magic/Technology: {self.project.worldbuilding['magic_system']}")
+                context['worldbuilding'] = '\n'.join(wb_parts)
+
+            # Get characters summary
+            if hasattr(self.project, 'characters') and self.project.characters:
+                char_parts = []
+                for char in self.project.characters[:10]:  # Limit to first 10 characters
+                    if isinstance(char, dict):
+                        name = char.get('name', 'Unknown')
+                        role = char.get('role', '')
+                        char_parts.append(f"- {name}: {role}")
+                context['characters'] = '\n'.join(char_parts)
+
+        return context
+
+    def _init_ai(self):
+        """Initialize AI client for the planner."""
+        try:
+            from src.config.ai_config import get_ai_config
+            from src.ai.llm_client import LLMClient, LLMProvider
+
+            config = get_ai_config()
+            settings = config.get_settings()
+            provider = settings.get("default_llm", "claude")
+
+            api_key = config.get_api_key(provider)
+
+            if api_key:
+                provider_enum = {
+                    "claude": LLMProvider.CLAUDE,
+                    "chatgpt": LLMProvider.CHATGPT,
+                    "openai": LLMProvider.CHATGPT,
+                    "gemini": LLMProvider.GEMINI
+                }.get(provider.lower(), LLMProvider.CLAUDE)
+
+                self._llm_client = LLMClient(
+                    provider=provider_enum,
+                    api_key=api_key,
+                    model=config.get_model(provider)
+                )
+
+                # Set up the AI handler for the planner
+                self.planner_widget.set_ai_handler(self._handle_planner_ai_request)
+
+        except Exception as e:
+            print(f"Failed to initialize AI for planner: {e}")
+            self._llm_client = None
+
+    def _handle_planner_ai_request(self, prompt: str, model_name: str) -> str:
+        """Handle AI requests from the planner widget.
+
+        Args:
+            prompt: The full prompt including context
+            model_name: Selected model name from dropdown (for future use)
+
+        Returns:
+            AI response text or empty string on error
+        """
+        if not self._llm_client:
+            return "AI not configured. Please set up API keys in Settings."
+
+        try:
+            response = self._llm_client.generate(prompt)
+            return response
+        except Exception as e:
+            print(f"AI request error: {e}")
+            return f"Error: {str(e)}"
 
     def _load_chapter(self):
         """Load chapter data into editor.
@@ -364,6 +532,8 @@ class ChapterEditor(QWidget):
         self.title_edit.setPlainText(self.chapter.title)
         # Load plain text content (now with Markdown formatting)
         self.editor.setPlainText(self.chapter.content)
+        # Load chapter plan (separate from content)
+        self.planner_widget.set_plan(self.chapter.plan)
         self._update_word_count()
         self._update_margin_annotations()
         self._highlight_annotated_lines()
@@ -1309,10 +1479,13 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
         """Save editor content to chapter model.
 
         Content is stored as plain text with Markdown formatting.
+        Plan is saved separately and NOT exported with manuscript.
         """
         self.chapter.title = self.title_edit.toPlainText()
         # Save plain text content (contains Markdown formatting)
         self.chapter.content = self.editor.toPlainText()
+        # Save plan (separate from content, not exported)
+        self.chapter.plan = self.planner_widget.get_plan()
         self._update_word_count()
 
 

@@ -168,6 +168,8 @@ class Chapter(BaseModel):
     content: str = ""  # Plain text content (for word count, search, AI analysis)
     html_content: str = ""  # Rich text HTML content (for formatting preservation)
     file_path: Optional[str] = None  # Relative path to chapter file within project
+    plan: str = ""  # Chapter plan/outline (NOT exported with manuscript)
+    plan_file_path: Optional[str] = None  # Relative path to plan file within project
     revisions: List[ChapterRevision] = Field(default_factory=list)
     annotations: List[Annotation] = Field(default_factory=list)  # Line-specific notes and attributions
     notes: str = ""
@@ -204,6 +206,27 @@ class Chapter(BaseModel):
         full_path = project_dir / self.file_path
         full_path.parent.mkdir(parents=True, exist_ok=True)
         full_path.write_text(self.content, encoding='utf-8')
+        return True
+
+    def load_plan_from_file(self, project_dir: Path) -> bool:
+        """Load chapter plan from external file."""
+        if not self.plan_file_path:
+            return False
+
+        full_path = project_dir / self.plan_file_path
+        if full_path.exists():
+            self.plan = full_path.read_text(encoding='utf-8')
+            return True
+        return False
+
+    def save_plan_to_file(self, project_dir: Path) -> bool:
+        """Save chapter plan to external file (separate from content)."""
+        # Always regenerate file path based on current chapter number
+        self.plan_file_path = f"chapters/plans/chapter_{self.number:03d}_plan.md"
+
+        full_path = project_dir / self.plan_file_path
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_text(self.plan, encoding='utf-8')
         return True
 
 
