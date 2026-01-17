@@ -8,13 +8,20 @@ openai>=1.12.0
 google-genai>=1.0.0
 langchain>=0.1.0
 langgraph>=0.0.20
-huggingface_hub>=0.20.0  # For HuggingFace Inference API
 
-# Local LLM Support (optional - install separately for local models)
-# transformers>=4.37.0
-# torch>=2.1.0
-# accelerate>=0.25.0
-# bitsandbytes>=0.42.0  # For quantization on Linux/WSL
+# Hugging Face Integration
+huggingface_hub>=0.21.0  # For model downloads and HF Inference API
+transformers>=4.40.0  # For loading and running local models
+safetensors>=0.4.0  # For efficient model weight loading
+
+# PyTorch - Local LLM Inference
+torch>=2.2.0  # Core deep learning framework
+# torchvision>=0.17.0  # Optional: for image models
+# torchaudio>=2.2.0  # Optional: for audio models
+
+# Model Optimization (optional - for quantization)
+accelerate>=0.27.0  # For efficient model loading and device mapping
+# bitsandbytes>=0.42.0  # For 4/8-bit quantization (Linux/WSL only)
 
 # Document Processing
 python-docx>=1.1.0
@@ -25,6 +32,8 @@ markdown>=3.5
 # Spell Check and Grammar
 language-tool-python>=2.8.0
 pyspellchecker>=0.7.2
+pyenchant>=3.2.2  # Dictionary-based spell checking with suggestions
+nltk>=3.8.1  # Natural language toolkit for word corpus and grammar
 
 # Image Processing
 Pillow>=10.2.0
@@ -36,3 +45,10 @@ pyyaml>=6.0.1
 
 # Utilities
 python-dotenv>=1.0.0
+
+# Secure Credential Storage
+keyring>=25.0.0  # Cross-platform credential storage (Windows Credential Manager)
+
+# Text-to-Speech
+pyttsx3>=2.90  # Offline TTS using system voices (Windows SAPI5, macOS NSSpeech, Linux espeak)
+edge-tts>=6.1.0  # High-quality Microsoft Edge neural voices (requires internet)

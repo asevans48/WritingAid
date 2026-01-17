@@ -12,7 +12,11 @@ from pathlib import Path
 from src.ai.llm_client import LLMClient, LLMProvider, HuggingFaceConfig
 from src.ai.worldbuilding_agent import WorldbuildingAgent
 from src.ai.chapter_analysis_agent import ChapterAnalysisAgent, ChapterAnalysis
+from src.ai.enhanced_rag import EnhancedRAGSystem
+from src.ai.semantic_search import SearchMethod
 from src.config.ai_config import get_ai_config
+from src.services.tts_service import get_tts_service, TTSEngine
+from src.services.tts_document_generator import TTSDocumentGenerator, TTSDocumentConfig, create_default_config, get_tts_output_dir
 
 if TYPE_CHECKING:
     from src.models.project import WriterProject
@@ -25,6 +29,7 @@ class AgentMode(Enum):
     CHAPTER_ANALYSIS = "chapter_analysis"
     GENERAL_CHAT = "general_chat"
     RECOMMENDATIONS = "recommendations"
+    TEXT_TO_SPEECH = "text_to_speech"
 
 
 @dataclass
@@ -70,6 +75,10 @@ class AgentSuite:
         self._worldbuilding_agent: Optional[WorldbuildingAgent] = None
         self._chapter_agent: Optional[ChapterAnalysisAgent] = None
 
+        # Initialize RAG system for semantic context retrieval
+        self._rag_system: Optional[EnhancedRAGSystem] = None
+        self._rag_initialized = False
+
         # Conversation state
         self.current_mode = AgentMode.GENERAL_CHAT
         self.conversation_history: List[Dict[str, str]] = []
@@ -77,12 +86,19 @@ class AgentSuite:
         # Cost tracking
         self.session_cost = 0.0
 
+        # TTS service
+        self._tts_service = None
+        self._tts_generator = None
+
         # Initialize primary LLM
         self._init_primary_llm()
 
         # Initialize local LLM if configured
         if self.config.use_local_model:
             self._init_local_llm()
+
+        # Initialize RAG system
+        self._init_rag_system()
 
     def _init_primary_llm(self):
         """Initialize primary cloud LLM."""
@@ -132,6 +148,35 @@ class AgentSuite:
             print(f"Failed to load local model: {e}")
             print("Falling back to cloud-only mode.")
             self.config.use_local_model = False
+
+    def _init_rag_system(self):
+        """Initialize RAG system for semantic context retrieval."""
+        if not self.project:
+            return
+
+        try:
+            self._rag_system = EnhancedRAGSystem(
+                project=self.project,
+                llm_client=self.primary_llm
+            )
+            self._rag_system.rebuild_index()
+            self._rag_initialized = True
+            print("RAG system initialized successfully")
+        except Exception as e:
+            print(f"Failed to initialize RAG system: {e}")
+            self._rag_initialized = False
+
+    def refresh_rag_index(self):
+        """Refresh the RAG index when project data changes."""
+        if self._rag_system:
+            self._rag_system.rebuild_index()
+
+    @property
+    def rag_system(self) -> Optional[EnhancedRAGSystem]:
+        """Get RAG system (initialized on demand)."""
+        if not self._rag_initialized and self.project:
+            self._init_rag_system()
+        return self._rag_system
 
     @property
     def worldbuilding_agent(self) -> WorldbuildingAgent:
@@ -193,10 +238,14 @@ class AgentSuite:
             return self._handle_chapter_analysis(message)
         elif any(word in message_lower for word in ["suggest", "recommend", "ideas for", "help with"]):
             return self._handle_recommendations(message)
+        elif any(word in message_lower for word in ["read aloud", "speak text", "text to speech", "tts", "read this", "generate tts", "convert to speech", "audio", "narrate"]):
+            return self._handle_tts_request(message)
         elif self.current_mode == AgentMode.WORLDBUILDING:
             return self._handle_worldbuilding_chat(message)
         elif self.current_mode == AgentMode.CHAPTER_ANALYSIS:
             return self._handle_chapter_analysis(message)
+        elif self.current_mode == AgentMode.TEXT_TO_SPEECH:
+            return self._handle_tts_request(message)
         else:
             return self._handle_general_chat(message)
 
@@ -205,8 +254,8 @@ class AgentSuite:
         if not self.project:
             return "Please open a project first before creating characters."
 
-        # Get world context
-        world_context = self._get_world_context()
+        # Get world context using RAG for relevant character-related info
+        world_context = self._get_world_context(message)
 
         # Use worldbuilding agent
         character_data = self.worldbuilding_agent.help_create_character(
@@ -240,7 +289,7 @@ Just let me know what you'd like to do next!
         if not self.project:
             return "Please open a project first before creating factions."
 
-        world_context = self._get_world_context()
+        world_context = self._get_world_context(message)
 
         faction_data = self.worldbuilding_agent.help_create_faction(
             user_description=message,
@@ -265,7 +314,7 @@ What would you like to do?
         if not self.project:
             return "Please open a project first before creating places."
 
-        world_context = self._get_world_context()
+        world_context = self._get_world_context(message)
 
         # Get available planets
         planets = [p.name for p in self.project.worldbuilding.planets] if hasattr(self.project.worldbuilding, 'planets') else []
@@ -328,7 +377,7 @@ Please select a chapter from your manuscript, and let me know if you want a quic
         elif "plot" in message.lower() or "story" in message.lower():
             category = "plot"
 
-        world_context = self._get_world_context()
+        world_context = self._get_world_context(message)
 
         # Get existing elements
         existing = self._get_existing_elements(category)
@@ -353,7 +402,7 @@ Please select a chapter from your manuscript, and let me know if you want a quic
     def _handle_worldbuilding_chat(self, message: str) -> str:
         """Handle general worldbuilding conversation."""
         # General worldbuilding assistance
-        world_context = self._get_world_context()
+        world_context = self._get_world_context(message)
 
         system_prompt = """You are a worldbuilding consultant helping an author.
         Provide creative suggestions and ask clarifying questions.
@@ -395,11 +444,241 @@ Provide helpful suggestions or ask clarifying questions.
 
         return response
 
-    def _get_world_context(self) -> str:
-        """Get relevant world context for current conversation."""
+    def _handle_tts_request(self, message: str) -> str:
+        """Handle text-to-speech related requests."""
+        message_lower = message.lower()
+
+        # Check what type of TTS action is requested
+        if "generate" in message_lower or "convert" in message_lower or "document" in message_lower:
+            return self._get_tts_generation_help()
+        elif "stop" in message_lower or "pause" in message_lower:
+            return self._stop_tts()
+        elif "status" in message_lower or "available" in message_lower or "check" in message_lower:
+            return self._get_tts_status()
+        elif "voice" in message_lower or "configure" in message_lower or "settings" in message_lower:
+            return self._get_tts_voice_info()
+        elif "help" in message_lower:
+            return self._get_tts_help()
+        else:
+            return self._get_tts_help()
+
+    def _get_tts_help(self) -> str:
+        """Get TTS help information."""
+        tts_service = self.get_tts_service()
+        status = "available" if tts_service and tts_service.is_available() else "not available"
+        engine = tts_service.engine.value if tts_service else "none"
+
+        return f"""**Text-to-Speech Capabilities**
+
+Current Status: {status}
+Active Engine: {engine}
+
+**Available Actions:**
+
+1. **Read Aloud** - Use the 🔊 Read button in the chapter toolbar, or right-click on selected text
+2. **Generate TTS Document** - Convert chapter text to speaker-formatted document for multi-voice synthesis
+3. **Stop Playback** - Use the ⏹ Stop button or say "stop TTS"
+
+**TTS Engines:**
+- **pyttsx3**: Offline, basic voices (default)
+- **edge-tts**: Microsoft Azure voices (requires internet)
+- **VibeVoice**: Multi-speaker synthesis (requires installation)
+
+**For VibeVoice:**
+1. Install from Settings > TTS Settings > Install VibeVoice
+2. Generate a TTS document with speaker assignments (🎙 Generate TTS button)
+3. Run the generated document through VibeVoice for multi-voice audio
+
+Would you like to:
+- Check TTS availability ("tts status")
+- Configure voices ("tts voices")
+- Generate a TTS document ("generate tts document")
+"""
+
+    def _get_tts_status(self) -> str:
+        """Get TTS system status."""
+        tts_service = self.get_tts_service()
+
+        if not tts_service:
+            return """**TTS Status: Not Available**
+
+Text-to-Speech service is not initialized.
+
+To enable TTS:
+1. Install pyttsx3: `pip install pyttsx3`
+2. Or install edge-tts: `pip install edge-tts`
+3. Restart the application
+"""
+
+        status_lines = ["**TTS Status Report**", ""]
+        status_lines.append(f"Service Available: {'Yes' if tts_service.is_available() else 'No'}")
+        status_lines.append(f"Current Engine: {tts_service.engine.value}")
+        status_lines.append(f"Voice: {tts_service.voice}")
+
+        # Check VibeVoice installation
+        vv_installed = tts_service.is_vibevoice_installed()
+        status_lines.append(f"VibeVoice Installed: {'Yes' if vv_installed else 'No'}")
+
+        if vv_installed:
+            status_lines.append(f"VibeVoice Path: {tts_service._vibevoice_path}")
+            status_lines.append(f"VibeVoice Model: {tts_service._vibevoice_model}")
+
+        # Available voices
+        voices = tts_service.get_voices()
+        if voices:
+            status_lines.append(f"\nAvailable Voices ({len(voices)}):")
+            for v in voices[:5]:
+                status_lines.append(f"  - {v.name} ({v.id})")
+            if len(voices) > 5:
+                status_lines.append(f"  ... and {len(voices) - 5} more")
+
+        return "\n".join(status_lines)
+
+    def _get_tts_voice_info(self) -> str:
+        """Get TTS voice configuration info."""
+        tts_service = self.get_tts_service()
+
+        if not tts_service or not tts_service.is_available():
+            return "TTS is not available. Please install pyttsx3 or edge-tts first."
+
+        voices = tts_service.get_voices()
+        voice_info = ["**Available TTS Voices**", ""]
+
+        for voice in voices:
+            voice_info.append(f"**{voice.name}** (ID: `{voice.id}`)")
+            if voice.language:
+                voice_info.append(f"  Language: {voice.language}")
+            if voice.gender:
+                voice_info.append(f"  Gender: {voice.gender}")
+            voice_info.append("")
+
+        voice_info.append("**VibeVoice Voices** (if installed):")
+        voice_info.append("- Carter: Deep, authoritative male voice")
+        voice_info.append("- Davis: Warm, friendly male voice")
+        voice_info.append("- Emma: Clear, professional female voice")
+        voice_info.append("- Frank: Mature, steady male voice")
+        voice_info.append("- Grace: Soft, gentle female voice")
+        voice_info.append("- Mike: Energetic, youthful male voice")
+        voice_info.append("- Samuel: Distinguished, formal male voice")
+        voice_info.append("")
+        voice_info.append("To change voices, go to Settings > TTS Settings")
+
+        return "\n".join(voice_info)
+
+    def _get_tts_generation_help(self) -> str:
+        """Get help for TTS document generation."""
+        return """**TTS Document Generation**
+
+To generate a TTS document from your chapter:
+
+1. **From Toolbar**: Click the 🎙 **Generate TTS** button in the chapter editor
+2. **From Context Menu**: Right-click and select **Text to Speech > Generate TTS Doc for Chapter...**
+3. **For Selected Text**: Select text, right-click, and choose **Generate TTS Doc from Selection...**
+
+**The Generator Dialog allows you to:**
+- Choose the TTS format (VibeVoice, Plain, or SSML)
+- Configure multiple speakers with different voices
+- Enable/disable dialogue detection
+- Set custom speaker names
+
+**Output:**
+- TTS documents are saved to: `~/.writer_platform/tts_output/`
+- Format: `{chapter_name}_tts.txt`
+- Files are overwritten when regenerated (no duplicates)
+
+**For VibeVoice multi-speaker synthesis:**
+```
+Speaker 1: [narrator text]
+Speaker 2: [dialogue text]
+Speaker 3: [different character]
+```
+
+Would you like me to explain more about speaker configuration or dialogue detection?
+"""
+
+    def _stop_tts(self) -> str:
+        """Stop TTS playback."""
+        tts_service = self.get_tts_service()
+        if tts_service:
+            tts_service.stop()
+            return "TTS playback stopped."
+        return "TTS service is not available."
+
+    def get_tts_service(self):
+        """Get or initialize the TTS service."""
+        if self._tts_service is None:
+            try:
+                self._tts_service = get_tts_service()
+            except Exception as e:
+                print(f"Failed to initialize TTS service: {e}")
+        return self._tts_service
+
+    def get_tts_generator(self, config=None):
+        """Get or initialize the TTS document generator."""
+        if self._tts_generator is None or config is not None:
+            self._tts_generator = TTSDocumentGenerator(config or create_default_config())
+        return self._tts_generator
+
+    def speak_text(self, text: str) -> bool:
+        """Speak text aloud using TTS.
+
+        Args:
+            text: Text to speak
+
+        Returns:
+            True if successful
+        """
+        tts_service = self.get_tts_service()
+        if not tts_service or not tts_service.is_available():
+            return False
+
+        tts_service.speak(text)
+        return True
+
+    def generate_tts_document(self, text: str, chapter_name: str = "chapter", config=None):
+        """Generate a TTS document from text.
+
+        Args:
+            text: Source text to convert
+            chapter_name: Name for the output file
+            config: Optional TTSDocumentConfig
+
+        Returns:
+            Tuple of (output file path, list of speaker names used)
+        """
+        generator = self.get_tts_generator(config)
+        output_dir = get_tts_output_dir()
+        return generator.generate_tts_document(text, output_dir, chapter_name)
+
+    def _get_world_context(self, query: str = "") -> str:
+        """Get relevant world context for current conversation.
+
+        Uses RAG system for semantic search if available and query provided,
+        otherwise falls back to basic context extraction.
+
+        Args:
+            query: Optional query to find relevant context for
+
+        Returns:
+            Formatted context string
+        """
         if not self.project:
             return ""
 
+        # Try to use RAG system for targeted context retrieval
+        if query and self.rag_system:
+            try:
+                context = self.rag_system.get_context_for_ai(
+                    query=query,
+                    max_tokens=1500,
+                    method=SearchMethod.HYBRID
+                )
+                if context:
+                    return context
+            except Exception as e:
+                print(f"RAG context retrieval failed: {e}")
+
+        # Fallback to basic context extraction
         wb = self.project.worldbuilding
         context_parts = []
 
@@ -411,10 +690,30 @@ Provide helpful suggestions or ask clarifying questions.
         if wb.politics:
             context_parts.append(f"Politics: {wb.politics[:200]}")
 
+        # Add factions summary
+        if hasattr(wb, 'factions') and wb.factions:
+            faction_names = [f.name for f in wb.factions[:10]]
+            context_parts.append(f"Key Factions: {', '.join(faction_names)}")
+
+        # Add technologies summary
+        if hasattr(wb, 'technologies') and wb.technologies:
+            tech_names = [t.name for t in wb.technologies[:10]]
+            context_parts.append(f"Technologies: {', '.join(tech_names)}")
+
+        # Add places summary
+        if hasattr(wb, 'places') and wb.places:
+            place_names = [p.name for p in wb.places[:10]]
+            context_parts.append(f"Key Places: {', '.join(place_names)}")
+
         # Add character names
         if self.project.characters:
             char_names = [c.name for c in self.project.characters[:10]]
             context_parts.append(f"Key Characters: {', '.join(char_names)}")
+
+        # Add story promises
+        if hasattr(self.project.story_planning, 'promises') and self.project.story_planning.promises:
+            promises = [p.title for p in self.project.story_planning.promises[:5]]
+            context_parts.append(f"Story Promises: {', '.join(promises)}")
 
         return "\n\n".join(context_parts)
 

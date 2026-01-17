@@ -4,7 +4,8 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QPushButton, QLabel, QTextEdit, QToolBar, QComboBox, QSpinBox,
     QMessageBox, QInputDialog, QGroupBox, QSplitter, QFileDialog,
-    QDialog, QMenu
+    QDialog, QMenu, QCheckBox, QLineEdit, QScrollArea, QFrame,
+    QProgressBar, QRadioButton, QButtonGroup
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QRect, QSize
 from PyQt6.QtGui import QFont, QTextCursor, QAction, QTextCharFormat, QColor, QPainter, QTextFormat
@@ -12,10 +13,11 @@ from typing import List, Optional
 import uuid
 
 from src.models.project import Manuscript, Chapter, Annotation
-from src.ui.enhanced_text_editor import EnhancedTextEditor
+from src.ui.enhanced_text_editor import EnhancedTextEditor, CheckMode
 from src.ui.annotations import AnnotationDialog
 from src.ui.annotation_list_dialog import AnnotationListDialog
 from src.ai.chapter_memory import ChapterMemoryManager
+from src.utils.markdown_editor import MarkdownStyle, toggle_inline_style
 
 
 class AnnotationMarginArea(QWidget):
@@ -165,6 +167,60 @@ class ChapterEditor(QWidget):
 
         toolbar.addSeparator()
 
+        # Heading style dropdown
+        toolbar.addWidget(QLabel("Style: "))
+        self.heading_combo = QComboBox()
+        self.heading_combo.addItems(["Normal", "Title", "Heading 1", "Heading 2", "Heading 3", "Heading 4"])
+        self.heading_combo.setToolTip("Apply heading style (exports properly to Word, HTML, Markdown)")
+        # Use activated instead of currentTextChanged so we can apply the same style multiple times
+        self.heading_combo.activated.connect(self._on_heading_combo_activated)
+        toolbar.addWidget(self.heading_combo)
+
+        toolbar.addSeparator()
+
+        # Writing checks toggle buttons (3-state: On-demand=green, Realtime=blue, Off=white)
+        # Style templates for button states
+        self._check_button_styles = {
+            CheckMode.ON_DEMAND: "background-color: #86efac; color: black; font-weight: bold; padding: 2px 6px; border-radius: 3px;",
+            CheckMode.REALTIME: "background-color: #93c5fd; color: black; font-weight: bold; padding: 2px 6px; border-radius: 3px;",
+            CheckMode.OFF: "background-color: #f3f4f6; color: #6b7280; padding: 2px 6px; border-radius: 3px;",
+        }
+
+        self.spell_check_btn = QPushButton("ABC")
+        self.spell_check_btn.setToolTip("Spell check: Click to cycle (Green=On-demand, Blue=Realtime, White=Off)")
+        self.spell_check_btn.clicked.connect(self._toggle_spell_check)
+        self._update_check_button_style(self.spell_check_btn, CheckMode.ON_DEMAND)
+        toolbar.addWidget(self.spell_check_btn)
+
+        self.grammar_check_btn = QPushButton("Gr")
+        self.grammar_check_btn.setToolTip("Grammar check: Click to cycle (Green=On-demand, Blue=Realtime, White=Off)")
+        self.grammar_check_btn.clicked.connect(self._toggle_grammar_check)
+        self._update_check_button_style(self.grammar_check_btn, CheckMode.ON_DEMAND)
+        toolbar.addWidget(self.grammar_check_btn)
+
+        self.overuse_check_btn = QPushButton("Ov")
+        self.overuse_check_btn.setToolTip("Overuse detection: Click to cycle (Green=On-demand, Blue=Realtime, White=Off)")
+        self.overuse_check_btn.clicked.connect(self._toggle_overuse_check)
+        self._update_check_button_style(self.overuse_check_btn, CheckMode.ON_DEMAND)
+        toolbar.addWidget(self.overuse_check_btn)
+
+        # Recheck button
+        self.recheck_btn = QPushButton("🔄 Recheck")
+        self.recheck_btn.setToolTip("Rerun all on-demand checks on this chapter")
+        self.recheck_btn.clicked.connect(self._recheck_writing)
+        toolbar.addWidget(self.recheck_btn)
+
+        toolbar.addSeparator()
+
+        # AI Rephrase action
+        rephrase_action = QAction("Rephrase", self)
+        rephrase_action.setShortcut("Ctrl+R")
+        rephrase_action.setToolTip("Rephrase selected text using AI (Ctrl+R)")
+        rephrase_action.triggered.connect(self._rephrase_selection)
+        toolbar.addAction(rephrase_action)
+
+        toolbar.addSeparator()
+
         # Annotation actions
         annotation_action = QAction("📝 Add Note", self)
         annotation_action.setShortcut("Ctrl+Shift+N")
@@ -176,6 +232,24 @@ class ChapterEditor(QWidget):
         view_annotations_action.triggered.connect(self._view_annotations_list)
         view_annotations_action.setToolTip("View all annotations")
         toolbar.addAction(view_annotations_action)
+
+        toolbar.addSeparator()
+
+        # Text-to-Speech actions
+        self.tts_speak_btn = QPushButton("🔊 Read")
+        self.tts_speak_btn.setToolTip("Read chapter aloud (or selection if text is selected)")
+        self.tts_speak_btn.clicked.connect(self._tts_speak_chapter)
+        toolbar.addWidget(self.tts_speak_btn)
+
+        self.tts_stop_btn = QPushButton("⏹ Stop")
+        self.tts_stop_btn.setToolTip("Stop reading")
+        self.tts_stop_btn.clicked.connect(self._tts_stop)
+        toolbar.addWidget(self.tts_stop_btn)
+
+        self.tts_generate_btn = QPushButton("🎙 Generate TTS")
+        self.tts_generate_btn.setToolTip("Generate TTS document for this chapter with voice configuration")
+        self.tts_generate_btn.clicked.connect(self._tts_generate_document)
+        toolbar.addWidget(self.tts_generate_btn)
 
         layout.addWidget(toolbar)
 
@@ -201,6 +275,12 @@ class ChapterEditor(QWidget):
         self.editor = EnhancedTextEditor()
         self.editor.setPlaceholderText("Start writing your chapter...")
         self.editor.textChanged.connect(self._on_text_changed)
+
+        # Connect TTS progress signal for status updates
+        self.editor.tts_progress.connect(self._on_tts_progress)
+        self.editor.tts_started.connect(self._on_tts_started)
+        self.editor.tts_stopped.connect(self._on_tts_stopped)
+        self.editor.tts_error.connect(self._on_tts_error_display)
 
         # Set default font
         font = QFont("Times New Roman", 12)
@@ -277,12 +357,18 @@ class ChapterEditor(QWidget):
         layout.addLayout(bottom_toolbar)
 
     def _load_chapter(self):
-        """Load chapter data into editor."""
+        """Load chapter data into editor.
+
+        Content is stored as Markdown - the highlighter renders it visually.
+        """
         self.title_edit.setPlainText(self.chapter.title)
+        # Load plain text content (now with Markdown formatting)
         self.editor.setPlainText(self.chapter.content)
         self._update_word_count()
         self._update_margin_annotations()
         self._highlight_annotated_lines()
+        # Perform initial writing check (for on-demand mode)
+        self.editor.do_initial_check()
 
     def _on_text_changed(self):
         """Handle text changes."""
@@ -334,18 +420,30 @@ class ChapterEditor(QWidget):
             pass
 
     def _toggle_bold(self):
-        """Toggle bold formatting."""
+        """Toggle bold formatting using Markdown ** markers."""
         cursor = self.editor.textCursor()
-        fmt = cursor.charFormat()
-        fmt.setFontWeight(QFont.Weight.Normal if fmt.fontWeight() == QFont.Weight.Bold else QFont.Weight.Bold)
-        cursor.mergeCharFormat(fmt)
+        if cursor.hasSelection():
+            selected_text = cursor.selectedText()
+            new_text = toggle_inline_style(selected_text, MarkdownStyle.BOLD)
+            cursor.insertText(new_text)
+        else:
+            # No selection - insert ** markers and position cursor between them
+            cursor.insertText("****")
+            cursor.movePosition(QTextCursor.MoveOperation.Left, QTextCursor.MoveMode.MoveAnchor, 2)
+            self.editor.setTextCursor(cursor)
 
     def _toggle_italic(self):
-        """Toggle italic formatting."""
+        """Toggle italic formatting using Markdown * markers."""
         cursor = self.editor.textCursor()
-        fmt = cursor.charFormat()
-        fmt.setFontItalic(not fmt.fontItalic())
-        cursor.mergeCharFormat(fmt)
+        if cursor.hasSelection():
+            selected_text = cursor.selectedText()
+            new_text = toggle_inline_style(selected_text, MarkdownStyle.ITALIC)
+            cursor.insertText(new_text)
+        else:
+            # No selection - insert * markers and position cursor between them
+            cursor.insertText("**")
+            cursor.movePosition(QTextCursor.MoveOperation.Left, QTextCursor.MoveMode.MoveAnchor, 1)
+            self.editor.setTextCursor(cursor)
 
     def _toggle_underline(self):
         """Toggle underline formatting."""
@@ -353,6 +451,83 @@ class ChapterEditor(QWidget):
         fmt = cursor.charFormat()
         fmt.setFontUnderline(not fmt.fontUnderline())
         cursor.mergeCharFormat(fmt)
+
+    def _on_heading_combo_activated(self, index: int):
+        """Handle heading combo box selection (activated fires even for same selection)."""
+        style = self.heading_combo.itemText(index)
+        self.editor.apply_heading(style)
+
+    def _apply_heading_style(self, style: str):
+        """Apply heading style to current paragraph."""
+        self.editor.apply_heading(style)
+
+    def _update_check_button_style(self, button: QPushButton, mode: CheckMode):
+        """Update button style based on check mode."""
+        button.setStyleSheet(self._check_button_styles[mode])
+
+    def _cycle_check_mode(self, current_mode: CheckMode) -> CheckMode:
+        """Cycle to the next check mode: ON_DEMAND -> REALTIME -> OFF -> ON_DEMAND."""
+        if current_mode == CheckMode.ON_DEMAND:
+            return CheckMode.REALTIME
+        elif current_mode == CheckMode.REALTIME:
+            return CheckMode.OFF
+        else:
+            return CheckMode.ON_DEMAND
+
+    def _toggle_spell_check(self):
+        """Cycle spell checking mode."""
+        current_mode = self.editor.get_spell_mode()
+        new_mode = self._cycle_check_mode(current_mode)
+        self.editor.set_spell_mode(new_mode)
+        self._update_check_button_style(self.spell_check_btn, new_mode)
+
+    def _toggle_grammar_check(self):
+        """Cycle grammar checking mode."""
+        current_mode = self.editor.get_grammar_mode()
+        new_mode = self._cycle_check_mode(current_mode)
+        self.editor.set_grammar_mode(new_mode)
+        self._update_check_button_style(self.grammar_check_btn, new_mode)
+
+    def _toggle_overuse_check(self):
+        """Cycle overused word detection mode."""
+        current_mode = self.editor.get_overuse_mode()
+        new_mode = self._cycle_check_mode(current_mode)
+        self.editor.set_overuse_mode(new_mode)
+        self._update_check_button_style(self.overuse_check_btn, new_mode)
+
+    def _recheck_writing(self):
+        """Rerun all on-demand checks on the chapter."""
+        # Update full text for overuse analysis
+        current_text = self.editor.toPlainText()
+        self.editor.overuse_detector.update_cache(current_text)
+        self.editor.writing_highlighter.update_full_text(current_text)
+        # Clear ignored errors to recheck everything
+        self.editor.writing_highlighter.clear_ignored()
+        # Also clear the overuse detector's ignored words
+        self.editor.overuse_detector._ignored_words.clear()
+        # Trigger full recheck (includes heavy grammar checking if available)
+        self.editor.writing_highlighter.do_full_recheck()
+
+    def _rephrase_selection(self):
+        """Open rephrase dialog for selected text."""
+        cursor = self.editor.textCursor()
+        selected_text = cursor.selectedText()
+
+        if not selected_text or len(selected_text.strip()) < 3:
+            QMessageBox.information(
+                self,
+                "No Selection",
+                "Please select some text to rephrase."
+            )
+            return
+
+        # Open rephrase dialog
+        from src.ui.rephrase_dialog import RephraseDialog
+        dialog = RephraseDialog(selected_text, self.project, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            replacement = dialog.get_selected_text()
+            if replacement:
+                cursor.insertText(replacement)
 
     def _show_context_menu(self, position):
         """Show custom context menu with annotation option."""
@@ -410,6 +585,11 @@ class ChapterEditor(QWidget):
             # Lookup selected text
             lookup_selected = lookup_menu.addAction(f'Look Up "{selected_text[:30]}..."')
             lookup_selected.triggered.connect(lambda: self._lookup_selected_text(selected_text))
+
+            # Find similar content (semantic search)
+            find_similar = lookup_menu.addAction(f'Find Similar Content')
+            find_similar.triggered.connect(lambda: self._find_similar_content(selected_text))
+
             lookup_menu.addSeparator()
 
         # Character lookup
@@ -423,6 +603,55 @@ class ChapterEditor(QWidget):
         # Plot lookup
         plot_action = lookup_menu.addAction("Plot Reference")
         plot_action.triggered.connect(self._lookup_plot)
+
+        # Technology lookup
+        tech_action = lookup_menu.addAction("Technology Reference")
+        tech_action.triggered.connect(self._lookup_technology)
+
+        # Advanced search
+        lookup_menu.addSeparator()
+        advanced_search = lookup_menu.addAction("Advanced Search...")
+        advanced_search.triggered.connect(self._show_advanced_search)
+
+        # AI Rephrase option (only if text selected)
+        text_cursor = self.editor.textCursor()
+        if text_cursor.hasSelection():
+            menu.addSeparator()
+            rephrase_action = menu.addAction("Rephrase with AI...")
+            rephrase_action.triggered.connect(self._rephrase_selection)
+
+            # Heading style submenu
+            heading_menu = menu.addMenu("Heading Style")
+            for level in ["Normal", "Heading 1", "Heading 2", "Heading 3"]:
+                action = heading_menu.addAction(level)
+                action.triggered.connect(lambda checked, l=level: self.editor.apply_heading(l))
+
+            # TTS options for selected text
+            menu.addSeparator()
+            tts_menu = menu.addMenu("🔊 Text to Speech")
+
+            # Capture the selected text now (not lazily in lambda)
+            selected_text = text_cursor.selectedText()
+
+            speak_selection_action = tts_menu.addAction("Read Selection Aloud")
+            speak_selection_action.triggered.connect(lambda checked, txt=selected_text: self._tts_speak_selection(txt))
+
+            generate_tts_selection = tts_menu.addAction("Generate TTS Doc from Selection...")
+            generate_tts_selection.triggered.connect(lambda checked, txt=selected_text: self._tts_generate_from_selection(txt))
+
+        # TTS options always available (for full chapter)
+        if not text_cursor.hasSelection():
+            menu.addSeparator()
+            tts_menu = menu.addMenu("🔊 Text to Speech")
+
+        speak_chapter_action = tts_menu.addAction("Read Entire Chapter")
+        speak_chapter_action.triggered.connect(self._tts_speak_chapter)
+
+        generate_tts_chapter = tts_menu.addAction("Generate TTS Doc for Chapter...")
+        generate_tts_chapter.triggered.connect(self._tts_generate_document)
+
+        stop_tts_action = tts_menu.addAction("Stop Playback")
+        stop_tts_action.triggered.connect(self._tts_stop)
 
         # Show menu at cursor position
         menu.exec(self.editor.mapToGlobal(position))
@@ -552,6 +781,72 @@ class ChapterEditor(QWidget):
             result = self.editor.lookup_plot_callback()
             dialog = ContextLookupDialog("Plot Reference", result, self)
             dialog.exec()
+
+    def _lookup_technology(self):
+        """Look up technology reference."""
+        if not self.project:
+            QMessageBox.information(self, "Not Available", "No project loaded.")
+            return
+
+        from src.ui.enhanced_text_editor import ContextLookupDialog, QuickReferenceDialog
+
+        wb = self.project.worldbuilding
+        if not hasattr(wb, 'technologies') or not wb.technologies:
+            QMessageBox.information(self, "No Technologies", "No technologies defined in worldbuilding.")
+            return
+
+        tech_names = [t.name for t in wb.technologies]
+        dialog = QuickReferenceDialog(tech_names, "Technology", self)
+        if dialog.exec() and dialog.selected_item:
+            tech = next((t for t in wb.technologies if t.name == dialog.selected_item), None)
+            if tech:
+                result = f"""
+**{tech.name}**
+Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.technology_type, 'value') else tech.technology_type}
+
+**Description:**
+{tech.description}
+
+**How It Works:**
+{tech.how_it_works or 'Not documented'}
+
+**Factions with Access:**
+{', '.join(tech.factions_with_access) if tech.factions_with_access else 'All'}
+
+**Impact Level:** {tech.game_changing_level}/100
+**Destructive Level:** {tech.destructive_level}/100
+
+**Limitations:**
+{tech.limitations or 'None specified'}
+
+**Story Importance:**
+{tech.story_importance or 'Not specified'}
+                """.strip()
+                ref_dialog = ContextLookupDialog(f"Technology: {tech.name}", result, self)
+                ref_dialog.exec()
+
+    def _find_similar_content(self, text: str):
+        """Find content similar to the highlighted text using semantic search."""
+        if not self.project:
+            QMessageBox.warning(self, "No Project", "Please load a project first.")
+            return
+
+        # Show the similarity search dialog
+        dialog = SimilaritySearchDialog(
+            search_text=text,
+            project=self.project,
+            parent=self
+        )
+        dialog.exec()
+
+    def _show_advanced_search(self):
+        """Show advanced search dialog for project content."""
+        if not self.project:
+            QMessageBox.warning(self, "No Project", "Please load a project first.")
+            return
+
+        dialog = AdvancedSearchDialog(project=self.project, parent=self)
+        dialog.exec()
 
     def _save_revision(self):
         """Save current content as a revision."""
@@ -901,9 +1196,116 @@ class ChapterEditor(QWidget):
         new_cursor.setPosition(old_position)
         self.editor.setTextCursor(new_cursor)
 
+    # ==================== Text-to-Speech Methods ====================
+
+    def _tts_speak_chapter(self):
+        """Speak the chapter or selected text aloud."""
+        if not self.editor.is_tts_available():
+            QMessageBox.warning(
+                self,
+                "TTS Not Available",
+                "Text-to-Speech is not available.\n\n"
+                "Install with: pip install pyttsx3 edge-tts"
+            )
+            return
+
+        # Check if there's selected text
+        cursor = self.editor.textCursor()
+        if cursor.hasSelection():
+            text = cursor.selectedText().replace('\u2029', '\n')
+        else:
+            text = self.editor.toPlainText()
+
+        if not text.strip():
+            QMessageBox.information(self, "No Text", "No text to read aloud.")
+            return
+
+        self.editor.speak_text(text)
+
+    def _tts_stop(self):
+        """Stop TTS playback."""
+        if self.editor.is_tts_available():
+            self.editor.stop_speaking()
+
+    def _tts_generate_document(self):
+        """Generate a TTS document for this chapter."""
+        text = self.editor.toPlainText()
+        if not text.strip():
+            QMessageBox.information(self, "No Content", "The chapter is empty.")
+            return
+
+        # Get chapter name for file naming
+        chapter_name = self.chapter.title or f"chapter_{self.chapter.id[:8]}"
+
+        # Show the TTS document generator dialog
+        self.editor.show_tts_document_generator(text)
+
+    def _tts_speak_selection(self, selected_text: str):
+        """Speak selected text aloud."""
+        if not self.editor.is_tts_available():
+            QMessageBox.warning(
+                self,
+                "TTS Not Available",
+                "Text-to-Speech is not available.\n\n"
+                "Install with: pip install pyttsx3 edge-tts"
+            )
+            return
+
+        # Replace paragraph separator with newline
+        text = selected_text.replace('\u2029', '\n')
+        if not text.strip():
+            QMessageBox.information(self, "No Text", "No text selected to read aloud.")
+            return
+
+        self.editor.speak_text(text)
+
+    def _tts_generate_from_selection(self, selected_text: str):
+        """Generate a TTS document from selected text."""
+        # Replace paragraph separator with newline
+        text = selected_text.replace('\u2029', '\n')
+        if not text.strip():
+            QMessageBox.information(self, "No Selection", "No text selected.")
+            return
+
+        # Show the TTS document generator dialog with selection
+        self.editor.show_tts_document_generator(text)
+
+    def get_current_chapter_name(self) -> str:
+        """Get the current chapter name for TTS file naming."""
+        return self.chapter.title or f"chapter_{self.chapter.id[:8]}"
+
+    def _on_tts_progress(self, message: str):
+        """Handle TTS progress update - show status on Read button."""
+        self.tts_speak_btn.setText(f"🔊 {message}")
+        self.tts_speak_btn.setEnabled(False)
+
+    def _on_tts_started(self):
+        """Handle TTS playback started."""
+        self.tts_speak_btn.setText("🔊 Playing...")
+        self.tts_speak_btn.setEnabled(False)
+        self.tts_stop_btn.setEnabled(True)
+
+    def _on_tts_stopped(self):
+        """Handle TTS playback stopped."""
+        self.tts_speak_btn.setText("🔊 Read")
+        self.tts_speak_btn.setEnabled(True)
+        self.tts_stop_btn.setEnabled(True)
+
+    def _on_tts_error_display(self, error: str):
+        """Handle TTS error - display to user."""
+        self.tts_speak_btn.setText("🔊 Read")
+        self.tts_speak_btn.setEnabled(True)
+        QMessageBox.warning(self, "TTS Error", f"Text-to-Speech error:\n\n{error}")
+
+    # ==================== End TTS Methods ====================
+
     def save_to_model(self):
-        """Save editor content to chapter model."""
+        """Save editor content to chapter model.
+
+        Content is stored as plain text with Markdown formatting.
+        """
         self.chapter.title = self.title_edit.toPlainText()
+        # Save plain text content (contains Markdown formatting)
         self.chapter.content = self.editor.toPlainText()
         self._update_word_count()
 
@@ -913,6 +1315,7 @@ class ManuscriptEditor(QWidget):
 
     content_changed = pyqtSignal()
     annotations_changed = pyqtSignal()  # Signal when any annotation changes
+    chapter_switched = pyqtSignal()  # Signal when switching between chapters (triggers auto-save)
 
     def __init__(self, project=None):
         """Initialize manuscript editor."""
@@ -1262,6 +1665,8 @@ class ManuscriptEditor(QWidget):
             self._update_total_word_count()
             # Notify memory manager of chapter exit (saves state, marks for re-analysis if changed)
             self.memory_manager.on_chapter_exit(self._current_chapter_id, save_content=True)
+            # Emit signal to trigger project auto-save
+            self.chapter_switched.emit()
 
         # Load selected chapter
         chapter_id = current.data(Qt.ItemDataRole.UserRole)
@@ -1552,5 +1957,375 @@ class PromiseCheckDialog(QDialog):
                 lines.append("</div>")
         else:
             lines.append("<p>✅ No character inconsistencies detected</p>")
+
+        self.results_text.setHtml("\n".join(lines))
+
+
+class SimilaritySearchDialog(QDialog):
+    """Dialog for finding similar content using semantic search."""
+
+    def __init__(self, search_text: str, project, parent=None):
+        """Initialize similarity search dialog.
+
+        Args:
+            search_text: Text to find similar content for
+            project: The writer project
+            parent: Parent widget
+        """
+        super().__init__(parent)
+        self.search_text = search_text
+        self.project = project
+        self.rag_system = None
+        self._init_ui()
+        self._run_search()
+
+    def _init_ui(self):
+        """Initialize UI."""
+        self.setWindowTitle("Find Similar Content")
+        self.setMinimumWidth(700)
+        self.setMinimumHeight(500)
+
+        layout = QVBoxLayout(self)
+
+        # Header
+        header = QLabel("<h3>Finding Similar Content</h3>")
+        layout.addWidget(header)
+
+        # Search text display
+        search_frame = QGroupBox("Search Text")
+        search_layout = QVBoxLayout(search_frame)
+        search_label = QLabel(self.search_text[:500] + ("..." if len(self.search_text) > 500 else ""))
+        search_label.setWordWrap(True)
+        search_label.setStyleSheet("font-style: italic; color: #4b5563;")
+        search_layout.addWidget(search_label)
+        layout.addWidget(search_frame)
+
+        # Results area
+        self.results_text = QTextEdit()
+        self.results_text.setReadOnly(True)
+        self.results_text.setPlaceholderText("Searching...")
+        layout.addWidget(self.results_text, stretch=1)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        button_layout.addWidget(close_btn)
+
+        layout.addLayout(button_layout)
+
+    def _run_search(self):
+        """Run the similarity search."""
+        try:
+            from src.ai.enhanced_rag import EnhancedRAGSystem
+            from src.ai.semantic_search import SearchMethod
+
+            # Initialize RAG system
+            self.rag_system = EnhancedRAGSystem(self.project)
+            self.rag_system.rebuild_index()
+
+            # Find similar content
+            results = self.rag_system.find_similar(
+                self.search_text,
+                top_k=10,
+                method=SearchMethod.HYBRID
+            )
+
+            self._display_results(results)
+
+        except Exception as e:
+            self.results_text.setPlainText(f"Error during search: {str(e)}")
+
+    def _display_results(self, results):
+        """Display search results."""
+        if not results:
+            self.results_text.setHtml(
+                "<p>No similar content found in your project.</p>"
+                "<p style='color: #6b7280;'>Try adding more content to your "
+                "worldbuilding, characters, or plot sections.</p>"
+            )
+            return
+
+        lines = [f"<p>Found {len(results)} similar items:</p><hr/>"]
+
+        for i, result in enumerate(results, 1):
+            score_pct = int(result.relevance_score * 100)
+            type_icon = self._get_type_icon(result.source_type)
+
+            lines.append(f"<div style='margin-bottom: 15px; padding: 10px; background-color: #f9fafb; border-radius: 6px;'>")
+            lines.append(f"<h4>{type_icon} {result.source_name}</h4>")
+            lines.append(f"<p style='color: #6b7280; font-size: 11px;'>"
+                        f"Type: {result.source_type.replace('_', ' ').title()} | "
+                        f"Match: {score_pct}% | Method: {result.match_type}</p>")
+
+            # Show matched terms if available
+            if result.matched_terms:
+                terms = ", ".join(result.matched_terms[:5])
+                lines.append(f"<p style='color: #059669; font-size: 11px;'>Matched: {terms}</p>")
+
+            # Show content preview
+            content_preview = result.content[:400]
+            if len(result.content) > 400:
+                content_preview += "..."
+            lines.append(f"<p>{content_preview}</p>")
+            lines.append("</div>")
+
+        self.results_text.setHtml("\n".join(lines))
+
+    def _get_type_icon(self, source_type: str) -> str:
+        """Get icon for source type."""
+        icons = {
+            "character": "👤",
+            "faction": "⚔️",
+            "place": "🗺️",
+            "technology": "🔬",
+            "culture": "🎭",
+            "historical_event": "📜",
+            "flora": "🌿",
+            "fauna": "🦁",
+            "myth": "📖",
+            "star_system": "⭐",
+            "military": "🎖️",
+            "economy": "💰",
+            "political_system": "🏛️",
+            "plot": "📊",
+            "plot_event": "📍",
+            "subplot": "🔀",
+            "promise": "🤝",
+            "worldbuilding": "🌍",
+            "chapter_key_point": "📝",
+            "themes": "🎨"
+        }
+        return icons.get(source_type, "📄")
+
+
+class AdvancedSearchDialog(QDialog):
+    """Advanced search dialog with filters and options."""
+
+    def __init__(self, project, parent=None):
+        """Initialize advanced search dialog.
+
+        Args:
+            project: The writer project
+            parent: Parent widget
+        """
+        super().__init__(parent)
+        self.project = project
+        self.rag_system = None
+        self._init_ui()
+        self._init_rag()
+
+    def _init_ui(self):
+        """Initialize UI."""
+        self.setWindowTitle("Advanced Project Search")
+        self.setMinimumWidth(800)
+        self.setMinimumHeight(600)
+
+        layout = QVBoxLayout(self)
+
+        # Search input
+        search_layout = QHBoxLayout()
+
+        self.search_input = QTextEdit()
+        self.search_input.setPlaceholderText("Enter search query...")
+        self.search_input.setMaximumHeight(80)
+        search_layout.addWidget(self.search_input, stretch=1)
+
+        search_btn = QPushButton("🔍 Search")
+        search_btn.clicked.connect(self._run_search)
+        search_btn.setMinimumHeight(60)
+        search_layout.addWidget(search_btn)
+
+        layout.addLayout(search_layout)
+
+        # Filters
+        filter_group = QGroupBox("Filter by Type")
+        filter_layout = QHBoxLayout(filter_group)
+
+        self.type_checkboxes = {}
+        types = [
+            ("character", "Characters"),
+            ("faction", "Factions"),
+            ("place", "Places"),
+            ("technology", "Technologies"),
+            ("culture", "Cultures"),
+            ("historical_event", "History"),
+            ("flora", "Flora"),
+            ("fauna", "Fauna"),
+            ("plot", "Plot"),
+            ("promise", "Promises"),
+            ("worldbuilding", "Worldbuilding")
+        ]
+
+        for type_id, type_name in types:
+            cb = QCheckBox(type_name)
+            cb.setChecked(True)
+            self.type_checkboxes[type_id] = cb
+            filter_layout.addWidget(cb)
+
+        layout.addWidget(filter_group)
+
+        # Search method
+        method_layout = QHBoxLayout()
+        method_layout.addWidget(QLabel("Search Method:"))
+
+        from PyQt6.QtWidgets import QComboBox
+        self.method_combo = QComboBox()
+        self.method_combo.addItem("Hybrid (Recommended)", "hybrid")
+        self.method_combo.addItem("TF-IDF (Keyword-based)", "tfidf")
+        self.method_combo.addItem("Semantic (AI Embeddings)", "embedding")
+        method_layout.addWidget(self.method_combo)
+
+        method_layout.addStretch()
+
+        # Result count
+        method_layout.addWidget(QLabel("Max Results:"))
+        self.max_results_spin = QSpinBox()
+        self.max_results_spin.setRange(5, 50)
+        self.max_results_spin.setValue(15)
+        method_layout.addWidget(self.max_results_spin)
+
+        layout.addLayout(method_layout)
+
+        # Results
+        self.results_text = QTextEdit()
+        self.results_text.setReadOnly(True)
+        self.results_text.setPlaceholderText("Enter a search query and click Search...")
+        layout.addWidget(self.results_text, stretch=1)
+
+        # Stats
+        self.stats_label = QLabel("")
+        self.stats_label.setStyleSheet("color: #6b7280; font-size: 11px;")
+        layout.addWidget(self.stats_label)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        button_layout.addWidget(close_btn)
+
+        layout.addLayout(button_layout)
+
+    def _init_rag(self):
+        """Initialize RAG system."""
+        try:
+            from src.ai.enhanced_rag import EnhancedRAGSystem
+
+            self.rag_system = EnhancedRAGSystem(self.project)
+            self.rag_system.rebuild_index()
+
+            # Show stats
+            stats = self.rag_system.get_stats()
+            self.stats_label.setText(
+                f"Indexed: {stats['total_documents']} documents | "
+                f"Vocabulary: {stats['vocab_size']} terms"
+            )
+
+        except Exception as e:
+            self.stats_label.setText(f"Error initializing search: {e}")
+
+    def _run_search(self):
+        """Run the search."""
+        query = self.search_input.toPlainText().strip()
+        if not query:
+            return
+
+        if not self.rag_system:
+            self.results_text.setPlainText("Search system not initialized.")
+            return
+
+        try:
+            from src.ai.semantic_search import SearchMethod
+
+            # Get selected types
+            selected_types = [
+                type_id for type_id, cb in self.type_checkboxes.items()
+                if cb.isChecked()
+            ]
+
+            # Get method
+            method_map = {
+                "hybrid": SearchMethod.HYBRID,
+                "tfidf": SearchMethod.TFIDF,
+                "embedding": SearchMethod.EMBEDDING
+            }
+            method = method_map.get(
+                self.method_combo.currentData(),
+                SearchMethod.HYBRID
+            )
+
+            # Run search
+            results = self.rag_system.search(
+                query=query,
+                method=method,
+                top_k=self.max_results_spin.value(),
+                source_types=selected_types if selected_types else None
+            )
+
+            self._display_results(results, query)
+
+        except Exception as e:
+            self.results_text.setPlainText(f"Search error: {str(e)}")
+
+    def _display_results(self, results, query: str):
+        """Display search results."""
+        if not results:
+            self.results_text.setHtml(
+                f"<p>No results found for: <b>{query}</b></p>"
+            )
+            return
+
+        lines = [f"<h3>Results for: {query}</h3>", f"<p>Found {len(results)} matches</p><hr/>"]
+
+        type_icons = {
+            "character": "👤", "faction": "⚔️", "place": "🗺️",
+            "technology": "🔬", "culture": "🎭", "historical_event": "📜",
+            "flora": "🌿", "fauna": "🦁", "myth": "📖", "star_system": "⭐",
+            "military": "🎖️", "economy": "💰", "political_system": "🏛️",
+            "plot": "📊", "plot_event": "📍", "subplot": "🔀",
+            "promise": "🤝", "worldbuilding": "🌍", "chapter_key_point": "📝"
+        }
+
+        for result in results:
+            icon = type_icons.get(result.source_type, "📄")
+            score_pct = int(result.relevance_score * 100)
+
+            lines.append(
+                f"<div style='margin-bottom: 12px; padding: 10px; "
+                f"background-color: #f9fafb; border-radius: 6px; border-left: 3px solid #6366f1;'>"
+            )
+            lines.append(f"<h4 style='margin: 0;'>{icon} {result.source_name}</h4>")
+            lines.append(
+                f"<p style='color: #6b7280; font-size: 11px; margin: 4px 0;'>"
+                f"{result.source_type.replace('_', ' ').title()} | "
+                f"Relevance: {score_pct}% | {result.match_type}</p>"
+            )
+
+            if result.matched_terms:
+                terms = ", ".join(f"<b>{t}</b>" for t in result.matched_terms[:5])
+                lines.append(f"<p style='color: #059669; font-size: 11px;'>Matched: {terms}</p>")
+
+            # Content preview with query highlighting
+            preview = result.content[:500]
+            if len(result.content) > 500:
+                preview += "..."
+
+            # Simple highlighting of query terms
+            for term in query.lower().split():
+                if len(term) > 2:
+                    import re
+                    preview = re.sub(
+                        f'({re.escape(term)})',
+                        r'<mark>\1</mark>',
+                        preview,
+                        flags=re.IGNORECASE
+                    )
+
+            lines.append(f"<p style='margin-top: 8px;'>{preview}</p>")
+            lines.append("</div>")
 
         self.results_text.setHtml("\n".join(lines))

@@ -10,7 +10,7 @@ class AIConfig:
     """Manage AI configuration with persistent storage."""
 
     DEFAULT_SETTINGS = {
-        # API Keys
+        # API Keys (stored in config for non-sensitive providers, secure storage preferred)
         "claude_api_key": "",
         "chatgpt_api_key": "",
         "gemini_api_key": "",
@@ -44,6 +44,15 @@ class AIConfig:
         "enable_streaming": False,
         "enable_fallback": True,
         "enable_caching": True,
+
+        # Local SLM Settings
+        "enable_local_models": False,  # Enable local/small language models support
+        "local_model_id": "",  # Hugging Face model ID (e.g., "microsoft/Phi-4-mini-instruct")
+        "local_model_quantization": "none",  # "none", "4bit", "8bit"
+        "local_model_device": "auto",  # "auto", "cuda", "cpu", "mps"
+        "local_model_trust_remote_code": False,  # Whether to trust remote code for model loading
+        "prefer_local_model": False,  # Use local model instead of cloud by default
+        "local_model_max_tokens": 1024,  # Max tokens for local model generation
 
         # Session State
         "last_project_path": ""
@@ -206,6 +215,65 @@ class AIConfig:
             True if save successful
         """
         self.settings["last_project_path"] = path
+        return self.save_settings(self.settings)
+
+    # Local SLM Methods
+
+    def get_local_model_settings(self) -> Dict[str, Any]:
+        """Get all local model settings.
+
+        Returns:
+            Dictionary with local model configuration
+        """
+        return {
+            "model_id": self.settings.get("local_model_id", ""),
+            "quantization": self.settings.get("local_model_quantization", "none"),
+            "device": self.settings.get("local_model_device", "auto"),
+            "trust_remote_code": self.settings.get("local_model_trust_remote_code", False),
+            "prefer_local": self.settings.get("prefer_local_model", False),
+            "max_tokens": self.settings.get("local_model_max_tokens", 1024),
+        }
+
+    def set_local_model(self, model_id: str, trust_remote_code: bool = False) -> bool:
+        """Set the local model to use.
+
+        Args:
+            model_id: Hugging Face model ID
+            trust_remote_code: Whether model requires trust_remote_code
+
+        Returns:
+            True if saved successfully
+        """
+        self.settings["local_model_id"] = model_id
+        self.settings["local_model_trust_remote_code"] = trust_remote_code
+        return self.save_settings(self.settings)
+
+    def get_local_model_id(self) -> str:
+        """Get the configured local model ID.
+
+        Returns:
+            Model ID string or empty if not set
+        """
+        return self.settings.get("local_model_id", "")
+
+    def should_prefer_local_model(self) -> bool:
+        """Check if local model should be preferred over cloud.
+
+        Returns:
+            True if local model is preferred
+        """
+        return self.settings.get("prefer_local_model", False)
+
+    def set_prefer_local_model(self, prefer: bool) -> bool:
+        """Set whether to prefer local model.
+
+        Args:
+            prefer: True to prefer local model
+
+        Returns:
+            True if saved successfully
+        """
+        self.settings["prefer_local_model"] = prefer
         return self.save_settings(self.settings)
 
 

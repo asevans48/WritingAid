@@ -286,6 +286,9 @@ class MainWindow(QMainWindow):
         # Connect annotation changes to update attributions tab
         self.manuscript_editor.annotations_changed.connect(self._on_annotations_changed)
 
+        # Auto-save when switching chapters
+        self.manuscript_editor.chapter_switched.connect(self._auto_save_project)
+
         # Connect chat to AI assistance
         self.chat_widget.message_sent.connect(self._handle_chat_message)
 
@@ -399,6 +402,24 @@ class MainWindow(QMainWindow):
                 "Error Saving Project",
                 f"Failed to save project:\n{str(e)}"
             )
+
+    def _auto_save_project(self):
+        """Auto-save project (e.g., when switching chapters).
+
+        Silently saves without showing status messages to avoid interrupting workflow.
+        """
+        if not self.current_project:
+            return
+
+        if self.current_project.project_path:
+            try:
+                self._collect_project_data()
+                self.current_project.save_project(self.current_project.project_path)
+                # Update window title to remove unsaved indicator
+                self.setWindowTitle(f"Writer Platform - {self.current_project.name}")
+            except Exception as e:
+                # Log error but don't interrupt user
+                print(f"Auto-save failed: {e}")
 
     def _load_project_into_ui(self):
         """Load current project data into UI widgets."""

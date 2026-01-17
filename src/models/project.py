@@ -165,7 +165,8 @@ class Chapter(BaseModel):
     id: str
     number: int
     title: str
-    content: str = ""  # Content stored inline (legacy) or loaded from file_path
+    content: str = ""  # Plain text content (for word count, search, AI analysis)
+    html_content: str = ""  # Rich text HTML content (for formatting preservation)
     file_path: Optional[str] = None  # Relative path to chapter file within project
     revisions: List[ChapterRevision] = Field(default_factory=list)
     annotations: List[Annotation] = Field(default_factory=list)  # Line-specific notes and attributions
