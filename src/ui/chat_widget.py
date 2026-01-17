@@ -1,7 +1,7 @@
 """Persistent collapsible chat widget for AI assistance."""
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QTextEdit, QLineEdit,
+    QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QLineEdit,
     QPushButton, QLabel, QFrame
 )
 from PyQt6.QtCore import pyqtSignal, Qt
@@ -11,40 +11,95 @@ class ChatWidget(QWidget):
     """Collapsible chat interface for AI assistance."""
 
     message_sent = pyqtSignal(str)
+    collapsed_changed = pyqtSignal(bool)  # Emits True when collapsed
 
     def __init__(self):
         """Initialize chat widget."""
         super().__init__()
         self.setObjectName("chatWidget")
+        self._collapsed = False
         self._init_ui()
 
     def _init_ui(self):
         """Initialize user interface."""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
 
-        # Header with icon
-        header_layout = QVBoxLayout()
-        header_layout.setSpacing(4)
+        # Collapsed state button (vertical AI button)
+        self.collapsed_btn = QPushButton("🤖\nA\nI")
+        self.collapsed_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #6366f1;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                font-size: 12px;
+                font-weight: bold;
+                padding: 8px 4px;
+                min-height: 80px;
+            }
+            QPushButton:hover {
+                background-color: #4f46e5;
+            }
+        """)
+        self.collapsed_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.collapsed_btn.clicked.connect(self._toggle_collapse)
+        self.collapsed_btn.setVisible(False)  # Hidden initially
+        layout.addWidget(self.collapsed_btn, 0, Qt.AlignmentFlag.AlignTop)
 
-        title = QLabel("✨ AI Assistant")
-        title.setProperty("subheading", True)
-        title.setStyleSheet("font-size: 18px; font-weight: 600; color: #6366f1;")
-        header_layout.addWidget(title)
+        # Collapsible header bar
+        self.header_frame = QFrame()
+        self.header_frame.setStyleSheet("""
+            QFrame {
+                background-color: #6366f1;
+                border-radius: 6px;
+            }
+        """)
+        header_layout = QHBoxLayout(self.header_frame)
+        header_layout.setContentsMargins(10, 6, 10, 6)
+        header_layout.setSpacing(8)
 
+        # Toggle button with title
+        self.toggle_btn = QPushButton("◀ ✨ AI Assistant")
+        self.toggle_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: white;
+                border: none;
+                font-size: 13px;
+                font-weight: 600;
+                text-align: left;
+                padding: 2px;
+            }
+            QPushButton:hover {
+                color: #e0e7ff;
+            }
+        """)
+        self.toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.toggle_btn.clicked.connect(self._toggle_collapse)
+        header_layout.addWidget(self.toggle_btn)
+        header_layout.addStretch()
+
+        layout.addWidget(self.header_frame)
+
+        # Content container (collapsible)
+        self.content_widget = QWidget()
+        content_layout = QVBoxLayout(self.content_widget)
+        content_layout.setContentsMargins(0, 4, 0, 0)
+        content_layout.setSpacing(8)
+
+        # Subtitle
         subtitle = QLabel("Your creative writing companion")
         subtitle.setProperty("muted", True)
         subtitle.setStyleSheet("font-size: 11px; color: #a3a3a3;")
-        header_layout.addWidget(subtitle)
-
-        layout.addLayout(header_layout)
+        content_layout.addWidget(subtitle)
 
         # Separator line
         separator = QFrame()
         separator.setFrameShape(QFrame.Shape.HLine)
         separator.setStyleSheet("background-color: #e5e7eb; max-height: 1px;")
-        layout.addWidget(separator)
+        content_layout.addWidget(separator)
 
         # Chat history with modern styling
         self.chat_history = QTextEdit()
@@ -60,7 +115,7 @@ class ChatWidget(QWidget):
                 line-height: 1.5;
             }
         """)
-        layout.addWidget(self.chat_history)
+        content_layout.addWidget(self.chat_history)
 
         # Input area with modern styling
         self.input_field = QLineEdit()
@@ -78,7 +133,7 @@ class ChatWidget(QWidget):
                 border: 2px solid #6366f1;
             }
         """)
-        layout.addWidget(self.input_field)
+        content_layout.addWidget(self.input_field)
 
         # Send button with modern styling
         send_button = QPushButton("Send")
@@ -100,7 +155,34 @@ class ChatWidget(QWidget):
             }
         """)
         send_button.clicked.connect(self._send_message)
-        layout.addWidget(send_button)
+        content_layout.addWidget(send_button)
+
+        layout.addWidget(self.content_widget)
+
+    def _toggle_collapse(self):
+        """Toggle between collapsed and expanded state."""
+        self._collapsed = not self._collapsed
+        self.content_widget.setVisible(not self._collapsed)
+        self.header_frame.setVisible(not self._collapsed)
+        self.collapsed_btn.setVisible(self._collapsed)
+
+        if self._collapsed:
+            self.setMinimumWidth(36)
+            self.setMaximumWidth(40)
+        else:
+            self.setMinimumWidth(300)
+            self.setMaximumWidth(400)
+
+        self.collapsed_changed.emit(self._collapsed)
+
+    def is_collapsed(self) -> bool:
+        """Return whether the widget is collapsed."""
+        return self._collapsed
+
+    def set_collapsed(self, collapsed: bool):
+        """Set the collapsed state."""
+        if collapsed != self._collapsed:
+            self._toggle_collapse()
 
     def _send_message(self):
         """Send user message."""

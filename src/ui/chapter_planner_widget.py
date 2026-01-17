@@ -30,30 +30,61 @@ class TodoItemWidget(QWidget):
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(4)
 
-        # Checkbox
+        # Checkbox with visible styling
         self.checkbox = QCheckBox()
         self.checkbox.setChecked(completed)
+        self.checkbox.setStyleSheet("""
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+            }
+            QCheckBox::indicator:unchecked {
+                border: 2px solid #9ca3af;
+                border-radius: 3px;
+                background-color: white;
+            }
+            QCheckBox::indicator:checked {
+                border: 2px solid #22c55e;
+                border-radius: 3px;
+                background-color: #22c55e;
+            }
+        """)
         self.checkbox.stateChanged.connect(self._on_changed)
         layout.addWidget(self.checkbox)
 
-        # Priority indicator
+        # Priority indicator with compact styling
         self.priority_combo = QComboBox()
         self.priority_combo.addItems(["low", "normal", "high"])
         self.priority_combo.setCurrentText(priority)
-        self.priority_combo.setMaximumWidth(70)
+        self.priority_combo.setMaximumWidth(65)
+        self.priority_combo.setStyleSheet("font-size: 10px;")
         self.priority_combo.currentTextChanged.connect(self._on_changed)
         layout.addWidget(self.priority_combo)
 
         # Text
         self.text_edit = QLineEdit(text)
         self.text_edit.setPlaceholderText("Enter task...")
+        self.text_edit.setStyleSheet("font-size: 11px;")
         self.text_edit.textChanged.connect(self._on_changed)
         layout.addWidget(self.text_edit)
 
-        # Delete button
-        delete_btn = QPushButton("×")
-        delete_btn.setMaximumWidth(25)
-        delete_btn.setStyleSheet("color: red;")
+        # Delete button with visible icon
+        delete_btn = QPushButton("🗑")
+        delete_btn.setMinimumWidth(24)
+        delete_btn.setMaximumWidth(28)
+        delete_btn.setToolTip("Delete task")
+        delete_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 12px;
+                padding: 2px;
+                border: none;
+                background: transparent;
+            }
+            QPushButton:hover {
+                background-color: #fee2e2;
+                border-radius: 3px;
+            }
+        """)
         delete_btn.clicked.connect(lambda: self.delete_requested.emit(self.item_id))
         layout.addWidget(delete_btn)
 
@@ -64,16 +95,17 @@ class TodoItemWidget(QWidget):
         self.changed.emit()
 
     def _update_style(self):
+        base_style = "font-size: 11px; "
         if self.checkbox.isChecked():
-            self.text_edit.setStyleSheet("text-decoration: line-through; color: gray;")
+            self.text_edit.setStyleSheet(base_style + "text-decoration: line-through; color: gray;")
         else:
             priority = self.priority_combo.currentText()
             if priority == "high":
-                self.text_edit.setStyleSheet("color: #dc2626; font-weight: bold;")
+                self.text_edit.setStyleSheet(base_style + "color: #dc2626; font-weight: bold;")
             elif priority == "low":
-                self.text_edit.setStyleSheet("color: #6b7280;")
+                self.text_edit.setStyleSheet(base_style + "color: #6b7280;")
             else:
-                self.text_edit.setStyleSheet("")
+                self.text_edit.setStyleSheet(base_style)
 
     def get_data(self) -> dict:
         return {
@@ -758,7 +790,7 @@ class ChapterPlannerWidget(QWidget):
 
         add_todo_btn = QPushButton("+ Add")
         add_todo_btn.setStyleSheet("font-size: 11px; padding: 2px 6px;")
-        add_todo_btn.clicked.connect(self._add_todo_item)
+        add_todo_btn.clicked.connect(lambda: self._add_todo_item())
         todo_header.addWidget(add_todo_btn)
 
         todo_header.addStretch()
@@ -798,10 +830,51 @@ class ChapterPlannerWidget(QWidget):
 
         self.tab_widget.addTab(notes_tab, "Notes")
 
-        # === TAB 5: AI Assistant === (compact for small screens)
-        ai_tab = QWidget()
-        ai_layout = QVBoxLayout(ai_tab)
-        ai_layout.setSpacing(4)
+        layout.addWidget(self.tab_widget)
+
+        # === COLLAPSIBLE AI ASSISTANT PANEL ===
+        self.ai_panel = QFrame()
+        self.ai_panel.setStyleSheet("""
+            QFrame#ai_panel {
+                border: 1px solid #8b5cf6;
+                border-radius: 4px;
+                background-color: #faf5ff;
+            }
+        """)
+        self.ai_panel.setObjectName("ai_panel")
+        ai_panel_layout = QVBoxLayout(self.ai_panel)
+        ai_panel_layout.setContentsMargins(4, 4, 4, 4)
+        ai_panel_layout.setSpacing(4)
+
+        # Collapsible header bar
+        ai_header = QHBoxLayout()
+        ai_header.setSpacing(4)
+
+        self.ai_toggle_btn = QPushButton("🤖 AI Assistant ▶")
+        self.ai_toggle_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #8b5cf6;
+                color: white;
+                font-weight: bold;
+                font-size: 11px;
+                padding: 4px 8px;
+                border-radius: 3px;
+                text-align: left;
+            }
+            QPushButton:hover {
+                background-color: #7c3aed;
+            }
+        """)
+        self.ai_toggle_btn.clicked.connect(self._toggle_ai_panel)
+        ai_header.addWidget(self.ai_toggle_btn)
+        ai_header.addStretch()
+        ai_panel_layout.addLayout(ai_header)
+
+        # Collapsible content container
+        self.ai_content = QWidget()
+        ai_content_layout = QVBoxLayout(self.ai_content)
+        ai_content_layout.setContentsMargins(0, 4, 0, 0)
+        ai_content_layout.setSpacing(4)
 
         # Model selector - compact with tooltips for full names
         model_layout = QHBoxLayout()
@@ -820,7 +893,7 @@ class ChapterPlannerWidget(QWidget):
         self.model_combo.setToolTip("Select AI model")
         model_layout.addWidget(self.model_combo)
         model_layout.addStretch()
-        ai_layout.addLayout(model_layout)
+        ai_content_layout.addLayout(model_layout)
 
         # Chat history
         self.chat_history = QTextEdit()
@@ -828,7 +901,9 @@ class ChapterPlannerWidget(QWidget):
         self.chat_history.setFont(QFont("Segoe UI", 9))
         self.chat_history.setStyleSheet("background-color: #f8f9fa;")
         self.chat_history.setPlaceholderText("AI responses...")
-        ai_layout.addWidget(self.chat_history)
+        self.chat_history.setMinimumHeight(100)
+        self.chat_history.setMaximumHeight(150)
+        ai_content_layout.addWidget(self.chat_history)
 
         # Chat input - compact
         input_layout = QHBoxLayout()
@@ -844,7 +919,7 @@ class ChapterPlannerWidget(QWidget):
         self.send_btn.clicked.connect(self._send_chat_message)
         input_layout.addWidget(self.send_btn)
 
-        ai_layout.addLayout(input_layout)
+        ai_content_layout.addLayout(input_layout)
 
         # Progress bar
         self.progress_bar = QProgressBar()
@@ -852,11 +927,15 @@ class ChapterPlannerWidget(QWidget):
         self.progress_bar.setTextVisible(False)
         self.progress_bar.setMaximum(0)
         self.progress_bar.setMaximumHeight(8)
-        ai_layout.addWidget(self.progress_bar)
+        ai_content_layout.addWidget(self.progress_bar)
 
-        self.tab_widget.addTab(ai_tab, "AI")
+        ai_panel_layout.addWidget(self.ai_content)
 
-        layout.addWidget(self.tab_widget)
+        # Start collapsed
+        self.ai_content.setVisible(False)
+        self._ai_expanded = False
+
+        layout.addWidget(self.ai_panel)
 
         # Consistency check section at bottom - compact for small screens
         check_frame = QFrame()
@@ -877,6 +956,15 @@ class ChapterPlannerWidget(QWidget):
         """Handle any planning content change."""
         self._update_arc_widget()
         self.plan_changed.emit()
+
+    def _toggle_ai_panel(self):
+        """Toggle the AI Assistant panel expand/collapse."""
+        self._ai_expanded = not self._ai_expanded
+        self.ai_content.setVisible(self._ai_expanded)
+        if self._ai_expanded:
+            self.ai_toggle_btn.setText("🤖 AI Assistant ▼")
+        else:
+            self.ai_toggle_btn.setText("🤖 AI Assistant ▶")
 
     def _update_arc_widget(self):
         """Update the arc visualization with current events."""

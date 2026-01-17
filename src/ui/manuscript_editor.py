@@ -219,10 +219,12 @@ class ChapterEditor(QWidget):
         self._update_check_button_style(self.overuse_check_btn, CheckMode.ON_DEMAND)
         toolbar.addWidget(self.overuse_check_btn)
 
-        # Recheck button - compact
+        # Recheck button - compact with emoji
         self.recheck_btn = QPushButton("🔄")
         self.recheck_btn.setToolTip("Rerun all on-demand checks on this chapter")
-        self.recheck_btn.setMaximumWidth(30)
+        self.recheck_btn.setMinimumWidth(28)
+        self.recheck_btn.setMaximumWidth(32)
+        self.recheck_btn.setStyleSheet("font-size: 14px; padding: 2px;")
         self.recheck_btn.clicked.connect(self._recheck_writing)
         toolbar.addWidget(self.recheck_btn)
 
@@ -251,22 +253,30 @@ class ChapterEditor(QWidget):
 
         toolbar.addSeparator()
 
-        # Text-to-Speech actions - compact
+        # Text-to-Speech actions - compact with emoji styling
+        emoji_btn_style = "font-size: 14px; padding: 2px;"
+
         self.tts_speak_btn = QPushButton("🔊")
         self.tts_speak_btn.setToolTip("Read chapter aloud (or selection if text is selected)")
-        self.tts_speak_btn.setMaximumWidth(30)
+        self.tts_speak_btn.setMinimumWidth(28)
+        self.tts_speak_btn.setMaximumWidth(32)
+        self.tts_speak_btn.setStyleSheet(emoji_btn_style)
         self.tts_speak_btn.clicked.connect(self._tts_speak_chapter)
         toolbar.addWidget(self.tts_speak_btn)
 
         self.tts_stop_btn = QPushButton("⏹")
         self.tts_stop_btn.setToolTip("Stop reading")
-        self.tts_stop_btn.setMaximumWidth(30)
+        self.tts_stop_btn.setMinimumWidth(28)
+        self.tts_stop_btn.setMaximumWidth(32)
+        self.tts_stop_btn.setStyleSheet(emoji_btn_style)
         self.tts_stop_btn.clicked.connect(self._tts_stop)
         toolbar.addWidget(self.tts_stop_btn)
 
         self.tts_generate_btn = QPushButton("🎙")
         self.tts_generate_btn.setToolTip("Generate TTS document for this chapter")
-        self.tts_generate_btn.setMaximumWidth(30)
+        self.tts_generate_btn.setMinimumWidth(28)
+        self.tts_generate_btn.setMaximumWidth(32)
+        self.tts_generate_btn.setStyleSheet(emoji_btn_style)
         self.tts_generate_btn.clicked.connect(self._tts_generate_document)
         toolbar.addWidget(self.tts_generate_btn)
 
