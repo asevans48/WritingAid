@@ -232,23 +232,23 @@ class StoryEventWidget(QWidget):
         self.arc_slider.valueChanged.connect(self._on_arc_changed)
         layout.addWidget(self.arc_slider)
 
-        # Delete button
-        delete_btn = QPushButton("×")
-        delete_btn.setFixedWidth(20)
+        # Delete button with visible icon
+        delete_btn = QPushButton("🗑")
+        delete_btn.setMinimumWidth(24)
+        delete_btn.setMaximumWidth(28)
+        delete_btn.setToolTip("Delete event")
         delete_btn.setStyleSheet("""
             QPushButton {
-                background-color: transparent;
+                font-size: 12px;
+                padding: 2px;
                 border: none;
-                font-size: 14px;
-                color: #9ca3af;
+                background: transparent;
             }
             QPushButton:hover {
                 background-color: #fee2e2;
-                color: #dc2626;
-                border-radius: 2px;
+                border-radius: 3px;
             }
         """)
-        delete_btn.setToolTip("Remove event")
         delete_btn.clicked.connect(lambda: self.delete_requested.emit(self.event_id))
         layout.addWidget(delete_btn)
 
