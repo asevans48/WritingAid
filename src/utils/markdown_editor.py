@@ -4,7 +4,7 @@ Provides bidirectional conversion between rich text display and Markdown storage
 """
 
 import re
-from typing import Tuple, List
+from typing import Tuple
 from enum import Enum
 
 
@@ -29,39 +29,6 @@ HEADING_PREFIXES = {
     MarkdownStyle.HEADING_3: "#### ",
     MarkdownStyle.HEADING_4: "##### ",
 }
-
-# Reverse mapping from prefix to style
-PREFIX_TO_STYLE = {v.strip(): k for k, v in HEADING_PREFIXES.items()}
-
-
-def markdown_to_display(markdown_text: str) -> str:
-    """Convert Markdown text to display format.
-
-    For the editor, we keep the Markdown visible so users can see/edit it.
-    This function is a pass-through but could be extended for live preview.
-
-    Args:
-        markdown_text: Raw Markdown text
-
-    Returns:
-        Text suitable for display in editor
-    """
-    return markdown_text
-
-
-def display_to_markdown(display_text: str) -> str:
-    """Convert display text back to Markdown.
-
-    Since we display Markdown directly, this is a pass-through.
-
-    Args:
-        display_text: Text from editor
-
-    Returns:
-        Markdown text for storage
-    """
-    return display_text
-
 
 def get_line_style(line: str) -> Tuple[MarkdownStyle, str]:
     """Determine the Markdown style of a line and extract content.
@@ -153,65 +120,6 @@ def is_text_italic(text: str) -> bool:
         return False  # Bold, not italic
     return (text.startswith("*") and text.endswith("*") and len(text) > 2) or \
            (text.startswith("_") and text.endswith("_") and len(text) > 2)
-
-
-def markdown_to_html(markdown_text: str) -> str:
-    """Convert Markdown to HTML for export.
-
-    Args:
-        markdown_text: Markdown formatted text
-
-    Returns:
-        HTML string
-    """
-    lines = markdown_text.split('\n')
-    html_lines = []
-
-    for line in lines:
-        style, content = get_line_style(line)
-
-        # Process inline formatting
-        content = _process_inline_formatting(content)
-
-        # Wrap in appropriate tags
-        if style == MarkdownStyle.TITLE:
-            html_lines.append(f"<h1>{content}</h1>")
-        elif style == MarkdownStyle.HEADING_1:
-            html_lines.append(f"<h2>{content}</h2>")
-        elif style == MarkdownStyle.HEADING_2:
-            html_lines.append(f"<h3>{content}</h3>")
-        elif style == MarkdownStyle.HEADING_3:
-            html_lines.append(f"<h4>{content}</h4>")
-        elif style == MarkdownStyle.HEADING_4:
-            html_lines.append(f"<h5>{content}</h5>")
-        elif content.strip():
-            html_lines.append(f"<p>{content}</p>")
-        else:
-            html_lines.append("<p></p>")
-
-    return '\n'.join(html_lines)
-
-
-def _process_inline_formatting(text: str) -> str:
-    """Process inline Markdown formatting (bold, italic) to HTML.
-
-    Args:
-        text: Text with Markdown inline formatting
-
-    Returns:
-        Text with HTML formatting
-    """
-    # Bold italic first (***text***)
-    text = re.sub(r'\*\*\*(.+?)\*\*\*', r'<strong><em>\1</em></strong>', text)
-
-    # Bold (**text**)
-    text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
-
-    # Italic (*text* or _text_)
-    text = re.sub(r'\*(.+?)\*', r'<em>\1</em>', text)
-    text = re.sub(r'_(.+?)_', r'<em>\1</em>', text)
-
-    return text
 
 
 def strip_markdown(markdown_text: str) -> str:

@@ -17,9 +17,8 @@ from dataclasses import dataclass
 from enum import Enum
 from collections import Counter
 from docx import Document
-from docx.shared import Pt, RGBColor, Inches
+from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.enum.style import WD_STYLE_TYPE
 from pathlib import Path
 import re
 import os
@@ -33,7 +32,7 @@ from src.utils.markdown_editor import (
 
 # TTS imports (lazy loaded)
 try:
-    from src.services.tts_service import get_tts_service, TTSEngine, TTSVoice
+    from src.services.tts_service import get_tts_service, TTSEngine
     from src.services.tts_document_generator import (
         TTSDocumentGenerator, TTSDocumentConfig, TTSFormat,
         SpeakerConfig, create_default_config, get_tts_output_dir

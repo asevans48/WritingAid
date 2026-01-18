@@ -7,8 +7,8 @@ from PyQt6.QtWidgets import (
     QDialog, QMenu, QCheckBox, QLineEdit, QScrollArea, QFrame,
     QProgressBar, QRadioButton, QButtonGroup, QTabWidget
 )
-from PyQt6.QtCore import pyqtSignal, Qt, QRect, QSize
-from PyQt6.QtGui import QFont, QTextCursor, QAction, QTextCharFormat, QColor, QPainter, QTextFormat
+from PyQt6.QtCore import pyqtSignal, Qt, QSize
+from PyQt6.QtGui import QFont, QTextCursor, QAction, QTextCharFormat, QColor, QPainter
 from typing import List, Optional
 import uuid
 
@@ -49,9 +49,6 @@ class AnnotationMarginArea(QWidget):
 
         # Get document
         document = self.editor.document()
-
-        # Get viewport rect to determine visible area
-        viewport_rect = self.editor.viewport().rect()
 
         # Iterate through all blocks in document
         block = document.begin()

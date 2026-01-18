@@ -1,7 +1,7 @@
 """Thesaurus utility for synonym lookup."""
 
 import re
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple  # Tuple used in _find_synonyms_wordnet
 from dataclasses import dataclass
 
 # Try to import NLTK for WordNet support
@@ -376,24 +376,16 @@ class WordStemmer:
             if word.endswith('iance') and len(word) > 6:
                 forms.append(word[:-5] + 'y')
         if word.endswith('ence') and len(word) > 5:
-            # dependence -> depend
+            # dependence -> depend, reference -> refer, existence -> exist
             forms.append(word[:-4])
-            # reference -> refer
-            forms.append(word[:-4])
-            # existence -> exist
-            forms.append(word[:-4])
-            # preference -> prefer (ence -> )
+            # preference -> prefer (erence -> er)
             if word.endswith('erence') and len(word) > 7:
                 forms.append(word[:-5])
 
         # -ant/-ent adjective/noun endings (resistant -> resist, dependent -> depend)
         if word.endswith('ant') and len(word) > 4:
             forms.append(word[:-3])
-            # resistant -> resist
-            forms.append(word[:-3])
         if word.endswith('ent') and len(word) > 4:
-            forms.append(word[:-3])
-            # dependent -> depend
             forms.append(word[:-3])
 
         # -ity noun endings (simplicity -> simple, activity -> active)
@@ -799,13 +791,11 @@ class Thesaurus:
         # Try multiple lookup strategies
         synonyms = set()
         antonyms = set()
-        base_form_used = None
 
         # Strategy 1: Direct lookup
         direct_synonyms = self._find_synonyms_local(word_clean)
         if direct_synonyms:
             synonyms.update(direct_synonyms)
-            base_form_used = word_clean
 
         # Strategy 2: Try stemmed/base forms if direct lookup found nothing or few results
         if len(synonyms) < 3:
@@ -815,8 +805,6 @@ class Thesaurus:
                     base_synonyms = self._find_synonyms_local(base_form)
                     if base_synonyms:
                         synonyms.update(base_synonyms)
-                        if not base_form_used:
-                            base_form_used = base_form
                         # Also check antonyms for base form
                         if base_form in self.ANTONYMS:
                             antonyms.update(self.ANTONYMS[base_form])
@@ -1035,17 +1023,3 @@ def refresh_wordnet_availability() -> bool:
         _WORDNET_AVAILABLE = False
         _LEMMATIZER_AVAILABLE = False
         return False
-
-
-def get_base_forms(word: str) -> List[str]:
-    """Get possible base forms of a word using stemming rules.
-
-    Useful for debugging or understanding what forms are being tried.
-
-    Args:
-        word: The word to analyze
-
-    Returns:
-        List of possible base forms
-    """
-    return WordStemmer.get_base_forms(word)
