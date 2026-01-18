@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont
 
-from src.ai.rephrasing_agent import RephrasingAgent, RephraseStyle, RephraseResult
+from src.ai.rephrasing_agent import RephrasingAgent, RephraseStyle, RephraseTone, RephraseResult
 
 
 class RephraseWorker(QThread):
@@ -19,11 +19,13 @@ class RephraseWorker(QThread):
     finished = pyqtSignal(object)  # RephraseResult
     error = pyqtSignal(str)
 
-    def __init__(self, agent: RephrasingAgent, text: str, styles: List[RephraseStyle], context: str):
+    def __init__(self, agent: RephrasingAgent, text: str, styles: List[RephraseStyle],
+                 tone: RephraseTone, context: str):
         super().__init__()
         self.agent = agent
         self.text = text
         self.styles = styles
+        self.tone = tone
         self.context = context
 
     def run(self):
@@ -32,6 +34,7 @@ class RephraseWorker(QThread):
             result = self.agent.rephrase(
                 text=self.text,
                 styles=self.styles,
+                tone=self.tone,
                 context=self.context
             )
             self.finished.emit(result)
@@ -91,38 +94,59 @@ class RephraseDialog(QDialog):
         original_layout.addWidget(self.original_display)
         layout.addWidget(original_group)
 
-        # Style selection
-        style_group = QGroupBox("Rephrasing Styles")
-        style_layout = QHBoxLayout(style_group)
+        # Style and Tone selection in horizontal layout
+        style_tone_layout = QHBoxLayout()
+
+        # Style selection (structural approach)
+        style_group = QGroupBox("Writing Style")
+        style_inner = QVBoxLayout(style_group)
 
         self.style_checkboxes = {}
-        styles_left = QVBoxLayout()
-        styles_right = QVBoxLayout()
-
         style_info = [
-            (RephraseStyle.CONCISE, "Concise - Shorter, tighter phrasing"),
+            (RephraseStyle.CONCISE, "Concise - Shorter, tighter"),
             (RephraseStyle.CLEARER, "Clearer - Easier to understand"),
-            (RephraseStyle.ELABORATE, "Elaborate - More detail and description"),
-            (RephraseStyle.DRAMATIC, "Dramatic - More impactful"),
-            (RephraseStyle.FORMAL, "Formal - Professional tone"),
-            (RephraseStyle.CASUAL, "Casual - Conversational tone"),
-            (RephraseStyle.POETIC, "Poetic - Lyrical and artistic"),
-            (RephraseStyle.ACTIVE_VOICE, "Active Voice - Convert passive to active"),
+            (RephraseStyle.ELABORATE, "Elaborate - More detail"),
+            (RephraseStyle.FORMAL, "Formal - Professional"),
+            (RephraseStyle.CASUAL, "Casual - Conversational"),
+            (RephraseStyle.POETIC, "Poetic - Lyrical"),
+            (RephraseStyle.ACTIVE_VOICE, "Active Voice"),
         ]
 
         for i, (style, label) in enumerate(style_info):
             cb = QCheckBox(label)
             cb.setChecked(i < 4)  # First 4 checked by default
             self.style_checkboxes[style] = cb
+            style_inner.addWidget(cb)
 
-            if i < 4:
-                styles_left.addWidget(cb)
-            else:
-                styles_right.addWidget(cb)
+        style_tone_layout.addWidget(style_group)
 
-        style_layout.addLayout(styles_left)
-        style_layout.addLayout(styles_right)
-        layout.addWidget(style_group)
+        # Tone selection (emotional quality)
+        tone_group = QGroupBox("Tone (applies to all)")
+        tone_inner = QVBoxLayout(tone_group)
+
+        self.tone_button_group = QButtonGroup(self)
+        self.tone_radios = {}
+
+        tone_info = [
+            (RephraseTone.NEUTRAL, "Neutral - No tone change"),
+            (RephraseTone.DARK, "Dark - Ominous, foreboding"),
+            (RephraseTone.DRAMATIC, "Dramatic - Impactful"),
+            (RephraseTone.HOPEFUL, "Hopeful - Optimistic"),
+            (RephraseTone.MELANCHOLIC, "Melancholic - Wistful"),
+            (RephraseTone.TENSE, "Tense - Suspenseful"),
+            (RephraseTone.WHIMSICAL, "Whimsical - Playful"),
+        ]
+
+        for i, (tone, label) in enumerate(tone_info):
+            radio = QRadioButton(label)
+            if i == 0:  # Neutral selected by default
+                radio.setChecked(True)
+            self.tone_button_group.addButton(radio, i)
+            self.tone_radios[tone] = radio
+            tone_inner.addWidget(radio)
+
+        style_tone_layout.addWidget(tone_group)
+        layout.addLayout(style_tone_layout)
 
         # Model selection
         model_layout = QHBoxLayout()
@@ -247,6 +271,9 @@ class RephraseDialog(QDialog):
             settings = config.get_settings()
             provider = settings.get("default_llm", "claude")
 
+            # Get local model ID from settings
+            local_model_id = settings.get("local_model_id", "microsoft/Phi-3-mini-4k-instruct")
+
             # Get API key
             api_key = config.get_api_key(provider)
 
@@ -266,11 +293,15 @@ class RephraseDialog(QDialog):
 
                 self.agent = RephrasingAgent(
                     llm_client=llm,
-                    project=self.project
+                    project=self.project,
+                    local_model_id=local_model_id
                 )
             else:
                 # No API key - will need to use local model
-                self.agent = RephrasingAgent(project=self.project)
+                self.agent = RephrasingAgent(
+                    project=self.project,
+                    local_model_id=local_model_id
+                )
                 self.cloud_radio.setEnabled(False)
                 self.local_radio.setChecked(True)
 
@@ -288,9 +319,17 @@ class RephraseDialog(QDialog):
                 styles.append(style)
         return styles
 
+    def _get_selected_tone(self) -> RephraseTone:
+        """Get the selected tone."""
+        for tone, radio in self.tone_radios.items():
+            if radio.isChecked():
+                return tone
+        return RephraseTone.NEUTRAL
+
     def _generate_options(self):
         """Generate rephrasing options."""
         styles = self._get_selected_styles()
+        tone = self._get_selected_tone()
 
         if not styles:
             QMessageBox.warning(
@@ -319,6 +358,7 @@ class RephraseDialog(QDialog):
             self.agent,
             self.original_text,
             styles,
+            tone,
             context
         )
         self.worker.finished.connect(self._on_generation_complete)
@@ -369,7 +409,7 @@ class RephraseDialog(QDialog):
 
         option = self.result.options[row]
         self.preview_edit.setPlainText(option.text)
-        self.style_label.setText(f"Style: {option.style} - {option.explanation}")
+        self.style_label.setText(f"Style: {option.style} | Tone: {option.tone} — {option.explanation}")
         self.use_btn.setEnabled(True)
 
     def _use_selected(self):

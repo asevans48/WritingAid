@@ -15,7 +15,20 @@ transformers>=4.40.0  # For loading and running local models
 safetensors>=0.4.0  # For efficient model weight loading
 
 # PyTorch - Local LLM Inference
-torch>=2.2.0  # Core deep learning framework
+# NOTE: For GPU/CUDA support, install PyTorch separately BEFORE other packages:
+#
+# 1. First, check your CUDA version with: nvidia-smi (look at top right for "CUDA Version")
+#
+# 2. Uninstall existing PyTorch:
+#    pip uninstall torch torchvision torchaudio
+#
+# 3. Install PyTorch with CUDA support (check https://pytorch.org/get-started/locally/ for latest):
+#    - CUDA 13.x: pip install torch --index-url https://download.pytorch.org/whl/cu131
+#    - CUDA 12.x: pip install torch --index-url https://download.pytorch.org/whl/cu121
+#    - CUDA 11.8: pip install torch --index-url https://download.pytorch.org/whl/cu118
+#
+# The default "pip install torch" gets CPU-only version on Windows/Linux.
+torch>=2.2.0  # Core deep learning framework (CPU by default - see note above for GPU)
 # torchvision>=0.17.0  # Optional: for image models
 # torchaudio>=2.2.0  # Optional: for audio models
 
