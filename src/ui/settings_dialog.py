@@ -511,6 +511,149 @@ class VibeVoiceInstallWorker(QThread):
             self.finished.emit(False, f"Installation failed:\n{str(e)}")
 
 
+@dataclass
+class LanguageResourceInfo:
+    """Information about a downloadable language resource."""
+    resource_id: str
+    display_name: str
+    description: str
+    platform: str  # 'nltk', 'spacy', etc.
+    size_mb: float
+    required_for: str
+
+
+# Available language resources for download
+LANGUAGE_RESOURCES: List[LanguageResourceInfo] = [
+    # NLTK Resources
+    LanguageResourceInfo(
+        resource_id="wordnet",
+        display_name="WordNet",
+        description="Lexical database with synonyms, antonyms, definitions",
+        platform="nltk",
+        size_mb=30.0,
+        required_for="Thesaurus, synonym lookup"
+    ),
+    LanguageResourceInfo(
+        resource_id="averaged_perceptron_tagger",
+        display_name="POS Tagger",
+        description="Part-of-speech tagger for English text",
+        platform="nltk",
+        size_mb=2.0,
+        required_for="Grammar analysis, word classification"
+    ),
+    LanguageResourceInfo(
+        resource_id="punkt",
+        display_name="Punkt Tokenizer",
+        description="Sentence tokenization models",
+        platform="nltk",
+        size_mb=1.5,
+        required_for="Sentence splitting, text processing"
+    ),
+    LanguageResourceInfo(
+        resource_id="punkt_tab",
+        display_name="Punkt Tab (Updated)",
+        description="Updated Punkt tokenizer models",
+        platform="nltk",
+        size_mb=1.5,
+        required_for="Sentence splitting (newer NLTK versions)"
+    ),
+    LanguageResourceInfo(
+        resource_id="stopwords",
+        display_name="Stopwords",
+        description="Common words to filter (the, a, is, etc.)",
+        platform="nltk",
+        size_mb=0.1,
+        required_for="Text analysis, keyword extraction"
+    ),
+    LanguageResourceInfo(
+        resource_id="words",
+        display_name="Word List",
+        description="English word list for spell checking",
+        platform="nltk",
+        size_mb=0.7,
+        required_for="Spell checking, word validation"
+    ),
+    LanguageResourceInfo(
+        resource_id="omw-1.4",
+        display_name="Open Multilingual WordNet",
+        description="Extended WordNet with multilingual support",
+        platform="nltk",
+        size_mb=50.0,
+        required_for="Extended synonyms, multilingual support"
+    ),
+]
+
+
+class NLTKDownloadWorker(QThread):
+    """Background worker for downloading NLTK data packages."""
+
+    progress = pyqtSignal(str, int)  # status message, percentage (0-100, -1 for indeterminate)
+    finished = pyqtSignal(bool, str)  # success, message
+
+    def __init__(self, resource_ids: List[str]):
+        super().__init__()
+        self.resource_ids = resource_ids
+        self._cancelled = False
+
+    def cancel(self):
+        """Request cancellation of the download."""
+        self._cancelled = True
+
+    def run(self):
+        """Download the NLTK resources."""
+        try:
+            self.progress.emit("Initializing NLTK...", -1)
+
+            # Import NLTK
+            try:
+                import nltk
+            except ImportError:
+                self.finished.emit(False,
+                    "NLTK not installed.\n\n"
+                    "Install with: pip install nltk"
+                )
+                return
+
+            if self._cancelled:
+                self.finished.emit(False, "Download cancelled")
+                return
+
+            total = len(self.resource_ids)
+            successful = []
+            failed = []
+
+            for i, resource_id in enumerate(self.resource_ids):
+                if self._cancelled:
+                    self.finished.emit(False, "Download cancelled")
+                    return
+
+                progress_pct = int((i / total) * 100)
+                self.progress.emit(f"Downloading {resource_id}...", progress_pct)
+
+                try:
+                    # Download the resource
+                    nltk.download(resource_id, quiet=True)
+                    successful.append(resource_id)
+                except Exception as e:
+                    failed.append((resource_id, str(e)))
+
+            self.progress.emit("Download complete!", 100)
+
+            # Build result message
+            msg_parts = []
+            if successful:
+                msg_parts.append(f"Successfully downloaded: {', '.join(successful)}")
+            if failed:
+                failed_msgs = [f"{r}: {e}" for r, e in failed]
+                msg_parts.append(f"Failed to download:\n" + "\n".join(failed_msgs))
+
+            success = len(failed) == 0
+            self.finished.emit(success, "\n\n".join(msg_parts))
+
+        except Exception as e:
+            self.finished.emit(False, f"Download failed:\n\n{str(e)}")
+
+
 class SettingsDialog(QDialog):
     """Dialog for configuring application settings."""
 
@@ -558,6 +701,10 @@ class SettingsDialog(QDialog):
         # Features Tab
         features_tab = self._create_features_tab()
         tabs.addTab(features_tab, "✨ AI Features")
+
+        # Language Resources Tab
+        lang_tab = self._create_language_resources_tab()
+        tabs.addTab(lang_tab, "📚 Language")
 
         layout.addWidget(tabs)
 
@@ -1888,6 +2035,301 @@ class SettingsDialog(QDialog):
         # Set widget to scroll area and return scroll area
         scroll_area.setWidget(widget)
         return scroll_area
+
+    def _create_language_resources_tab(self) -> QWidget:
+        """Create language resources download tab."""
+        # Create scroll area wrapper
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(16, 16, 16, 16)
+
+        # NLTK Resources Group
+        nltk_group = QGroupBox("NLTK Language Resources")
+        nltk_layout = QVBoxLayout()
+
+        # Description
+        nltk_desc = QLabel(
+            "NLTK (Natural Language Toolkit) provides dictionaries and models for "
+            "advanced text processing features like synonyms, grammar analysis, and more."
+        )
+        nltk_desc.setWordWrap(True)
+        nltk_desc.setStyleSheet("color: #6b7280; font-size: 11px; padding-bottom: 8px;")
+        nltk_layout.addWidget(nltk_desc)
+
+        # Resource list with checkboxes
+        self.nltk_resource_checkboxes = {}
+        for resource in LANGUAGE_RESOURCES:
+            if resource.platform == "nltk":
+                # Create container for resource
+                resource_frame = QFrame()
+                resource_frame.setStyleSheet("""
+                    QFrame {
+                        background-color: #f9fafb;
+                        border: 1px solid #e5e7eb;
+                        border-radius: 6px;
+                        padding: 8px;
+                        margin: 2px 0;
+                    }
+                """)
+                resource_layout = QVBoxLayout(resource_frame)
+                resource_layout.setContentsMargins(8, 8, 8, 8)
+                resource_layout.setSpacing(4)
+
+                # Checkbox with name and size
+                checkbox = QCheckBox(f"{resource.display_name} (~{resource.size_mb:.1f} MB)")
+                checkbox.setStyleSheet("font-weight: 500;")
+                self.nltk_resource_checkboxes[resource.resource_id] = checkbox
+                resource_layout.addWidget(checkbox)
+
+                # Description label
+                desc_label = QLabel(resource.description)
+                desc_label.setStyleSheet("color: #6b7280; font-size: 11px; margin-left: 20px;")
+                desc_label.setWordWrap(True)
+                resource_layout.addWidget(desc_label)
+
+                # Required for label
+                req_label = QLabel(f"Used for: {resource.required_for}")
+                req_label.setStyleSheet("color: #4f46e5; font-size: 10px; margin-left: 20px;")
+                resource_layout.addWidget(req_label)
+
+                nltk_layout.addWidget(resource_frame)
+
+        # Download buttons row
+        button_row = QHBoxLayout()
+
+        select_all_btn = QPushButton("Select All")
+        select_all_btn.clicked.connect(self._select_all_nltk_resources)
+        button_row.addWidget(select_all_btn)
+
+        select_none_btn = QPushButton("Select None")
+        select_none_btn.clicked.connect(self._select_no_nltk_resources)
+        button_row.addWidget(select_none_btn)
+
+        button_row.addStretch()
+
+        self.nltk_download_btn = QPushButton("Download Selected")
+        self.nltk_download_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #6366f1;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: #4f46e5;
+            }
+            QPushButton:disabled {
+                background-color: #9ca3af;
+            }
+        """)
+        self.nltk_download_btn.clicked.connect(self._download_nltk_resources)
+        button_row.addWidget(self.nltk_download_btn)
+
+        nltk_layout.addLayout(button_row)
+
+        # Progress bar (hidden initially)
+        self.nltk_progress_bar = QProgressBar()
+        self.nltk_progress_bar.setVisible(False)
+        self.nltk_progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #e5e7eb;
+                border-radius: 4px;
+                text-align: center;
+                height: 20px;
+            }
+            QProgressBar::chunk {
+                background-color: #6366f1;
+                border-radius: 3px;
+            }
+        """)
+        nltk_layout.addWidget(self.nltk_progress_bar)
+
+        # Status label
+        self.nltk_status_label = QLabel("")
+        self.nltk_status_label.setStyleSheet("color: #6b7280; font-size: 11px;")
+        self.nltk_status_label.setWordWrap(True)
+        nltk_layout.addWidget(self.nltk_status_label)
+
+        nltk_group.setLayout(nltk_layout)
+        layout.addWidget(nltk_group)
+
+        # Status Group - Show installed resources
+        status_group = QGroupBox("Installed Resources")
+        status_layout = QVBoxLayout()
+
+        self.installed_resources_label = QLabel("Checking installed resources...")
+        self.installed_resources_label.setWordWrap(True)
+        self.installed_resources_label.setStyleSheet("font-size: 11px; padding: 8px;")
+        status_layout.addWidget(self.installed_resources_label)
+
+        refresh_btn = QPushButton("Refresh Status")
+        refresh_btn.clicked.connect(self._refresh_installed_resources)
+        status_layout.addWidget(refresh_btn, 0, Qt.AlignmentFlag.AlignLeft)
+
+        status_group.setLayout(status_layout)
+        layout.addWidget(status_group)
+
+        # Info note
+        info_note = QLabel(
+            "💡 Tip: WordNet is recommended for the thesaurus feature. "
+            "Download it to enable synonym lookup when right-clicking on words."
+        )
+        info_note.setWordWrap(True)
+        info_note.setStyleSheet(
+            "color: #6b7280; font-size: 11px; padding: 10px; "
+            "background-color: #f3f4f6; border-radius: 4px;"
+        )
+        layout.addWidget(info_note)
+
+        layout.addStretch()
+
+        # Set widget to scroll area and return scroll area
+        scroll_area.setWidget(widget)
+
+        # Initial check for installed resources
+        self._refresh_installed_resources()
+
+        return scroll_area
+
+    def _select_all_nltk_resources(self):
+        """Select all NLTK resource checkboxes."""
+        for checkbox in self.nltk_resource_checkboxes.values():
+            checkbox.setChecked(True)
+
+    def _select_no_nltk_resources(self):
+        """Deselect all NLTK resource checkboxes."""
+        for checkbox in self.nltk_resource_checkboxes.values():
+            checkbox.setChecked(False)
+
+    def _download_nltk_resources(self):
+        """Download selected NLTK resources."""
+        # Get selected resources
+        selected = [
+            resource_id for resource_id, checkbox in self.nltk_resource_checkboxes.items()
+            if checkbox.isChecked()
+        ]
+
+        if not selected:
+            QMessageBox.information(
+                self,
+                "No Selection",
+                "Please select at least one resource to download."
+            )
+            return
+
+        # Disable UI during download
+        self.nltk_download_btn.setEnabled(False)
+        self.nltk_progress_bar.setVisible(True)
+        self.nltk_progress_bar.setValue(0)
+        self.nltk_status_label.setText("Starting download...")
+
+        # Start download worker
+        self._nltk_worker = NLTKDownloadWorker(selected)
+        self._nltk_worker.progress.connect(self._on_nltk_progress)
+        self._nltk_worker.finished.connect(self._on_nltk_finished)
+        self._nltk_worker.start()
+
+    def _on_nltk_progress(self, message: str, percent: int):
+        """Handle NLTK download progress update."""
+        self.nltk_status_label.setText(message)
+        if percent >= 0:
+            self.nltk_progress_bar.setValue(percent)
+        else:
+            # Indeterminate progress
+            self.nltk_progress_bar.setRange(0, 0)
+
+    def _on_nltk_finished(self, success: bool, message: str):
+        """Handle NLTK download completion."""
+        self.nltk_download_btn.setEnabled(True)
+        self.nltk_progress_bar.setVisible(False)
+        self.nltk_progress_bar.setRange(0, 100)
+
+        if success:
+            self.nltk_status_label.setText("Download completed successfully!")
+            self.nltk_status_label.setStyleSheet("color: #059669; font-size: 11px;")
+
+            # Refresh WordNet availability so thesaurus can use it immediately
+            try:
+                from src.utils.thesaurus import refresh_wordnet_availability
+                wordnet_enabled = refresh_wordnet_availability()
+                if wordnet_enabled:
+                    message += "\n\nWordNet is now active - synonyms will use enhanced lookup!"
+            except Exception:
+                pass  # Thesaurus refresh is optional
+
+            QMessageBox.information(self, "Download Complete", message)
+        else:
+            self.nltk_status_label.setText(f"Download failed: {message[:50]}...")
+            self.nltk_status_label.setStyleSheet("color: #dc2626; font-size: 11px;")
+            QMessageBox.warning(self, "Download Failed", message)
+
+        # Refresh installed resources display
+        self._refresh_installed_resources()
+
+    def _refresh_installed_resources(self):
+        """Check and display installed NLTK resources."""
+        try:
+            import nltk
+            installed = []
+            not_installed = []
+
+            for resource in LANGUAGE_RESOURCES:
+                if resource.platform == "nltk":
+                    try:
+                        nltk.data.find(f"corpora/{resource.resource_id}")
+                        installed.append(resource.display_name)
+                    except LookupError:
+                        try:
+                            nltk.data.find(f"tokenizers/{resource.resource_id}")
+                            installed.append(resource.display_name)
+                        except LookupError:
+                            try:
+                                nltk.data.find(f"taggers/{resource.resource_id}")
+                                installed.append(resource.display_name)
+                            except LookupError:
+                                not_installed.append(resource.display_name)
+
+            # Check if thesaurus is using WordNet
+            wordnet_status = ""
+            try:
+                from src.utils.thesaurus import is_wordnet_available
+                if is_wordnet_available():
+                    wordnet_status = "\n\n🔗 Thesaurus: Using WordNet for enhanced synonyms"
+                elif "WordNet" in installed:
+                    wordnet_status = "\n\n⚠️ Thesaurus: WordNet installed but not yet active (will activate on next lookup)"
+            except Exception:
+                pass
+
+            if installed:
+                installed_text = f"✓ Installed: {', '.join(installed)}"
+            else:
+                installed_text = "No NLTK resources installed."
+
+            if not_installed:
+                not_installed_text = f"\n✗ Not installed: {', '.join(not_installed)}"
+            else:
+                not_installed_text = ""
+
+            self.installed_resources_label.setText(installed_text + not_installed_text + wordnet_status)
+            self.installed_resources_label.setStyleSheet(
+                "font-size: 11px; padding: 8px; background-color: #f9fafb; border-radius: 4px;"
+            )
+
+        except ImportError:
+            self.installed_resources_label.setText(
+                "NLTK is not installed. Install it with: pip install nltk"
+            )
+            self.installed_resources_label.setStyleSheet(
+                "font-size: 11px; padding: 8px; background-color: #fef2f2; "
+                "border-radius: 4px; color: #dc2626;"
+            )
 
     def _test_connection(self):
         """Test AI API connections."""

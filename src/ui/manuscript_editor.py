@@ -19,6 +19,7 @@ from src.ui.annotation_list_dialog import AnnotationListDialog
 from src.ui.chapter_planner_widget import ChapterPlannerWidget
 from src.ai.chapter_memory import ChapterMemoryManager
 from src.utils.markdown_editor import MarkdownStyle, toggle_inline_style
+from src.utils.thesaurus import get_synonyms, get_antonyms
 
 
 class AnnotationMarginArea(QWidget):
@@ -743,6 +744,29 @@ class ChapterEditor(QWidget):
         # Trigger full recheck (includes heavy grammar checking if available)
         self.editor.writing_highlighter.do_full_recheck()
 
+    def _replace_selection_with(self, replacement: str):
+        """Replace the current selection with the given text, preserving case.
+
+        Args:
+            replacement: The text to replace the selection with
+        """
+        cursor = self.editor.textCursor()
+        if not cursor.hasSelection():
+            return
+
+        original = cursor.selectedText()
+
+        # Preserve the case of the original word
+        if original.isupper():
+            # ALL CAPS
+            replacement = replacement.upper()
+        elif original and original[0].isupper():
+            # Title Case (capitalize first letter)
+            replacement = replacement.capitalize()
+        # else: keep lowercase
+
+        cursor.insertText(replacement)
+
     def _rephrase_selection(self):
         """Open rephrase dialog for selected text."""
         cursor = self.editor.textCursor()
@@ -852,7 +876,45 @@ class ChapterEditor(QWidget):
         text_cursor = self.editor.textCursor()
         if text_cursor.hasSelection():
             menu.addSeparator()
-            rephrase_action = menu.addAction("Rephrase with AI...")
+
+            # Get the selected text for thesaurus lookup
+            selected_text = text_cursor.selectedText().strip()
+
+            # Thesaurus/Synonyms submenu - only for single words (no spaces)
+            # Strip punctuation for display but keep original for replacement
+            import re
+            clean_word = re.sub(r'^[^\w]+|[^\w]+$', '', selected_text)
+
+            if clean_word and ' ' not in clean_word and len(clean_word) <= 30:
+                synonyms = get_synonyms(clean_word, max_results=12)
+                antonyms = get_antonyms(clean_word, max_results=5)
+
+                # Always show the thesaurus menu for single words
+                display_word = clean_word[:15] + "..." if len(clean_word) > 15 else clean_word
+                thesaurus_menu = menu.addMenu(f"📖 Synonyms for \"{display_word}\"")
+
+                if synonyms:
+                    for synonym in synonyms:
+                        action = thesaurus_menu.addAction(synonym)
+                        # Capture synonym in lambda
+                        action.triggered.connect(
+                            lambda checked, s=synonym: self._replace_selection_with(s)
+                        )
+
+                    if antonyms:
+                        thesaurus_menu.addSeparator()
+                        antonyms_submenu = thesaurus_menu.addMenu("Antonyms")
+                        for antonym in antonyms:
+                            action = antonyms_submenu.addAction(antonym)
+                            action.triggered.connect(
+                                lambda checked, a=antonym: self._replace_selection_with(a)
+                            )
+                else:
+                    # Show "no synonyms found" when word not in thesaurus
+                    no_syn_action = thesaurus_menu.addAction("(no synonyms found)")
+                    no_syn_action.setEnabled(False)
+
+            rephrase_action = menu.addAction("✨ Rephrase with AI...")
             rephrase_action.triggered.connect(self._rephrase_selection)
 
             # Heading style submenu
