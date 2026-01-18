@@ -1816,30 +1816,3 @@ Provide only the rephrased text, nothing else."""
             response = response[1:-1]
 
         return response
-
-
-# Public functions for model cache management
-def get_cached_model_info() -> Optional[str]:
-    """Get info about the currently cached local model.
-
-    Returns:
-        Model ID if a model is cached, None otherwise.
-    """
-    return _model_cache.get_loaded_model_id()
-
-
-def is_local_model_loaded(model_id: str = None) -> bool:
-    """Check if a local model is loaded in the cache.
-
-    Args:
-        model_id: Optional specific model ID to check for.
-
-    Returns:
-        True if a model (or the specific model) is cached.
-    """
-    return _model_cache.is_loaded(model_id)
-
-
-def unload_local_model():
-    """Unload the cached local model to free memory/GPU."""
-    _model_cache.unload()

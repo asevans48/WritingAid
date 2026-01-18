@@ -2,7 +2,7 @@
 
 from typing import List, Dict, Optional, TYPE_CHECKING
 from dataclasses import dataclass
-from src.models.project import WriterProject, Character, Subplot
+from src.models.project import WriterProject
 from src.ai.llm_client import LLMClient
 
 if TYPE_CHECKING:

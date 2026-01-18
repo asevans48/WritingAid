@@ -1,12 +1,10 @@
 """Chapter Memory System - Manages memory for chapters with key points, plot points, and caching."""
 
 import hashlib
-import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Set, Tuple
-from pathlib import Path
 
 
 @dataclass

@@ -15,7 +15,7 @@ from src.ai.chapter_analysis_agent import ChapterAnalysisAgent, ChapterAnalysis
 from src.ai.enhanced_rag import EnhancedRAGSystem
 from src.ai.semantic_search import SearchMethod
 from src.config.ai_config import get_ai_config
-from src.services.tts_service import get_tts_service, TTSEngine
+from src.services.tts_service import get_tts_service
 from src.services.tts_document_generator import TTSDocumentGenerator, TTSDocumentConfig, create_default_config, get_tts_output_dir
 
 if TYPE_CHECKING:
