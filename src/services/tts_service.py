@@ -99,12 +99,27 @@ class TTSService:
                 vv_path = Path(self._vibevoice_path)
                 if vv_path.exists() and (vv_path / "demo" / "inference_from_file.py").exists():
                     return True
-            # Check common installation paths
+            # Check common installation paths (cross-platform)
             common_paths = [
                 Path.home() / "VibeVoice",
                 Path.home() / ".vibevoice",
-                Path("C:/VibeVoice") if os.name == 'nt' else Path("/opt/vibevoice"),
             ]
+            # Add platform-specific paths
+            if os.name == 'nt':
+                # Windows: check Program Files and root of common drives
+                common_paths.extend([
+                    Path(os.environ.get('PROGRAMFILES', 'C:\\Program Files')) / "VibeVoice",
+                    Path(os.environ.get('LOCALAPPDATA', '')) / "VibeVoice" if os.environ.get('LOCALAPPDATA') else None,
+                ])
+            else:
+                # macOS and Linux
+                common_paths.extend([
+                    Path("/opt/vibevoice"),
+                    Path("/usr/local/vibevoice"),
+                    Path.home() / "Applications" / "VibeVoice",  # macOS user Applications
+                ])
+            # Filter out None values
+            common_paths = [p for p in common_paths if p is not None]
             for path in common_paths:
                 if path.exists() and (path / "demo" / "inference_from_file.py").exists():
                     self._vibevoice_path = str(path)

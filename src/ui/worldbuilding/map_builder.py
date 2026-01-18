@@ -213,7 +213,7 @@ class MapCanvas(QGraphicsView):
         self.base_map_item = None
 
         # Load base map image if specified
-        if world_map.image_path and os.path.exists(world_map.image_path):
+        if world_map.image_path and Path(world_map.image_path).exists():
             pixmap = QPixmap(world_map.image_path)
             if not pixmap.isNull():
                 self.base_map_item = self.scene.addPixmap(pixmap)

@@ -27,6 +27,7 @@ class AIConfig:
         "top_p": 0.95,
 
         # Features
+        "disable_all_ai": False,  # Master toggle to disable all AI/LLM features
         "enable_chat": True,
         "enable_character_gen": True,
         "enable_plot_suggestions": True,
@@ -149,6 +150,14 @@ class AIConfig:
         model_key = model_map.get(provider.lower(), "")
         return self.settings.get(model_key, "")
 
+    def is_ai_disabled(self) -> bool:
+        """Check if all AI features are disabled.
+
+        Returns:
+            True if AI is disabled, False otherwise
+        """
+        return self.settings.get("disable_all_ai", False)
+
     def is_feature_enabled(self, feature: str) -> bool:
         """Check if a specific AI feature is enabled.
 
@@ -158,6 +167,9 @@ class AIConfig:
         Returns:
             True if feature is enabled, False otherwise
         """
+        # If all AI is disabled, no features are enabled
+        if self.is_ai_disabled():
+            return False
         key = f"enable_{feature}"
         return self.settings.get(key, True)
 

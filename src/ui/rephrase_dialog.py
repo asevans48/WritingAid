@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTextEdit, QListWidget, QListWidgetItem, QGroupBox,
     QRadioButton, QButtonGroup, QProgressBar, QMessageBox,
-    QCheckBox, QFrame, QSplitter, QWidget
+    QCheckBox, QFrame, QSplitter, QWidget, QScrollArea
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont
@@ -66,13 +66,30 @@ class RephraseDialog(QDialog):
     def _init_ui(self):
         """Initialize the UI."""
         self.setWindowTitle("Rephrase Text")
-        self.setMinimumSize(700, 600)
-        self.resize(800, 650)
+        # Smaller minimum for laptops (14" MacBook Pro, smaller Windows laptops)
+        self.setMinimumSize(500, 350)
+        self.resize(750, 600)
 
-        layout = QVBoxLayout(self)
+        # Main dialog layout
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
-        # Header
-        header = QLabel("<h2>AI Text Rephrasing</h2>")
+        # Create scroll area for the content
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+
+        # Container widget for scroll area
+        scroll_widget = QWidget()
+        layout = QVBoxLayout(scroll_widget)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        # Header - more compact
+        header = QLabel("<b style='font-size: 14pt;'>AI Text Rephrasing</b>")
         layout.addWidget(header)
 
         desc = QLabel(
@@ -80,35 +97,40 @@ class RephraseDialog(QDialog):
             "You can edit the result before applying."
         )
         desc.setWordWrap(True)
-        desc.setStyleSheet("color: #6b7280; margin-bottom: 10px;")
+        desc.setStyleSheet("color: #6b7280; margin-bottom: 6px; font-size: 11px;")
         layout.addWidget(desc)
 
-        # Original text display
+        # Original text display - more compact
         original_group = QGroupBox("Original Text")
         original_layout = QVBoxLayout(original_group)
+        original_layout.setContentsMargins(8, 8, 8, 8)
         self.original_display = QTextEdit()
         self.original_display.setPlainText(self.original_text)
         self.original_display.setReadOnly(True)
-        self.original_display.setMaximumHeight(100)
+        self.original_display.setMaximumHeight(80)
+        self.original_display.setMinimumHeight(50)
         self.original_display.setStyleSheet("background-color: #f3f4f6;")
         original_layout.addWidget(self.original_display)
         layout.addWidget(original_group)
 
         # Style and Tone selection in horizontal layout
         style_tone_layout = QHBoxLayout()
+        style_tone_layout.setSpacing(8)
 
-        # Style selection (structural approach)
+        # Style selection (structural approach) - compact labels
         style_group = QGroupBox("Writing Style")
         style_inner = QVBoxLayout(style_group)
+        style_inner.setContentsMargins(8, 8, 8, 8)
+        style_inner.setSpacing(2)
 
         self.style_checkboxes = {}
         style_info = [
-            (RephraseStyle.CONCISE, "Concise - Shorter, tighter"),
-            (RephraseStyle.CLEARER, "Clearer - Easier to understand"),
-            (RephraseStyle.ELABORATE, "Elaborate - More detail"),
-            (RephraseStyle.FORMAL, "Formal - Professional"),
-            (RephraseStyle.CASUAL, "Casual - Conversational"),
-            (RephraseStyle.POETIC, "Poetic - Lyrical"),
+            (RephraseStyle.CONCISE, "Concise"),
+            (RephraseStyle.CLEARER, "Clearer"),
+            (RephraseStyle.ELABORATE, "Elaborate"),
+            (RephraseStyle.FORMAL, "Formal"),
+            (RephraseStyle.CASUAL, "Casual"),
+            (RephraseStyle.POETIC, "Poetic"),
             (RephraseStyle.ACTIVE_VOICE, "Active Voice"),
         ]
 
@@ -120,21 +142,23 @@ class RephraseDialog(QDialog):
 
         style_tone_layout.addWidget(style_group)
 
-        # Tone selection (emotional quality)
-        tone_group = QGroupBox("Tone (applies to all)")
+        # Tone selection (emotional quality) - compact labels
+        tone_group = QGroupBox("Tone")
         tone_inner = QVBoxLayout(tone_group)
+        tone_inner.setContentsMargins(8, 8, 8, 8)
+        tone_inner.setSpacing(2)
 
         self.tone_button_group = QButtonGroup(self)
         self.tone_radios = {}
 
         tone_info = [
-            (RephraseTone.NEUTRAL, "Neutral - No tone change"),
-            (RephraseTone.DARK, "Dark - Ominous, foreboding"),
-            (RephraseTone.DRAMATIC, "Dramatic - Impactful"),
-            (RephraseTone.HOPEFUL, "Hopeful - Optimistic"),
-            (RephraseTone.MELANCHOLIC, "Melancholic - Wistful"),
-            (RephraseTone.TENSE, "Tense - Suspenseful"),
-            (RephraseTone.WHIMSICAL, "Whimsical - Playful"),
+            (RephraseTone.NEUTRAL, "Neutral"),
+            (RephraseTone.DARK, "Dark"),
+            (RephraseTone.DRAMATIC, "Dramatic"),
+            (RephraseTone.HOPEFUL, "Hopeful"),
+            (RephraseTone.MELANCHOLIC, "Melancholic"),
+            (RephraseTone.TENSE, "Tense"),
+            (RephraseTone.WHIMSICAL, "Whimsical"),
         ]
 
         for i, (tone, label) in enumerate(tone_info):
@@ -152,19 +176,31 @@ class RephraseDialog(QDialog):
         model_layout = QHBoxLayout()
 
         model_group = QGroupBox("AI Model")
-        model_inner = QHBoxLayout(model_group)
+        model_inner = QVBoxLayout(model_group)
 
+        # Python libraries mode indicator (hidden by default)
+        self.python_mode_label = QLabel("Using Python libraries (nltk/nlpaug) - AI is disabled in settings")
+        self.python_mode_label.setStyleSheet(
+            "color: #0369a1; background-color: #e0f2fe; padding: 6px; "
+            "border-radius: 4px; font-weight: bold;"
+        )
+        self.python_mode_label.setVisible(False)
+        model_inner.addWidget(self.python_mode_label)
+
+        # Radio buttons row
+        radio_row = QHBoxLayout()
         self.model_button_group = QButtonGroup(self)
 
         self.cloud_radio = QRadioButton("Cloud LLM (faster, API costs)")
         self.cloud_radio.setChecked(True)
         self.model_button_group.addButton(self.cloud_radio, 0)
-        model_inner.addWidget(self.cloud_radio)
+        radio_row.addWidget(self.cloud_radio)
 
         self.local_radio = QRadioButton("Local SLM (slower, no costs)")
         self.model_button_group.addButton(self.local_radio, 1)
-        model_inner.addWidget(self.local_radio)
+        radio_row.addWidget(self.local_radio)
 
+        model_inner.addLayout(radio_row)
         model_layout.addWidget(model_group)
 
         # Generate button
@@ -230,8 +266,13 @@ class RephraseDialog(QDialog):
         results_layout.addWidget(splitter)
         layout.addWidget(self.results_group)
 
-        # Bottom buttons
+        # Set scroll widget and add scroll area to main layout
+        scroll_area.setWidget(scroll_widget)
+        main_layout.addWidget(scroll_area)
+
+        # Bottom buttons (outside scroll area so always visible)
         button_layout = QHBoxLayout()
+        button_layout.setContentsMargins(16, 8, 16, 16)
 
         self.use_btn = QPushButton("Use Selected")
         self.use_btn.setEnabled(False)
@@ -259,7 +300,7 @@ class RephraseDialog(QDialog):
         cancel_btn.clicked.connect(self.reject)
         button_layout.addWidget(cancel_btn)
 
-        layout.addLayout(button_layout)
+        main_layout.addLayout(button_layout)
 
     def _init_agent(self):
         """Initialize the rephrasing agent."""
@@ -269,6 +310,24 @@ class RephraseDialog(QDialog):
 
             config = get_ai_config()
             settings = config.get_settings()
+
+            # Check if AI is disabled entirely
+            disable_all_ai = config.is_ai_disabled()
+
+            if disable_all_ai:
+                # Use Python libraries only mode
+                self.agent = RephrasingAgent(
+                    project=self.project,
+                    use_python_libraries=True
+                )
+                self.cloud_radio.setEnabled(False)
+                self.local_radio.setEnabled(False)
+                self.cloud_radio.setVisible(False)
+                self.local_radio.setVisible(False)
+                # Show Python mode indicator
+                self.python_mode_label.setVisible(True)
+                return
+
             provider = settings.get("default_llm", "claude")
 
             # Get local model ID from settings
@@ -307,9 +366,13 @@ class RephraseDialog(QDialog):
 
         except Exception as e:
             print(f"Failed to initialize rephrasing agent: {e}")
-            self.agent = RephrasingAgent(project=self.project)
+            self.agent = RephrasingAgent(project=self.project, use_python_libraries=True)
             self.cloud_radio.setEnabled(False)
-            self.local_radio.setChecked(True)
+            self.local_radio.setEnabled(False)
+            self.cloud_radio.setVisible(False)
+            self.local_radio.setVisible(False)
+            self.python_mode_label.setText("Using Python libraries (AI initialization failed)")
+            self.python_mode_label.setVisible(True)
 
     def _get_selected_styles(self) -> List[RephraseStyle]:
         """Get list of selected styles."""
@@ -339,8 +402,9 @@ class RephraseDialog(QDialog):
             )
             return
 
-        # Configure agent
-        self.agent.use_local_model = self.local_radio.isChecked()
+        # Configure agent - only set local model if not using python libraries
+        if not self.agent.use_python_libraries:
+            self.agent.use_local_model = self.local_radio.isChecked()
 
         # Show progress
         self.progress_bar.setVisible(True)
@@ -401,7 +465,7 @@ class RephraseDialog(QDialog):
 
     def _on_option_selected(self, row: int):
         """Handle option selection."""
-        if row < 0 or not self.result:
+        if row < 0 or not self.result or row >= len(self.result.options):
             self.preview_edit.clear()
             self.style_label.clear()
             self.use_btn.setEnabled(False)

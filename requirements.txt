@@ -48,6 +48,11 @@ pyspellchecker>=0.7.2
 pyenchant>=3.2.2  # Dictionary-based spell checking with suggestions
 nltk>=3.8.1  # Natural language toolkit for word corpus and grammar
 
+# NLP and Text Processing
+spacy>=3.7.0  # Advanced NLP: POS tagging, dependency parsing, NER
+# After installing, download the English model:
+#   python -m spacy download en_core_web_sm
+
 # Image Processing
 Pillow>=10.2.0
 requests>=2.31.0

@@ -11,13 +11,13 @@ from PyQt6.QtGui import (
     QTransform, QPolygonF, QImage, QFont
 )
 from typing import List, Optional, Dict, Tuple, Any
+from pathlib import Path
 import math
 
 from src.models.worldbuilding_objects import (
     WorldMap, MapPlace, MapLandmark, MapEvent, Planet, ClimateZone
 )
 from src.ui.worldbuilding.map_builder import MapElementItem, MapLandmarkItem
-import os
 
 
 class MapProjection:
@@ -445,7 +445,7 @@ class EnhancedMapCanvas(QGraphicsView):
         self.sphere_border = None
 
         # Load base map image or create blank canvas
-        if world_map.image_path and os.path.exists(world_map.image_path):
+        if world_map.image_path and Path(world_map.image_path).exists():
             pixmap = QPixmap(world_map.image_path)
             if not pixmap.isNull():
                 self.base_map_item = self.scene.addPixmap(pixmap)

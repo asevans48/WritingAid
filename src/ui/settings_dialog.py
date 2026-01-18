@@ -1494,6 +1494,12 @@ class SettingsDialog(QDialog):
         # Could enable/disable related controls
         pass
 
+    def _on_disable_ai_toggled(self, checked: bool):
+        """Handle disable all AI toggle."""
+        # Disable/enable the AI features group when AI is disabled
+        if hasattr(self, 'ai_features_group'):
+            self.ai_features_group.setEnabled(not checked)
+
     def _create_tts_tab(self) -> QWidget:
         """Create Text-to-Speech configuration tab."""
         scroll_area = QScrollArea()
@@ -1888,8 +1894,29 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(16, 16, 16, 16)
 
+        # Master AI Toggle
+        master_group = QGroupBox("AI Mode")
+        master_layout = QVBoxLayout()
+
+        self.disable_all_ai = QCheckBox("Disable all AI/LLM features (use Python libraries only)")
+        self.disable_all_ai.setChecked(self.settings.get("disable_all_ai", False))
+        self.disable_all_ai.toggled.connect(self._on_disable_ai_toggled)
+        master_layout.addWidget(self.disable_all_ai)
+
+        ai_mode_note = QLabel(
+            "When AI is disabled, features like rephrasing will use lightweight Python libraries\n"
+            "(nlpaug, nltk) instead of LLMs. This works on any computer without API costs,\n"
+            "but results may be less sophisticated."
+        )
+        ai_mode_note.setWordWrap(True)
+        ai_mode_note.setStyleSheet("color: #6b7280; font-size: 11px; padding: 4px;")
+        master_layout.addWidget(ai_mode_note)
+
+        master_group.setLayout(master_layout)
+        layout.addWidget(master_group)
+
         # Enable/Disable AI Features
-        features_group = QGroupBox("AI-Powered Features")
+        self.ai_features_group = QGroupBox("AI-Powered Features")
         features_layout = QVBoxLayout()
 
         self.enable_chat = QCheckBox("Enable AI Chat Assistant")
@@ -1928,8 +1955,11 @@ class SettingsDialog(QDialog):
         self.enable_rephrasing.setChecked(self.settings.get("enable_rephrasing", True))
         features_layout.addWidget(self.enable_rephrasing)
 
-        features_group.setLayout(features_layout)
-        layout.addWidget(features_group)
+        self.ai_features_group.setLayout(features_layout)
+        layout.addWidget(self.ai_features_group)
+
+        # Set initial state based on disable_all_ai
+        self._on_disable_ai_toggled(self.settings.get("disable_all_ai", False))
 
         # Writing Analysis Settings
         writing_group = QGroupBox("Writing Analysis")
@@ -2414,6 +2444,7 @@ class SettingsDialog(QDialog):
             "collect_general": self.collect_general.isChecked(),
 
             # Features
+            "disable_all_ai": self.disable_all_ai.isChecked(),
             "enable_chat": self.enable_chat.isChecked(),
             "enable_character_gen": self.enable_character_gen.isChecked(),
             "enable_plot_suggestions": self.enable_plot_suggestions.isChecked(),
