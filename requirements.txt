@@ -53,9 +53,21 @@ spacy>=3.7.0  # Advanced NLP: POS tagging, dependency parsing, NER
 # After installing, download the English model:
 #   python -m spacy download en_core_web_sm
 
-# Image Processing
+# Image Processing & Generation
 Pillow>=10.2.0
 requests>=2.31.0
+
+# Image Generation (Optional)
+# For Apple Silicon (M1/M2/M3/M4/M5):
+#   pip install mflux  # MLX-based FLUX model for image generation
+#   pip install mlx mlx-lm  # MLX framework (if not already installed)
+#
+# For NVIDIA GPUs:
+#   pip install diffusers  # Hugging Face Diffusers for Stable Diffusion, FLUX
+#   Requires PyTorch with CUDA support (see PyTorch section above)
+#
+# For OpenAI DALL-E 3:
+#   Uses the openai package (already included above)
 
 # Data Management
 pydantic>=2.5.0

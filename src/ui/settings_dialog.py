@@ -12,8 +12,10 @@ from PyQt6.QtWidgets import (
     QProgressBar, QMessageBox, QFrame
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QColor
 
 from src.config.credential_manager import get_credential_manager
+from src.ai.mlx_utils import can_use_mlx
 
 
 @dataclass
@@ -28,8 +30,143 @@ class LocalModelInfo:
     requires_trust_remote_code: bool = False
 
 
-# Curated list of verified small language models (updated 2025)
-AVAILABLE_MODELS: List[LocalModelInfo] = [
+# MLX Models for Apple Silicon (M1/M2/M3/M4/M5)
+MLX_MODELS: List[LocalModelInfo] = [
+    # === Lightweight Models (4-8GB RAM) ===
+    LocalModelInfo(
+        model_id="mlx-community/Phi-3-mini-4k-instruct-4bit",
+        display_name="Phi-3 Mini (3.8B) - MLX",
+        size_gb=2.0,
+        description="Microsoft's efficient model optimized for Apple Silicon",
+        ram_required="8GB+",
+        best_for="General writing, rephrasing, fast inference",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="mlx-community/Qwen2.5-3B-Instruct-4bit",
+        display_name="Qwen 2.5 (3B) - MLX",
+        size_gb=1.6,
+        description="Alibaba's very fast 3B model",
+        ram_required="6GB+",
+        best_for="Quick rephrasing, instructions, very fast",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="mlx-community/Qwen3-4B-4bit",
+        display_name="Qwen 3 (4B) - MLX [Latest]",
+        size_gb=2.0,
+        description="Latest Qwen model (January 2026)",
+        ram_required="8GB+",
+        best_for="General writing, latest features",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="mlx-community/gemma-3-4b-it-4bit",
+        display_name="Gemma 3 (4B) - MLX",
+        size_gb=2.0,
+        description="Google's multimodal model, works great on MLX",
+        ram_required="8GB+",
+        best_for="Creative writing, dialogue",
+        requires_trust_remote_code=False
+    ),
+
+    # === Medium Models (16GB RAM) ===
+    LocalModelInfo(
+        model_id="mlx-community/Qwen2.5-7B-Instruct-4bit",
+        display_name="Qwen 2.5 (7B) - MLX [Recommended]",
+        size_gb=4.0,
+        description="Excellent balance of speed and quality",
+        ram_required="8GB+",
+        best_for="All-around best choice for most tasks",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="mlx-community/Qwen3-8B-4bit",
+        display_name="Qwen 3 (8B) - MLX [Latest]",
+        size_gb=4.0,
+        description="Latest Qwen 8B model (January 2026)",
+        ram_required="8GB+",
+        best_for="General writing, latest features",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="mlx-community/Mistral-7B-Instruct-v0.3-4bit",
+        display_name="Mistral 7B v0.3 - MLX",
+        size_gb=4.0,
+        description="Mistral AI's powerful 7B model",
+        ram_required="8GB+",
+        best_for="High-quality writing, reasoning",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="mlx-community/gemma-3-12b-it-4bit",
+        display_name="Gemma 3 (12B) - MLX",
+        size_gb=6.0,
+        description="Google's high-quality 12B model",
+        ram_required="16GB+",
+        best_for="Creative writing, complex tasks",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="mlx-community/Mistral-Nemo-Instruct-2407-4bit",
+        display_name="Mistral Nemo (12B) - MLX",
+        size_gb=7.0,
+        description="Mistral's excellent 12B model",
+        ram_required="16GB+",
+        best_for="Quality writing with good speed",
+        requires_trust_remote_code=False
+    ),
+
+    # === High-Performance Models (32GB+ RAM) ===
+    LocalModelInfo(
+        model_id="mlx-community/Qwen2.5-14B-Instruct-4bit",
+        display_name="Qwen 2.5 (14B) - MLX",
+        size_gb=7.0,
+        description="High-quality 14B model with excellent reasoning",
+        ram_required="16GB+",
+        best_for="Complex writing, long context (128K)",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="mlx-community/gemma-3-27b-it-4bit",
+        display_name="Gemma 3 (27B) - MLX",
+        size_gb=14.0,
+        description="Google's top-tier model for Apple Silicon",
+        ram_required="32GB+",
+        best_for="Maximum quality creative writing",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="mlx-community/Qwen3-30B-A3B-4bit",
+        display_name="Qwen 3 (30B) - MLX [Latest]",
+        size_gb=15.0,
+        description="Latest Qwen model with exceptional quality",
+        ram_required="32GB+",
+        best_for="Highest quality, latest features",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="mlx-community/Qwen2.5-32B-Instruct-4bit",
+        display_name="Qwen 2.5 (32B) - MLX",
+        size_gb=17.0,
+        description="Top-tier model with exceptional capabilities",
+        ram_required="32GB+",
+        best_for="Maximum quality across all tasks",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="mlx-community/Mistral-Small-Instruct-2409-4bit",
+        display_name="Mistral Small (22B) - MLX",
+        size_gb=12.0,
+        description="Mistral's high-quality 22B model",
+        ram_required="32GB+",
+        best_for="Professional writing, complex reasoning",
+        requires_trust_remote_code=False
+    ),
+]
+
+# PyTorch Models for Windows/Linux/Intel Macs
+PYTORCH_MODELS: List[LocalModelInfo] = [
     # === Lightweight Models (4-6GB RAM) ===
     LocalModelInfo(
         model_id="microsoft/Phi-4-mini-instruct",
@@ -51,11 +188,11 @@ AVAILABLE_MODELS: List[LocalModelInfo] = [
     ),
     LocalModelInfo(
         model_id="google/gemma-3-4b-it",
-        display_name="Gemma 3 (4B)",
+        display_name="Gemma 3 (4B) ⚠️ Not Mac Compatible",
         size_gb=8.0,
-        description="Google's latest efficient model with strong capabilities",
+        description="Google's latest efficient model - WARNING: Known to crash on macOS/Apple Silicon due to stack overflow. Use Qwen or Phi instead.",
         ram_required="8GB+",
-        best_for="Creative writing, instructions, dialogue",
+        best_for="Creative writing, instructions, dialogue (Linux/Windows only)",
         requires_trust_remote_code=False
     ),
     LocalModelInfo(
@@ -116,22 +253,22 @@ AVAILABLE_MODELS: List[LocalModelInfo] = [
     ),
     LocalModelInfo(
         model_id="google/gemma-3-12b-it",
-        display_name="Gemma 3 (12B)",
+        display_name="Gemma 3 (12B) ⚠️ Not Mac Compatible",
         size_gb=24.0,
-        description="Google's high-quality 12B model",
+        description="Google's high-quality 12B model - WARNING: Known to crash on macOS/Apple Silicon due to stack overflow. Use Qwen 2.5-14B instead.",
         ram_required="24GB+",
-        best_for="Best quality creative writing, complex tasks",
+        best_for="Best quality creative writing, complex tasks (Linux/Windows only)",
         requires_trust_remote_code=False
     ),
 
     # === Specialized/Community Models ===
     LocalModelInfo(
         model_id="ToastyPigeon/Gemma-3-Starshine-12B",
-        display_name="Gemma 3 Starshine (12B)",
+        display_name="Gemma 3 Starshine (12B) ⚠️ Not Mac Compatible",
         size_gb=24.0,
-        description="Story-focused Gemma 3 merge, excellent for creative writing",
+        description="Story-focused Gemma 3 merge - WARNING: Known to crash on macOS/Apple Silicon due to stack overflow. Use Qwen or Mistral Nemo instead.",
         ram_required="24GB+",
-        best_for="Creative fiction, storytelling, novel-like prose",
+        best_for="Creative fiction, storytelling (Linux/Windows only)",
         requires_trust_remote_code=False
     ),
     LocalModelInfo(
@@ -161,7 +298,114 @@ AVAILABLE_MODELS: List[LocalModelInfo] = [
         best_for="Creative writing, storytelling",
         requires_trust_remote_code=False
     ),
+
+    # === High-Performance Models (32GB RAM, optimized for M5 Mac) ===
+    LocalModelInfo(
+        model_id="Qwen/Qwen2.5-14B-Instruct",
+        display_name="Qwen 2.5 (14B)",
+        size_gb=28.0,
+        description="Alibaba's powerful 14B model with excellent reasoning and coding",
+        ram_required="32GB+",
+        best_for="High-quality writing, complex reasoning, long context (128K)",
+        requires_trust_remote_code=True
+    ),
+    LocalModelInfo(
+        model_id="Qwen/Qwen2.5-32B-Instruct",
+        display_name="Qwen 2.5 (32B)",
+        size_gb=64.0,
+        description="Top-tier Qwen model with exceptional capabilities across all tasks",
+        ram_required="32GB+",
+        best_for="Professional writing, complex analysis, multilingual (29 languages)",
+        requires_trust_remote_code=True
+    ),
+    LocalModelInfo(
+        model_id="mistralai/Mistral-Nemo-Instruct-2407",
+        display_name="Mistral Nemo (12B)",
+        size_gb=24.0,
+        description="Mistral's collaboration with NVIDIA, 128K context window",
+        ram_required="32GB+",
+        best_for="Long-form writing, coding, reasoning with large context",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="Qwen/Qwen2.5-Coder-14B-Instruct",
+        display_name="Qwen 2.5 Coder (14B)",
+        size_gb=28.0,
+        description="Specialized coding variant with excellent technical writing",
+        ram_required="32GB+",
+        best_for="Technical documentation, code explanations, structured output",
+        requires_trust_remote_code=True
+    ),
+    LocalModelInfo(
+        model_id="google/gemma-2-27b-it",
+        display_name="Gemma 2 (27B)",
+        size_gb=54.0,
+        description="Google's powerful 27B model trained on 13T tokens",
+        ram_required="32GB+",
+        best_for="High-quality creative writing, summarization, reasoning",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="google/gemma-3-27b-it",
+        display_name="Gemma 3 (27B) ⚠️ Not Mac Compatible",
+        size_gb=54.0,
+        description="Latest Gemma with multimodal support - WARNING: Known to crash on macOS/Apple Silicon due to stack overflow. Use Qwen 2.5-32B or Mistral Small instead.",
+        ram_required="32GB+",
+        best_for="Advanced creative writing, multilingual (Linux/Windows only)",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="mistralai/Mistral-Small-Instruct-2409",
+        display_name="Mistral Small (22B)",
+        size_gb=44.0,
+        description="Mistral's efficient 22B model with strong performance",
+        ram_required="32GB+",
+        best_for="Balanced writing tasks, efficient reasoning",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="mistralai/Codestral-22B-v0.1",
+        display_name="Codestral (22B)",
+        size_gb=44.0,
+        description="Mistral's specialized code model with strong technical writing",
+        ram_required="32GB+",
+        best_for="Code generation, technical documentation, structured content",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+        display_name="Mistral Small 3 (24B)",
+        size_gb=48.0,
+        description="Latest Mistral Small 3, rivals Llama 3.3 70B in performance",
+        ram_required="32GB+",
+        best_for="High-quality writing, reasoning, best performance for size",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="TheBloke/WizardLM-Uncensored-SuperCOT-StoryTelling-30B-GPTQ",
+        display_name="WizardLM Storytelling (30B)",
+        size_gb=20.0,
+        description="GPTQ quantized model specialized for creative storytelling",
+        ram_required="32GB+",
+        best_for="Fiction writing, creative storytelling, narrative prose",
+        requires_trust_remote_code=False
+    ),
 ]
+
+
+def get_available_models() -> List[LocalModelInfo]:
+    """Get the appropriate model list based on platform.
+
+    Returns MLX models on Apple Silicon, PyTorch models elsewhere.
+    """
+    if can_use_mlx():
+        return MLX_MODELS
+    else:
+        return PYTORCH_MODELS
+
+
+# For backwards compatibility
+AVAILABLE_MODELS = get_available_models()
 
 
 class APITestWorker(QThread):
@@ -327,12 +571,40 @@ class ModelDownloadWorker(QThread):
 
             # Import huggingface_hub
             try:
-                from huggingface_hub import snapshot_download, HfFolder
-            except ImportError:
-                self.finished.emit(False,
-                    "huggingface_hub not installed.\n\n"
-                    "Install with: pip install huggingface_hub"
+                from huggingface_hub import snapshot_download
+            except ImportError as e:
+                import sys
+                import traceback
+
+                # Log full error to console
+                print("\n" + "="*70)
+                print("ERROR: Failed to import huggingface_hub")
+                print("="*70)
+                print(f"Python executable: {sys.executable}")
+                print(f"Python version: {sys.version}")
+                print(f"sys.prefix: {sys.prefix}")
+                print(f"sys.base_prefix: {sys.base_prefix}")
+                print(f"In venv: {sys.prefix != sys.base_prefix}")
+                print(f"\nImportError: {e}")
+                print(f"\nFull traceback:")
+                traceback.print_exc()
+                print("="*70 + "\n")
+
+                # User-friendly error message
+                error_msg = (
+                    f"huggingface_hub not installed in current Python environment.\n\n"
+                    f"Python: {sys.executable}\n"
+                    f"Version: {sys.version.split()[0]}\n"
+                    f"In venv: {sys.prefix != sys.base_prefix}\n\n"
+                    f"This usually means you're not running from the virtual environment.\n\n"
+                    f"Solution:\n"
+                    f"1. Close the app completely\n"
+                    f"2. Run: ./run.sh\n\n"
+                    f"OR install in current environment:\n"
+                    f"{sys.executable} -m pip install huggingface_hub\n\n"
+                    f"Error details: {e}"
                 )
+                self.finished.emit(False, error_msg)
                 return
 
             if self._cancelled:
@@ -690,6 +962,10 @@ class SettingsDialog(QDialog):
         hf_tab = self._create_huggingface_tab()
         tabs.addTab(hf_tab, "🤗 Local Models")
 
+        # GenAI / Image Generation Tab
+        genai_tab = self._create_genai_tab()
+        tabs.addTab(genai_tab, "🎨 Image Generation")
+
         # Training Data Collection Tab
         training_tab = self._create_training_data_tab()
         tabs.addTab(training_tab, "📊 Training Data")
@@ -996,10 +1272,8 @@ class SettingsDialog(QDialog):
         self.model_list.setMaximumHeight(200)
         self.model_list.currentRowChanged.connect(self._on_model_selected)
 
-        for model in AVAILABLE_MODELS:
-            item = QListWidgetItem(f"{model.display_name} - {model.size_gb}GB")
-            item.setData(Qt.ItemDataRole.UserRole, model)
-            self.model_list.addItem(item)
+        # Populate model list and check which ones are downloaded
+        self._populate_model_list()
 
         download_layout.addWidget(self.model_list)
 
@@ -1114,34 +1388,71 @@ class SettingsDialog(QDialog):
         self.local_model_combo.setEditable(True)
         self.local_model_combo.setPlaceholderText("Select or enter model ID...")
 
-        # Add available models to combo
-        for model in AVAILABLE_MODELS:
-            self.local_model_combo.addItem(model.display_name, model.model_id)
+        # Add available models to combo with model_id as both display and data
+        # Use get_available_models() to get platform-specific list (MLX on Apple Silicon, PyTorch elsewhere)
+        available_models = get_available_models()
+        for model in available_models:
+            # Display format: "Display Name (model_id)"
+            display_text = f"{model.display_name} ({model.model_id})"
+            self.local_model_combo.addItem(display_text, model.model_id)
 
-        # Set current value
-        current_model = self.settings.get("local_model_id", "microsoft/Phi-3-mini-4k-instruct")
-        self.local_model_combo.setCurrentText(current_model)
+        # Set current value - find matching model_id
+        # Use platform-specific default: MLX on Apple Silicon, PyTorch elsewhere
+        default_model = "mlx-community/Qwen2.5-7B-Instruct-4bit" if can_use_mlx() else "microsoft/Phi-3-mini-4k-instruct"
+        current_model = self.settings.get("local_model_id", default_model)
+
+        # Try to find and select the current model
+        index = self.local_model_combo.findData(current_model)
+        if index >= 0:
+            self.local_model_combo.setCurrentIndex(index)
+        else:
+            # If not in list, add it as custom entry
+            self.local_model_combo.setEditText(current_model)
 
         active_layout.addRow("Model:", self.local_model_combo)
 
-        # Quantization
+        # Quantization with platform note
+        quant_container = QVBoxLayout()
+
         self.quantization_combo = QComboBox()
-        self.quantization_combo.addItems(["None (full precision)", "8-bit (recommended)", "4-bit (low memory)"])
-        current_quant = self.settings.get("local_model_quantization", "8bit")
+        self.quantization_combo.addItems(["None (full precision)", "8-bit (recommended for CUDA)", "4-bit (low memory, CUDA only)"])
+        current_quant = self.settings.get("local_model_quantization", "none")
         if current_quant == "4bit":
             self.quantization_combo.setCurrentIndex(2)
         elif current_quant == "8bit":
             self.quantization_combo.setCurrentIndex(1)
         else:
             self.quantization_combo.setCurrentIndex(0)
-        active_layout.addRow("Quantization:", self.quantization_combo)
 
-        # Device selection
+        self.quantization_combo.setToolTip(
+            "Quantization reduces model size and memory usage.\n"
+            "⚠️ Only works with NVIDIA GPUs (CUDA).\n"
+            "Apple Silicon (MPS) and CPU will use full precision."
+        )
+        quant_container.addWidget(self.quantization_combo)
+
+        self.quantization_warning = QLabel("⚠️ Quantization only works with NVIDIA GPUs (CUDA)")
+        self.quantization_warning.setStyleSheet("color: #f59e0b; font-size: 10px;")
+        self.quantization_warning.setWordWrap(True)
+        quant_container.addWidget(self.quantization_warning)
+
+        active_layout.addRow("Quantization:", quant_container)
+
+        # Device selection with platform detection
         self.device_combo = QComboBox()
-        self.device_combo.addItems(["Auto", "CUDA (GPU)", "CPU"])
+        self.device_combo.addItems(["Auto (Recommended)", "CUDA (NVIDIA GPU)", "MPS (Apple Silicon)", "CPU"])
+
         current_device = self.settings.get("local_model_device", "auto")
-        device_map = {"auto": 0, "cuda": 1, "cpu": 2}
+        device_map = {"auto": 0, "cuda": 1, "mps": 2, "cpu": 3}
         self.device_combo.setCurrentIndex(device_map.get(current_device, 0))
+
+        # Add tooltip explaining device options
+        self.device_combo.setToolTip(
+            "Auto: Automatically select best device (CUDA > MPS > CPU)\n"
+            "CUDA: Use NVIDIA GPU (supports quantization)\n"
+            "MPS: Use Apple Silicon GPU (M1/M2/M3/M4/M5)\n"
+            "CPU: Use CPU only (slowest, but works everywhere)"
+        )
         active_layout.addRow("Device:", self.device_combo)
 
         # Trust remote code
@@ -1293,6 +1604,40 @@ class SettingsDialog(QDialog):
 
         self._download_worker = None
 
+    def _populate_model_list(self):
+        """Populate model list with download status indicators."""
+        self.model_list.clear()
+
+        # Get set of downloaded model IDs
+        downloaded_ids = set()
+        try:
+            from huggingface_hub import scan_cache_dir
+            cache_info = scan_cache_dir()
+            for repo in cache_info.repos:
+                downloaded_ids.add(repo.repo_id)
+        except (ImportError, Exception):
+            pass
+
+        # Add models to list with download indicator
+        # Use get_available_models() to get platform-specific list (MLX on Apple Silicon, PyTorch elsewhere)
+        available_models = get_available_models()
+        for model in available_models:
+            is_downloaded = model.model_id in downloaded_ids
+            download_indicator = "✓ " if is_downloaded else ""
+            item_text = f"{download_indicator}{model.display_name} - {model.size_gb}GB"
+
+            item = QListWidgetItem(item_text)
+            item.setData(Qt.ItemDataRole.UserRole, model)
+
+            # Color downloaded models green
+            if is_downloaded:
+                item.setForeground(QColor("#059669"))
+                item.setToolTip(f"✓ Downloaded: {model.model_id}")
+            else:
+                item.setToolTip(f"Not downloaded: {model.model_id}")
+
+            self.model_list.addItem(item)
+
     def _check_downloaded_models(self):
         """Check which models are already downloaded."""
         try:
@@ -1301,9 +1646,12 @@ class SettingsDialog(QDialog):
             cache_info = scan_cache_dir()
             downloaded = []
 
+            # Use get_available_models() to get platform-specific list
+            available_models = get_available_models()
+
             for repo in cache_info.repos:
                 # Check if it's one of our known models
-                for model in AVAILABLE_MODELS:
+                for model in available_models:
                     if model.model_id == repo.repo_id:
                         size_gb = repo.size_on_disk / (1024**3)
                         downloaded.append(f"{model.display_name} ({size_gb:.1f}GB)")
@@ -1322,6 +1670,9 @@ class SettingsDialog(QDialog):
             else:
                 self.downloaded_models_label.setText("No models downloaded yet.")
                 self.downloaded_models_label.setVisible(True)
+
+            # Refresh the model list to update download indicators
+            self._populate_model_list()
 
         except ImportError:
             self.downloaded_models_label.setText(
@@ -1343,8 +1694,167 @@ class SettingsDialog(QDialog):
         current_data = self.local_model_combo.currentData()
         if current_data:
             return current_data
-        # User typed a custom model ID
-        return self.local_model_combo.currentText()
+
+        # User typed a custom entry
+        text = self.local_model_combo.currentText()
+
+        # If text contains parentheses (our display format), extract model_id
+        if "(" in text and ")" in text:
+            # Extract text between last ( and )
+            start = text.rfind("(")
+            end = text.rfind(")")
+            if start < end:
+                return text[start+1:end].strip()
+
+        # Otherwise, treat entire text as model ID
+        return text.strip()
+
+    def _create_genai_tab(self) -> QWidget:
+        """Create GenAI / Image Generation configuration tab."""
+        from src.config.genai_config import get_genai_config, get_available_image_models
+
+        genai_config = get_genai_config()
+        settings = genai_config.get_settings()
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        content = QWidget()
+        layout = QVBoxLayout(content)
+
+        # Header
+        header = QLabel("Configure image generation models and settings")
+        header.setWordWrap(True)
+        header.setStyleSheet("color: #666; padding: 5px;")
+        layout.addWidget(header)
+
+        # Enable/Disable
+        self.enable_image_gen = QCheckBox("Enable AI Image Generation")
+        self.enable_image_gen.setChecked(settings.get("image_generation_enabled", True))
+        layout.addWidget(self.enable_image_gen)
+
+        # Image Model Selection
+        model_group = QGroupBox("Image Generation Model")
+        model_layout = QFormLayout()
+
+        self.image_model_combo = QComboBox()
+        available_models = get_available_image_models()
+        for model in available_models:
+            display = f"{model.display_name} ({model.vram_gb}GB VRAM)"
+            self.image_model_combo.addItem(display, model.model_id)
+
+        current_model = settings.get("image_model_id", "")
+        index = self.image_model_combo.findData(current_model)
+        if index >= 0:
+            self.image_model_combo.setCurrentIndex(index)
+
+        model_layout.addRow("Model:", self.image_model_combo)
+
+        # Download Model Button
+        download_layout = QHBoxLayout()
+        self.download_model_btn = QPushButton("📥 Download/Verify Model")
+        self.download_model_btn.setToolTip("Download the selected image generation model (first use)")
+        self.download_model_btn.clicked.connect(self._download_image_model)
+        download_layout.addWidget(self.download_model_btn)
+        download_layout.addStretch()
+        model_layout.addRow("", download_layout)
+
+        # Model info label
+        self.model_info_label = QLabel()
+        self.model_info_label.setWordWrap(True)
+        self.model_info_label.setStyleSheet("color: #666; font-size: 11px; padding: 5px;")
+        self._update_model_info()
+        self.image_model_combo.currentIndexChanged.connect(self._update_model_info)
+        model_layout.addRow("", self.model_info_label)
+
+        model_group.setLayout(model_layout)
+        layout.addWidget(model_group)
+
+        # Prompt Enhancement LLM
+        prompt_group = QGroupBox("Prompt Enhancement (separate from main LLM)")
+        prompt_layout = QFormLayout()
+
+        self.use_prompt_enhancement = QCheckBox("Use LLM to enhance image prompts")
+        self.use_prompt_enhancement.setChecked(settings.get("use_prompt_enhancement", True))
+        prompt_layout.addRow("", self.use_prompt_enhancement)
+
+        self.prompt_llm_provider = QComboBox()
+        self.prompt_llm_provider.addItems(["Local SLM", "Claude", "ChatGPT", "Gemini"])
+        provider_map = {"local": 0, "claude": 1, "chatgpt": 2, "gemini": 3}
+        current_provider = settings.get("prompt_llm_provider", "local")
+        self.prompt_llm_provider.setCurrentIndex(provider_map.get(current_provider, 0))
+        prompt_layout.addRow("Provider:", self.prompt_llm_provider)
+
+        self.prompt_llm_model = QComboBox()
+        self.prompt_llm_model.setEditable(True)
+        # Populate with text LLM models
+        text_models = get_available_models()
+        for model in text_models[:10]:  # Show first 10
+            self.prompt_llm_model.addItem(model.display_name, model.model_id)
+
+        current_prompt_model = settings.get("prompt_llm_model_id", "")
+        idx = self.prompt_llm_model.findData(current_prompt_model)
+        if idx >= 0:
+            self.prompt_llm_model.setCurrentIndex(idx)
+        else:
+            self.prompt_llm_model.setCurrentText(current_prompt_model)
+
+        prompt_layout.addRow("Local Model:", self.prompt_llm_model)
+
+        prompt_group.setLayout(prompt_layout)
+        layout.addWidget(prompt_group)
+
+        # Image Settings
+        settings_group = QGroupBox("Image Settings")
+        settings_layout = QFormLayout()
+
+        self.image_width = QSpinBox()
+        self.image_width.setRange(256, 2048)
+        self.image_width.setSingleStep(64)
+        self.image_width.setValue(settings.get("image_width", 1024))
+        settings_layout.addRow("Width:", self.image_width)
+
+        self.image_height = QSpinBox()
+        self.image_height.setRange(256, 2048)
+        self.image_height.setSingleStep(64)
+        self.image_height.setValue(settings.get("image_height", 1024))
+        settings_layout.addRow("Height:", self.image_height)
+
+        self.image_steps = QSpinBox()
+        self.image_steps.setRange(10, 100)
+        self.image_steps.setValue(settings.get("image_num_inference_steps", 20))
+        settings_layout.addRow("Inference Steps:", self.image_steps)
+
+        self.image_guidance = QDoubleSpinBox()
+        self.image_guidance.setRange(1.0, 20.0)
+        self.image_guidance.setSingleStep(0.5)
+        self.image_guidance.setValue(settings.get("image_guidance_scale", 7.5))
+        settings_layout.addRow("Guidance Scale:", self.image_guidance)
+
+        settings_group.setLayout(settings_layout)
+        layout.addWidget(settings_group)
+
+        # Character Context
+        char_group = QGroupBox("Character Generation")
+        char_layout = QFormLayout()
+
+        self.include_char_context = QCheckBox("Include character backstory/personality in prompts")
+        self.include_char_context.setChecked(settings.get("include_character_context", True))
+        char_layout.addRow("", self.include_char_context)
+
+        self.char_prompt_weight = QDoubleSpinBox()
+        self.char_prompt_weight.setRange(0.0, 1.0)
+        self.char_prompt_weight.setSingleStep(0.1)
+        self.char_prompt_weight.setValue(settings.get("character_prompt_weight", 0.8))
+        char_layout.addRow("Character Weight:", self.char_prompt_weight)
+
+        char_group.setLayout(char_layout)
+        layout.addWidget(char_group)
+
+        layout.addStretch()
+        scroll_area.setWidget(content)
+        return scroll_area
 
     def _create_training_data_tab(self) -> QWidget:
         """Create training data collection configuration tab."""
@@ -2394,11 +2904,352 @@ class SettingsDialog(QDialog):
         dialog = ConnectionTestDialog(providers, self)
         dialog.exec()
 
+    def accept(self):
+        """Save settings and close dialog."""
+        # Save GenAI settings separately
+        self._save_genai_settings()
+        # Call parent accept to close dialog
+        super().accept()
+
+    def _update_model_info(self):
+        """Update model information display based on selected model."""
+        from src.config.genai_config import get_available_image_models
+        from src.ai.mlx_utils import can_use_mlx
+
+        model_id = self.image_model_combo.currentData()
+        if not model_id:
+            return
+
+        # Find model info
+        available_models = get_available_image_models()
+        model_info = next((m for m in available_models if m.model_id == model_id), None)
+
+        if model_info:
+            # Build info text
+            info_parts = []
+            info_parts.append(f"<b>{model_info.description}</b>")
+            info_parts.append(f"Best for: {model_info.best_for}")
+            info_parts.append(f"RAM required: {model_info.ram_gb}GB")
+
+            # Platform check
+            is_apple_silicon = can_use_mlx()
+            if model_info.platform == "apple_silicon" and not is_apple_silicon:
+                info_parts.append("⚠️ <span style='color: orange;'>This model requires Apple Silicon (M-series chip)</span>")
+            elif model_info.platform == "nvidia" and is_apple_silicon:
+                info_parts.append("⚠️ <span style='color: orange;'>This model is optimized for NVIDIA GPUs</span>")
+            elif model_info.platform == "apple_silicon" and is_apple_silicon:
+                info_parts.append("✅ <span style='color: green;'>Compatible with your Apple Silicon Mac</span>")
+            elif model_info.platform == "nvidia":
+                info_parts.append("ℹ️ Requires NVIDIA GPU with CUDA support")
+
+            # Special notes for FLUX-2
+            if "flux2" in model_id.lower():
+                info_parts.append("<br>📝 <b>FLUX-2 requires:</b>")
+                info_parts.append("  • HuggingFace account with accepted license")
+                info_parts.append("  • HuggingFace token configured")
+                info_parts.append(f"  • ~{int(model_info.ram_gb)}GB download on first use")
+
+            self.model_info_label.setText("<br>".join(info_parts))
+        else:
+            self.model_info_label.setText("Select a model to see details")
+
+    def _download_image_model(self):
+        """Download or verify the selected image generation model."""
+        from PyQt6.QtWidgets import QMessageBox, QProgressDialog
+        from PyQt6.QtCore import QThread, pyqtSignal
+        from src.config.genai_config import get_available_image_models
+        from src.ai.mlx_utils import can_use_mlx
+        import subprocess
+        import sys
+
+        model_id = self.image_model_combo.currentData()
+        if not model_id:
+            QMessageBox.warning(self, "No Model Selected", "Please select a model to download.")
+            return
+
+        # Find model info
+        available_models = get_available_image_models()
+        model_info = next((m for m in available_models if m.model_id == model_id), None)
+
+        if not model_info:
+            QMessageBox.warning(self, "Model Not Found", "Could not find information for the selected model.")
+            return
+
+        # Platform check
+        is_apple_silicon = can_use_mlx()
+        if model_info.platform == "apple_silicon" and not is_apple_silicon:
+            QMessageBox.critical(
+                self,
+                "Incompatible Hardware",
+                f"This model requires Apple Silicon (M-series chip).\n\n"
+                f"Your system: {'Apple Silicon' if is_apple_silicon else 'Intel/AMD'}\n"
+                f"Required: Apple Silicon"
+            )
+            return
+        elif model_info.platform == "nvidia" and is_apple_silicon:
+            result = QMessageBox.question(
+                self,
+                "Different Hardware",
+                f"This model is optimized for NVIDIA GPUs, but you have Apple Silicon.\n\n"
+                f"Do you want to continue anyway? (May not work or be slow)",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if result != QMessageBox.StandardButton.Yes:
+                return
+
+        # Check for FLUX-2 gated model requirements
+        if "flux2" in model_id.lower():
+            # Check if HF token is configured
+            from src.ai.image_generation_agent import ImageGenerationAgent
+            agent = ImageGenerationAgent()
+            hf_token = agent._get_huggingface_token()
+
+            if not hf_token:
+                result = QMessageBox.warning(
+                    self,
+                    "HuggingFace Token Required",
+                    "FLUX-2 models require a HuggingFace token.\n\n"
+                    "Steps:\n"
+                    "1. Accept FLUX-2 license at:\n"
+                    "   https://huggingface.co/black-forest-labs/FLUX.2-klein-9B\n\n"
+                    "2. Get your token at:\n"
+                    "   https://huggingface.co/settings/tokens\n\n"
+                    "3. Enter token in Settings > API Keys tab\n\n"
+                    "Continue without token? (Download will likely fail)",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
+                if result != QMessageBox.StandardButton.Yes:
+                    return
+
+        # Show confirmation
+        result = QMessageBox.question(
+            self,
+            "Download Model",
+            f"Download: {model_info.display_name}\n\n"
+            f"Size: ~{int(model_info.ram_gb)}GB\n"
+            f"Platform: {model_info.platform.replace('_', ' ').title()}\n\n"
+            f"This will download the model to HuggingFace cache.\n"
+            f"Location: ~/.cache/huggingface/\n\n"
+            f"Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if result != QMessageBox.StandardButton.Yes:
+            return
+
+        # Trigger download by running a test generation
+        progress = QProgressDialog(
+            f"Downloading {model_info.display_name}...\n\n"
+            f"This may take 10-30 minutes depending on your internet speed.\n"
+            f"Model will be cached for future use.\n\n"
+            f"Check the console for progress.",
+            "Cancel",
+            0, 0,
+            self
+        )
+        progress.setWindowTitle("Downloading Model")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+
+        try:
+            if model_info.platform == "apple_silicon" or (is_apple_silicon and "mflux" in model_id.lower()):
+                # Use MFLUX to download
+                self._download_mflux_model(model_id, model_info, progress)
+            else:
+                # Use diffusers/PyTorch to download
+                self._download_torch_model(model_id, model_info, progress)
+
+            progress.close()
+            QMessageBox.information(
+                self,
+                "Download Complete",
+                f"{model_info.display_name} is ready to use!\n\n"
+                f"The model is cached and won't need to be downloaded again."
+            )
+
+        except Exception as e:
+            progress.close()
+            QMessageBox.critical(
+                self,
+                "Download Failed",
+                f"Failed to download model:\n\n{str(e)}\n\n"
+                f"Check the console for detailed error messages."
+            )
+
+    def _download_mflux_model(self, model_id: str, model_info, progress):
+        """Download MFLUX model by running a test generation."""
+        import subprocess
+        import tempfile
+        import os
+        import sys
+        from pathlib import Path
+
+        print("\n" + "=" * 60)
+        print(f"[Model Download] Starting download for: {model_id}")
+        print("=" * 60)
+
+        # Set HF token if available
+        from src.ai.image_generation_agent import ImageGenerationAgent
+        agent = ImageGenerationAgent()
+        hf_token = agent._get_huggingface_token()
+        if hf_token:
+            os.environ['HF_TOKEN'] = hf_token
+            print("[Model Download] HuggingFace token configured")
+        else:
+            print("[Model Download] WARNING: No HuggingFace token found (may be required for gated models)")
+
+        # Determine command and model variant
+        is_flux2 = "flux2" in model_id.lower()
+
+        if is_flux2:
+            cmd_name = "mflux-generate-flux2"
+            if "klein-9b" in model_id.lower():
+                model_variant = "flux2-klein-9b"
+            elif "klein-4b" in model_id.lower():
+                model_variant = "flux2-klein-4b"
+            else:
+                model_variant = "flux2-klein-4b"
+        else:
+            cmd_name = "mflux-generate"
+            if "schnell" in model_id.lower():
+                model_variant = "schnell"
+            elif "dev" in model_id.lower():
+                model_variant = "dev"
+            else:
+                model_variant = "dev"
+
+        print(f"[Model Download] Model type: {'FLUX-2' if is_flux2 else 'FLUX-1'}")
+        print(f"[Model Download] Model variant: {model_variant}")
+        print(f"[Model Download] Command: {cmd_name}")
+
+        # Create temp output file
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            output_path = tmp.name
+
+        try:
+            # Run MFLUX with minimal settings to trigger download
+            # Note: FLUX-2 requires minimum 2 steps to avoid division by zero
+            min_steps = "2" if is_flux2 else "1"
+
+            cmd = [
+                cmd_name,
+                "--model", model_variant,
+                "--prompt", "test",
+                "--steps", min_steps,
+                "--seed", "42",
+                "--height", "512",
+                "--width", "512",
+                "--output", output_path
+            ]
+
+            if is_flux2:
+                cmd.extend(["--guidance", "1.0"])
+            else:
+                cmd.extend(["--quantize", "4" if "4bit" in model_id else "8"])
+
+            print(f"[Model Download] Expected download size: ~{model_info.vram_gb:.1f} GB")
+            print("[Model Download] This may take 10-30 minutes depending on your internet speed")
+            print("[Model Download] MFLUX output will stream below:")
+            print("-" * 60)
+
+            result = subprocess.run(
+                cmd,
+                stdout=sys.stdout,  # Stream to console in real-time
+                stderr=sys.stderr,  # Stream errors to console in real-time
+                text=True,
+                timeout=1800  # 30 minute timeout for download
+            )
+
+            print("-" * 60)
+            if result.returncode != 0:
+                print(f"[Model Download] FAILED with return code: {result.returncode}")
+                raise Exception(f"MFLUX command failed with return code {result.returncode}")
+            else:
+                print("[Model Download] SUCCESS! Model downloaded and verified")
+                print("=" * 60 + "\n")
+
+        finally:
+            # Clean up temp file
+            try:
+                Path(output_path).unlink(missing_ok=True)
+            except:
+                pass
+
+    def _download_torch_model(self, model_id: str, model_info, progress):
+        """Download PyTorch/Diffusers model."""
+        from diffusers import DiffusionPipeline
+        import torch
+
+        print("\n" + "=" * 60)
+        print(f"[Model Download] Starting download for: {model_id}")
+        print("=" * 60)
+
+        # Determine device
+        if torch.cuda.is_available():
+            device = "cuda"
+            dtype = torch.float16
+            print("[Model Download] Using CUDA GPU acceleration")
+        else:
+            device = "cpu"
+            dtype = torch.float32
+            print("[Model Download] Using CPU (GPU not available)")
+
+        print(f"[Model Download] Expected download size: ~{model_info.vram_gb:.1f} GB")
+        print("[Model Download] Downloading model files...")
+
+        # Download model (this caches it)
+        pipe = DiffusionPipeline.from_pretrained(
+            model_id,
+            torch_dtype=dtype,
+            use_safetensors=True
+        )
+
+        print("[Model Download] Model downloaded, loading to device...")
+        pipe = pipe.to(device)
+
+        print("[Model Download] Running test generation to verify installation...")
+        # Generate a test image to ensure everything works
+        generator = torch.Generator(device=device).manual_seed(42)
+        _ = pipe(
+            prompt="test",
+            num_inference_steps=1,
+            generator=generator,
+            height=512,
+            width=512
+        ).images[0]
+
+        print("[Model Download] SUCCESS! Model downloaded and verified")
+        print("=" * 60 + "\n")
+
+    def _save_genai_settings(self):
+        """Save GenAI / Image Generation settings."""
+        from src.config.genai_config import get_genai_config
+
+        genai_config = get_genai_config()
+
+        # Map provider combo to value
+        provider_map = {0: "local", 1: "claude", 2: "chatgpt", 3: "gemini"}
+
+        genai_config.update_settings({
+            "image_generation_enabled": self.enable_image_gen.isChecked(),
+            "image_model_id": self.image_model_combo.currentData() or self.image_model_combo.currentText(),
+            "use_prompt_enhancement": self.use_prompt_enhancement.isChecked(),
+            "prompt_llm_provider": provider_map.get(self.prompt_llm_provider.currentIndex(), "local"),
+            "prompt_llm_model_id": self.prompt_llm_model.currentData() or self.prompt_llm_model.currentText(),
+            "image_width": self.image_width.value(),
+            "image_height": self.image_height.value(),
+            "image_num_inference_steps": self.image_steps.value(),
+            "image_guidance_scale": self.image_guidance.value(),
+            "include_character_context": self.include_char_context.isChecked(),
+            "character_prompt_weight": self.char_prompt_weight.value(),
+        })
+
     def get_settings(self) -> dict:
         """Get updated settings."""
         # Map quantization combo to value
         quant_map = {0: "none", 1: "8bit", 2: "4bit"}
-        device_map = {0: "auto", 1: "cuda", 2: "cpu"}
+        device_map = {0: "auto", 1: "cuda", 2: "mps", 3: "cpu"}
         min_rating_map = {0: "excellent", 1: "good", 2: "all"}
 
         # Store HF token securely in Windows Credential Manager

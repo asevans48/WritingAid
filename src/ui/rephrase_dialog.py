@@ -11,6 +11,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont
 
 from src.ai.rephrasing_agent import RephrasingAgent, RephraseStyle, RephraseTone, RephraseResult
+from src.ai.mlx_utils import can_use_mlx
 
 
 class RephraseWorker(QThread):
@@ -330,8 +331,10 @@ class RephraseDialog(QDialog):
 
             provider = settings.get("default_llm", "claude")
 
-            # Get local model ID from settings
-            local_model_id = settings.get("local_model_id", "microsoft/Phi-3-mini-4k-instruct")
+            # Get local model ID from settings with platform-specific default
+            # MLX model on Apple Silicon, PyTorch model elsewhere
+            default_model = "mlx-community/Qwen2.5-7B-Instruct-4bit" if can_use_mlx() else "microsoft/Phi-3-mini-4k-instruct"
+            local_model_id = settings.get("local_model_id", default_model)
 
             # Get API key
             api_key = config.get_api_key(provider)

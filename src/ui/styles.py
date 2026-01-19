@@ -400,6 +400,7 @@ ICONS = {
     'import': '📥',
     'ai': '✨',
     'chat': '💬',
+    'settings': '⚙️',
 }
 
 

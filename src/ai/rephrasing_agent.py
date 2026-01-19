@@ -1,9 +1,85 @@
 """Rephrasing agent for text rewriting with multiple options."""
 
+import sys
 import re
+import threading
+import resource
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 from dataclasses import dataclass
 from enum import Enum
+from src.ai.device_utils import detect_device, print_device_info
+from src.ai.mlx_utils import can_use_mlx, print_mlx_info, _mlx_cache as mlx_cache
+
+# Increase stack size for macOS (addresses C stack overflow issues)
+# macOS has a default C stack size of 500KB which is too small for deep model architectures
+try:
+    # Get current stack size limit
+    soft_limit, hard_limit = resource.getrlimit(resource.RLIMIT_STACK)
+    print(f"[MODULE INIT] Current stack size: {soft_limit / (1024*1024):.1f}MB (hard limit: {hard_limit / (1024*1024):.1f}MB)")
+
+    # Try to increase to the hard limit if current is lower
+    if soft_limit < hard_limit:
+        resource.setrlimit(resource.RLIMIT_STACK, (hard_limit, hard_limit))
+        print(f"[MODULE INIT] Stack size increased to {hard_limit / (1024*1024):.1f}MB")
+    else:
+        print(f"[MODULE INIT] Stack size already at maximum")
+
+    # Also set thread stack size for any worker threads
+    try:
+        threading.stack_size(int(soft_limit))
+    except ValueError:
+        pass  # Threading stack size setting might not be supported
+except (ValueError, OSError) as e:
+    # Stack size setting might fail on some systems
+    print(f"[MODULE INIT] Could not adjust stack size: {e}")
+
+# Increase recursion limit BEFORE importing torch/transformers to prevent stack overflow
+# Both PyTorch and Transformers can trigger deep recursion during import on some platforms
+# This is especially critical for Gemma3 and other models with complex architecture definitions
+_original_recursion_limit = sys.getrecursionlimit()
+sys.setrecursionlimit(10000)
+
+print(f"[MODULE INIT] Importing PyTorch and Transformers with recursion limit: {sys.getrecursionlimit()}")
+
+# Import torch at module level to avoid repeated imports causing stack overflow
+try:
+    import torch
+    _TORCH_AVAILABLE = True
+    print("[MODULE INIT] ✓ PyTorch imported successfully")
+except ImportError:
+    _TORCH_AVAILABLE = False
+    torch = None
+    print("[MODULE INIT] ✗ PyTorch not available")
+
+# Import transformers at module level with high recursion limit
+# This is especially important for Gemma3 and other models with deep architecture definitions
+try:
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    _TRANSFORMERS_AVAILABLE = True
+    print("[MODULE INIT] ✓ Transformers imported successfully")
+except ImportError as e:
+    _TRANSFORMERS_AVAILABLE = False
+    AutoModelForCausalLM = None
+    AutoTokenizer = None
+    print(f"[MODULE INIT] ✗ Transformers not available: {e}")
+
+# Import MLX for Apple Silicon optimization
+try:
+    if can_use_mlx():
+        import mlx.core as mx
+        from mlx_lm import load, generate
+        _MLX_AVAILABLE = True
+        print("[MODULE INIT] ✓ MLX available - using Apple Silicon optimized inference")
+    else:
+        _MLX_AVAILABLE = False
+        print("[MODULE INIT] ✗ MLX not available (not on Apple Silicon)")
+except ImportError as e:
+    _MLX_AVAILABLE = False
+    print(f"[MODULE INIT] ✗ MLX not available: {e}")
+
+# Restore original limit after imports
+sys.setrecursionlimit(_original_recursion_limit)
+print(f"[MODULE INIT] Recursion limit restored to: {sys.getrecursionlimit()}")
 
 if TYPE_CHECKING:
     from src.ai.llm_client import LLMClient
@@ -284,6 +360,172 @@ For each option, briefly explain what makes it different from the original."""
         self._nlpaug_initialized = False
         self._spacy_nlp = None
         self._spacy_available = None  # None = not checked, True/False = checked
+        # MLX model attributes
+        self._mlx_model = None
+        self._mlx_tokenizer = None
+        self._mlx_model_id = None
+
+    def _convert_to_mlx_model_id(self, model_id: str) -> str:
+        """Convert a standard HuggingFace model ID to its MLX equivalent if available.
+
+        Args:
+            model_id: Original model ID (e.g., "Qwen/Qwen2.5-14B-Instruct")
+
+        Returns:
+            MLX model ID if available, otherwise returns original
+        """
+        # If already an MLX model, return as-is
+        if model_id.startswith("mlx-community/"):
+            return model_id
+
+        # Map standard models to their MLX equivalents (4-bit quantized for performance)
+        mlx_mapping = {
+            # Qwen 2.5 series (Alibaba - excellent for general use)
+            "Qwen/Qwen2.5-3B-Instruct": "mlx-community/Qwen2.5-3B-Instruct-4bit",
+            "Qwen/Qwen2.5-7B-Instruct": "mlx-community/Qwen2.5-7B-Instruct-4bit",
+            "Qwen/Qwen2.5-14B-Instruct": "mlx-community/Qwen2.5-14B-Instruct-4bit",
+            "Qwen/Qwen2.5-32B-Instruct": "mlx-community/Qwen2.5-32B-Instruct-4bit",
+
+            # Qwen 3 series (Latest January 2026)
+            "Qwen/Qwen3-4B": "mlx-community/Qwen3-4B-4bit",
+            "Qwen/Qwen3-8B": "mlx-community/Qwen3-8B-4bit",
+            "Qwen/Qwen3-30B-A3B": "mlx-community/Qwen3-30B-A3B-4bit",
+
+            # Gemma 3 series (Google - multimodal, works great on MLX!)
+            "google/gemma-3-4b-it": "mlx-community/gemma-3-4b-it-4bit",
+            "google/gemma-3-12b-it": "mlx-community/gemma-3-12b-it-4bit",
+            "google/gemma-3-27b-it": "mlx-community/gemma-3-27b-it-4bit",
+
+            # Mistral series (Mistral AI - excellent instruction following)
+            "mistralai/Mistral-7B-Instruct-v0.3": "mlx-community/Mistral-7B-Instruct-v0.3-4bit",
+            "mistralai/Mistral-Nemo-Instruct-2407": "mlx-community/Mistral-Nemo-Instruct-2407-4bit",
+            "mistralai/Mistral-Small-Instruct-2409": "mlx-community/Mistral-Small-Instruct-2409-4bit",
+
+            # Phi series (Microsoft - very efficient small models)
+            "microsoft/Phi-3-mini-4k-instruct": "mlx-community/Phi-3-mini-4k-instruct-4bit",
+            "microsoft/Phi-3.5-mini-instruct": "mlx-community/Phi-3.5-mini-instruct-4bit",
+        }
+
+        return mlx_mapping.get(model_id, model_id)
+
+    def _convert_to_pytorch_model_id(self, model_id: str) -> str:
+        """Convert an MLX model ID back to its PyTorch equivalent.
+
+        Args:
+            model_id: MLX model ID (e.g., "mlx-community/Qwen2.5-7B-Instruct-4bit")
+
+        Returns:
+            PyTorch model ID if MLX model, otherwise returns original
+        """
+        # If not an MLX model, return as-is
+        if not model_id.startswith("mlx-community/"):
+            return model_id
+
+        # Reverse mapping: MLX -> PyTorch
+        pytorch_mapping = {
+            # Qwen 2.5 series
+            "mlx-community/Qwen2.5-3B-Instruct-4bit": "Qwen/Qwen2.5-3B-Instruct",
+            "mlx-community/Qwen2.5-7B-Instruct-4bit": "Qwen/Qwen2.5-7B-Instruct",
+            "mlx-community/Qwen2.5-14B-Instruct-4bit": "Qwen/Qwen2.5-14B-Instruct",
+            "mlx-community/Qwen2.5-32B-Instruct-4bit": "Qwen/Qwen2.5-32B-Instruct",
+
+            # Qwen 3 series
+            "mlx-community/Qwen3-4B-4bit": "Qwen/Qwen3-4B",
+            "mlx-community/Qwen3-8B-4bit": "Qwen/Qwen3-8B",
+            "mlx-community/Qwen3-30B-A3B-4bit": "Qwen/Qwen3-30B-A3B",
+
+            # Gemma 3 series
+            "mlx-community/gemma-3-4b-it-4bit": "google/gemma-3-4b-it",
+            "mlx-community/gemma-3-12b-it-4bit": "google/gemma-3-12b-it",
+            "mlx-community/gemma-3-27b-it-4bit": "google/gemma-3-27b-it",
+
+            # Mistral series
+            "mlx-community/Mistral-7B-Instruct-v0.3-4bit": "mistralai/Mistral-7B-Instruct-v0.3",
+            "mlx-community/Mistral-Nemo-Instruct-2407-4bit": "mistralai/Mistral-Nemo-Instruct-2407",
+            "mlx-community/Mistral-Small-Instruct-2409-4bit": "mistralai/Mistral-Small-Instruct-2409",
+
+            # Phi series
+            "mlx-community/Phi-3-mini-4k-instruct-4bit": "microsoft/Phi-3-mini-4k-instruct",
+            "mlx-community/Phi-3.5-mini-instruct-4bit": "microsoft/Phi-3.5-mini-instruct",
+        }
+
+        return pytorch_mapping.get(model_id, model_id)
+
+    def _init_mlx_model(self):
+        """Initialize MLX model for Apple Silicon optimized inference.
+
+        Uses a global cache to keep models loaded in memory across agent instances.
+        Automatically converts standard HuggingFace model IDs to MLX equivalents.
+        """
+        if not _MLX_AVAILABLE:
+            raise RuntimeError("MLX is not available")
+
+        # Use model from settings, or fall back to default
+        original_model_id = self.local_model_id or "Qwen/Qwen2.5-7B-Instruct"
+
+        # Convert to MLX model if needed
+        model_id = self._convert_to_mlx_model_id(original_model_id)
+
+        if model_id != original_model_id:
+            print(f"Converting to MLX model: {original_model_id} → {model_id}")
+
+        # Check if model is already cached
+        cached_model, cached_tokenizer = mlx_cache.get_model(model_id)
+        if cached_model is not None:
+            print(f"Using cached MLX model: {model_id}")
+            self._mlx_model = cached_model
+            self._mlx_tokenizer = cached_tokenizer
+            self._mlx_model_id = model_id
+            return
+
+        # Check if instance already has this model loaded
+        if self._mlx_model is not None:
+            return
+
+        try:
+            print(f"\n{'='*60}")
+            print(f"MLX MODEL INITIALIZATION")
+            print(f"{'='*60}")
+            print(f"Loading MLX model: {model_id}")
+
+            # Verify this is actually an MLX model
+            if not model_id.startswith("mlx-community/"):
+                print(f"⚠ Warning: Model ID doesn't start with 'mlx-community/'")
+                print(f"  This may be a PyTorch model, not an MLX model.")
+                print(f"  Attempting to load anyway...")
+
+            from mlx_lm import load
+
+            print("  Loading model and tokenizer...")
+            model, tokenizer = load(model_id)
+            print(f"✓ MLX model loaded successfully")
+
+            # Store in instance
+            self._mlx_model = model
+            self._mlx_tokenizer = tokenizer
+            self._mlx_model_id = model_id
+
+            # Cache for future use
+            mlx_cache.set_model(model_id, model, tokenizer)
+            print(f"✓ MLX model cached for reuse")
+            print(f"{'='*60}\n")
+
+        except Exception as e:
+            error_msg = str(e)
+            print(f"✗ MLX model loading failed!")
+            print(f"  Error: {error_msg}")
+
+            # Provide helpful error messages
+            if "ignore_mismatched_sizes" in error_msg:
+                print(f"\n  💡 This error suggests you're trying to load a PyTorch model with MLX.")
+                print(f"     Model ID: {model_id}")
+                print(f"     Solution: Use an MLX-compatible model ID starting with 'mlx-community/'")
+            elif "not found" in error_msg.lower() or "does not exist" in error_msg.lower():
+                print(f"\n  💡 Model not found. It will be downloaded on first use.")
+                print(f"     Ensure you have internet connection and disk space.")
+
+            print(f"{'='*60}\n")
+            raise RuntimeError(f"Failed to load MLX model '{model_id}': {error_msg}")
 
     def _init_local_model(self):
         """Initialize local small language model.
@@ -292,7 +534,16 @@ For each option, briefly explain what makes it different from the original."""
         Only reloads if a different model is requested.
         """
         # Use model from settings, or fall back to default
-        model_id = self.local_model_id or "microsoft/Phi-3-mini-4k-instruct"
+        original_model_id = self.local_model_id or "microsoft/Phi-3-mini-4k-instruct"
+
+        # Convert MLX model IDs to PyTorch equivalents for PyTorch backend
+        # This is important when falling back from MLX to PyTorch
+        model_id = self._convert_to_pytorch_model_id(original_model_id)
+
+        if model_id != original_model_id:
+            print(f"Converted MLX model to PyTorch equivalent:")
+            print(f"  MLX: {original_model_id}")
+            print(f"  PyTorch: {model_id}")
 
         # Check if model is already cached
         cached_model, cached_tokenizer, cached_device = _model_cache.get_model(model_id)
@@ -308,83 +559,122 @@ For each option, briefly explain what makes it different from the original."""
             return
 
         try:
+            if not _TORCH_AVAILABLE:
+                raise RuntimeError("PyTorch is not available. Install with: pip install torch")
+
             from transformers import AutoModelForCausalLM, AutoTokenizer
-            import torch
 
-            print(f"Loading local model: {model_id}")
+            # Increase recursion limit to prevent stack overflow during model loading
+            # Gemma3 and other models with complex architectures need very high recursion limits
+            old_recursion_limit = sys.getrecursionlimit()
+            sys.setrecursionlimit(10000)  # Temporarily increase from default 1000 (Gemma3 needs ~10000)
 
-            tokenizer = AutoTokenizer.from_pretrained(
-                model_id,
-                trust_remote_code=True
-            )
+            try:
+                print(f"\n{'='*60}")
+                print(f"MODEL INITIALIZATION - DEBUG LOG")
+                print(f"{'='*60}")
+                print(f"Loading model: {model_id}")
+                print(f"Recursion limit: {sys.getrecursionlimit()}")
 
-            # Try CUDA first, fall back to CPU if it fails
-            device = "cpu"
-            model = None
-            cuda_available = torch.cuda.is_available()
-            print(f"CUDA available (torch.cuda.is_available()): {cuda_available}")
-
-            # Check if PyTorch was built with CUDA support
-            cuda_built = torch.backends.cuda.is_built() if hasattr(torch.backends, 'cuda') else False
-            print(f"PyTorch built with CUDA: {cuda_built}")
-            print(f"PyTorch version: {torch.__version__}")
-
-            if not cuda_built:
-                print("WARNING: PyTorch was installed without CUDA support!")
-                print("To enable GPU acceleration, reinstall PyTorch with CUDA:")
-                print("  pip uninstall torch torchvision torchaudio")
-                print("")
-                print("Then install with your CUDA version (check with 'nvidia-smi'):")
-                print("  CUDA 13.x: pip install torch --index-url https://download.pytorch.org/whl/cu131")
-                print("  CUDA 12.x: pip install torch --index-url https://download.pytorch.org/whl/cu121")
-                print("  CUDA 11.8: pip install torch --index-url https://download.pytorch.org/whl/cu118")
-                print("")
-                print("Check https://pytorch.org/get-started/locally/ for the latest wheel URLs.")
-
-            if cuda_available:
-                try:
-                    print(f"CUDA device count: {torch.cuda.device_count()}")
-                    print(f"CUDA device name: {torch.cuda.get_device_name(0)}")
-                    print(f"CUDA version: {torch.version.cuda}")
-                    print("Attempting to load model on CUDA...")
-                    model = AutoModelForCausalLM.from_pretrained(
-                        model_id,
-                        torch_dtype=torch.float16,
-                        device_map="auto",
-                        trust_remote_code=True
-                    )
-                    device = "cuda"
-                    print("Model loaded successfully on CUDA")
-                except Exception as cuda_err:
-                    # Catch ALL exceptions during CUDA loading, not just specific ones
-                    print(f"CUDA loading failed: {type(cuda_err).__name__}: {cuda_err}")
-                    print("Falling back to CPU...")
-                    # Clear CUDA cache before falling back
-                    try:
-                        torch.cuda.empty_cache()
-                    except Exception:
-                        pass
-                    model = None
-
-            # Load on CPU if CUDA not available or failed
-            if model is None:
-                print("Loading model on CPU...")
-                model = AutoModelForCausalLM.from_pretrained(
+                print("\n[Step 1] Loading tokenizer...")
+                tokenizer = AutoTokenizer.from_pretrained(
                     model_id,
-                    torch_dtype=torch.float32,
                     trust_remote_code=True
                 )
-                model = model.to("cpu")
-                device = "cpu"
+                print(f"✓ Tokenizer loaded: {type(tokenizer).__name__}")
 
-            # Store in instance
-            self._local_model = model
-            self._local_tokenizer = tokenizer
-            self._device = device
+                # Use shared device detection utility for cross-platform support
+                print("\n[Step 2] Detecting hardware...")
+                print_device_info()
+                device_name, dtype, use_device_map = detect_device()
+                print(f"✓ Device selected: {device_name}")
+                print(f"  - dtype: {dtype}")
+                print(f"  - use_device_map: {use_device_map}")
 
-            # Cache for future use
-            _model_cache.set_model(model_id, model, tokenizer, device)
-            print(f"Local model loaded on {device}")
+                model = None
+                device = device_name
+
+                # Load model with appropriate settings for the detected device
+                try:
+                    print(f"\n[Step 3] Loading model weights on {device_name}...")
+
+                    model_kwargs = {
+                        "torch_dtype": dtype,
+                        "low_cpu_mem_usage": True,
+                        "trust_remote_code": True,
+                        "attn_implementation": "eager",  # Use eager attention to avoid flash attention recursion
+                    }
+
+                    # Only use device_map for CUDA
+                    if use_device_map and device_name == "cuda":
+                        model_kwargs["device_map"] = "auto"
+                        print("  - Using device_map='auto' (CUDA multi-GPU)")
+                    else:
+                        print(f"  - No device_map (will use .to('{device_name}'))")
+
+                    print(f"  - Model kwargs: {list(model_kwargs.keys())}")
+                    print("  Loading... (this may take 30-60 seconds)")
+
+                    model = AutoModelForCausalLM.from_pretrained(
+                        model_id,
+                        **model_kwargs
+                    )
+                    print(f"✓ Model weights loaded: {type(model).__name__}")
+
+                    # Explicitly move to device if not using device_map
+                    if not use_device_map:
+                        print(f"\n[Step 4] Moving model to {device_name}...")
+                        model = model.to(device_name)
+                        print(f"✓ Model moved to {device_name}")
+
+                    print(f"\n✓✓✓ Model initialization complete on {device_name}")
+                    print(f"{'='*60}\n")
+
+                except Exception as e:
+                    print(f"{device_name} loading failed: {type(e).__name__}: {e}")
+
+                    # Fallback to CPU if primary device fails
+                    if device_name != "cpu":
+                        print("Falling back to CPU...")
+                        try:
+                            # Clear device cache if applicable
+                            if device_name == "cuda":
+                                torch.cuda.empty_cache()
+                            elif device_name == "mps":
+                                # MPS doesn't have a cache to clear
+                                pass
+
+                            # Retry on CPU
+                            model = AutoModelForCausalLM.from_pretrained(
+                                model_id,
+                                torch_dtype=torch.float32,
+                                low_cpu_mem_usage=True,
+                                trust_remote_code=True,
+                                attn_implementation="eager"  # Use eager attention to avoid flash attention recursion
+                            )
+                            model = model.to("cpu")
+                            device = "cpu"
+                            print("Model loaded successfully on CPU (fallback)")
+
+                        except Exception as cpu_err:
+                            print(f"CPU fallback also failed: {type(cpu_err).__name__}: {cpu_err}")
+                            raise
+                    else:
+                        # Already on CPU and still failed
+                        raise
+
+                # Store in instance
+                self._local_model = model
+                self._local_tokenizer = tokenizer
+                self._device = device
+
+                # Cache for future use
+                _model_cache.set_model(model_id, model, tokenizer, device)
+                print(f"Local model loaded on {device}")
+
+            finally:
+                # Always restore original recursion limit
+                sys.setrecursionlimit(old_recursion_limit)
 
         except ImportError:
             raise ImportError(
@@ -394,42 +684,183 @@ For each option, briefly explain what makes it different from the original."""
         except Exception as e:
             raise RuntimeError(f"Failed to load local model: {e}")
 
+    def _generate_mlx(self, prompt: str, max_tokens: int = 500) -> str:
+        """Generate text using MLX (Apple Silicon optimized)."""
+        if not _MLX_AVAILABLE:
+            raise RuntimeError("MLX is not available")
+
+        print(f"\n{'='*60}")
+        print(f"MLX GENERATION - Apple Silicon Optimized")
+        print(f"{'='*60}")
+
+        try:
+            print("\n[1/4] Initializing MLX model...")
+            self._init_mlx_model()
+            print(f"✓ MLX model initialized: {self._mlx_model_id}")
+
+            print("\n[2/4] Preparing prompt...")
+            messages = [
+                {"role": "system", "content": self.REPHRASE_SYSTEM},
+                {"role": "user", "content": prompt}
+            ]
+
+            # Apply chat template manually for MLX
+            prompt_text = self._mlx_tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+            print(f"✓ Prompt prepared ({len(prompt_text)} chars)")
+
+            print("\n[3/4] Generating with MLX...")
+            print(f"  Parameters:")
+            print(f"    - max_tokens: {max_tokens}")
+            print(f"    - temp: 0.7")
+            print(f"  Starting generation...")
+
+            from mlx_lm import generate as mlx_generate
+            from mlx_lm.sample_utils import make_sampler
+
+            # Create sampler with temperature
+            sampler = make_sampler(temp=0.7)
+
+            response = mlx_generate(
+                self._mlx_model,
+                self._mlx_tokenizer,
+                prompt=prompt_text,
+                max_tokens=max_tokens,
+                sampler=sampler,
+                verbose=False
+            )
+            print(f"✓ Generation complete!")
+
+            print(f"\n[4/4] Extracting response...")
+            # Extract just the generated part (remove the prompt)
+            if response.startswith(prompt_text):
+                response = response[len(prompt_text):].strip()
+
+            print(f"✓ Response extracted ({len(response)} chars)")
+            print(f"{'='*60}\n")
+
+            return response
+
+        except Exception as e:
+            print(f"✗ MLX generation failed: {e}")
+            raise
+
     def _generate_local(self, prompt: str, max_tokens: int = 500) -> str:
-        """Generate text using local model."""
-        import torch
-        self._init_local_model()
+        """Generate text using local model (PyTorch or MLX).
 
-        messages = [
-            {"role": "system", "content": self.REPHRASE_SYSTEM},
-            {"role": "user", "content": prompt}
-        ]
+        Automatically selects the best backend:
+        - Apple Silicon: Tries MLX first (faster), falls back to PyTorch
+        - Other platforms: Uses PyTorch
+        """
+        print(f"\n{'='*60}")
+        print(f"BACKEND SELECTION")
+        print(f"{'='*60}")
+        print(f"_MLX_AVAILABLE: {_MLX_AVAILABLE}")
+        print(f"can_use_mlx(): {can_use_mlx()}")
+        print(f"Will use MLX: {_MLX_AVAILABLE and can_use_mlx()}")
+        print(f"{'='*60}\n")
 
-        inputs = self._local_tokenizer.apply_chat_template(
-            messages,
-            return_tensors="pt",
-            add_generation_prompt=True
-        )
+        # Prefer MLX on Apple Silicon for better performance
+        if _MLX_AVAILABLE and can_use_mlx():
+            try:
+                return self._generate_mlx(prompt, max_tokens)
+            except Exception as mlx_error:
+                print(f"⚠ MLX generation failed: {mlx_error}")
+                print("  Falling back to PyTorch...")
 
-        # Create attention mask (1 for all tokens since there's no padding)
-        attention_mask = torch.ones_like(inputs)
+                # If MLX fails, try PyTorch as fallback
+                if not _TORCH_AVAILABLE:
+                    raise RuntimeError(f"MLX failed and PyTorch not available: {mlx_error}")
 
-        # Move inputs to the same device as the model
-        if hasattr(self, '_device') and self._device:
-            inputs = inputs.to(self._device)
-            attention_mask = attention_mask.to(self._device)
-        elif hasattr(self._local_model, 'device'):
-            inputs = inputs.to(self._local_model.device)
-            attention_mask = attention_mask.to(self._local_model.device)
+        if not _TORCH_AVAILABLE:
+            raise RuntimeError("Neither MLX nor PyTorch is available for local inference")
 
-        outputs = self._local_model.generate(
-            inputs,
-            attention_mask=attention_mask,
-            max_new_tokens=max_tokens,
-            temperature=0.7,
-            do_sample=True,
-            pad_token_id=self._local_tokenizer.eos_token_id,
-            use_cache=False  # Disable KV cache to avoid DynamicCache compatibility issues
-        )
+        print(f"\n{'='*60}")
+        print(f"LOCAL MODEL GENERATION - DEBUG LOG")
+        print(f"{'='*60}")
+        print(f"Initial recursion limit: {sys.getrecursionlimit()}")
+
+        # Increase recursion limit for generation as well
+        old_limit = sys.getrecursionlimit()
+        sys.setrecursionlimit(10000)  # Even higher for generation
+        print(f"Increased recursion limit to: {sys.getrecursionlimit()}")
+
+        try:
+            print("\n[1/7] Initializing local model...")
+            self._init_local_model()
+            print(f"✓ Model initialized on device: {self._device}")
+            print(f"  Model class: {type(self._local_model).__name__}")
+
+            print("\n[2/7] Preparing messages...")
+            messages = [
+                {"role": "system", "content": self.REPHRASE_SYSTEM},
+                {"role": "user", "content": prompt}
+            ]
+            print(f"✓ Messages prepared (prompt: {len(prompt)} chars)")
+
+            print("\n[3/7] Applying chat template...")
+            inputs = self._local_tokenizer.apply_chat_template(
+                messages,
+                return_tensors="pt",
+                add_generation_prompt=True
+            )
+            print(f"✓ Template applied (shape: {inputs.shape}, tokens: {inputs.shape[1]})")
+
+            print("\n[4/7] Creating attention mask...")
+            # Create attention mask (1 for all tokens since there's no padding)
+            attention_mask = torch.ones_like(inputs)
+            print(f"✓ Attention mask created (shape: {attention_mask.shape})")
+
+            print("\n[5/7] Moving tensors to device...")
+            # Move inputs to the same device as the model
+            if hasattr(self, '_device') and self._device:
+                print(f"  Moving to {self._device}...")
+                inputs = inputs.to(self._device)
+                attention_mask = attention_mask.to(self._device)
+                print(f"✓ Tensors moved to {self._device}")
+            elif hasattr(self._local_model, 'device'):
+                device = self._local_model.device
+                print(f"  Moving to {device}...")
+                inputs = inputs.to(device)
+                attention_mask = attention_mask.to(device)
+                print(f"✓ Tensors moved to {device}")
+
+            # Limit input length to prevent excessive memory/computation
+            max_input_length = 2048
+            if inputs.shape[1] > max_input_length:
+                print(f"⚠ Warning: Input too long ({inputs.shape[1]} tokens), truncating to {max_input_length}")
+                inputs = inputs[:, -max_input_length:]
+                attention_mask = attention_mask[:, -max_input_length:]
+
+            print(f"\n[6/7] Calling model.generate()...")
+            print(f"  Parameters:")
+            print(f"    - max_new_tokens: {max_tokens}")
+            print(f"    - temperature: 0.7")
+            print(f"    - do_sample: True")
+            print(f"    - use_cache: False")
+            print(f"    - num_beams: 1")
+            print(f"    - attn_implementation: eager")
+            print(f"  Starting generation... (this may take a while)")
+
+            outputs = self._local_model.generate(
+                inputs,
+                attention_mask=attention_mask,
+                max_new_tokens=max_tokens,
+                temperature=0.7,
+                do_sample=True,
+                pad_token_id=self._local_tokenizer.eos_token_id,
+                use_cache=False,  # Disable KV cache to avoid DynamicCache compatibility issues
+                num_beams=1,  # Disable beam search to reduce complexity
+            )
+            print(f"✓ Generation complete! (output shape: {outputs.shape})")
+
+            print(f"\n[7/7] Decoding output...")
+        finally:
+            print(f"\nRestoring recursion limit to: {old_limit}")
+            sys.setrecursionlimit(old_limit)
 
         response = self._local_tokenizer.decode(
             outputs[0][inputs.shape[1]:],
@@ -1607,6 +2038,16 @@ For each option, briefly explain what makes it different from the original."""
         Returns:
             RephraseResult with multiple options
         """
+        import sys
+        print(f"\n{'='*60}")
+        print("REPHRASE METHOD CALLED")
+        print(f"{'='*60}")
+        print(f"use_local_model: {self.use_local_model}")
+        print(f"use_python_libraries: {self.use_python_libraries}")
+        print(f"text length: {len(text)} chars")
+        print(f"recursion limit: {sys.getrecursionlimit()}")
+        print(f"{'='*60}\n")
+
         if not styles:
             # Default styles for variety
             styles = [
@@ -1668,7 +2109,10 @@ Format your response as:
 
         # Generate using either local or cloud model
         if self.use_local_model:
+            print("[DEBUG] About to call _generate_local()")
+            print(f"[DEBUG] Prompt length: {len(prompt)} chars")
             response = self._generate_local(prompt, max_tokens=800)
+            print("[DEBUG] _generate_local() returned successfully")
             model_used = "local-phi-3"
             cost = 0.0
         else:

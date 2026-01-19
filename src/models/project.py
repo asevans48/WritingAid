@@ -66,6 +66,7 @@ class Character(BaseModel):
     image_path: Optional[str] = None
     personality: str = ""
     backstory: str = ""
+    physical_description: str = ""  # Physical appearance for AI image generation
     social_network: Dict[str, str] = Field(default_factory=dict)  # relationship mapping
     notes: str = ""
     created_at: datetime = Field(default_factory=datetime.now)

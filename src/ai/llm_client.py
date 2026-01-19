@@ -5,6 +5,7 @@ from enum import Enum
 import anthropic
 import openai
 from google import genai
+from src.ai.device_utils import detect_device, can_use_quantization
 
 if TYPE_CHECKING:
     from src.ai.conversation_store import ConversationStore, RatedConversation
@@ -102,61 +103,119 @@ class LLMClient:
             )
 
     def _init_huggingface_local(self) -> None:
-        """Initialize local Hugging Face model."""
+        """Initialize local Hugging Face model with cross-platform support."""
         if not self.hf_config:
             raise ValueError("HuggingFaceConfig is required for local models")
 
         try:
+            import sys
             import torch
             from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 
-            model_kwargs = {}
+            # Increase recursion limit to prevent stack overflow
+            old_recursion_limit = sys.getrecursionlimit()
+            sys.setrecursionlimit(5000)
 
-            # Handle quantization
-            if self.hf_config.quantization == "4bit":
-                from transformers import BitsAndBytesConfig
-                model_kwargs["quantization_config"] = BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_compute_dtype=torch.float16
+            try:
+                model_kwargs = {
+                    "low_cpu_mem_usage": True,
+                    "attn_implementation": "eager",  # Avoid flash attention stack overflow
+                }
+
+                # Use shared device detection utility
+                device_name, dtype, use_device_map = detect_device()
+
+                # Handle user-specified device override
+                if self.hf_config.device != "auto":
+                    if self.hf_config.device == "cpu":
+                        device_name = "cpu"
+                        dtype = torch.float32
+                        use_device_map = False
+                    elif self.hf_config.device == "cuda" and torch.cuda.is_available():
+                        device_name = "cuda"
+                        dtype = torch.float16
+                        use_device_map = True
+                    elif self.hf_config.device == "mps" and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                        device_name = "mps"
+                        dtype = torch.bfloat16
+                        use_device_map = False
+
+                print(f"Device configuration - device: {device_name}, dtype: {dtype}, device_map: {use_device_map}")
+
+                # Handle quantization (only works with CUDA)
+                quantization_enabled = False
+                if self.hf_config.quantization in ["4bit", "8bit"]:
+                    if can_use_quantization(device_name):
+                        from transformers import BitsAndBytesConfig
+                        if self.hf_config.quantization == "4bit":
+                            model_kwargs["quantization_config"] = BitsAndBytesConfig(
+                                load_in_4bit=True,
+                                bnb_4bit_compute_dtype=torch.float16
+                            )
+                        else:  # 8bit
+                            model_kwargs["quantization_config"] = BitsAndBytesConfig(
+                                load_in_8bit=True
+                            )
+                        model_kwargs["device_map"] = "auto"
+                        quantization_enabled = True
+                        print(f"Using {self.hf_config.quantization} quantization on CUDA")
+                    else:
+                        print(f"Warning: {self.hf_config.quantization} quantization only works with CUDA. Using standard precision on {device_name}.")
+
+                # Set device_map for CUDA (if not already set by quantization)
+                if use_device_map and device_name == "cuda" and not quantization_enabled:
+                    model_kwargs["device_map"] = "auto"
+
+                # Memory limits (primarily for CUDA)
+                if self.hf_config.max_memory and device_name == "cuda":
+                    model_kwargs["max_memory"] = self.hf_config.max_memory
+
+                # Trust remote code (for some models like Phi, Qwen)
+                if self.hf_config.trust_remote_code:
+                    model_kwargs["trust_remote_code"] = True
+
+                # Load tokenizer
+                self._hf_tokenizer = AutoTokenizer.from_pretrained(
+                    self.hf_config.model_id,
+                    trust_remote_code=self.hf_config.trust_remote_code
                 )
-            elif self.hf_config.quantization == "8bit":
-                from transformers import BitsAndBytesConfig
-                model_kwargs["quantization_config"] = BitsAndBytesConfig(
-                    load_in_8bit=True
+
+                print(f"Loading model on {device_name} with dtype {dtype}")
+
+                # Load model
+                model = AutoModelForCausalLM.from_pretrained(
+                    self.hf_config.model_id,
+                    torch_dtype=dtype,
+                    **model_kwargs
                 )
 
-            # Set device
-            if self.hf_config.device == "auto":
-                model_kwargs["device_map"] = "auto"
-            elif self.hf_config.device != "cpu":
-                model_kwargs["device_map"] = self.hf_config.device
+                # Move to target device if not using device_map
+                if "device_map" not in model_kwargs:
+                    model = model.to(device_name)
+                    print(f"Model moved to {device_name}")
 
-            # Memory limits
-            if self.hf_config.max_memory:
-                model_kwargs["max_memory"] = self.hf_config.max_memory
+                # Create pipeline with correct device parameter
+                # For CUDA with device_map, use device=-1 to let device_map handle it
+                # For MPS/CPU, use device name string
+                if "device_map" in model_kwargs:
+                    pipeline_device = -1  # Let device_map handle it
+                elif device_name == "cuda":
+                    pipeline_device = 0  # First CUDA device
+                else:
+                    pipeline_device = device_name  # "mps" or "cpu"
 
-            # Trust remote code (for some models like Phi, Qwen)
-            if self.hf_config.trust_remote_code:
-                model_kwargs["trust_remote_code"] = True
+                self._hf_pipeline = pipeline(
+                    "text-generation",
+                    model=model,
+                    tokenizer=self._hf_tokenizer,
+                    device=pipeline_device
+                )
 
-            # Load tokenizer and model
-            self._hf_tokenizer = AutoTokenizer.from_pretrained(
-                self.hf_config.model_id,
-                trust_remote_code=self.hf_config.trust_remote_code
-            )
+                print(f"Model initialized successfully on {device_name}")
 
-            model = AutoModelForCausalLM.from_pretrained(
-                self.hf_config.model_id,
-                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                **model_kwargs
-            )
-
-            # Create pipeline
-            self._hf_pipeline = pipeline(
-                "text-generation",
-                model=model,
-                tokenizer=self._hf_tokenizer
-            )
+            finally:
+                # Always restore original recursion limit
+                sys.setrecursionlimit(old_recursion_limit)
 
         except ImportError as e:
             raise ImportError(

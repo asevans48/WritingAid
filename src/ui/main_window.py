@@ -296,6 +296,14 @@ class MainWindow(QMainWindow):
         ai_action.triggered.connect(self._toggle_chat)
         toolbar.addAction(ai_action)
 
+        toolbar.addSeparator()
+
+        # Settings
+        settings_action = QAction(f"{get_icon('settings')} Settings", self)
+        settings_action.setToolTip("Settings & Configuration (Ctrl+,)")
+        settings_action.triggered.connect(self._show_settings)
+        toolbar.addAction(settings_action)
+
     def _create_status_bar(self):
         """Create status bar."""
         self.statusBar().showMessage("Ready")
@@ -541,6 +549,8 @@ class MainWindow(QMainWindow):
         self.story_planning_widget.load_data(self.current_project.story_planning)
         self.manuscript_editor.load_manuscript(self.current_project.manuscript)
         self.image_generator.load_data(self.current_project.generated_images)
+        # Update characters for image generation
+        self.image_generator.set_characters(self.current_project.characters)
         self.agent_manager.load_data(self.current_project.agent_contacts)
         self.attributions_tab.set_manuscript(self.current_project.manuscript)
 
@@ -583,6 +593,10 @@ class MainWindow(QMainWindow):
         if self.current_project:
             window_title = f"Writer Platform - {self.current_project.name}*"
             self.setWindowTitle(window_title)
+
+            # Update characters in image generator when characters change
+            characters = self.characters_widget.get_data()
+            self.image_generator.set_characters(characters)
 
     def _on_annotations_changed(self):
         """Handle annotation changes - update attributions tab."""

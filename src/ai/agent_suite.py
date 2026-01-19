@@ -14,12 +14,25 @@ from src.ai.worldbuilding_agent import WorldbuildingAgent
 from src.ai.chapter_analysis_agent import ChapterAnalysisAgent, ChapterAnalysis
 from src.ai.enhanced_rag import EnhancedRAGSystem
 from src.ai.semantic_search import SearchMethod
+from src.ai.mlx_utils import can_use_mlx
 from src.config.ai_config import get_ai_config
 from src.services.tts_service import get_tts_service
 from src.services.tts_document_generator import TTSDocumentGenerator, TTSDocumentConfig, create_default_config, get_tts_output_dir
 
 if TYPE_CHECKING:
     from src.models.project import WriterProject
+
+
+def get_default_local_model() -> str:
+    """Get platform-specific default local model.
+
+    Returns:
+        MLX model on Apple Silicon, PyTorch model elsewhere
+    """
+    if can_use_mlx():
+        return "mlx-community/Qwen2.5-7B-Instruct-4bit"
+    else:
+        return "microsoft/Phi-3.5-mini-instruct"
 
 
 class AgentMode(Enum):
@@ -35,12 +48,17 @@ class AgentMode(Enum):
 
 @dataclass
 class AgentConfig:
-    """Configuration for agent suite."""
+    """Configuration for agent suite with platform-aware defaults."""
     use_local_model: bool = False
-    local_model_id: str = "microsoft/Phi-3.5-mini-instruct"
+    local_model_id: str = None  # Will be set to platform default if None
     primary_provider: str = "claude"
     enable_conversation_logging: bool = True
     cost_tracking: bool = True
+
+    def __post_init__(self):
+        """Set platform-specific default model if not specified."""
+        if self.local_model_id is None:
+            self.local_model_id = get_default_local_model()
 
 
 class AgentSuite:
@@ -1038,18 +1056,22 @@ Would you like me to explain more about speaker configuration or dialogue detect
 def create_agent_suite(
     project: Optional['WriterProject'] = None,
     use_local_model: bool = False,
-    local_model_id: str = "microsoft/Phi-3.5-mini-instruct"
+    local_model_id: Optional[str] = None
 ) -> AgentSuite:
-    """Factory function to create configured agent suite.
+    """Factory function to create configured agent suite with platform-aware defaults.
 
     Args:
         project: Optional WriterProject
         use_local_model: Whether to use local model for cost savings
-        local_model_id: HuggingFace model ID for local model
+        local_model_id: HuggingFace model ID for local model (auto-detects platform default if None)
 
     Returns:
         Configured AgentSuite
     """
+    # Use platform-specific default if no model specified
+    if local_model_id is None:
+        local_model_id = get_default_local_model()
+
     config = AgentConfig(
         use_local_model=use_local_model,
         local_model_id=local_model_id,
