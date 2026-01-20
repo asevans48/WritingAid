@@ -3,35 +3,38 @@
 import sys
 import re
 import threading
-import resource
+import platform
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 from dataclasses import dataclass
 from enum import Enum
 from src.ai.device_utils import detect_device, print_device_info
 from src.ai.mlx_utils import can_use_mlx, print_mlx_info, _mlx_cache as mlx_cache
 
-# Increase stack size for macOS (addresses C stack overflow issues)
+# macOS-specific: Increase stack size (addresses C stack overflow issues)
 # macOS has a default C stack size of 500KB which is too small for deep model architectures
-try:
-    # Get current stack size limit
-    soft_limit, hard_limit = resource.getrlimit(resource.RLIMIT_STACK)
-    print(f"[MODULE INIT] Current stack size: {soft_limit / (1024*1024):.1f}MB (hard limit: {hard_limit / (1024*1024):.1f}MB)")
-
-    # Try to increase to the hard limit if current is lower
-    if soft_limit < hard_limit:
-        resource.setrlimit(resource.RLIMIT_STACK, (hard_limit, hard_limit))
-        print(f"[MODULE INIT] Stack size increased to {hard_limit / (1024*1024):.1f}MB")
-    else:
-        print(f"[MODULE INIT] Stack size already at maximum")
-
-    # Also set thread stack size for any worker threads
+# Windows doesn't have the resource module and doesn't need this fix
+if platform.system() == "Darwin":
     try:
-        threading.stack_size(int(soft_limit))
-    except ValueError:
-        pass  # Threading stack size setting might not be supported
-except (ValueError, OSError) as e:
-    # Stack size setting might fail on some systems
-    print(f"[MODULE INIT] Could not adjust stack size: {e}")
+        import resource
+        # Get current stack size limit
+        soft_limit, hard_limit = resource.getrlimit(resource.RLIMIT_STACK)
+        print(f"[MODULE INIT] Current stack size: {soft_limit / (1024*1024):.1f}MB (hard limit: {hard_limit / (1024*1024):.1f}MB)")
+
+        # Try to increase to the hard limit if current is lower
+        if soft_limit < hard_limit:
+            resource.setrlimit(resource.RLIMIT_STACK, (hard_limit, hard_limit))
+            print(f"[MODULE INIT] Stack size increased to {hard_limit / (1024*1024):.1f}MB")
+        else:
+            print(f"[MODULE INIT] Stack size already at maximum")
+
+        # Also set thread stack size for any worker threads
+        try:
+            threading.stack_size(int(soft_limit))
+        except ValueError:
+            pass  # Threading stack size setting might not be supported
+    except (ValueError, OSError, ImportError) as e:
+        # Stack size setting might fail on some systems
+        print(f"[MODULE INIT] Could not adjust stack size: {e}")
 
 # Increase recursion limit BEFORE importing torch/transformers to prevent stack overflow
 # Both PyTorch and Transformers can trigger deep recursion during import on some platforms
@@ -365,6 +368,65 @@ For each option, briefly explain what makes it different from the original."""
         self._mlx_tokenizer = None
         self._mlx_model_id = None
 
+    def _get_huggingface_token(self) -> Optional[str]:
+        """Get HuggingFace token from secure storage, config, or environment.
+
+        Priority order:
+        1. Credential manager (secure keyring storage)
+        2. genai_config.json
+        3. HF_TOKEN environment variable
+        4. huggingface-cli login token
+
+        Returns:
+            HuggingFace token or None if not configured
+        """
+        import os
+
+        # 1. Check credential manager (most secure, preferred method)
+        try:
+            from src.config.credential_manager import get_credential_manager
+            cred_manager = get_credential_manager()
+            token = cred_manager.get_huggingface_token()
+            if token:
+                # Mask token for security but show it was found
+                masked = token[:4] + "..." + token[-4:] if len(token) > 8 else "***"
+                print(f"  HuggingFace token found in credential manager: {masked}")
+                return token
+            else:
+                print("  Credential manager: no token stored")
+        except Exception as e:
+            print(f"  Credential manager error: {type(e).__name__}: {e}")
+
+        # 2. Check genai_config.json
+        try:
+            from src.config.genai_config import GenAIConfig
+            config = GenAIConfig()
+            token = config.get("huggingface_token", "")
+            if token:
+                print("  HuggingFace token found in genai_config.json")
+                return token
+        except Exception:
+            pass
+
+        # 3. Check environment variable
+        token = os.environ.get("HF_TOKEN", "")
+        if token:
+            print("  HuggingFace token found in HF_TOKEN environment variable")
+            return token
+
+        # 4. Check huggingface-cli login (stored token)
+        try:
+            from huggingface_hub import HfFolder
+            token = HfFolder.get_token()
+            if token:
+                print("  HuggingFace token found from huggingface-cli login")
+                return token
+        except Exception:
+            pass
+
+        print("  ⚠ No HuggingFace token found - gated models may fail to load")
+        return None
+
     def _convert_to_mlx_model_id(self, model_id: str) -> str:
         """Convert a standard HuggingFace model ID to its MLX equivalent if available.
 
@@ -483,10 +545,18 @@ For each option, briefly explain what makes it different from the original."""
             return
 
         try:
+            import os
             print(f"\n{'='*60}")
             print(f"MLX MODEL INITIALIZATION")
             print(f"{'='*60}")
             print(f"Loading MLX model: {model_id}")
+
+            # Get HuggingFace token for gated model access
+            print("\n[Step 0] Checking HuggingFace token...")
+            hf_token = self._get_huggingface_token()
+            if hf_token:
+                os.environ['HF_TOKEN'] = hf_token
+                print("  HF_TOKEN environment variable set for mlx_lm")
 
             # Verify this is actually an MLX model
             if not model_id.startswith("mlx-community/"):
@@ -576,11 +646,20 @@ For each option, briefly explain what makes it different from the original."""
                 print(f"Loading model: {model_id}")
                 print(f"Recursion limit: {sys.getrecursionlimit()}")
 
+                # Get HuggingFace token for gated model access
+                print("\n[Step 0] Checking HuggingFace token...")
+                hf_token = self._get_huggingface_token()
+
                 print("\n[Step 1] Loading tokenizer...")
                 tokenizer = AutoTokenizer.from_pretrained(
                     model_id,
-                    trust_remote_code=True
+                    trust_remote_code=True,
+                    token=hf_token
                 )
+                # Ensure pad_token is set (required for Gemma and some other models)
+                if tokenizer.pad_token is None:
+                    tokenizer.pad_token = tokenizer.eos_token
+                    print(f"  Set pad_token to eos_token: {tokenizer.pad_token}")
                 print(f"✓ Tokenizer loaded: {type(tokenizer).__name__}")
 
                 # Use shared device detection utility for cross-platform support
@@ -600,16 +679,18 @@ For each option, briefly explain what makes it different from the original."""
 
                     model_kwargs = {
                         "torch_dtype": dtype,
-                        "low_cpu_mem_usage": True,
                         "trust_remote_code": True,
                         "attn_implementation": "eager",  # Use eager attention to avoid flash attention recursion
+                        "token": hf_token,  # For gated model access (e.g., Gemma)
                     }
 
-                    # Only use device_map for CUDA
+                    # Only use device_map for CUDA (don't combine with low_cpu_mem_usage)
                     if use_device_map and device_name == "cuda":
                         model_kwargs["device_map"] = "auto"
                         print("  - Using device_map='auto' (CUDA multi-GPU)")
                     else:
+                        # Use low_cpu_mem_usage only when NOT using device_map
+                        model_kwargs["low_cpu_mem_usage"] = True
                         print(f"  - No device_map (will use .to('{device_name}'))")
 
                     print(f"  - Model kwargs: {list(model_kwargs.keys())}")
@@ -621,8 +702,26 @@ For each option, briefly explain what makes it different from the original."""
                     )
                     print(f"✓ Model weights loaded: {type(model).__name__}")
 
-                    # Explicitly move to device if not using device_map
-                    if not use_device_map:
+                    # Check for meta tensors (model not properly loaded)
+                    has_meta = any(p.device.type == "meta" for p in model.parameters())
+                    if has_meta:
+                        print("⚠ Model has meta tensors - reloading without device_map...")
+                        del model
+                        torch.cuda.empty_cache()
+
+                        # Reload without device_map, then move to CUDA
+                        model = AutoModelForCausalLM.from_pretrained(
+                            model_id,
+                            torch_dtype=dtype,
+                            low_cpu_mem_usage=True,
+                            trust_remote_code=True,
+                            attn_implementation="eager",
+                            token=hf_token,
+                        )
+                        model = model.to(device_name)
+                        print(f"✓ Model reloaded and moved to {device_name}")
+                    elif not use_device_map:
+                        # Explicitly move to device if not using device_map
                         print(f"\n[Step 4] Moving model to {device_name}...")
                         model = model.to(device_name)
                         print(f"✓ Model moved to {device_name}")
@@ -631,36 +730,90 @@ For each option, briefly explain what makes it different from the original."""
                     print(f"{'='*60}\n")
 
                 except Exception as e:
+                    error_str = str(e).lower()
                     print(f"{device_name} loading failed: {type(e).__name__}: {e}")
 
-                    # Fallback to CPU if primary device fails
-                    if device_name != "cpu":
-                        print("Falling back to CPU...")
-                        try:
-                            # Clear device cache if applicable
-                            if device_name == "cuda":
-                                torch.cuda.empty_cache()
-                            elif device_name == "mps":
-                                # MPS doesn't have a cache to clear
-                                pass
+                    # Check if it's an out of memory error
+                    is_oom = "out of memory" in error_str or "cuda out of memory" in error_str
 
-                            # Retry on CPU
+                    if is_oom and device_name == "cuda":
+                        # Get GPU memory info
+                        try:
+                            gpu_mem_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                            print(f"\n⚠ GPU has {gpu_mem_gb:.1f}GB VRAM - model is too large!")
+                            print(f"  Model: {model_id}")
+                            print(f"\n  Recommended models for {gpu_mem_gb:.0f}GB VRAM:")
+                            if gpu_mem_gb < 12:
+                                print(f"    • microsoft/Phi-3.5-mini-instruct (~6GB)")
+                                print(f"    • google/gemma-3-4b-it (~8GB)")
+                            elif gpu_mem_gb < 20:
+                                print(f"    • google/gemma-3-4b-it (~8GB)")
+                                print(f"    • Qwen/Qwen2.5-7B-Instruct (~14GB)")
+                                print(f"    • microsoft/Phi-3.5-mini-instruct (~6GB)")
+                            else:
+                                print(f"    • Qwen/Qwen2.5-14B-Instruct (~28GB)")
+                                print(f"    • google/gemma-3-12b-it (~24GB)")
+                        except Exception:
+                            pass
+
+                        # Try CPU offloading (keeps some layers on GPU, rest on CPU/disk)
+                        print("\nAttempting CPU offloading...")
+                        torch.cuda.empty_cache()
+
+                        try:
+                            model = AutoModelForCausalLM.from_pretrained(
+                                model_id,
+                                torch_dtype=dtype,
+                                device_map="auto",
+                                offload_folder="offload",
+                                trust_remote_code=True,
+                                attn_implementation="eager",
+                                token=hf_token,
+                            )
+                            has_meta = any(p.device.type == "meta" for p in model.parameters())
+                            if has_meta:
+                                raise RuntimeError("Model has uninitialized meta tensors")
+                            device = "cuda"
+                            print(f"✓ Model loaded with CPU offloading (slower but works)")
+                        except Exception as offload_err:
+                            print(f"CPU offloading failed: {offload_err}")
+                            print("\nFalling back to CPU-only...")
+
+                            torch.cuda.empty_cache()
                             model = AutoModelForCausalLM.from_pretrained(
                                 model_id,
                                 torch_dtype=torch.float32,
                                 low_cpu_mem_usage=True,
                                 trust_remote_code=True,
-                                attn_implementation="eager"  # Use eager attention to avoid flash attention recursion
+                                attn_implementation="eager",
+                                token=hf_token
                             )
                             model = model.to("cpu")
                             device = "cpu"
-                            print("Model loaded successfully on CPU (fallback)")
+                            print("✓ Model loaded on CPU (will be slow)")
+
+                    elif device_name != "cpu":
+                        print("Falling back to CPU...")
+                        try:
+                            if device_name == "cuda":
+                                torch.cuda.empty_cache()
+
+                            model = AutoModelForCausalLM.from_pretrained(
+                                model_id,
+                                torch_dtype=torch.float32,
+                                low_cpu_mem_usage=True,
+                                trust_remote_code=True,
+                                attn_implementation="eager",
+                                token=hf_token
+                            )
+                            model = model.to("cpu")
+                            device = "cpu"
+                            print("Model loaded on CPU (fallback)")
 
                         except Exception as cpu_err:
                             print(f"CPU fallback also failed: {type(cpu_err).__name__}: {cpu_err}")
                             raise
                     else:
-                        # Already on CPU and still failed
                         raise
 
                 # Store in instance
@@ -795,10 +948,22 @@ For each option, briefly explain what makes it different from the original."""
             print(f"  Model class: {type(self._local_model).__name__}")
 
             print("\n[2/7] Preparing messages...")
-            messages = [
-                {"role": "system", "content": self.REPHRASE_SYSTEM},
-                {"role": "user", "content": prompt}
-            ]
+            # Check if tokenizer supports system role (Gemma 3 doesn't)
+            model_id_lower = (self.local_model_id or "").lower()
+            supports_system_role = "gemma" not in model_id_lower
+
+            if supports_system_role:
+                messages = [
+                    {"role": "system", "content": self.REPHRASE_SYSTEM},
+                    {"role": "user", "content": prompt}
+                ]
+            else:
+                # For Gemma 3: embed system prompt in user message
+                combined_prompt = f"{self.REPHRASE_SYSTEM}\n\n{prompt}"
+                messages = [
+                    {"role": "user", "content": combined_prompt}
+                ]
+                print("  (Gemma detected - embedding system prompt in user message)")
             print(f"✓ Messages prepared (prompt: {len(prompt)} chars)")
 
             print("\n[3/7] Applying chat template...")
@@ -845,16 +1010,74 @@ For each option, briefly explain what makes it different from the original."""
             print(f"    - attn_implementation: eager")
             print(f"  Starting generation... (this may take a while)")
 
-            outputs = self._local_model.generate(
-                inputs,
-                attention_mask=attention_mask,
-                max_new_tokens=max_tokens,
-                temperature=0.7,
-                do_sample=True,
-                pad_token_id=self._local_tokenizer.eos_token_id,
-                use_cache=False,  # Disable KV cache to avoid DynamicCache compatibility issues
-                num_beams=1,  # Disable beam search to reduce complexity
-            )
+            # Use pad_token_id from tokenizer (we set it during init if it was None)
+            pad_token_id = self._local_tokenizer.pad_token_id
+            if pad_token_id is None:
+                pad_token_id = self._local_tokenizer.eos_token_id
+
+            # Check if this is a Gemma model (known CUDA assertion issues)
+            model_id_lower = (self.local_model_id or "").lower()
+            is_gemma = "gemma" in model_id_lower
+
+            try:
+                # Build generation kwargs
+                gen_kwargs = {
+                    "attention_mask": attention_mask,
+                    "max_new_tokens": max_tokens,
+                    "pad_token_id": pad_token_id,
+                    "eos_token_id": self._local_tokenizer.eos_token_id,
+                    "use_cache": False,  # Disable KV cache to avoid DynamicCache compatibility issues
+                    "num_beams": 1,  # Disable beam search to reduce complexity
+                }
+
+                if is_gemma and self._device == "cuda":
+                    # Gemma on CUDA: use greedy decoding to avoid CUDA assertion errors
+                    # The assertion errors occur during sampling with certain token IDs
+                    print("  (Gemma on CUDA: using greedy decoding to avoid assertion errors)")
+                    gen_kwargs["do_sample"] = False
+                else:
+                    # Other models: use sampling with temperature
+                    gen_kwargs["do_sample"] = True
+                    gen_kwargs["temperature"] = 0.7
+                    gen_kwargs["top_k"] = 50  # Limit sampling to top 50 tokens
+                    gen_kwargs["top_p"] = 0.95  # Nucleus sampling
+
+                outputs = self._local_model.generate(inputs, **gen_kwargs)
+
+            except RuntimeError as e:
+                error_str = str(e).lower()
+                if "cuda" in error_str and ("assert" in error_str or "device-side" in error_str):
+                    print(f"✗ CUDA assertion error detected!")
+                    print(f"  Error: {e}")
+
+                    # Clear CUDA state
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        torch.cuda.synchronize()
+
+                    # Try again with greedy decoding (no sampling)
+                    print(f"  Retrying with greedy decoding (do_sample=False)...")
+                    try:
+                        outputs = self._local_model.generate(
+                            inputs,
+                            attention_mask=attention_mask,
+                            max_new_tokens=max_tokens,
+                            pad_token_id=pad_token_id,
+                            eos_token_id=self._local_tokenizer.eos_token_id,
+                            do_sample=False,  # Greedy decoding
+                            use_cache=False,
+                            num_beams=1,
+                        )
+                        print(f"  ✓ Greedy decoding succeeded!")
+                    except RuntimeError as retry_error:
+                        print(f"  ✗ Greedy decoding also failed: {retry_error}")
+                        print(f"\n  Suggestions:")
+                        print(f"    1. Try a different model (e.g., microsoft/Phi-3.5-mini-instruct)")
+                        print(f"    2. Use CPU instead of CUDA (slower but more stable)")
+                        print(f"    3. Ensure sentencepiece is installed: pip install sentencepiece")
+                        raise
+                else:
+                    raise
             print(f"✓ Generation complete! (output shape: {outputs.shape})")
 
             print(f"\n[7/7] Decoding output...")

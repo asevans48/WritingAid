@@ -31,11 +31,58 @@ def detect_device():
             return "mps", torch.bfloat16, False
         else:
             # CPU fallback - use float32 for compatibility
+            # Print a warning if CUDA might be expected but not available
+            _print_cuda_warning()
             return "cpu", torch.float32, False
 
     except ImportError:
         # PyTorch not installed, default to CPU
         return "cpu", None, False
+
+
+def _print_cuda_warning():
+    """Print a warning if CUDA is not available but might be expected."""
+    import platform
+    import subprocess
+
+    # Only warn on Windows/Linux where CUDA GPUs are common
+    if platform.system() == "Darwin":
+        return  # macOS uses MPS, not CUDA
+
+    try:
+        # Check if nvidia-smi exists (indicates NVIDIA GPU present)
+        if platform.system() == "Windows":
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=5
+            )
+        else:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=5
+            )
+
+        if result.returncode == 0 and result.stdout.strip():
+            gpu_name = result.stdout.strip().split('\n')[0]
+            print("\n" + "=" * 70)
+            print("⚠️  WARNING: NVIDIA GPU detected but CUDA is not available in PyTorch!")
+            print("=" * 70)
+            print(f"  GPU Found: {gpu_name}")
+            print(f"  PyTorch CUDA: torch.cuda.is_available() = False")
+            print()
+            print("  This usually means PyTorch was installed without CUDA support.")
+            print("  The default 'pip install torch' gets CPU-only on Windows/Linux!")
+            print()
+            print("  To fix this, reinstall PyTorch with CUDA:")
+            print("    1. pip uninstall torch torchvision torchaudio -y")
+            print("    2. pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124")
+            print()
+            print("  (Replace cu124 with cu131 for CUDA 13.1, or cu118 for CUDA 11.8)")
+            print("  Visit https://pytorch.org/get-started/locally/ for the correct command.")
+            print("=" * 70 + "\n")
+    except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+        # nvidia-smi not found or other error - no warning needed
+        pass
 
 
 def can_use_quantization(device_name=None):
@@ -113,9 +160,20 @@ def print_device_info():
     print(f"CUDA Available: {info['cuda_available']}")
 
     if info["cuda_available"]:
-        print(f"  - CUDA Version: {info.get('cuda_version')}")
+        print(f"  - CUDA Version (PyTorch built with): {info.get('cuda_version')}")
         print(f"  - GPU Count: {info.get('cuda_device_count')}")
         print(f"  - GPU Name: {info.get('cuda_device_name')}")
+    else:
+        # Show what PyTorch was built with
+        try:
+            import torch
+            cuda_build = getattr(torch.version, 'cuda', None)
+            if cuda_build:
+                print(f"  - PyTorch CUDA build: {cuda_build} (but runtime unavailable)")
+            else:
+                print(f"  - PyTorch CUDA build: None (CPU-only build!)")
+        except Exception:
+            pass
 
     print(f"MPS (Apple Silicon) Available: {info['mps_available']}")
     print(f"Quantization Supported: {info['quantization_supported']}")

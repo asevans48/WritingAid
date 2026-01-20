@@ -11,26 +11,41 @@ langgraph>=0.0.20
 
 # Hugging Face Integration
 huggingface_hub>=0.21.0  # For model downloads and HF Inference API
-transformers>=4.40.0  # For loading and running local models
+transformers>=4.47.0  # For loading and running local models (4.47+ required for Gemma 3)
 safetensors>=0.4.0  # For efficient model weight loading
+sentencepiece>=0.2.0  # Tokenizer for Gemma, Llama, and other models (required on Windows)
+protobuf>=4.25.0  # Required for some model tokenizers
 
 # PyTorch - Local LLM Inference
 # NOTE: For GPU/CUDA support, install PyTorch separately BEFORE other packages:
 #
 # 1. First, check your CUDA version with: nvidia-smi (look at top right for "CUDA Version")
 #
-# 2. Uninstall existing PyTorch:
-#    pip uninstall torch torchvision torchaudio
+# 2. Uninstall existing PyTorch (if installed):
+#    pip uninstall torch torchvision torchaudio -y
 #
-# 3. Install PyTorch with CUDA support (check https://pytorch.org/get-started/locally/ for latest):
-#    - CUDA 13.x: pip install torch --index-url https://download.pytorch.org/whl/cu131
-#    - CUDA 12.x: pip install torch --index-url https://download.pytorch.org/whl/cu121
-#    - CUDA 11.8: pip install torch --index-url https://download.pytorch.org/whl/cu118
+# 3. Install PyTorch with CUDA support:
+#    Visit https://pytorch.org/get-started/locally/ for the latest commands
 #
-# The default "pip install torch" gets CPU-only version on Windows/Linux.
-torch>=2.2.0  # Core deep learning framework (CPU by default - see note above for GPU)
-# torchvision>=0.17.0  # Optional: for image models
-# torchaudio>=2.2.0  # Optional: for audio models
+#    CUDA 13.1 (latest):
+#      pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu131
+#
+#    CUDA 12.4/12.x:
+#      pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+#
+#    CUDA 12.1:
+#      pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+#
+#    CUDA 11.8:
+#      pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+#
+# 4. Verify CUDA is working:
+#    python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}'); print(f'Device: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"N/A\"}')"
+#
+# NOTE: The default "pip install torch" gets CPU-only version on Windows/Linux!
+torch>=2.5.0  # Core deep learning framework (CPU by default - see note above for GPU)
+# torchvision>=0.20.0  # Optional: for image models
+# torchaudio>=2.5.0  # Optional: for audio models
 
 # Model Optimization (optional - for quantization)
 accelerate>=0.27.0  # For efficient model loading and device mapping
