@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 class SuggestionType(Enum):
     """Types of editing suggestions."""
+    # Core writing craft
     SHOW_DONT_TELL = "show_dont_tell"
     PACING = "pacing"
     DIALOGUE = "dialogue"
@@ -24,6 +25,28 @@ class SuggestionType(Enum):
     GRAMMAR = "grammar"
     WORD_CHOICE = "word_choice"
 
+    # Extended categories for comprehensive critique
+    PLOT = "plot"
+    WORLDBUILDING = "worldbuilding"
+    STYLE = "style"
+    TONE = "tone"
+    VOICE = "voice"
+    CHARACTER_DEVELOPMENT = "character_development"
+    TENSION = "tension"
+    THEME = "theme"
+
+
+@dataclass
+class CritiqueContext:
+    """Context provided by author for targeted critique."""
+    style: str = ""  # e.g., "literary fiction", "hard-boiled noir"
+    tone: str = ""  # e.g., "dark and brooding", "hopeful"
+    voice: str = ""  # e.g., "first-person unreliable narrator"
+    plot_goals: str = ""  # What this section should accomplish
+    characters: str = ""  # Key characters and their arcs
+    worldbuilding: str = ""  # Relevant world details
+    additional_instructions: str = ""  # Any other critique focus
+
 
 @dataclass
 class LineItemSuggestion:
@@ -33,8 +56,9 @@ class LineItemSuggestion:
     suggestion_type: SuggestionType
     original_text: str  # The text being commented on
     suggestion: str  # What to consider changing
-    explanation: str  # Why this matters
+    explanation: str  # Why this matters (reasoning)
     priority: str  # "high", "medium", "low"
+    reasoning: str = ""  # Detailed reasoning for the edit (separate from brief explanation)
 
 
 @dataclass
@@ -65,9 +89,103 @@ class ChapterAnalysisAgent:
     Prioritize suggestions that most improve the writing.
     """
 
+    ENHANCED_ANALYSIS_PROMPT = """You are a professional editor providing constructive feedback on creative writing.
+
+CONTEXT PROVIDED BY AUTHOR:
+- Genre/Style: {style_context}
+- Intended Tone: {tone_context}
+- Narrative Voice: {voice_context}
+- Plot Goals for This Section: {plot_context}
+- Key Characters: {character_context}
+- Worldbuilding Elements: {worldbuilding_context}
+- Additional Instructions: {additional_instructions}
+
+CRITICAL RULES:
+1. Provide SUGGESTIONS, not rewrites
+2. Frame feedback as "Consider..." "You might..." "What if..."
+3. Be specific about what and where
+4. Explain WHY each suggestion matters
+5. Recognize what works well
+6. Prioritize suggestions that most improve the writing
+7. Consider the author's stated intentions when giving feedback
+8. Respect the genre conventions and style choices
+
+ANALYSIS AREAS:
+1. Style & Voice: Does the writing maintain consistent style? Is the narrative voice distinct and appropriate for the genre?
+2. Tone: Does the emotional quality match the author's stated intent? Are tonal shifts effective or jarring?
+3. Plot: Does this section advance the plot appropriately? Are there pacing issues or unclear motivations?
+4. Character: Are characters consistent with their established voices and motivations? Do they feel authentic?
+5. Worldbuilding: Are world details consistent and well-integrated? Does exposition feel natural?
+6. Show Don't Tell: Are emotions and descriptions shown through action rather than stated?
+7. Dialogue: Is dialogue natural and distinctive per character? Does it serve the scene?
+8. Pacing: Does the scene flow well? Are there sections that drag or rush?
+9. Tension: Is there appropriate conflict or tension for this point in the story?
+10. Clarity: Are sentences clear? Is meaning unambiguous?
+11. Grammar & Word Choice: Are there technical issues or weak word choices?
+
+For each suggestion:
+- Quote the specific text
+- Identify the issue type
+- Explain the problem clearly
+- Suggest an improvement approach (not a rewrite)
+- Rate priority: high/medium/low
+"""
+
     QUICK_REVIEW_PROMPT = """You are providing quick feedback on writing.
     Point out the 2-3 most important issues only.
     Be brief and specific."""
+
+    QUICK_ENHANCED_PROMPT = """You are a professional editor providing quick feedback on writing.
+Focus on the 3-5 most impactful improvements considering:
+- Author's stated style/tone/voice intentions
+- Plot and character consistency
+- Worldbuilding coherence
+- The most pressing technical issues
+
+Be specific and constructive. Explain why each issue matters."""
+
+    LINE_BY_LINE_PROMPT = """You are a professional editor providing LINE-BY-LINE feedback on creative writing.
+
+CONTEXT PROVIDED BY AUTHOR:
+- Genre/Style: {style_context}
+- Intended Tone: {tone_context}
+- Narrative Voice: {voice_context}
+- Plot Goals for This Section: {plot_context}
+- Key Characters: {character_context}
+- Worldbuilding Elements: {worldbuilding_context}
+- Additional Instructions: {additional_instructions}
+
+YOUR TASK:
+Review each line (sentence) and identify lines that would benefit from revision. NOT every line needs feedback - only flag lines that have clear opportunities for improvement.
+
+FOCUS ON LINES THAT:
+1. Could better match the author's stated style, tone, or voice
+2. Tell rather than show (emotions stated rather than demonstrated through action/body language)
+3. Could be enriched with plot-relevant details or worldbuilding elements
+4. Have weak or generic word choices that don't fit the genre
+5. Break character voice consistency
+6. Could build more tension or emotional impact
+7. Have pacing issues (too rushed or too slow for the moment)
+
+IMPORTANT GUIDELINES:
+- Some telling is perfectly fine - only flag egregious cases
+- Respect the author's style choices
+- Don't suggest changes just for the sake of change
+- Prioritize suggestions that serve the story
+- Be specific about WHY a change would improve the line
+
+OUTPUT FORMAT:
+For each line needing attention, provide:
+
+LINE [number]: "[exact line text]"
+ISSUE: [Style/Tone/Voice/Show-Don't-Tell/Plot/Worldbuilding/Pacing/Word Choice]
+REASONING: [Why this line could be improved - what's the specific problem?]
+SUGGESTION: [What to consider - frame as "Consider..." or "You might..." - NOT a rewrite]
+PRIORITY: [high/medium/low]
+
+---
+
+If a line is working well, skip it. Only include lines that genuinely need attention."""
 
     def __init__(
         self,
@@ -150,7 +268,9 @@ Priority: [high/medium/low]
         chapter_text: str,
         chapter_title: str,
         manuscript_context: str = "",
-        detailed: bool = True
+        detailed: bool = True,
+        critique_context: Optional[CritiqueContext] = None,
+        focus_areas: Optional[List[SuggestionType]] = None
     ) -> ChapterAnalysis:
         """Analyze entire chapter.
 
@@ -159,6 +279,8 @@ Priority: [high/medium/low]
             chapter_title: Chapter title
             manuscript_context: Context from manuscript
             detailed: If True, provides detailed line-item analysis
+            critique_context: Optional author-provided context for targeted critique
+            focus_areas: Optional list of specific suggestion types to focus on
 
         Returns:
             Complete ChapterAnalysis
@@ -167,15 +289,36 @@ Priority: [high/medium/low]
         paragraphs = [p.strip() for p in chapter_text.split('\n\n') if p.strip()]
 
         if not detailed:
-            return self._quick_chapter_review(chapter_text, chapter_title, paragraphs)
+            return self._quick_chapter_review(chapter_text, chapter_title, paragraphs, critique_context)
 
         # Detailed analysis
         word_count = len(chapter_text.split())
+
+        # Build focus areas text if provided
+        focus_text = ""
+        if focus_areas:
+            areas = [area.value.replace('_', ' ').title() for area in focus_areas]
+            focus_text = f"\n\nFOCUS AREAS (prioritize these):\n{', '.join(areas)}"
+
+        # Build system prompt with context if provided
+        if critique_context:
+            system_prompt = self.ENHANCED_ANALYSIS_PROMPT.format(
+                style_context=critique_context.style or "Not specified",
+                tone_context=critique_context.tone or "Not specified",
+                voice_context=critique_context.voice or "Not specified",
+                plot_context=critique_context.plot_goals or "Not specified",
+                character_context=critique_context.characters or "Not specified",
+                worldbuilding_context=critique_context.worldbuilding or "Not specified",
+                additional_instructions=critique_context.additional_instructions or "None"
+            )
+        else:
+            system_prompt = self.ANALYSIS_PROMPT
 
         prompt = f"""
 Chapter: {chapter_title}
 Word Count: {word_count}
 Manuscript Context: {manuscript_context[:300]}
+{focus_text}
 
 Chapter Text (first 2000 words):
 {' '.join(chapter_text.split()[:2000])}
@@ -210,7 +353,7 @@ Keep feedback constructive and actionable.
 
         response = self.primary_llm.generate_text(
             prompt,
-            self.ANALYSIS_PROMPT,
+            system_prompt,
             max_tokens=1500,
             temperature=0.5
         )
@@ -226,16 +369,189 @@ Keep feedback constructive and actionable.
 
         return analysis
 
+    def analyze_lines(
+        self,
+        text: str,
+        critique_context: Optional[CritiqueContext] = None,
+        max_lines: int = 100
+    ) -> List[LineItemSuggestion]:
+        """Perform line-by-line analysis of text.
+
+        Args:
+            text: The text to analyze
+            critique_context: Author-provided context for targeted critique
+            max_lines: Maximum number of lines to analyze (for token limits)
+
+        Returns:
+            List of LineItemSuggestion objects, one per flagged line
+        """
+        # Split text into lines (sentences)
+        import re
+        # Split on sentence-ending punctuation while keeping the punctuation
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        sentences = [s.strip() for s in sentences if s.strip()]
+
+        # Limit lines for token management
+        if len(sentences) > max_lines:
+            sentences = sentences[:max_lines]
+
+        # Number the lines
+        numbered_text = "\n".join([f"{i+1}. {s}" for i, s in enumerate(sentences)])
+
+        # Build system prompt with context
+        if critique_context:
+            system_prompt = self.LINE_BY_LINE_PROMPT.format(
+                style_context=critique_context.style or "Not specified",
+                tone_context=critique_context.tone or "Not specified",
+                voice_context=critique_context.voice or "Not specified",
+                plot_context=critique_context.plot_goals or "Not specified",
+                character_context=critique_context.characters or "Not specified",
+                worldbuilding_context=critique_context.worldbuilding or "Not specified",
+                additional_instructions=critique_context.additional_instructions or "None"
+            )
+        else:
+            system_prompt = self.LINE_BY_LINE_PROMPT.format(
+                style_context="Not specified",
+                tone_context="Not specified",
+                voice_context="Not specified",
+                plot_context="Not specified",
+                character_context="Not specified",
+                worldbuilding_context="Not specified",
+                additional_instructions="None"
+            )
+
+        prompt = f"""Please review the following numbered lines and provide feedback on lines that need improvement.
+Remember: NOT every line needs feedback - only flag lines with genuine opportunities for improvement.
+
+TEXT TO REVIEW:
+{numbered_text}
+
+Provide your line-by-line feedback now. Use the format specified in your instructions."""
+
+        response = self.primary_llm.generate_text(
+            prompt,
+            system_prompt,
+            max_tokens=2500,
+            temperature=0.4
+        )
+
+        # Parse line-by-line suggestions
+        suggestions = self._parse_line_by_line_response(response, sentences)
+
+        return suggestions
+
+    def _parse_line_by_line_response(
+        self,
+        response: str,
+        original_sentences: List[str]
+    ) -> List[LineItemSuggestion]:
+        """Parse the line-by-line analysis response.
+
+        Args:
+            response: The LLM response
+            original_sentences: Original sentences for reference
+
+        Returns:
+            List of LineItemSuggestion objects
+        """
+        import re
+        suggestions = []
+
+        # Split by line entries (LINE [number])
+        # Pattern matches "LINE 1:", "LINE 23:", etc.
+        line_pattern = re.compile(
+            r'LINE\s*(\d+)[:\s]*["\u201c]?([^"\u201d\n]+)["\u201d]?\s*'
+            r'(?:ISSUE[:\s]*([^\n]+))?\s*'
+            r'(?:REASONING[:\s]*([^\n]+(?:\n(?!LINE|ISSUE|SUGGESTION|PRIORITY)[^\n]+)*))?\s*'
+            r'(?:SUGGESTION[:\s]*([^\n]+(?:\n(?!LINE|ISSUE|REASONING|PRIORITY)[^\n]+)*))?\s*'
+            r'(?:PRIORITY[:\s]*(\w+))?',
+            re.IGNORECASE | re.MULTILINE
+        )
+
+        for match in line_pattern.finditer(response):
+            try:
+                line_num = int(match.group(1))
+                quoted_text = match.group(2).strip() if match.group(2) else ""
+                issue_type = match.group(3).strip() if match.group(3) else "General"
+                reasoning = match.group(4).strip() if match.group(4) else ""
+                suggestion = match.group(5).strip() if match.group(5) else ""
+                priority = match.group(6).strip().lower() if match.group(6) else "medium"
+
+                # Get original text if we have it
+                original_text = quoted_text
+                if 0 < line_num <= len(original_sentences):
+                    original_text = original_sentences[line_num - 1]
+
+                # Map issue type to SuggestionType
+                issue_lower = issue_type.lower()
+                if 'show' in issue_lower or 'tell' in issue_lower:
+                    stype = SuggestionType.SHOW_DONT_TELL
+                elif 'style' in issue_lower:
+                    stype = SuggestionType.STYLE
+                elif 'tone' in issue_lower:
+                    stype = SuggestionType.TONE
+                elif 'voice' in issue_lower:
+                    stype = SuggestionType.VOICE
+                elif 'plot' in issue_lower:
+                    stype = SuggestionType.PLOT
+                elif 'world' in issue_lower:
+                    stype = SuggestionType.WORLDBUILDING
+                elif 'pacing' in issue_lower:
+                    stype = SuggestionType.PACING
+                elif 'word' in issue_lower or 'choice' in issue_lower:
+                    stype = SuggestionType.WORD_CHOICE
+                elif 'character' in issue_lower:
+                    stype = SuggestionType.CHARACTER_VOICE
+                elif 'tension' in issue_lower:
+                    stype = SuggestionType.TENSION
+                elif 'clarity' in issue_lower:
+                    stype = SuggestionType.CLARITY
+                else:
+                    stype = SuggestionType.STYLE
+
+                # Normalize priority
+                if priority not in ['high', 'medium', 'low']:
+                    priority = 'medium'
+
+                suggestions.append(LineItemSuggestion(
+                    line_number=line_num,
+                    paragraph_number=1,  # We're doing line-by-line, not paragraph
+                    suggestion_type=stype,
+                    original_text=original_text,
+                    suggestion=suggestion,
+                    explanation=issue_type,  # Brief issue type
+                    priority=priority,
+                    reasoning=reasoning  # Detailed reasoning
+                ))
+            except (ValueError, IndexError):
+                continue
+
+        return suggestions
+
     def _quick_chapter_review(
         self,
         chapter_text: str,
         chapter_title: str,
-        paragraphs: List[str]
+        paragraphs: List[str],
+        critique_context: Optional[CritiqueContext] = None
     ) -> ChapterAnalysis:
         """Quick review of chapter for cost savings."""
+        # Build context note if provided
+        context_note = ""
+        if critique_context:
+            context_parts = []
+            if critique_context.style:
+                context_parts.append(f"Style: {critique_context.style}")
+            if critique_context.tone:
+                context_parts.append(f"Tone: {critique_context.tone}")
+            if critique_context.voice:
+                context_parts.append(f"Voice: {critique_context.voice}")
+            if context_parts:
+                context_note = f"\n\nAuthor's Intent:\n{', '.join(context_parts)}\n"
+
         prompt = f"""
 Chapter: {chapter_title}
-
+{context_note}
 First 500 words:
 {' '.join(chapter_text.split()[:500])}
 
@@ -253,9 +569,12 @@ Be concise.
 
         llm = self.local_llm if self.local_llm else self.primary_llm
 
+        # Use enhanced prompt if context provided
+        system_prompt = self.QUICK_ENHANCED_PROMPT if critique_context else self.QUICK_REVIEW_PROMPT
+
         response = llm.generate_text(
             prompt,
-            self.QUICK_REVIEW_PROMPT,
+            system_prompt,
             max_tokens=400,
             temperature=0.4
         )

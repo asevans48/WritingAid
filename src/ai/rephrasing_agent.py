@@ -276,6 +276,12 @@ class RephraseStyle(Enum):
     POETIC = "poetic"
     ACTIVE_VOICE = "active_voice"
     CLEARER = "clearer"
+    # Extended styles
+    SENSORY = "sensory"  # Add sensory details
+    PUNCHY = "punchy"  # Short, impactful sentences
+    FLOWING = "flowing"  # Longer, flowing prose
+    SPARSE = "sparse"  # Minimalist style
+    LITERARY = "literary"  # More artistic
 
 
 class RephraseTone(Enum):
@@ -287,6 +293,22 @@ class RephraseTone(Enum):
     MELANCHOLIC = "melancholic"
     TENSE = "tense"
     WHIMSICAL = "whimsical"
+    # Extended tones
+    MYSTERIOUS = "mysterious"
+    ROMANTIC = "romantic"
+    HUMOROUS = "humorous"
+    OMINOUS = "ominous"
+    NOSTALGIC = "nostalgic"
+    URGENT = "urgent"
+
+
+@dataclass
+class RephraseContext:
+    """Context for rephrasing operations."""
+    character_voice: str = ""  # Whose POV/voice
+    scene_mood: str = ""  # Current scene mood
+    genre: str = ""  # Genre conventions to follow
+    plot_context: str = ""  # What's happening in the plot
 
 
 @dataclass
@@ -334,6 +356,12 @@ For each option, briefly explain what makes it different from the original."""
         RephraseStyle.POETIC: "poetic and lyrical",
         RephraseStyle.ACTIVE_VOICE: "using active voice",
         RephraseStyle.CLEARER: "clearer and easier to understand",
+        # Extended styles
+        RephraseStyle.SENSORY: "rich with sensory details (sight, sound, smell, touch, taste)",
+        RephraseStyle.PUNCHY: "short, punchy, and impactful with strong verbs",
+        RephraseStyle.FLOWING: "longer, flowing prose with smooth transitions",
+        RephraseStyle.SPARSE: "minimalist and sparse, only essential words",
+        RephraseStyle.LITERARY: "literary and artistic with vivid imagery",
     }
 
     # Tone prompts (emotional quality)
@@ -345,6 +373,13 @@ For each option, briefly explain what makes it different from the original."""
         RephraseTone.MELANCHOLIC: "melancholic and wistful",
         RephraseTone.TENSE: "tense and suspenseful",
         RephraseTone.WHIMSICAL: "whimsical and playful",
+        # Extended tones
+        RephraseTone.MYSTERIOUS: "mysterious and enigmatic",
+        RephraseTone.ROMANTIC: "romantic and intimate",
+        RephraseTone.HUMOROUS: "humorous and witty",
+        RephraseTone.OMINOUS: "foreboding and ominous",
+        RephraseTone.NOSTALGIC: "nostalgic and reminiscent",
+        RephraseTone.URGENT: "urgent and pressing",
     }
 
     def __init__(

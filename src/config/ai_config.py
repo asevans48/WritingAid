@@ -55,6 +55,13 @@ class AIConfig:
         "prefer_local_model": False,  # Use local model instead of cloud by default
         "local_model_max_tokens": 1024,  # Max tokens for local model generation
 
+        # Critique Model Settings
+        "critique_model_source": "default",  # "default", "local", "cloud"
+        "critique_local_model_id": "",  # Specific local model for critique
+        "critique_cloud_provider": "claude",  # Cloud provider for critique: claude, chatgpt, gemini
+        "critique_temperature": 0.3,  # Lower temperature for consistent critique
+        "critique_max_tokens": 2000,  # Max tokens for critique responses
+
         # Session State
         "last_project_path": ""
     }
@@ -286,6 +293,43 @@ class AIConfig:
             True if saved successfully
         """
         self.settings["prefer_local_model"] = prefer
+        return self.save_settings(self.settings)
+
+    # Critique Model Methods
+
+    def get_critique_model_settings(self) -> Dict[str, Any]:
+        """Get critique-specific model configuration.
+
+        Returns:
+            Dictionary with critique model settings
+        """
+        return {
+            "source": self.settings.get("critique_model_source", "default"),
+            "local_model_id": self.settings.get("critique_local_model_id", ""),
+            "cloud_provider": self.settings.get("critique_cloud_provider", "claude"),
+            "temperature": self.settings.get("critique_temperature", 0.3),
+            "max_tokens": self.settings.get("critique_max_tokens", 2000),
+        }
+
+    def set_critique_model_settings(self, settings: Dict[str, Any]) -> bool:
+        """Set critique-specific model configuration.
+
+        Args:
+            settings: Dictionary with source, local_model_id, cloud_provider, temperature, max_tokens
+
+        Returns:
+            True if saved successfully
+        """
+        if "source" in settings:
+            self.settings["critique_model_source"] = settings["source"]
+        if "local_model_id" in settings:
+            self.settings["critique_local_model_id"] = settings["local_model_id"]
+        if "cloud_provider" in settings:
+            self.settings["critique_cloud_provider"] = settings["cloud_provider"]
+        if "temperature" in settings:
+            self.settings["critique_temperature"] = settings["temperature"]
+        if "max_tokens" in settings:
+            self.settings["critique_max_tokens"] = settings["max_tokens"]
         return self.save_settings(self.settings)
 
 

@@ -72,6 +72,7 @@ class ErrorType(Enum):
     SPELLING = "spelling"
     GRAMMAR = "grammar"
     OVERUSE = "overuse"
+    OVERUSED_PHRASE = "overused_phrase"
 
 
 @dataclass
@@ -554,7 +555,7 @@ class SpellChecker:
 
 
 class OveruseDetector:
-    """Detects overused words and provides synonym suggestions."""
+    """Detects overused words and phrases, providing synonym suggestions."""
 
     # Words to ignore (common words that are expected to repeat)
     IGNORE_WORDS = {
@@ -569,6 +570,21 @@ class OveruseDetector:
         'every', 'both', 'few', 'more', 'most', 'other', 'some', 'such', 'no',
         'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 'just',
         'also', 'now', 'here', 'there', 'still', 'already', 'even', 'again',
+    }
+
+    # Common phrases to ignore (expected to repeat)
+    IGNORE_PHRASES = {
+        'he said', 'she said', 'i said', 'they said',
+        'it was', 'there was', 'there were', 'it is',
+        'i was', 'he was', 'she was', 'they were',
+        'i am', 'he is', 'she is', 'they are',
+        'in the', 'on the', 'at the', 'to the', 'of the', 'for the',
+        'and the', 'but the', 'with the', 'from the',
+        'i had', 'he had', 'she had', 'they had',
+        'i have', 'he has', 'she has', 'they have',
+        'as if', 'as though', 'even if', 'even though',
+        'out of', 'in front of', 'on top of', 'because of',
+        'a lot', 'a lot of', 'some of', 'all of', 'one of',
     }
 
     # Common synonyms for overused words
@@ -609,27 +625,61 @@ class OveruseDetector:
         'suddenly': ['abruptly', 'unexpectedly', 'instantly', 'immediately', 'swiftly', 'rapidly', 'quickly', 'all at once'],
     }
 
-    def __init__(self, threshold: int = 3, window_size: int = 500):
+    def __init__(self, threshold: int = 3, phrase_threshold: int = 2, window_size: int = 500):
         """Initialize overuse detector.
 
         Args:
             threshold: Number of times a word must appear to be flagged
+            phrase_threshold: Number of times a phrase must appear to be flagged
             window_size: Number of words to consider for frequency analysis
         """
         self.threshold = threshold
+        self.phrase_threshold = phrase_threshold
         self.window_size = window_size
         self._ignored_words: Set[str] = set()
+        self._ignored_phrases: Set[str] = set()
         # Cache for word counts to avoid recalculating for every word
         self._cached_counts: Dict[str, int] = {}
         self._cached_text_hash: int = 0
+        # Cache for phrase counts (2, 3, 4, 5-word ngrams)
+        self._cached_phrase_counts: Dict[str, int] = {}
+        # Cache phrase positions for highlighting: phrase -> [(start, end), ...]
+        self._cached_phrase_positions: Dict[str, List[Tuple[int, int]]] = {}
+
+    def _extract_ngrams(self, words: List[str], n: int) -> List[str]:
+        """Extract n-grams from a list of words."""
+        if len(words) < n:
+            return []
+        return [' '.join(words[i:i+n]) for i in range(len(words) - n + 1)]
 
     def update_cache(self, text: str):
-        """Update the cached word counts for a text."""
+        """Update the cached word and phrase counts for a text."""
         text_hash = hash(text)
         if text_hash != self._cached_text_hash:
             self._cached_text_hash = text_hash
-            words = re.findall(r'\b[a-zA-Z]+\b', text.lower())
+            text_lower = text.lower()
+            words = re.findall(r'\b[a-zA-Z]+\b', text_lower)
             self._cached_counts = Counter(words)
+
+            # Extract and count phrases (2, 3, 4, 5-word ngrams)
+            all_phrases: List[str] = []
+            for n in range(2, 6):  # 2, 3, 4, 5-word phrases
+                all_phrases.extend(self._extract_ngrams(words, n))
+
+            self._cached_phrase_counts = Counter(all_phrases)
+
+            # Build phrase positions for highlighting
+            self._cached_phrase_positions.clear()
+            for phrase, count in self._cached_phrase_counts.items():
+                if count >= self.phrase_threshold and phrase not in self.IGNORE_PHRASES and phrase not in self._ignored_phrases:
+                    # Find all positions of this phrase in the text
+                    positions = []
+                    start = 0
+                    phrase_pattern = r'\b' + r'\s+'.join(re.escape(w) for w in phrase.split()) + r'\b'
+                    for match in re.finditer(phrase_pattern, text_lower):
+                        positions.append((match.start(), match.end()))
+                    if positions:
+                        self._cached_phrase_positions[phrase] = positions
 
     def analyze_text(self, text: str) -> Dict[str, int]:
         """Analyze text and return word frequencies for non-ignored words."""
@@ -698,23 +748,697 @@ class OveruseDetector:
         """Check if word is in ignored list."""
         return word.lower() in self._ignored_words
 
+    # Phrase detection methods
+
+    def analyze_phrases(self, text: str) -> Dict[str, int]:
+        """Analyze text and return phrase frequencies for non-ignored phrases.
+
+        Returns phrases that appear at least phrase_threshold times.
+        """
+        self.update_cache(text)
+
+        return {
+            phrase: count for phrase, count in self._cached_phrase_counts.items()
+            if phrase not in self.IGNORE_PHRASES
+            and phrase not in self._ignored_phrases
+            and count >= self.phrase_threshold
+        }
+
+    def is_phrase_overused(self, phrase: str) -> Tuple[bool, int]:
+        """Check if a phrase is overused based on cached counts.
+
+        Returns:
+            Tuple of (is_overused, count)
+        """
+        phrase_lower = phrase.lower()
+
+        if phrase_lower in self.IGNORE_PHRASES or phrase_lower in self._ignored_phrases:
+            return False, 0
+
+        count = self._cached_phrase_counts.get(phrase_lower, 0)
+        return count >= self.phrase_threshold, count
+
+    def get_overused_phrases_in_range(self, text: str, start: int, end: int) -> List[Tuple[str, int, int, int]]:
+        """Get all overused phrases that overlap with a given text range.
+
+        Args:
+            text: Full document text (for cache validation)
+            start: Start position in document
+            end: End position in document
+
+        Returns:
+            List of (phrase, phrase_start, phrase_end, count) tuples
+        """
+        # Ensure cache is current
+        if self._cached_text_hash != hash(text):
+            self.update_cache(text)
+
+        results = []
+        for phrase, positions in self._cached_phrase_positions.items():
+            count = self._cached_phrase_counts.get(phrase, 0)
+            for pos_start, pos_end in positions:
+                # Check if this phrase occurrence overlaps with our range
+                if pos_start < end and pos_end > start:
+                    results.append((phrase, pos_start, pos_end, count))
+
+        return results
+
+    def get_phrase_at_position(self, text: str, position: int) -> Optional[Tuple[str, int, int, int]]:
+        """Get overused phrase at a specific position, if any.
+
+        Args:
+            text: Full document text
+            position: Character position to check
+
+        Returns:
+            Tuple of (phrase, start, end, count) or None
+        """
+        # Ensure cache is current
+        if self._cached_text_hash != hash(text):
+            self.update_cache(text)
+
+        # Check all overused phrases for one that contains this position
+        # Prefer longer phrases over shorter ones
+        best_match = None
+        for phrase, positions in self._cached_phrase_positions.items():
+            count = self._cached_phrase_counts.get(phrase, 0)
+            for pos_start, pos_end in positions:
+                if pos_start <= position < pos_end:
+                    if best_match is None or len(phrase) > len(best_match[0]):
+                        best_match = (phrase, pos_start, pos_end, count)
+
+        return best_match
+
+    def ignore_phrase(self, phrase: str):
+        """Add phrase to ignored list."""
+        self._ignored_phrases.add(phrase.lower())
+        # Remove from cached positions
+        phrase_lower = phrase.lower()
+        if phrase_lower in self._cached_phrase_positions:
+            del self._cached_phrase_positions[phrase_lower]
+
+    def is_phrase_ignored(self, phrase: str) -> bool:
+        """Check if phrase is in ignored list."""
+        return phrase.lower() in self._ignored_phrases
+
+
+@dataclass
+class WritingStats:
+    """Comprehensive writing statistics like ProWritingAid."""
+    word_count: int = 0
+    sentence_count: int = 0
+    paragraph_count: int = 0
+    avg_sentence_length: float = 0.0
+    avg_word_length: float = 0.0
+
+    # Sentence length variation
+    short_sentences: int = 0  # < 10 words
+    medium_sentences: int = 0  # 10-20 words
+    long_sentences: int = 0  # 21-35 words
+    very_long_sentences: int = 0  # > 35 words
+    sentence_length_score: float = 0.0  # 0-100, higher is better variety
+
+    # Sticky sentences (high % of glue words)
+    sticky_sentences: List[str] = None
+    sticky_sentence_count: int = 0
+    avg_glue_index: float = 0.0
+
+    # Echoes (repeated words in close proximity)
+    echoes: List[Tuple[str, int, int]] = None  # (word, first_pos, second_pos)
+    echo_count: int = 0
+
+    # Passive voice
+    passive_sentences: List[str] = None
+    passive_count: int = 0
+    passive_percentage: float = 0.0
+
+    # Dialogue
+    dialogue_percentage: float = 0.0
+    dialogue_tags: Dict[str, int] = None  # tag -> count
+    overused_dialogue_tags: List[str] = None
+
+    # Readability
+    flesch_reading_ease: float = 0.0
+    flesch_grade_level: float = 0.0
+
+    # Adverbs
+    adverbs: List[str] = None
+    adverb_count: int = 0
+    adverb_percentage: float = 0.0
+
+    # Clichés
+    cliches: List[str] = None
+    cliche_count: int = 0
+
+    def __post_init__(self):
+        """Initialize mutable defaults."""
+        if self.sticky_sentences is None:
+            self.sticky_sentences = []
+        if self.echoes is None:
+            self.echoes = []
+        if self.passive_sentences is None:
+            self.passive_sentences = []
+        if self.dialogue_tags is None:
+            self.dialogue_tags = {}
+        if self.overused_dialogue_tags is None:
+            self.overused_dialogue_tags = []
+        if self.adverbs is None:
+            self.adverbs = []
+        if self.cliches is None:
+            self.cliches = []
+
+
+class ProWritingAnalyzer:
+    """ProWritingAid-style comprehensive text analysis."""
+
+    # Common glue words (function words that don't add meaning)
+    GLUE_WORDS = {
+        'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+        'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were', 'been',
+        'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would',
+        'could', 'should', 'may', 'might', 'must', 'shall', 'can', 'need',
+        'it', 'its', 'this', 'that', 'these', 'those', 'i', 'you', 'he',
+        'she', 'we', 'they', 'me', 'him', 'her', 'us', 'them', 'my', 'your',
+        'his', 'our', 'their', 'what', 'which', 'who', 'whom', 'whose',
+        'if', 'then', 'else', 'when', 'where', 'why', 'how', 'all', 'each',
+        'every', 'both', 'few', 'more', 'most', 'other', 'some', 'such', 'no',
+        'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 'just',
+        'also', 'now', 'here', 'there', 'still', 'already', 'even', 'again',
+        'into', 'through', 'during', 'before', 'after', 'above', 'below',
+        'between', 'under', 'over', 'up', 'down', 'out', 'off', 'about',
+        'any', 'am', 'being', 'having', 'doing', 'get', 'got', 'getting',
+    }
+
+    # Passive voice indicators
+    PASSIVE_HELPERS = {'was', 'were', 'is', 'are', 'been', 'being', 'be', 'am'}
+
+    # Common dialogue tags
+    DIALOGUE_TAGS = {
+        'said', 'asked', 'replied', 'answered', 'responded', 'exclaimed',
+        'whispered', 'shouted', 'yelled', 'screamed', 'muttered', 'murmured',
+        'declared', 'announced', 'stated', 'remarked', 'commented', 'noted',
+        'added', 'continued', 'explained', 'insisted', 'demanded', 'suggested',
+        'wondered', 'questioned', 'inquired', 'cried', 'called', 'sighed',
+        'groaned', 'moaned', 'breathed', 'gasped', 'hissed', 'snapped',
+        'barked', 'growled', 'laughed', 'chuckled', 'giggled', 'sobbed',
+    }
+
+    # Common clichés in writing
+    CLICHES = {
+        'at the end of the day', 'in the nick of time', 'all of a sudden',
+        'in the blink of an eye', 'better late than never', 'as luck would have it',
+        'a matter of time', 'the tip of the iceberg', 'a sigh of relief',
+        'with bated breath', 'without a doubt', 'at first glance',
+        'crystal clear', 'dead of night', 'in broad daylight', 'pitch black',
+        'blood ran cold', 'heart skipped a beat', 'butterflies in stomach',
+        'like a deer in headlights', 'like a fish out of water', 'cold as ice',
+        'white as a sheet', 'red as a tomato', 'black as night', 'clear as day',
+        'quiet as a mouse', 'sick as a dog', 'fit as a fiddle', 'stubborn as a mule',
+        'light as a feather', 'heavy as lead', 'sharp as a tack', 'dumb as a rock',
+        'needle in a haystack', 'easy as pie', 'piece of cake', 'walk in the park',
+        'once upon a time', 'happily ever after', 'in the end', 'last but not least',
+        'long story short', 'to make a long story short', 'bottom line',
+        'at this point in time', 'going forward', 'on the same page',
+        'think outside the box', 'low hanging fruit', 'push the envelope',
+        'touch base', 'circle back', 'move the needle',
+    }
+
+    # Common adverbs to flag
+    COMMON_ADVERBS = {
+        'really', 'very', 'actually', 'basically', 'literally', 'totally',
+        'absolutely', 'definitely', 'certainly', 'obviously', 'clearly',
+        'simply', 'just', 'quite', 'rather', 'somewhat', 'fairly',
+        'extremely', 'incredibly', 'particularly', 'especially',
+        'suddenly', 'immediately', 'quickly', 'slowly', 'carefully',
+        'quietly', 'loudly', 'softly', 'hardly', 'nearly', 'almost',
+        'completely', 'entirely', 'perfectly', 'truly', 'honestly',
+    }
+
+    def __init__(self):
+        """Initialize analyzer."""
+        pass
+
+    def analyze(self, text: str) -> WritingStats:
+        """Perform comprehensive text analysis.
+
+        Args:
+            text: The text to analyze
+
+        Returns:
+            WritingStats with all metrics
+        """
+        stats = WritingStats()
+
+        if not text or not text.strip():
+            return stats
+
+        # Basic counts
+        words = re.findall(r'\b[a-zA-Z]+\b', text)
+        stats.word_count = len(words)
+
+        # Sentence detection
+        sentences = self._split_sentences(text)
+        stats.sentence_count = len(sentences)
+
+        # Paragraph count
+        paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
+        stats.paragraph_count = len(paragraphs) if paragraphs else 1
+
+        if stats.word_count == 0 or stats.sentence_count == 0:
+            return stats
+
+        # Average lengths
+        stats.avg_sentence_length = stats.word_count / stats.sentence_count
+        stats.avg_word_length = sum(len(w) for w in words) / len(words)
+
+        # Sentence length analysis
+        self._analyze_sentence_lengths(sentences, stats)
+
+        # Sticky sentences
+        self._analyze_sticky_sentences(sentences, stats)
+
+        # Echoes
+        self._analyze_echoes(text, stats)
+
+        # Passive voice
+        self._analyze_passive_voice(sentences, stats)
+
+        # Dialogue analysis
+        self._analyze_dialogue(text, sentences, stats)
+
+        # Readability
+        self._calculate_readability(text, words, sentences, stats)
+
+        # Adverbs
+        self._analyze_adverbs(words, stats)
+
+        # Clichés
+        self._detect_cliches(text, stats)
+
+        return stats
+
+    def _split_sentences(self, text: str) -> List[str]:
+        """Split text into sentences."""
+        # Simple sentence splitter
+        # Handle abbreviations, dialogue, etc.
+        sentences = []
+
+        # First, protect common abbreviations
+        protected = text
+        abbreviations = ['Mr.', 'Mrs.', 'Ms.', 'Dr.', 'Prof.', 'Jr.', 'Sr.',
+                        'vs.', 'etc.', 'e.g.', 'i.e.', 'St.', 'Ave.', 'Blvd.']
+        for abbr in abbreviations:
+            protected = protected.replace(abbr, abbr.replace('.', '<DOT>'))
+
+        # Split on sentence-ending punctuation
+        parts = re.split(r'(?<=[.!?])\s+', protected)
+
+        for part in parts:
+            # Restore dots
+            sentence = part.replace('<DOT>', '.')
+            if sentence.strip():
+                sentences.append(sentence.strip())
+
+        return sentences
+
+    def _analyze_sentence_lengths(self, sentences: List[str], stats: WritingStats):
+        """Analyze sentence length distribution."""
+        lengths = []
+
+        for sentence in sentences:
+            words = len(re.findall(r'\b[a-zA-Z]+\b', sentence))
+            lengths.append(words)
+
+            if words < 10:
+                stats.short_sentences += 1
+            elif words <= 20:
+                stats.medium_sentences += 1
+            elif words <= 35:
+                stats.long_sentences += 1
+            else:
+                stats.very_long_sentences += 1
+
+        # Calculate variety score (standard deviation normalized)
+        if len(lengths) > 1:
+            import statistics
+            try:
+                std_dev = statistics.stdev(lengths)
+                mean = statistics.mean(lengths)
+                # Coefficient of variation as variety indicator
+                cv = (std_dev / mean * 100) if mean > 0 else 0
+                # Score: higher CV = more variety = better (cap at 100)
+                stats.sentence_length_score = min(100, cv * 2)
+            except:
+                stats.sentence_length_score = 50.0
+
+    def _analyze_sticky_sentences(self, sentences: List[str], stats: WritingStats):
+        """Analyze sentences for high glue word percentage (sticky sentences)."""
+        sticky_threshold = 0.45  # 45% glue words = sticky
+        total_glue_index = 0
+
+        for sentence in sentences:
+            words = re.findall(r'\b[a-zA-Z]+\b', sentence.lower())
+            if len(words) < 4:
+                continue
+
+            glue_count = sum(1 for w in words if w in self.GLUE_WORDS)
+            glue_index = glue_count / len(words) if words else 0
+            total_glue_index += glue_index
+
+            if glue_index >= sticky_threshold:
+                stats.sticky_sentences.append(sentence[:100] + '...' if len(sentence) > 100 else sentence)
+
+        stats.sticky_sentence_count = len(stats.sticky_sentences)
+        stats.avg_glue_index = total_glue_index / len(sentences) if sentences else 0
+
+    def _analyze_echoes(self, text: str, stats: WritingStats):
+        """Find words repeated within close proximity (echoes)."""
+        words = re.findall(r'\b([a-zA-Z]{4,})\b', text.lower())  # Only words 4+ chars
+        word_positions: Dict[str, List[int]] = {}
+
+        for i, word in enumerate(words):
+            if word in self.GLUE_WORDS:
+                continue
+            if word not in word_positions:
+                word_positions[word] = []
+            word_positions[word].append(i)
+
+        # Find echoes (same word within 10 words)
+        echo_distance = 10
+        for word, positions in word_positions.items():
+            for i in range(len(positions) - 1):
+                if positions[i+1] - positions[i] <= echo_distance:
+                    stats.echoes.append((word, positions[i], positions[i+1]))
+
+        stats.echo_count = len(stats.echoes)
+
+    def _analyze_passive_voice(self, sentences: List[str], stats: WritingStats):
+        """Detect passive voice constructions."""
+        # Pattern: was/were/is/are/been/being + past participle (often ends in -ed)
+        passive_pattern = re.compile(
+            r'\b(was|were|is|are|am|been|being|be)\s+(?:\w+\s+)?(\w+ed|written|spoken|taken|given|made|done|seen|known|found|felt)\b',
+            re.IGNORECASE
+        )
+
+        for sentence in sentences:
+            if passive_pattern.search(sentence):
+                stats.passive_sentences.append(sentence[:100] + '...' if len(sentence) > 100 else sentence)
+
+        stats.passive_count = len(stats.passive_sentences)
+        stats.passive_percentage = (stats.passive_count / len(sentences) * 100) if sentences else 0
+
+    def _analyze_dialogue(self, text: str, sentences: List[str], stats: WritingStats):
+        """Analyze dialogue and dialogue tags."""
+        # Find dialogue (text in quotes)
+        dialogue_matches = re.findall(r'["\u201c][^"\u201d]+["\u201d]', text)
+        dialogue_words = sum(len(m.split()) for m in dialogue_matches)
+        total_words = len(text.split())
+
+        stats.dialogue_percentage = (dialogue_words / total_words * 100) if total_words > 0 else 0
+
+        # Find dialogue tags
+        tag_pattern = re.compile(
+            r'["\u201d]\s*(?:,\s*)?(?:he|she|they|i|we|[A-Z][a-z]+)\s+(\w+ed?)',
+            re.IGNORECASE
+        )
+
+        stats.dialogue_tags = Counter()
+        for match in tag_pattern.finditer(text):
+            tag = match.group(1).lower()
+            if tag in self.DIALOGUE_TAGS:
+                stats.dialogue_tags[tag] += 1
+
+        # Find overused tags (>3 uses)
+        stats.overused_dialogue_tags = [
+            tag for tag, count in stats.dialogue_tags.items() if count > 3
+        ]
+
+    def _calculate_readability(self, text: str, words: List[str], sentences: List[str], stats: WritingStats):
+        """Calculate Flesch reading ease and grade level."""
+        if not words or not sentences:
+            return
+
+        # Count syllables (simple approximation)
+        def count_syllables(word: str) -> int:
+            word = word.lower()
+            vowels = 'aeiouy'
+            count = 0
+            prev_vowel = False
+            for char in word:
+                is_vowel = char in vowels
+                if is_vowel and not prev_vowel:
+                    count += 1
+                prev_vowel = is_vowel
+            # Adjust for silent e
+            if word.endswith('e') and count > 1:
+                count -= 1
+            return max(1, count)
+
+        total_syllables = sum(count_syllables(w) for w in words)
+        avg_syllables = total_syllables / len(words)
+        avg_sentence_len = len(words) / len(sentences)
+
+        # Flesch Reading Ease
+        # 206.835 - 1.015 * (words/sentences) - 84.6 * (syllables/words)
+        stats.flesch_reading_ease = 206.835 - (1.015 * avg_sentence_len) - (84.6 * avg_syllables)
+        stats.flesch_reading_ease = max(0, min(100, stats.flesch_reading_ease))
+
+        # Flesch-Kincaid Grade Level
+        # 0.39 * (words/sentences) + 11.8 * (syllables/words) - 15.59
+        stats.flesch_grade_level = (0.39 * avg_sentence_len) + (11.8 * avg_syllables) - 15.59
+        stats.flesch_grade_level = max(0, stats.flesch_grade_level)
+
+    def _analyze_adverbs(self, words: List[str], stats: WritingStats):
+        """Analyze adverb usage."""
+        word_list = [w.lower() for w in words]
+
+        # Find -ly adverbs and common adverbs
+        for word in word_list:
+            if word.endswith('ly') and len(word) > 3:
+                if word not in stats.adverbs:
+                    stats.adverbs.append(word)
+            elif word in self.COMMON_ADVERBS:
+                if word not in stats.adverbs:
+                    stats.adverbs.append(word)
+
+        stats.adverb_count = sum(1 for w in word_list if w in stats.adverbs or (w.endswith('ly') and len(w) > 3))
+        stats.adverb_percentage = (stats.adverb_count / len(words) * 100) if words else 0
+
+    def _detect_cliches(self, text: str, stats: WritingStats):
+        """Detect clichés in text."""
+        text_lower = text.lower()
+
+        for cliche in self.CLICHES:
+            if cliche in text_lower:
+                stats.cliches.append(cliche)
+
+        stats.cliche_count = len(stats.cliches)
+
+    def format_report(self, stats: WritingStats) -> str:
+        """Format stats as an HTML report."""
+        html = """
+        <style>
+            .stat-section { margin: 15px 0; padding: 10px; background: #f5f5f5; border-radius: 4px; }
+            .stat-header { font-weight: bold; color: #374151; margin-bottom: 8px; }
+            .stat-value { color: #059669; font-weight: bold; }
+            .stat-warning { color: #dc2626; }
+            .stat-ok { color: #059669; }
+            .meter { height: 10px; background: #e5e7eb; border-radius: 5px; margin: 5px 0; }
+            .meter-fill { height: 100%; border-radius: 5px; }
+            .list-item { padding: 4px 0; border-bottom: 1px solid #e5e7eb; }
+        </style>
+        """
+
+        # Overview
+        html += f"""
+        <div class='stat-section'>
+            <div class='stat-header'>📊 Document Overview</div>
+            <p>Words: <span class='stat-value'>{stats.word_count:,}</span> |
+               Sentences: <span class='stat-value'>{stats.sentence_count:,}</span> |
+               Paragraphs: <span class='stat-value'>{stats.paragraph_count:,}</span></p>
+            <p>Avg sentence length: <span class='stat-value'>{stats.avg_sentence_length:.1f}</span> words |
+               Avg word length: <span class='stat-value'>{stats.avg_word_length:.1f}</span> chars</p>
+        </div>
+        """
+
+        # Sentence Length Variation
+        variety_class = 'stat-ok' if stats.sentence_length_score > 40 else 'stat-warning'
+        html += f"""
+        <div class='stat-section'>
+            <div class='stat-header'>📏 Sentence Length Variation</div>
+            <p>Short (< 10 words): {stats.short_sentences} |
+               Medium (10-20): {stats.medium_sentences} |
+               Long (21-35): {stats.long_sentences} |
+               Very Long (> 35): {stats.very_long_sentences}</p>
+            <p>Variety Score: <span class='{variety_class}'>{stats.sentence_length_score:.0f}/100</span></p>
+            <div class='meter'><div class='meter-fill' style='width: {stats.sentence_length_score}%; background: {"#059669" if stats.sentence_length_score > 40 else "#dc2626"};'></div></div>
+        </div>
+        """
+
+        # Sticky Sentences
+        sticky_class = 'stat-ok' if stats.sticky_sentence_count < 3 else 'stat-warning'
+        html += f"""
+        <div class='stat-section'>
+            <div class='stat-header'>🔗 Sticky Sentences (high glue word %)</div>
+            <p>Sticky sentences: <span class='{sticky_class}'>{stats.sticky_sentence_count}</span> |
+               Avg glue index: {stats.avg_glue_index:.1%}</p>
+        """
+        if stats.sticky_sentences[:3]:
+            html += "<div style='font-size: 11px; color: #666; margin-top: 5px;'>"
+            for s in stats.sticky_sentences[:3]:
+                html += f"<div class='list-item'>• {s}</div>"
+            if len(stats.sticky_sentences) > 3:
+                html += f"<div class='list-item'><em>...and {len(stats.sticky_sentences) - 3} more</em></div>"
+            html += "</div>"
+        html += "</div>"
+
+        # Echoes
+        echo_class = 'stat-ok' if stats.echo_count < 5 else 'stat-warning'
+        html += f"""
+        <div class='stat-section'>
+            <div class='stat-header'>🔁 Echoes (repeated words nearby)</div>
+            <p>Echoes found: <span class='{echo_class}'>{stats.echo_count}</span></p>
+        """
+        if stats.echoes[:5]:
+            echo_words = list(set([e[0] for e in stats.echoes[:10]]))
+            html += f"<p style='font-size: 11px; color: #666;'>Words: {', '.join(echo_words[:8])}</p>"
+        html += "</div>"
+
+        # Passive Voice
+        passive_class = 'stat-ok' if stats.passive_percentage < 15 else 'stat-warning'
+        html += f"""
+        <div class='stat-section'>
+            <div class='stat-header'>🔄 Passive Voice</div>
+            <p>Passive sentences: <span class='{passive_class}'>{stats.passive_count}</span> ({stats.passive_percentage:.1f}%)</p>
+        </div>
+        """
+
+        # Dialogue
+        html += f"""
+        <div class='stat-section'>
+            <div class='stat-header'>💬 Dialogue Analysis</div>
+            <p>Dialogue: {stats.dialogue_percentage:.1f}% of text</p>
+        """
+        if stats.dialogue_tags:
+            top_tags = sorted(stats.dialogue_tags.items(), key=lambda x: -x[1])[:5]
+            html += "<p style='font-size: 11px;'>Tags: "
+            html += ', '.join([f"{tag} ({count})" for tag, count in top_tags])
+            html += "</p>"
+        if stats.overused_dialogue_tags:
+            html += f"<p class='stat-warning' style='font-size: 11px;'>Overused: {', '.join(stats.overused_dialogue_tags)}</p>"
+        html += "</div>"
+
+        # Readability
+        ease_desc = self._get_readability_description(stats.flesch_reading_ease)
+        html += f"""
+        <div class='stat-section'>
+            <div class='stat-header'>📖 Readability</div>
+            <p>Flesch Reading Ease: <span class='stat-value'>{stats.flesch_reading_ease:.1f}</span> ({ease_desc})</p>
+            <p>Grade Level: <span class='stat-value'>{stats.flesch_grade_level:.1f}</span></p>
+        </div>
+        """
+
+        # Adverbs
+        adverb_class = 'stat-ok' if stats.adverb_percentage < 3 else 'stat-warning'
+        html += f"""
+        <div class='stat-section'>
+            <div class='stat-header'>📝 Adverb Usage</div>
+            <p>Adverbs: <span class='{adverb_class}'>{stats.adverb_count}</span> ({stats.adverb_percentage:.1f}%)</p>
+        """
+        if stats.adverbs[:10]:
+            html += f"<p style='font-size: 11px; color: #666;'>Examples: {', '.join(stats.adverbs[:10])}</p>"
+        html += "</div>"
+
+        # Clichés
+        cliche_class = 'stat-ok' if stats.cliche_count == 0 else 'stat-warning'
+        html += f"""
+        <div class='stat-section'>
+            <div class='stat-header'>⚠️ Clichés</div>
+            <p>Clichés found: <span class='{cliche_class}'>{stats.cliche_count}</span></p>
+        """
+        if stats.cliches:
+            html += f"<p style='font-size: 11px; color: #666;'>{', '.join(stats.cliches[:5])}</p>"
+        html += "</div>"
+
+        return html
+
+    def _get_readability_description(self, score: float) -> str:
+        """Get description for Flesch reading ease score."""
+        if score >= 90:
+            return "Very Easy"
+        elif score >= 80:
+            return "Easy"
+        elif score >= 70:
+            return "Fairly Easy"
+        elif score >= 60:
+            return "Standard"
+        elif score >= 50:
+            return "Fairly Difficult"
+        elif score >= 30:
+            return "Difficult"
+        else:
+            return "Very Difficult"
+
 
 class GrammarChecker:
-    """Basic grammar checker using language-tool-python or rules."""
+    """Basic grammar checker using language-tool-python, gingerit, or basic rules."""
 
     def __init__(self):
         """Initialize grammar checker."""
         self._tool = None
         self._use_language_tool = False
+        self._use_gingerit = False
         self._ignored_rules: Set[str] = set()
         # Don't auto-init language tool - it's slow and resource intensive
         # Only use basic rules for real-time checking
         self._language_tool_available = self._check_language_tool_available()
+        self._gingerit_available = self._check_gingerit_available()
+
+        # Log available grammar tools
+        if self._language_tool_available:
+            print("Grammar checker: language-tool-python available (requires Java)")
+        elif self._gingerit_available:
+            print("Grammar checker: Using gingerit as fallback (no Java required)")
+        else:
+            print("Grammar checker: Using basic rules only")
+
+    def _check_java_available(self) -> bool:
+        """Check if Java is available on the system."""
+        import subprocess
+        import shutil
+
+        # First check if java is in PATH
+        java_path = shutil.which('java')
+        if not java_path:
+            return False
+
+        # Try to run java -version
+        try:
+            result = subprocess.run(
+                [java_path, '-version'],
+                capture_output=True,
+                timeout=5
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
 
     def _check_language_tool_available(self) -> bool:
-        """Check if language-tool-python is available (but don't init it)."""
+        """Check if language-tool-python is available (requires Java)."""
         try:
             import language_tool_python
+            # Also check if Java is available
+            if not self._check_java_available():
+                print("Grammar checker: language-tool-python installed but Java not available")
+                return False
+            return True
+        except ImportError:
+            return False
+
+    def _check_gingerit_available(self) -> bool:
+        """Check if gingerit is available as a fallback."""
+        try:
+            import gingerit
             return True
         except ImportError:
             return False
@@ -724,30 +1448,52 @@ class GrammarChecker:
         if self._tool is not None:
             return
 
-        try:
-            import language_tool_python
-            self._tool = language_tool_python.LanguageTool('en-US')
-            self._use_language_tool = True
-            print("Grammar checker: Initialized language-tool-python")
-        except Exception as e:
-            print(f"Grammar checker: language-tool-python error ({e})")
-            self._use_language_tool = False
+        # Try language-tool-python first (requires Java)
+        if self._language_tool_available:
+            try:
+                import language_tool_python
+                self._tool = language_tool_python.LanguageTool('en-US')
+                self._use_language_tool = True
+                print("Grammar checker: Initialized language-tool-python")
+                return
+            except Exception as e:
+                print(f"Grammar checker: language-tool-python error ({e})")
+                self._language_tool_available = False
+
+        # Fall back to gingerit (no Java required, uses web API)
+        if self._gingerit_available:
+            try:
+                from gingerit.gingerit import GingerIt
+                self._tool = GingerIt()
+                self._use_gingerit = True
+                print("Grammar checker: Initialized gingerit (fallback)")
+                return
+            except Exception as e:
+                print(f"Grammar checker: gingerit error ({e})")
+                self._gingerit_available = False
+
+        # No advanced grammar tool available
+        print("Grammar checker: Using basic rules only (no advanced tool available)")
+        self._use_language_tool = False
+        self._use_gingerit = False
 
     def check_text(self, text: str, use_full_check: bool = False) -> List[Tuple[int, int, str, str, List[str]]]:
         """Check text for grammar errors.
 
         Args:
             text: Text to check
-            use_full_check: If True, use heavy language-tool (only for explicit recheck)
+            use_full_check: If True, use heavy language-tool or gingerit (only for explicit recheck)
 
         Returns:
             List of (start, end, error_text, message, suggestions)
         """
         errors = []
 
-        # Only use language tool for explicit full checks (recheck button)
-        if use_full_check and self._language_tool_available:
+        # Only use advanced tools for explicit full checks (recheck button)
+        if use_full_check and (self._language_tool_available or self._gingerit_available):
             self._init_language_tool()
+
+            # Try language-tool-python first
             if self._use_language_tool and self._tool:
                 try:
                     matches = self._tool.check(text)
@@ -760,9 +1506,28 @@ class GrammarChecker:
                                 match.message,
                                 match.replacements[:5] if match.replacements else []
                             ))
+                    return errors
                 except Exception as e:
-                    print(f"Grammar check error: {e}")
-                return errors
+                    print(f"Grammar check error (language-tool): {e}")
+
+            # Fall back to gingerit
+            if self._use_gingerit and self._tool:
+                try:
+                    result = self._tool.parse(text)
+                    corrections = result.get('corrections', [])
+                    for correction in corrections:
+                        start = correction.get('start', 0)
+                        end = start + len(correction.get('text', ''))
+                        errors.append((
+                            start,
+                            end,
+                            correction.get('text', ''),
+                            correction.get('definition', 'Grammar suggestion'),
+                            [correction.get('correct', '')] if correction.get('correct') else []
+                        ))
+                    return errors
+                except Exception as e:
+                    print(f"Grammar check error (gingerit): {e}")
 
         # For real-time checking, use fast basic rules only
         errors.extend(self._check_basic_rules(text))
@@ -1019,7 +1784,7 @@ class WritingHighlighter(QSyntaxHighlighter):
             self._ignored_words[word_lower].add(error_type)
         else:
             # Ignore all error types for this word
-            self._ignored_words[word_lower].update([ErrorType.SPELLING, ErrorType.GRAMMAR, ErrorType.OVERUSE])
+            self._ignored_words[word_lower].update([ErrorType.SPELLING, ErrorType.GRAMMAR, ErrorType.OVERUSE, ErrorType.OVERUSED_PHRASE])
 
         self.rehighlight()
 
@@ -1229,6 +1994,56 @@ class WritingHighlighter(QSyntaxHighlighter):
                             suggestions=synonyms
                         ))
 
+            # Overused phrase detection (2, 3, 4, 5-word phrases)
+            # Calculate block start position in full document
+            block_start = block.position()
+            block_end = block_start + len(text)
+
+            # Get overused phrases that overlap with this block
+            phrase_occurrences = self.overuse_detector.get_overused_phrases_in_range(
+                self._full_text, block_start, block_end
+            )
+
+            for phrase, phrase_start, phrase_end, count in phrase_occurrences:
+                # Convert document position to block position
+                local_start = max(0, phrase_start - block_start)
+                local_end = min(len(text), phrase_end - block_start)
+
+                # Skip if the phrase doesn't actually overlap this block's text range
+                if local_start >= len(text) or local_end <= 0:
+                    continue
+
+                # Skip if ignored
+                if self.is_word_ignored(phrase, ErrorType.OVERUSED_PHRASE):
+                    continue
+
+                # Don't double-flag if already flagged
+                already_flagged = any(
+                    e.start == local_start and e.end == local_end
+                    for e in self._errors[block_number]
+                )
+                if not already_flagged:
+                    # Use a different shade of blue for phrases (purple-ish)
+                    phrase_format = QTextCharFormat()
+                    phrase_format.setUnderlineStyle(
+                        QTextCharFormat.UnderlineStyle.SpellCheckUnderline
+                    )
+                    phrase_format.setUnderlineColor(QColor(148, 0, 211))  # Purple for phrases
+
+                    existing_format = get_existing_format(local_start)
+                    existing_format.merge(phrase_format)
+                    self.setFormat(local_start, local_end - local_start, existing_format)
+
+                    word_count = len(phrase.split())
+                    self._errors[block_number].append(WritingError(
+                        error_type=ErrorType.OVERUSED_PHRASE,
+                        word=phrase,
+                        start=local_start,
+                        end=local_end,
+                        reason=f"Phrase '{phrase}' ({word_count} words) appears {count} times. Consider rephrasing.",
+                        suggestions=[]  # No automatic suggestions for phrases
+                    ))
+
 
 class ContextLookupDialog(QDialog):
     """Dialog for displaying context lookup results."""
@@ -1359,8 +2174,11 @@ class EnhancedTextEditor(QTextEdit):
             self.overuse_detector
         )
 
-        # Enable mouse tracking for tooltips
+        # Enable mouse tracking for tooltips on both widget and viewport
+        # On macOS, QTextEdit uses a viewport for rendering, so we must enable
+        # mouse tracking there and handle tooltip events via viewportEvent()
         self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
 
         # Update overuse detection when text changes (with longer debounce for performance)
         self.textChanged.connect(self._on_text_changed)
@@ -1440,41 +2258,64 @@ class EnhancedTextEditor(QTextEdit):
         """Get current overuse detection mode."""
         return self.writing_highlighter.get_overuse_mode()
 
+    def _show_error_tooltip(self, global_pos: QPoint, viewport_pos: QPoint) -> bool:
+        """Show tooltip for error at position. Returns True if tooltip was shown."""
+        cursor = self.cursorForPosition(viewport_pos)
+        block = cursor.block()
+        block_number = block.blockNumber()
+        position_in_block = cursor.positionInBlock()
+
+        # Check for any error at this position
+        error = self.writing_highlighter.get_error_at(block_number, position_in_block)
+        if error:
+            # Color-coded error type indicator
+            color_map = {
+                ErrorType.SPELLING: "#ff0000",  # Red
+                ErrorType.GRAMMAR: "#00b400",   # Green
+                ErrorType.OVERUSE: "#0078ff",   # Blue
+                ErrorType.OVERUSED_PHRASE: "#9400d3",  # Purple
+            }
+            type_names = {
+                ErrorType.SPELLING: "Spelling",
+                ErrorType.GRAMMAR: "Grammar",
+                ErrorType.OVERUSE: "Overused Word",
+                ErrorType.OVERUSED_PHRASE: "Repeated Phrase",
+            }
+            color = color_map.get(error.error_type, "#000000")
+            type_name = type_names.get(error.error_type, "Error")
+
+            tooltip_text = f"<span style='color:{color}'><b>{type_name}:</b></span> {error.word}<br>{error.reason}"
+            if error.suggestions:
+                tooltip_text += f"<br><br><b>Suggestions:</b> {', '.join(error.suggestions[:5])}"
+            tooltip_text += "<br><br><i>Right-click for options</i>"
+            QToolTip.showText(global_pos, tooltip_text, self)
+            return True
+        else:
+            QToolTip.hideText()
+        return False
+
+    def viewportEvent(self, event: QEvent) -> bool:
+        """Handle viewport events including tooltip display for writing errors.
+
+        On macOS, QTextEdit renders in a viewport, so tooltip events arrive here
+        rather than in event(). This ensures tooltips work cross-platform.
+        """
+        if event.type() == QEvent.Type.ToolTip:
+            pos = event.pos()
+            global_pos = event.globalPos()
+            if self._show_error_tooltip(global_pos, pos):
+                return True
+
+        return super().viewportEvent(event)
+
     def event(self, event: QEvent) -> bool:
         """Handle events including tooltip display for writing errors."""
         if event.type() == QEvent.Type.ToolTip:
             # Get position under cursor
             pos = event.pos()
-            cursor = self.cursorForPosition(pos)
-            block = cursor.block()
-            block_number = block.blockNumber()
-            position_in_block = cursor.positionInBlock()
-
-            # Check for any error at this position
-            error = self.writing_highlighter.get_error_at(block_number, position_in_block)
-            if error:
-                # Color-coded error type indicator
-                color_map = {
-                    ErrorType.SPELLING: "#ff0000",  # Red
-                    ErrorType.GRAMMAR: "#00b400",   # Green
-                    ErrorType.OVERUSE: "#0078ff",   # Blue
-                }
-                type_names = {
-                    ErrorType.SPELLING: "Spelling",
-                    ErrorType.GRAMMAR: "Grammar",
-                    ErrorType.OVERUSE: "Overused Word",
-                }
-                color = color_map.get(error.error_type, "#000000")
-                type_name = type_names.get(error.error_type, "Error")
-
-                tooltip_text = f"<span style='color:{color}'><b>{type_name}:</b></span> {error.word}<br>{error.reason}"
-                if error.suggestions:
-                    tooltip_text += f"<br><br><b>Suggestions:</b> {', '.join(error.suggestions[:5])}"
-                tooltip_text += "<br><br><i>Right-click for options</i>"
-                QToolTip.showText(event.globalPos(), tooltip_text, self)
+            global_pos = event.globalPos()
+            if self._show_error_tooltip(global_pos, pos):
                 return True
-            else:
-                QToolTip.hideText()
 
         return super().event(event)
 
@@ -1579,6 +2420,7 @@ class EnhancedTextEditor(QTextEdit):
                 ErrorType.SPELLING: "Spelling",
                 ErrorType.GRAMMAR: "Grammar",
                 ErrorType.OVERUSE: "Overused Word",
+                ErrorType.OVERUSED_PHRASE: "Repeated Phrase",
             }
             type_name = type_names.get(error.error_type, "Error")
 

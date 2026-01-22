@@ -404,6 +404,9 @@ class MainWindow(QMainWindow):
         # Auto-save when switching chapters
         self.manuscript_editor.chapter_switched.connect(self._auto_save_project)
 
+        # Update grader widget when switching to Critique tab
+        self.tab_widget.currentChanged.connect(self._on_tab_changed)
+
         # Connect chat to AI assistance
         self.chat_widget.message_sent.connect(self._handle_chat_message)
 
@@ -554,6 +557,9 @@ class MainWindow(QMainWindow):
         self.agent_manager.load_data(self.current_project.agent_contacts)
         self.attributions_tab.set_manuscript(self.current_project.manuscript)
 
+        # Set up grader widget with project reference
+        self.grader_widget.set_project(self.current_project)
+
         self.project_changed.emit()
 
     def _collect_project_data(self):
@@ -603,6 +609,15 @@ class MainWindow(QMainWindow):
         if self.current_project:
             self.attributions_tab.set_manuscript(self.current_project.manuscript)
             self._on_content_changed()
+
+    def _on_tab_changed(self, index: int):
+        """Handle tab change - update grader widget with current chapter when Critique tab selected."""
+        # Check if this is the Critique tab (index 6 based on tab order)
+        current_widget = self.tab_widget.widget(index)
+        if current_widget == self.grader_widget:
+            # Update grader widget with current chapter content
+            content, title = self.manuscript_editor.get_current_chapter_info()
+            self.grader_widget.set_current_chapter(content, title)
 
     def _toggle_chat(self):
         """Toggle chat widget visibility."""

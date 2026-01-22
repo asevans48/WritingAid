@@ -181,13 +181,21 @@ Style: {style}
 - detailed: Add rich visual details, lighting, composition (2-3 sentences)
 - artistic: Include artistic style references and techniques (2-3 sentences)
 
-Rules:
-1. Preserve the user's core description
+CRITICAL RULES FOR CHARACTER PORTRAITS:
+1. ALWAYS describe as: "portrait photograph", "character portrait", "painted portrait", or "headshot"
+2. NEVER use: social media, profile picture, avatar, selfie, phone camera, screenshot, app icon
+3. Include proper framing: "head and shoulders", "bust portrait", "3/4 view", "close-up portrait"
+4. Add professional lighting: "studio lighting", "soft natural light", "dramatic rim lighting"
+5. Specify a proper background: "neutral background", "blurred background", "atmospheric background"
+6. For artistic styles, reference traditional art: "oil painting", "digital painting", "concept art"
+
+General Rules:
+1. Preserve the user's core description and physical features
 2. Add visual details (lighting, colors, composition, camera angle)
-3. Specify art style if not mentioned
+3. Specify art style if not mentioned (prefer traditional portraiture or photography)
 4. Keep it under 150 words
 5. Do NOT add NSFW content
-6. Focus on visual elements only
+6. Focus on visual elements only - this is for a character portrait, NOT a social media profile
 {character_context}"""
 
         try:
@@ -231,14 +239,22 @@ Rules:
             logger.warning("Image generation is disabled in settings")
             return None
 
-        # Build base prompt from character
-        base_prompt_parts = [f"Portrait of {character.name}"]
+        # Build base prompt from character with explicit portrait framing
+        # This helps avoid social media profile-style outputs
+        base_prompt_parts = [
+            f"Character portrait of {character.name}",
+            "head and shoulders framing",
+            "professional portrait photography"
+        ]
 
         if character.physical_description:
             base_prompt_parts.append(character.physical_description)
 
         if additional_prompt:
             base_prompt_parts.append(additional_prompt)
+        else:
+            # Add default quality terms if no additional prompt
+            base_prompt_parts.append("neutral background, soft lighting")
 
         base_prompt = ", ".join(base_prompt_parts)
 

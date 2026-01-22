@@ -257,7 +257,7 @@ class GenAIConfig:
             "image_height": 1024,
             "image_num_inference_steps": default_steps,
             "image_guidance_scale": 7.5,
-            "image_negative_prompt": "blurry, low quality, distorted, deformed, ugly, bad anatomy",
+            "image_negative_prompt": "blurry, low quality, distorted, deformed, ugly, bad anatomy, social media profile, avatar, selfie, phone camera, screenshot, digital interface, app icon, profile picture frame, watermark, text overlay",
 
             # Prompt Enhancement (separate LLM/SLM for GenAI prompt generation)
             "use_prompt_enhancement": True,  # Use LLM to enhance prompts

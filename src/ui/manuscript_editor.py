@@ -2401,6 +2401,21 @@ class ManuscriptEditor(QWidget):
         """Get the most important key points across all chapters."""
         return self.memory_manager.get_key_points_for_context(max_points)
 
+    def get_current_chapter_info(self) -> tuple:
+        """Get current chapter content and title.
+
+        Returns:
+            Tuple of (content: str, title: str) or ("", "") if no chapter selected
+        """
+        if not self.current_chapter_editor:
+            return "", ""
+
+        # Save current content first
+        self.current_chapter_editor.save_to_model()
+
+        chapter = self.current_chapter_editor.chapter
+        return chapter.content or "", chapter.title or "Untitled Chapter"
+
     def search_key_points(self, query: str, point_types=None):
         """Search key points across all chapters."""
         return self.memory_manager.search_key_points(query, point_types)

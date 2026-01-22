@@ -508,6 +508,15 @@ PYTORCH_MODELS: List[LocalModelInfo] = [
         requires_trust_remote_code=True
     ),
     LocalModelInfo(
+        model_id="Qwen/Qwen3-30B-A3B",
+        display_name="Qwen 3 (30B-A3B) [Latest]",
+        size_gb=60.0,
+        description="Latest Qwen 3 model with exceptional reasoning and quality",
+        ram_required="64GB+ (32GB with 4-bit quantization)",
+        best_for="Highest quality critique, complex analysis, professional writing",
+        requires_trust_remote_code=True
+    ),
+    LocalModelInfo(
         model_id="mistralai/Mistral-Nemo-Instruct-2407",
         display_name="⭐ Mistral Nemo 12B [High Quality]",
         size_gb=24.0,
@@ -1903,6 +1912,80 @@ class SettingsDialog(QDialog):
         preference_group.setLayout(preference_layout)
         layout.addWidget(preference_group)
 
+        # Critique Model Settings
+        critique_group = QGroupBox("Critique Model Settings")
+        critique_layout = QFormLayout()
+
+        critique_info = QLabel(
+            "Configure a specific model for writing critique and feedback. "
+            "A dedicated model can provide more consistent and thorough analysis."
+        )
+        critique_info.setWordWrap(True)
+        critique_info.setStyleSheet("color: #6b7280; font-size: 11px; padding: 4px;")
+        critique_layout.addRow("", critique_info)
+
+        # Critique model source
+        self.critique_source_combo = QComboBox()
+        self.critique_source_combo.addItems([
+            "Use Default Model",
+            "Use Specific Local Model",
+            "Use Specific Cloud Provider"
+        ])
+        current_source = self.settings.get("critique_model_source", "default")
+        source_map = {"default": 0, "local": 1, "cloud": 2}
+        self.critique_source_combo.setCurrentIndex(source_map.get(current_source, 0))
+        self.critique_source_combo.currentIndexChanged.connect(self._on_critique_source_changed)
+        critique_layout.addRow("Critique Model:", self.critique_source_combo)
+
+        # Local model selection for critique
+        self.critique_local_combo = QComboBox()
+        self.critique_local_combo.setEditable(True)
+        self.critique_local_combo.setPlaceholderText("Select local model for critique...")
+        for model in available_models:
+            display_text = f"{model.display_name}"
+            self.critique_local_combo.addItem(display_text, model.model_id)
+
+        current_critique_model = self.settings.get("critique_local_model_id", "")
+        if current_critique_model:
+            index = self.critique_local_combo.findData(current_critique_model)
+            if index >= 0:
+                self.critique_local_combo.setCurrentIndex(index)
+            else:
+                self.critique_local_combo.setEditText(current_critique_model)
+        critique_layout.addRow("Local Model:", self.critique_local_combo)
+
+        # Cloud provider selection for critique
+        self.critique_cloud_combo = QComboBox()
+        self.critique_cloud_combo.addItems(["Claude", "ChatGPT", "Gemini"])
+        current_provider = self.settings.get("critique_cloud_provider", "claude")
+        provider_map = {"claude": 0, "chatgpt": 1, "gemini": 2}
+        self.critique_cloud_combo.setCurrentIndex(provider_map.get(current_provider, 0))
+        critique_layout.addRow("Cloud Provider:", self.critique_cloud_combo)
+
+        # Critique temperature
+        critique_temp_layout = QHBoxLayout()
+        self.critique_temp_slider = QSlider(Qt.Orientation.Horizontal)
+        self.critique_temp_slider.setRange(0, 100)
+        current_temp = int(self.settings.get("critique_temperature", 0.3) * 100)
+        self.critique_temp_slider.setValue(current_temp)
+        self.critique_temp_slider.valueChanged.connect(self._on_critique_temp_changed)
+        critique_temp_layout.addWidget(self.critique_temp_slider)
+
+        self.critique_temp_label = QLabel(f"{current_temp / 100:.2f}")
+        self.critique_temp_label.setMinimumWidth(40)
+        critique_temp_layout.addWidget(self.critique_temp_label)
+        critique_layout.addRow("Temperature:", critique_temp_layout)
+
+        critique_temp_note = QLabel("Lower values (0.2-0.4) give more consistent critique")
+        critique_temp_note.setStyleSheet("color: #6b7280; font-size: 10px;")
+        critique_layout.addRow("", critique_temp_note)
+
+        critique_group.setLayout(critique_layout)
+        layout.addWidget(critique_group)
+
+        # Initialize critique visibility
+        self._on_critique_source_changed(self.critique_source_combo.currentIndex())
+
         # Requirements note
         requirements = QLabel(
             "Requirements: pip install transformers torch huggingface_hub\n"
@@ -2483,6 +2566,26 @@ class SettingsDialog(QDialog):
         """Handle local models toggle."""
         # Could enable/disable related controls
         pass
+
+    def _on_critique_source_changed(self, index: int):
+        """Handle critique model source change."""
+        # 0 = Default, 1 = Local, 2 = Cloud
+        self.critique_local_combo.setVisible(index == 1)
+        self.critique_cloud_combo.setVisible(index == 2)
+
+        # Update labels visibility
+        # Find and update the label rows in the form layout
+        try:
+            # Just set enabled state instead of visibility for form rows
+            self.critique_local_combo.setEnabled(index == 1)
+            self.critique_cloud_combo.setEnabled(index == 2)
+        except Exception:
+            pass
+
+    def _on_critique_temp_changed(self, value: int):
+        """Handle critique temperature slider change."""
+        temp = value / 100.0
+        self.critique_temp_label.setText(f"{temp:.2f}")
 
     def _on_collection_toggled(self, checked: bool):
         """Handle collection toggle."""
@@ -3773,6 +3876,12 @@ class SettingsDialog(QDialog):
             "local_model_device": device_map.get(self.device_combo.currentIndex(), "auto"),
             "local_model_trust_remote_code": self.trust_remote_code.isChecked(),
             "prefer_local_model": self.prefer_local_model.isChecked(),
+
+            # Critique Model Settings
+            "critique_model_source": ["default", "local", "cloud"][self.critique_source_combo.currentIndex()],
+            "critique_local_model_id": self.critique_local_combo.currentData() or self.critique_local_combo.currentText(),
+            "critique_cloud_provider": ["claude", "chatgpt", "gemini"][self.critique_cloud_combo.currentIndex()],
+            "critique_temperature": self.critique_temp_slider.value() / 100,
 
             # Training Data Collection
             "enable_conversation_collection": self.enable_conversation_collection.isChecked(),
