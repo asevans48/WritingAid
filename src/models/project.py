@@ -304,6 +304,30 @@ class ProjectDictionary(BaseModel):
     definitions: Dict[str, str] = Field(default_factory=dict)
 
 
+class ProjectSummary(BaseModel):
+    """AI-generated condensed summaries of project data for context.
+
+    These summaries are automatically generated and updated when project data changes.
+    They provide concise context for AI assistants without overwhelming token limits.
+    """
+    plot_summary: str = ""  # Condensed plot outline (max ~500 words)
+    character_summary: str = ""  # Key character descriptions (max ~500 words)
+    worldbuilding_summary: str = ""  # Essential worldbuilding details (max ~500 words)
+    themes_summary: str = ""  # Core themes and motifs (max ~200 words)
+
+    # Metadata for tracking freshness
+    last_updated: datetime = Field(default_factory=datetime.now)
+    source_hash: str = ""  # Hash of source data to detect changes
+
+    def needs_update(self, current_hash: str) -> bool:
+        """Check if summary needs regeneration based on source data hash."""
+        return self.source_hash != current_hash
+
+    def is_empty(self) -> bool:
+        """Check if summary has been generated."""
+        return not (self.plot_summary or self.character_summary or self.worldbuilding_summary)
+
+
 class WriterProject(BaseModel):
     """Root project model encapsulating all writer work."""
     name: str
@@ -318,6 +342,9 @@ class WriterProject(BaseModel):
     generated_images: List[GeneratedImage] = Field(default_factory=list)
     agent_contacts: List[AgentContact] = Field(default_factory=list)
     dictionary: ProjectDictionary = Field(default_factory=ProjectDictionary)
+
+    # AI-generated summaries for efficient context
+    ai_summary: ProjectSummary = Field(default_factory=ProjectSummary)
 
     # Metadata
     created_at: datetime = Field(default_factory=datetime.now)

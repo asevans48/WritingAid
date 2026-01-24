@@ -463,7 +463,10 @@ class ChapterEditor(QWidget):
         self.content_changed.emit()
 
     def _get_planner_context(self) -> dict:
-        """Get context for the planner AI assistant."""
+        """Get context for the planner AI assistant.
+
+        Uses AI-generated summaries if available for efficient context management.
+        """
         context = {
             'chapter_title': self.chapter.title,
             'plot': '',
@@ -471,41 +474,85 @@ class ChapterEditor(QWidget):
             'characters': ''
         }
 
-        if self.project:
-            # Get plot outline
+        if not self.project:
+            return context
+
+        # Try to use AI-generated summaries if available and up-to-date
+        use_ai_summary = (hasattr(self.project, 'ai_summary') and
+                         self.project.ai_summary and
+                         not self.project.ai_summary.is_empty())
+
+        if use_ai_summary:
+            summary = self.project.ai_summary
+            print("✓ Using AI-generated summaries (efficient context)")
+
+            # Use condensed summaries
+            context['plot'] = summary.plot_summary or ""
+            context['worldbuilding'] = summary.worldbuilding_summary or ""
+            context['characters'] = summary.character_summary or ""
+
+            # Add themes if available
+            if summary.themes_summary:
+                if context['plot']:
+                    context['plot'] += f"\n\nThemes: {summary.themes_summary}"
+                else:
+                    context['plot'] = f"Themes: {summary.themes_summary}"
+
+        else:
+            # Fallback to manual extraction (less efficient, longer context)
+            print("⚠ Using manual extraction (AI summary not available)")
+
+            # Get plot outline from StoryPlanning model
             if hasattr(self.project, 'story_planning') and self.project.story_planning:
                 plot_parts = []
-                if self.project.story_planning.get('premise'):
-                    plot_parts.append(f"Premise: {self.project.story_planning['premise']}")
-                if self.project.story_planning.get('themes'):
-                    plot_parts.append(f"Themes: {', '.join(self.project.story_planning['themes'])}")
-                if self.project.story_planning.get('outline'):
-                    plot_parts.append(f"Outline: {self.project.story_planning['outline']}")
-                context['plot'] = '\n'.join(plot_parts)
+                if self.project.story_planning.main_plot:
+                    # Truncate for manual extraction
+                    plot_text = self.project.story_planning.main_plot
+                    if len(plot_text) > 500:
+                        plot_text = plot_text[:500] + "..."
+                    plot_parts.append(f"Plot: {plot_text}")
+                if self.project.story_planning.themes:
+                    plot_parts.append(f"Themes: {', '.join(self.project.story_planning.themes)}")
+                if plot_parts:
+                    context['plot'] = '\n'.join(plot_parts)
 
             # Get worldbuilding summary
             if hasattr(self.project, 'worldbuilding') and self.project.worldbuilding:
                 wb_parts = []
-                if self.project.worldbuilding.get('setting'):
-                    wb_parts.append(f"Setting: {self.project.worldbuilding['setting']}")
-                if self.project.worldbuilding.get('magic_system'):
-                    wb_parts.append(f"Magic/Technology: {self.project.worldbuilding['magic_system']}")
-                context['worldbuilding'] = '\n'.join(wb_parts)
+                if self.project.worldbuilding.mythology:
+                    wb_parts.append(f"Mythology: {self.project.worldbuilding.mythology[:150]}...")
+                if self.project.worldbuilding.history:
+                    wb_parts.append(f"History: {self.project.worldbuilding.history[:150]}...")
+                if wb_parts:
+                    context['worldbuilding'] = '\n'.join(wb_parts)
 
             # Get characters summary
             if hasattr(self.project, 'characters') and self.project.characters:
                 char_parts = []
-                for char in self.project.characters[:10]:  # Limit to first 10 characters
-                    if isinstance(char, dict):
-                        name = char.get('name', 'Unknown')
-                        role = char.get('role', '')
-                        char_parts.append(f"- {name}: {role}")
-                context['characters'] = '\n'.join(char_parts)
+                for char in self.project.characters[:8]:  # Limit to 8 for manual extraction
+                    name = getattr(char, 'name', 'Unknown')
+                    role = getattr(char, 'role', '')
+                    char_parts.append(f"- {name}: {role}")
+                if char_parts:
+                    context['characters'] = '\n'.join(char_parts)
 
         return context
 
     def _init_ai(self):
         """Initialize AI client for the planner."""
+        # Always set up the AI handler for the planner (works with both cloud and local models)
+        self.planner_widget.set_ai_handler(self._handle_planner_ai_request)
+
+        # Initialize project summarizer with AI handler
+        from src.ai.project_summarizer import get_project_summarizer
+        self._summarizer = get_project_summarizer()
+        self._summarizer.set_ai_handler(self._handle_summarization_request)
+
+        # Check if summary needs update and generate if needed
+        if self.project and self._summarizer.needs_update(self.project):
+            print("Project summary is outdated or missing - will regenerate on next save")
+
+        # Try to initialize cloud LLM if configured
         try:
             from src.config.ai_config import get_ai_config
             from src.ai.llm_client import LLMClient, LLMProvider
@@ -529,12 +576,14 @@ class ChapterEditor(QWidget):
                     api_key=api_key,
                     model=config.get_model(provider)
                 )
-
-                # Set up the AI handler for the planner
-                self.planner_widget.set_ai_handler(self._handle_planner_ai_request)
+                print(f"Initialized cloud LLM: {provider}")
+            else:
+                print("No cloud LLM API key configured - will use local models only")
+                self._llm_client = None
 
         except Exception as e:
-            print(f"Failed to initialize AI for planner: {e}")
+            print(f"Failed to initialize cloud LLM for planner: {e}")
+            print("Will use local models instead")
             self._llm_client = None
 
     def _handle_planner_ai_request(self, prompt: str, model_name: str) -> str:
@@ -542,20 +591,260 @@ class ChapterEditor(QWidget):
 
         Args:
             prompt: The full prompt including context
-            model_name: Selected model name from dropdown (for future use)
+            model_name: Selected model name from dropdown (e.g., "Local SLM", "Claude (Anthropic)")
 
         Returns:
             AI response text or empty string on error
         """
+        # Check user preference for chapter planning (Settings > Model Settings > Chapter Planning)
+        from src.config.ai_config import get_ai_config
+        config = get_ai_config()
+        settings = config.get_settings()
+        use_local_for_planning = settings.get("use_local_for_chapter_planning", False)
+
+        # Determine routing
+        will_use_local = model_name == "Local SLM" or use_local_for_planning or not self._llm_client
+
+        # Log routing decision
+        print(f"\n{'#'*70}")
+        print(f"# CHAPTER PLANNER REQUEST")
+        print(f"{'#'*70}")
+        print(f"📝 Request from: {'User dropdown' if model_name == 'Local SLM' else 'Settings preference' if use_local_for_planning else 'Auto (no cloud API)'}")
+        print(f"🎯 Will use: {'LOCAL MODEL' if will_use_local else f'CLOUD LLM ({self._llm_client._provider.value if self._llm_client else 'Unknown'})'}")
+        print(f"{'#'*70}\n")
+
+        # Route to local model if requested via dropdown OR configured in settings
+        if model_name == "Local SLM" or use_local_for_planning:
+            return self._handle_local_model_request(prompt)
+
+        # Use cloud LLM if configured
         if not self._llm_client:
-            return "AI not configured. Please set up API keys in Settings."
+            # No cloud LLM configured - try local model as fallback
+            print("⚠️  No cloud LLM configured - falling back to local model")
+            return self._handle_local_model_request(prompt)
 
         try:
+            print(f"☁️  Using cloud LLM: {self._llm_client._provider.value}")
             response = self._llm_client.generate(prompt)
+            print(f"✓ Cloud LLM response received ({len(response)} chars)\n")
             return response
         except Exception as e:
-            print(f"AI request error: {e}")
-            return f"Error: {str(e)}"
+            print(f"✗ Cloud LLM error: {e}")
+            print(f"⚠️  Falling back to local model")
+            return self._handle_local_model_request(prompt)
+
+    def _handle_local_model_request(self, prompt: str) -> str:
+        """Handle AI requests using local model.
+
+        Automatically selects between reasoning and storytelling models based on task type.
+
+        Args:
+            prompt: The full prompt including context
+
+        Returns:
+            AI response text or empty string on error
+        """
+        try:
+            print("[DEBUG] _handle_local_model_request: Starting...")
+            from src.config.ai_config import get_ai_config
+            print("[DEBUG] _handle_local_model_request: get_ai_config imported")
+            from src.ai.rephrasing_agent import RephrasingAgent
+            print("[DEBUG] _handle_local_model_request: RephrasingAgent imported")
+
+            # Use the correct config (ai_config, not genai_config)
+            ai_config = get_ai_config()
+            settings = ai_config.get_settings()
+            print(f"[DEBUG] _handle_local_model_request: ai_config loaded")
+
+            # Get storytelling and reasoning model IDs from settings
+            storytelling_model_id = settings.get("storytelling_model_id")
+            reasoning_model_id = settings.get("reasoning_model_id")
+            local_model_id = settings.get("local_model_id")
+            print(f"[DEBUG] storytelling_model_id: {storytelling_model_id}")
+            print(f"[DEBUG] reasoning_model_id: {reasoning_model_id}")
+            print(f"[DEBUG] local_model_id: {local_model_id}")
+
+            # Detect if this is a reasoning task (analytical) or creative task
+            prompt_lower = prompt.lower()
+
+            # Strong reasoning indicators - analytical/critique tasks
+            reasoning_keywords = [
+                'analyze', 'critique', 'review the chapter', 'evaluate', 'assess',
+                'consistency check', 'continuity check', 'logic', 'plot holes',
+                'find problems', 'find issues', 'check for errors', 'review for',
+                'identify weaknesses', 'identify strengths'
+            ]
+
+            # Creative indicators - writing/generation tasks
+            creative_keywords = [
+                'write', 'create', 'generate', 'draft', 'describe', 'narrate',
+                'develop', 'expand', 'continue', 'finish', 'compose', 'craft',
+                'help me write', 'plan a chapter', 'outline a scene', 'brainstorm ideas'
+            ]
+
+            # Check creative first (prioritize writing tasks for a writing tool)
+            is_creative_task = any(keyword in prompt_lower for keyword in creative_keywords)
+            is_reasoning_task = any(keyword in prompt_lower for keyword in reasoning_keywords) and not is_creative_task
+            print(f"[DEBUG] _handle_local_model_request: Task detection complete (reasoning={is_reasoning_task})")
+
+            # Choose model based on task type
+            if is_reasoning_task:
+                # Try reasoning model first, fall back to storytelling model
+                model_id = reasoning_model_id or storytelling_model_id or local_model_id
+                model_type = "reasoning" if reasoning_model_id else "storytelling"
+            else:
+                # Use storytelling model for creative tasks
+                model_id = storytelling_model_id or local_model_id
+                model_type = "storytelling"
+
+            print(f"[DEBUG] _handle_local_model_request: Model ID selected: {model_id}")
+
+            if not model_id:
+                return ("No local model configured. Please select a model in Settings > Hugging Face / Local Models.\n\n"
+                        "Storytelling Models (Creative Writing):\n"
+                        "⭐ mistralai/Ministral-3-8B-Instruct-2512 (16GB) - Latest Mistral\n"
+                        "📝 Qwen/Qwen2.5-7B-Instruct (14GB, 128K context) - Long chapters\n\n"
+                        "Reasoning Models (Planning & Critique):\n"
+                        "🧠 deepseek-ai/DeepSeek-R1-Distill-Qwen-7B (14GB) - Plot analysis\n"
+                        "🧠 microsoft/Phi-4-reasoning-plus (28GB) - Story planning\n\n"
+                        "General Models:\n"
+                        "• google/gemma-3-4b-it (8GB VRAM)\n"
+                        "• microsoft/Phi-3.5-mini-instruct (6GB VRAM)")
+
+            # Initialize rephrasing agent with appropriate model
+            agent = RephrasingAgent()
+            agent.local_model_id = model_id
+
+            # Prominent logging for chapter planner
+            task_icon = "🧠" if is_reasoning_task else "✍️"
+            print(f"\n{'='*70}")
+            print(f"{'='*70}")
+            print(f"{task_icon} CHAPTER PLANNER AI ASSISTANT")
+            print(f"{'='*70}")
+            print(f"📦 Model: {model_id}")
+            print(f"📋 Task Type: {'Reasoning/Analysis' if is_reasoning_task else 'Creative/Storytelling'}")
+            print(f"🎯 Model Category: {model_type.upper()}")
+
+            # Check if model is cached
+            from src.ai.rephrasing_agent import _model_cache
+            cached_model, _, cached_device = _model_cache.get_model(model_id)
+            if cached_model:
+                print(f"💾 Cache Status: ✓ CACHED (instant load)")
+                print(f"🖥️  Device: {cached_device.upper()}")
+            else:
+                print(f"💾 Cache Status: Not cached (will load - may take 30-120s)")
+                # Try to detect what device will be used
+                try:
+                    from src.ai.device_utils import detect_device
+                    device_name, _, _ = detect_device()
+                    print(f"🖥️  Will use device: {device_name.upper()}")
+                except:
+                    print(f"🖥️  Device: Detecting...")
+
+            print(f"{'='*70}\n")
+
+            # Use the agent's local model to generate a response
+            # Reasoning tasks may need more tokens for chain-of-thought
+            max_tokens = 2048 if is_reasoning_task else 1024
+
+            try:
+                response = agent._generate_local(prompt, max_tokens=max_tokens)
+
+                # Final success message with response preview
+                print(f"\n{'='*70}")
+                print(f"✅ CHAPTER PLANNER RESPONSE COMPLETE")
+                print(f"{'='*70}")
+                print(f"📦 Model: {model_id}")
+                print(f"📝 Response: {len(response)} characters")
+                print(f"📄 Response content preview:")
+                print(f"   First 200 chars: {repr(response[:200])}")
+                if len(response) > 200:
+                    print(f"   Last 100 chars: {repr(response[-100:])}")
+                print(f"   Is empty/whitespace: {not response.strip()}")
+                print(f"{'='*70}\n")
+
+                return response
+            except Exception as model_err:
+                error_msg = str(model_err)
+                if "out of memory" in error_msg.lower():
+                    return (f"Model '{model_id}' is too large for your GPU.\n\n"
+                            f"Try a smaller model:\n"
+                            f"For Storytelling:\n"
+                            f"• google/gemma-3-4b-it (~8GB)\n"
+                            f"• microsoft/Phi-3.5-mini-instruct (~6GB)\n\n"
+                            f"For Reasoning:\n"
+                            f"• deepseek-ai/DeepSeek-R1-Distill-Qwen-7B (~14GB)\n"
+                            f"• mistralai/Ministral-3-8B-Reasoning-2512 (~16GB)")
+                raise
+
+        except Exception as e:
+            print(f"Local model error: {e}")
+            import traceback
+            traceback.print_exc()
+            return f"Local model error: {str(e)}\n\nPlease check your model configuration in Settings."
+
+    def _handle_summarization_request(self, prompt: str) -> str:
+        """Handle AI requests from the project summarizer.
+
+        Uses local models for summarization (no cloud LLM needed for this background task).
+
+        Args:
+            prompt: Summarization prompt
+
+        Returns:
+            AI response text
+        """
+        # Always use local model for summarization (efficient background task)
+        try:
+            from src.config.genai_config import GenAIConfig
+            from src.ai.rephrasing_agent import RephrasingAgent
+
+            config = GenAIConfig()
+
+            if not config.get("enable_local_models", False):
+                return ""  # Silently skip if local models not enabled
+
+            # Use storytelling model for summarization (good at narrative understanding)
+            model_id = config.get("storytelling_model_id") or config.get("local_model_id")
+
+            if not model_id:
+                return ""  # Silently skip if no model configured
+
+            agent = RephrasingAgent()
+            agent.local_model_id = model_id
+
+            # Log summarization model usage
+            print(f"\n📊 Project Summarization - Using model:")
+            print(f"   Model: {model_id}")
+            print(f"   Purpose: AI-generated project summary")
+
+            # Summarization needs moderate token output
+            response = agent._generate_local(prompt, max_tokens=512)
+            print(f"   ✓ Summary generated ({len(response)} chars)\n")
+            return response
+
+        except Exception as e:
+            print(f"Summarization error: {e}")
+            return ""  # Return empty on error to avoid blocking
+
+    def update_project_summary(self):
+        """Update project AI summary if needed.
+
+        Should be called when:
+        - Project is saved
+        - Major changes to plot/characters/worldbuilding
+        - User manually requests update
+        """
+        if not hasattr(self, '_summarizer'):
+            return
+
+        if self.project:
+            updated = self._summarizer.update_project_summary(self.project)
+            if updated:
+                print("✓ Project summary updated successfully")
+                # Save the updated summary
+                if hasattr(self, '_project_manager') and self._project_manager:
+                    self._project_manager.save_project()
 
     def _load_chapter(self):
         """Load chapter data into editor.

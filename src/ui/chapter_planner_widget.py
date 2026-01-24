@@ -600,6 +600,7 @@ class ChapterPlannerWidget(QWidget):
 
     plan_changed = pyqtSignal()  # Emitted when any planning content changes
     check_requested = pyqtSignal(str, str)  # plan, chapter_content - for consistency check
+    _ai_response_ready = pyqtSignal(object)  # Internal signal for thread-safe callback delivery
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -607,6 +608,7 @@ class ChapterPlannerWidget(QWidget):
         self._context_provider: Optional[Callable] = None
         self._chapter_content_provider: Optional[Callable] = None
         self._is_processing = False
+        self._current_callback: Optional[Callable] = None
         self._todo_widgets: List[TodoItemWidget] = []
         self._event_widgets: List[StoryEventWidget] = []
         self._init_ui()
@@ -876,24 +878,14 @@ class ChapterPlannerWidget(QWidget):
         ai_content_layout.setContentsMargins(0, 4, 0, 0)
         ai_content_layout.setSpacing(4)
 
-        # Model selector - compact with tooltips for full names
-        model_layout = QHBoxLayout()
-        model_layout.setSpacing(4)
-        model_label = QLabel("Model:")
-        model_label.setStyleSheet("font-size: 11px;")
-        model_layout.addWidget(model_label)
-        self.model_combo = QComboBox()
-        # Store full names as data, display abbreviated
-        self.model_combo.addItem("Claude", "Claude (Anthropic)")
-        self.model_combo.addItem("GPT-4", "GPT-4 (OpenAI)")
-        self.model_combo.addItem("Gemini", "Gemini (Google)")
-        self.model_combo.addItem("Local", "Local SLM")
-        self.model_combo.setStyleSheet("font-size: 11px;")
-        self.model_combo.setMaximumWidth(80)
-        self.model_combo.setToolTip("Select AI model")
-        model_layout.addWidget(self.model_combo)
-        model_layout.addStretch()
-        ai_content_layout.addLayout(model_layout)
+        # Model info label - model is now configured in Settings
+        info_label = QLabel("💡 Using model from Settings > Model Configuration")
+        info_label.setStyleSheet(
+            "font-size: 10px; color: #6b7280; padding: 4px; "
+            "background-color: #f0f9ff; border-radius: 4px;"
+        )
+        info_label.setWordWrap(True)
+        ai_content_layout.addWidget(info_label)
 
         # Chat history
         self.chat_history = QTextEdit()
@@ -1313,21 +1305,29 @@ class ChapterPlannerWidget(QWidget):
 
     def _append_to_chat(self, role: str, message: str):
         """Append a message to the chat history."""
+        print(f"[ChapterPlanner] _append_to_chat called: role={role}, message_len={len(message)}")
+
+        # HTML escape the message to prevent rendering issues with special characters
+        import html
+        escaped_message = html.escape(message)
+
         cursor = self.chat_history.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
 
         if role == "user":
-            cursor.insertHtml(f'<p style="color: #0066cc;"><b>You:</b> {message}</p>')
+            cursor.insertHtml(f'<p style="color: #0066cc;"><b>You:</b> {escaped_message}</p>')
         elif role == "assistant":
-            cursor.insertHtml(f'<p style="color: #006600;"><b>AI:</b> {message}</p>')
+            cursor.insertHtml(f'<p style="color: #006600;"><b>AI:</b> {escaped_message}</p>')
         elif role == "system":
-            cursor.insertHtml(f'<p style="color: #666666;"><i>{message}</i></p>')
+            cursor.insertHtml(f'<p style="color: #666666;"><i>{escaped_message}</i></p>')
         elif role == "error":
-            cursor.insertHtml(f'<p style="color: #cc0000;"><b>Error:</b> {message}</p>')
+            cursor.insertHtml(f'<p style="color: #cc0000;"><b>Error:</b> {escaped_message}</p>')
 
         cursor.insertHtml("<br>")
         self.chat_history.setTextCursor(cursor)
         self.chat_history.ensureCursorVisible()
+
+        print(f"[ChapterPlanner] _append_to_chat completed")
 
     def _set_processing(self, is_processing: bool):
         """Set processing state."""
@@ -1346,21 +1346,25 @@ class ChapterPlannerWidget(QWidget):
         context = self._get_context()
         chapter_title = context.get('chapter_title', 'this chapter')
 
-        prompt = f"""Generate a list of 5-8 story events for "{chapter_title}".
+        prompt = f"""Based on the story context provided above, generate 5-8 specific story events for the chapter titled "{chapter_title}".
 
-Based on the plot outline, worldbuilding, and characters provided, create specific story beats.
+TASK:
+Create concrete story beats that:
+- Align with the established plot, characters, and worldbuilding
+- Show character development and advance the narrative
+- Follow a natural chapter arc structure
+- Are specific and actionable (not vague)
 
-For each event, specify:
-1. A brief description (1-2 sentences)
-2. Which part of the chapter arc it belongs to (exposition, rising action, climax, falling action, or resolution)
+FORMAT YOUR RESPONSE:
+Use a numbered list with the arc stage in brackets:
 
-Format your response as a numbered list with the arc stage in brackets:
-1. [exposition] Description of the first event...
-2. [rising] Description of the next event...
-3. [climax] The major turning point...
-etc.
+1. [exposition] Specific event that sets up the chapter...
+2. [rising] Event that builds tension or advances plot...
+3. [climax] The major turning point or key moment...
+4. [falling] Consequence or reaction to the climax...
+5. [resolution] How the chapter concludes or transitions...
 
-Make the events specific, actionable, and engaging."""
+Make each event concrete with specific character actions and scene details."""
 
         self._append_to_chat("system", f"Generating events for {chapter_title}...")
         self._set_processing(True)
@@ -1450,22 +1454,27 @@ Make the events specific, actionable, and engaging."""
 
         context = self._get_context()
         context['current_plan'] = self.get_plan()
-        context['chapter_content'] = self._get_chapter_content()
 
-        prompt = f"""The user is planning a chapter and asks:
-
+        prompt = f"""USER QUESTION:
 {message}
 
-Help them with their chapter planning. Current events in their outline:
-{self.get_plan()}"""
+INSTRUCTIONS:
+Help the user with their chapter planning question. Reference the story context (plot, characters, worldbuilding, and current outline) provided above to give specific, actionable advice that fits their story."""
 
         self._set_processing(True)
 
         def on_response(response: str):
+            print(f"\n[ChapterPlanner] on_response callback called!")
+            print(f"[ChapterPlanner] Response length: {len(response) if response else 0}")
+            print(f"[ChapterPlanner] Response preview: {repr(response[:100]) if response else 'None'}")
+
             self._set_processing(False)
             if response:
+                print(f"[ChapterPlanner] Calling _append_to_chat with response...")
                 self._append_to_chat("assistant", response)
+                print(f"[ChapterPlanner] _append_to_chat completed")
             else:
+                print(f"[ChapterPlanner] Response is empty/None, showing error")
                 self._append_to_chat("error", "Failed to get response.")
 
         self._run_ai_request(prompt, context, on_response)
@@ -1488,18 +1497,33 @@ Help them with their chapter planning. Current events in their outline:
 
         context = self._get_context()
 
-        prompt = f"""Analyze how well the chapter content follows the planned events.
+        # Truncate chapter content smartly (keep beginning and end if too long)
+        max_content_length = 6000
+        if len(chapter_content) > max_content_length:
+            mid_point = max_content_length // 2
+            chapter_preview = (
+                chapter_content[:mid_point] +
+                f"\n\n... [middle section omitted, {len(chapter_content) - max_content_length} chars] ...\n\n" +
+                chapter_content[-mid_point:]
+            )
+        else:
+            chapter_preview = chapter_content
+
+        prompt = f"""TASK: Analyze how well the chapter draft follows the planned outline.
 
 PLANNED EVENTS:
 {plan}
 
-CHAPTER CONTENT:
-{chapter_content[:8000]}
+CHAPTER DRAFT:
+{chapter_preview}
 
-Provide:
-1. **Events Covered**: Which planned events have been written?
-2. **Events Missing**: Which planned events haven't been addressed?
-3. **Suggestions**: How to better align the chapter with the plan"""
+ANALYSIS REQUESTED:
+1. **Events Successfully Written**: Which planned events are present in the draft?
+2. **Missing Events**: Which planned events haven't been addressed yet?
+3. **Alignment Issues**: Any scenes that deviate from the plan?
+4. **Suggestions**: How to improve alignment with the outline?
+
+Provide specific, constructive feedback."""
 
         self._append_to_chat("system", "Checking plan consistency...")
         self._set_processing(True)
@@ -1516,35 +1540,190 @@ Provide:
         self._run_ai_request(prompt, context, on_response)
 
     def _run_ai_request(self, prompt: str, context: dict, callback: Callable):
-        """Run an AI request in a background thread."""
+        """Run an AI request in a background thread with smart context management."""
+        # Store callback and connect signal (will be queued automatically for cross-thread)
+        self._current_callback = callback
+        try:
+            # Disconnect any existing connection first
+            self._ai_response_ready.disconnect(self._handle_ai_response)
+        except:
+            pass  # Not connected yet
+        self._ai_response_ready.connect(self._handle_ai_response)
+
         def run():
             try:
+                # Build context with intelligent truncation
                 context_parts = []
+
+                # Add plot (most important, keep full)
                 if context.get('plot'):
-                    context_parts.append(f"PLOT:\n{context['plot']}")
-                if context.get('worldbuilding'):
-                    context_parts.append(f"WORLDBUILDING:\n{context['worldbuilding']}")
+                    context_parts.append(f"PLOT OUTLINE:\n{context['plot']}")
+
+                # Add characters (limit to avoid context overflow)
                 if context.get('characters'):
-                    context_parts.append(f"CHARACTERS:\n{context['characters']}")
+                    char_text = context['characters']
+                    # Truncate if too long (keep first 1500 chars)
+                    if len(char_text) > 1500:
+                        char_text = char_text[:1500] + "\n... (more characters not shown)"
+                    context_parts.append(f"MAIN CHARACTERS:\n{char_text}")
+
+                # Add worldbuilding (limit to avoid context overflow)
+                if context.get('worldbuilding'):
+                    wb_text = context['worldbuilding']
+                    # Truncate if too long (keep first 1500 chars)
+                    if len(wb_text) > 1500:
+                        wb_text = wb_text[:1500] + "\n... (more worldbuilding details available)"
+                    context_parts.append(f"WORLDBUILDING:\n{wb_text}")
+
+                # Add current outline (important for continuity)
                 if context.get('current_plan'):
-                    context_parts.append(f"CURRENT OUTLINE:\n{context['current_plan']}")
+                    plan_text = context['current_plan']
+                    # Truncate if extremely long
+                    if len(plan_text) > 2000:
+                        plan_text = plan_text[:2000] + "\n... (outline continues)"
+                    context_parts.append(f"CURRENT CHAPTER OUTLINE:\n{plan_text}")
 
+                # Build full prompt with context
                 full_context = "\n\n".join(context_parts)
-                full_prompt = f"{full_context}\n\n---\n\n{prompt}" if full_context else prompt
 
-                result = self._ai_handler(full_prompt, self.model_combo.currentData())
+                if full_context:
+                    # Estimate token count (rough: 1 token ≈ 4 chars)
+                    estimated_tokens = len(full_context) // 4
+                    print(f"Context size: ~{estimated_tokens} tokens ({len(full_context)} chars)")
 
-                from PyQt6.QtCore import QTimer
-                QTimer.singleShot(0, lambda: callback(result))
+                    full_prompt = f"{full_context}\n\n{'=' * 60}\n\n{prompt}"
+                else:
+                    full_prompt = prompt
+
+                # Use configured model from settings (no model selection needed)
+                # The handler in manuscript_editor.py will route to appropriate model
+                result = self._ai_handler(full_prompt, "Auto")
+
+                print(f"\n[ChapterPlanner] AI request completed in background thread")
+                print(f"[ChapterPlanner] Result length: {len(result) if result else 0} chars")
+                print(f"[ChapterPlanner] Result preview: {repr(result[:100]) if result else 'None'}")
+
+                # Clean up response: remove echoed prompt/context
+                if result:
+                    result = self._extract_response_only(result, full_prompt, prompt)
+
+                print(f"[ChapterPlanner] Cleaned result length: {len(result) if result else 0} chars")
+                print(f"[ChapterPlanner] Emitting signal to main thread...\n")
+
+                # Emit signal to deliver result to main thread (thread-safe)
+                self._ai_response_ready.emit(result)
 
             except Exception as e:
-                from PyQt6.QtCore import QTimer
-                QTimer.singleShot(0, lambda: callback(None))
                 print(f"AI request error: {e}")
+                import traceback
+                traceback.print_exc()
+                # Emit None to trigger error handling
+                self._ai_response_ready.emit(None)
 
         thread = threading.Thread(target=run, daemon=True)
         thread.start()
 
+    def _handle_ai_response(self, result):
+        """Handle AI response on main thread (slot for _ai_response_ready signal)."""
+        print(f"\n[ChapterPlanner] _handle_ai_response called on main thread!")
+        print(f"[ChapterPlanner] Result: {repr(result[:100]) if result else 'None'}")
+
+        # Disconnect signal after use
+        try:
+            self._ai_response_ready.disconnect(self._handle_ai_response)
+        except:
+            pass  # Already disconnected
+
+        # Invoke the stored callback
+        if self._current_callback:
+            print(f"[ChapterPlanner] Invoking callback...")
+            self._current_callback(result)
+            self._current_callback = None
+        else:
+            print(f"[ChapterPlanner] ERROR: No callback stored!")
+
     def clear_chat(self):
         """Clear the chat history."""
         self.chat_history.clear()
+
+    def _extract_response_only(self, full_response: str, full_prompt: str, user_prompt: str) -> str:
+        """Extract only the AI's response, removing any echoed prompt/context.
+
+        Args:
+            full_response: Complete response from AI (may include echoed input)
+            full_prompt: Full prompt sent to AI (context + user prompt)
+            user_prompt: Just the user's prompt portion
+
+        Returns:
+            Cleaned response with only the AI's actual answer
+        """
+        if not full_response:
+            return full_response
+
+        # Strategy 1: Look for common separator patterns that indicate response start
+        # Many models use patterns like "ANALYSIS:", "RESPONSE:", "ANSWER:", etc.
+        separators = [
+            "ANALYSIS REQUESTED:",
+            "ANALYSIS:",
+            "RESPONSE:",
+            "ANSWER:",
+            "SUGGESTIONS:",
+            "TASK:",
+            "\n\n" + "=" * 60 + "\n\n",  # Our own separator
+        ]
+
+        response = full_response
+
+        # Try to find where the actual response starts (after separators)
+        for sep in separators:
+            if sep in response:
+                parts = response.split(sep, 1)
+                if len(parts) > 1:
+                    # Keep everything after the separator
+                    response = parts[1].strip()
+
+        # Strategy 2: If response starts with the context markers, skip them
+        context_markers = [
+            "PLOT OUTLINE:",
+            "MAIN CHARACTERS:",
+            "WORLDBUILDING:",
+            "CURRENT CHAPTER OUTLINE:",
+            "PLANNED EVENTS:",
+            "CHAPTER DRAFT:",
+            "USER QUESTION:",
+            "INSTRUCTIONS:",
+        ]
+
+        lines = response.split('\n')
+        start_idx = 0
+
+        # Skip lines that look like echoed context
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+
+            # Skip empty lines
+            if not stripped:
+                continue
+
+            # Check if this line is a context marker
+            is_marker = any(stripped.startswith(marker) for marker in context_markers)
+            if is_marker:
+                continue  # Skip this line
+
+            # Check if line looks like part of echoed context (all caps heading)
+            if stripped.isupper() and len(stripped) < 50 and ':' in stripped:
+                continue  # Likely a heading from context
+
+            # Check if it's a separator line (===, ---, etc.)
+            if all(c in '=-_*' for c in stripped) and len(stripped) > 10:
+                continue
+
+            # If we get here, this looks like actual content
+            start_idx = i
+            break
+
+        # Reconstruct response from first real content line
+        if start_idx > 0:
+            response = '\n'.join(lines[start_idx:]).strip()
+
+        return response

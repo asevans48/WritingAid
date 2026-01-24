@@ -32,14 +32,38 @@ class RephraseWorker(QThread):
     def run(self):
         """Run rephrasing in background."""
         try:
+            # Log at the start of the worker thread
+            print(f"\n{'='*70}")
+            print(f"REPHRASING WORKER THREAD STARTING")
+            print(f"{'='*70}")
+            print(f"Text length: {len(self.text)} chars")
+            print(f"Styles: {[s.value for s in self.styles]}")
+            print(f"Tone: {self.tone.value}")
+            print(f"Using local model: {self.agent.use_local_model}")
+            if self.agent.use_local_model:
+                print(f"Model ID: {self.agent.local_model_id or '(not set)'}")
+            print(f"{'='*70}\n")
+
             result = self.agent.rephrase(
                 text=self.text,
                 styles=self.styles,
                 tone=self.tone,
                 context=self.context
             )
+
+            print(f"\n{'='*70}")
+            print(f"✅ REPHRASING WORKER THREAD COMPLETE")
+            print(f"{'='*70}")
+            print(f"Generated {len(result.options)} options")
+            print(f"{'='*70}\n")
+
             self.finished.emit(result)
         except Exception as e:
+            print(f"\n{'='*70}")
+            print(f"❌ REPHRASING WORKER THREAD FAILED")
+            print(f"{'='*70}")
+            print(f"Error: {e}")
+            print(f"{'='*70}\n")
             self.error.emit(str(e))
 
 
@@ -408,6 +432,22 @@ class RephraseDialog(QDialog):
         # Configure agent - only set local model if not using python libraries
         if not self.agent.use_python_libraries:
             self.agent.use_local_model = self.local_radio.isChecked()
+
+        # Log configuration before starting
+        print(f"\n{'#'*70}")
+        print(f"# REPHRASING DIALOG - STARTING OPERATION")
+        print(f"{'#'*70}")
+        if self.agent.use_python_libraries:
+            print(f"🔧 Mode: Python Libraries Only")
+        elif self.agent.use_local_model:
+            print(f"🤖 Mode: Local Model")
+            print(f"📦 Model: {self.agent.local_model_id or '(not configured)'}")
+        else:
+            print(f"☁️  Mode: Cloud LLM")
+        print(f"📝 Text: {len(self.original_text)} chars")
+        print(f"🎨 Styles: {[s.value for s in styles]}")
+        print(f"🎭 Tone: {tone.value}")
+        print(f"{'#'*70}\n")
 
         # Show progress
         self.progress_bar.setVisible(True)

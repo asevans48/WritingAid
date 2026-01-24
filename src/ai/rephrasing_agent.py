@@ -4,6 +4,7 @@ import sys
 import re
 import threading
 import platform
+import time
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 from dataclasses import dataclass
 from enum import Enum
@@ -45,26 +46,37 @@ sys.setrecursionlimit(10000)
 print(f"[MODULE INIT] Importing PyTorch and Transformers with recursion limit: {sys.getrecursionlimit()}")
 
 # Import torch at module level to avoid repeated imports causing stack overflow
+_TORCH_IMPORT_ERROR = None
 try:
     import torch
     _TORCH_AVAILABLE = True
-    print("[MODULE INIT] ✓ PyTorch imported successfully")
-except ImportError:
+    print("[MODULE INIT] [OK] PyTorch imported successfully")
+except ImportError as e:
     _TORCH_AVAILABLE = False
+    _TORCH_IMPORT_ERROR = str(e)
     torch = None
-    print("[MODULE INIT] ✗ PyTorch not available")
+    print(f"[MODULE INIT] [FAIL] PyTorch not available: {e}")
 
 # Import transformers at module level with high recursion limit
 # This is especially important for Gemma3 and other models with deep architecture definitions
+_TRANSFORMERS_IMPORT_ERROR = None
 try:
     from transformers import AutoModelForCausalLM, AutoTokenizer
     _TRANSFORMERS_AVAILABLE = True
-    print("[MODULE INIT] ✓ Transformers imported successfully")
+    print("[MODULE INIT] [OK] Transformers imported successfully")
 except ImportError as e:
     _TRANSFORMERS_AVAILABLE = False
+    _TRANSFORMERS_IMPORT_ERROR = str(e)
     AutoModelForCausalLM = None
     AutoTokenizer = None
-    print(f"[MODULE INIT] ✗ Transformers not available: {e}")
+    print(f"[MODULE INIT] [FAIL] Transformers not available: {e}")
+except Exception as e:
+    # Catch any other error (like UnicodeEncodeError from print statements)
+    _TRANSFORMERS_AVAILABLE = False
+    _TRANSFORMERS_IMPORT_ERROR = f"Unexpected error during import: {type(e).__name__}: {e}"
+    AutoModelForCausalLM = None
+    AutoTokenizer = None
+    print(f"[MODULE INIT] [FAIL] Transformers import failed with unexpected error: {e}")
 
 # Import MLX for Apple Silicon optimization
 try:
@@ -72,13 +84,13 @@ try:
         import mlx.core as mx
         from mlx_lm import load, generate
         _MLX_AVAILABLE = True
-        print("[MODULE INIT] ✓ MLX available - using Apple Silicon optimized inference")
+        print("[MODULE INIT] [OK] MLX available - using Apple Silicon optimized inference")
     else:
         _MLX_AVAILABLE = False
-        print("[MODULE INIT] ✗ MLX not available (not on Apple Silicon)")
+        print("[MODULE INIT] [FAIL] MLX not available (not on Apple Silicon)")
 except ImportError as e:
     _MLX_AVAILABLE = False
-    print(f"[MODULE INIT] ✗ MLX not available: {e}")
+    print(f"[MODULE INIT] [FAIL] MLX not available: {e}")
 
 # Restore original limit after imports
 sys.setrecursionlimit(_original_recursion_limit)
@@ -568,7 +580,7 @@ For each option, briefly explain what makes it different from the original."""
 
             print("  Loading model and tokenizer...")
             model, tokenizer = load(model_id)
-            print(f"✓ MLX model loaded successfully")
+            print(f"[OK] MLX model loaded successfully")
 
             # Store in instance
             self._mlx_model = model
@@ -577,12 +589,12 @@ For each option, briefly explain what makes it different from the original."""
 
             # Cache for future use
             mlx_cache.set_model(model_id, model, tokenizer)
-            print(f"✓ MLX model cached for reuse")
+            print(f"[OK] MLX model cached for reuse")
             print(f"{'='*60}\n")
 
         except Exception as e:
             error_msg = str(e)
-            print(f"✗ MLX model loading failed!")
+            print(f"[FAIL] MLX model loading failed!")
             print(f"  Error: {error_msg}")
 
             # Provide helpful error messages
@@ -610,6 +622,14 @@ For each option, briefly explain what makes it different from the original."""
         # This is important when falling back from MLX to PyTorch
         model_id = self._convert_to_pytorch_model_id(original_model_id)
 
+        # Prominent logging at the very start
+        print(f"\n{'#'*60}")
+        print(f"# MODEL INITIALIZATION STARTING")
+        print(f"{'#'*60}")
+        print(f"📦 Model ID: {model_id}")
+        print(f"⏰ Start time: {time.strftime('%H:%M:%S')}")
+        print(f"{'#'*60}\n")
+
         if model_id != original_model_id:
             print(f"Converted MLX model to PyTorch equivalent:")
             print(f"  MLX: {original_model_id}")
@@ -618,7 +638,10 @@ For each option, briefly explain what makes it different from the original."""
         # Check if model is already cached
         cached_model, cached_tokenizer, cached_device = _model_cache.get_model(model_id)
         if cached_model is not None:
-            print(f"Using cached model: {model_id} on {cached_device}")
+            print(f"\n✅ CACHED MODEL FOUND - INSTANT LOAD!")
+            print(f"📦 Model: {model_id}")
+            print(f"🖥️  Device: {cached_device.upper()}")
+            print(f"{'='*60}\n")
             self._local_model = cached_model
             self._local_tokenizer = cached_tokenizer
             self._device = cached_device
@@ -626,13 +649,40 @@ For each option, briefly explain what makes it different from the original."""
 
         # Check if instance already has this model loaded
         if self._local_model is not None:
+            print(f"✅ Model already loaded in this instance")
             return
 
-        try:
-            if not _TORCH_AVAILABLE:
-                raise RuntimeError("PyTorch is not available. Install with: pip install torch")
+        print(f"⚠️  Model not cached - will download/load (this may take 30-120 seconds)")
+        print(f"{'='*60}\n")
 
-            from transformers import AutoModelForCausalLM, AutoTokenizer
+        try:
+            print("\n[Imports Check]")
+            print(f"  _TORCH_AVAILABLE: {_TORCH_AVAILABLE}")
+            print(f"  _TRANSFORMERS_AVAILABLE: {_TRANSFORMERS_AVAILABLE}")
+
+            if not _TORCH_AVAILABLE:
+                error_details = f"\nOriginal error: {_TORCH_IMPORT_ERROR}" if _TORCH_IMPORT_ERROR else ""
+                raise RuntimeError(
+                    f"PyTorch is not available.{error_details}\n"
+                    f"Install with: pip install torch\n"
+                    f"Python executable: {sys.executable}"
+                )
+
+            if not _TRANSFORMERS_AVAILABLE:
+                error_details = f"\nOriginal error: {_TRANSFORMERS_IMPORT_ERROR}" if _TRANSFORMERS_IMPORT_ERROR else ""
+                raise ImportError(
+                    f"Transformers failed to import at module level.{error_details}\n\n"
+                    "This usually means:\n"
+                    "1. transformers is not installed: pip install transformers\n"
+                    "2. Python environment mismatch (check you're using .venv)\n"
+                    "3. Package installation corrupted (try reinstalling)\n\n"
+                    f"Python executable: {sys.executable}"
+                )
+
+            print(f"  Using module-level imports (transformers already available)")
+            # Use the module-level imports
+            if AutoModelForCausalLM is None or AutoTokenizer is None:
+                raise ImportError("transformers imported but classes are None - this should not happen")
 
             # Increase recursion limit to prevent stack overflow during model loading
             # Gemma3 and other models with complex architectures need very high recursion limits
@@ -640,35 +690,49 @@ For each option, briefly explain what makes it different from the original."""
             sys.setrecursionlimit(10000)  # Temporarily increase from default 1000 (Gemma3 needs ~10000)
 
             try:
+                init_start_time = time.time()
+
                 print(f"\n{'='*60}")
-                print(f"MODEL INITIALIZATION - DEBUG LOG")
+                print(f"DETAILED INITIALIZATION LOG")
                 print(f"{'='*60}")
-                print(f"Loading model: {model_id}")
+                print(f"Model: {model_id}")
                 print(f"Recursion limit: {sys.getrecursionlimit()}")
 
                 # Get HuggingFace token for gated model access
                 print("\n[Step 0] Checking HuggingFace token...")
+                step_start = time.time()
                 hf_token = self._get_huggingface_token()
+                print(f"[OK] Token check complete ({time.time() - step_start:.2f}s)")
 
                 print("\n[Step 1] Loading tokenizer...")
+                step_start = time.time()
                 tokenizer = AutoTokenizer.from_pretrained(
                     model_id,
                     trust_remote_code=True,
                     token=hf_token
                 )
+                print(f"[OK] Tokenizer loaded ({time.time() - step_start:.2f}s)")
                 # Ensure pad_token is set (required for Gemma and some other models)
                 if tokenizer.pad_token is None:
                     tokenizer.pad_token = tokenizer.eos_token
                     print(f"  Set pad_token to eos_token: {tokenizer.pad_token}")
-                print(f"✓ Tokenizer loaded: {type(tokenizer).__name__}")
 
                 # Use shared device detection utility for cross-platform support
                 print("\n[Step 2] Detecting hardware...")
+                step_start = time.time()
                 print_device_info()
                 device_name, dtype, use_device_map = detect_device()
-                print(f"✓ Device selected: {device_name}")
-                print(f"  - dtype: {dtype}")
-                print(f"  - use_device_map: {use_device_map}")
+                print(f"\n🖥️  HARDWARE DETECTED:")
+                print(f"  Device: {device_name.upper()}")
+                print(f"  Data type: {dtype}")
+                print(f"  Device map: {use_device_map}")
+                if device_name == "cuda":
+                    import torch
+                    gpu_name = torch.cuda.get_device_name(0)
+                    gpu_mem_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                    print(f"  GPU: {gpu_name}")
+                    print(f"  VRAM: {gpu_mem_gb:.1f} GB")
+                print(f"[OK] Hardware detection complete ({time.time() - step_start:.2f}s)")
 
                 model = None
                 device = device_name
@@ -676,6 +740,7 @@ For each option, briefly explain what makes it different from the original."""
                 # Load model with appropriate settings for the detected device
                 try:
                     print(f"\n[Step 3] Loading model weights on {device_name}...")
+                    step_start = time.time()
 
                     model_kwargs = {
                         "torch_dtype": dtype,
@@ -694,18 +759,27 @@ For each option, briefly explain what makes it different from the original."""
                         print(f"  - No device_map (will use .to('{device_name}'))")
 
                     print(f"  - Model kwargs: {list(model_kwargs.keys())}")
-                    print("  Loading... (this may take 30-60 seconds)")
+                    print(f"\n⏳ LOADING MODEL WEIGHTS FROM HUGGINGFACE...")
+                    print(f"   This step typically takes 30-120 seconds depending on:")
+                    print(f"   - Whether model needs to be downloaded (first time)")
+                    print(f"   - Your disk speed (SSD vs HDD)")
+                    print(f"   - Model size (Phi 3.5 Mini is ~7.6GB)")
+                    print(f"\n⏰ Started at: {time.strftime('%H:%M:%S')}")
+                    print(f"   Please wait...\n")
 
                     model = AutoModelForCausalLM.from_pretrained(
                         model_id,
                         **model_kwargs
                     )
-                    print(f"✓ Model weights loaded: {type(model).__name__}")
+                    loading_time = time.time() - step_start
+                    print(f"\n[OK] Model weights loaded: {type(model).__name__}")
+                    print(f"⏱️  Loading took {loading_time:.1f} seconds")
 
                     # Check for meta tensors (model not properly loaded)
                     has_meta = any(p.device.type == "meta" for p in model.parameters())
                     if has_meta:
                         print("⚠ Model has meta tensors - reloading without device_map...")
+                        step_start = time.time()
                         del model
                         torch.cuda.empty_cache()
 
@@ -719,15 +793,23 @@ For each option, briefly explain what makes it different from the original."""
                             token=hf_token,
                         )
                         model = model.to(device_name)
-                        print(f"✓ Model reloaded and moved to {device_name}")
+                        print(f"[OK] Model reloaded and moved to {device_name} ({time.time() - step_start:.1f}s)")
                     elif not use_device_map:
                         # Explicitly move to device if not using device_map
                         print(f"\n[Step 4] Moving model to {device_name}...")
+                        step_start = time.time()
                         model = model.to(device_name)
-                        print(f"✓ Model moved to {device_name}")
+                        print(f"[OK] Model moved to {device_name} ({time.time() - step_start:.1f}s)")
 
-                    print(f"\n✓✓✓ Model initialization complete on {device_name}")
-                    print(f"{'='*60}\n")
+                    total_init_time = time.time() - init_start_time
+                    print(f"\n{'#'*60}")
+                    print(f"# ✅ INITIALIZATION COMPLETE")
+                    print(f"{'#'*60}")
+                    print(f"📦 Model: {model_id}")
+                    print(f"🖥️  Device: {device_name.upper()}")
+                    print(f"⏱️  Total time: {total_init_time:.1f}s")
+                    print(f"💾 Status: Now cached for instant future use")
+                    print(f"{'#'*60}\n")
 
                 except Exception as e:
                     error_str = str(e).lower()
@@ -774,7 +856,7 @@ For each option, briefly explain what makes it different from the original."""
                             if has_meta:
                                 raise RuntimeError("Model has uninitialized meta tensors")
                             device = "cuda"
-                            print(f"✓ Model loaded with CPU offloading (slower but works)")
+                            print(f"[OK] Model loaded with CPU offloading (slower but works)")
                         except Exception as offload_err:
                             print(f"CPU offloading failed: {offload_err}")
                             print("\nFalling back to CPU-only...")
@@ -790,7 +872,7 @@ For each option, briefly explain what makes it different from the original."""
                             )
                             model = model.to("cpu")
                             device = "cpu"
-                            print("✓ Model loaded on CPU (will be slow)")
+                            print("[OK] Model loaded on CPU (will be slow)")
 
                     elif device_name != "cpu":
                         print("Falling back to CPU...")
@@ -822,8 +904,9 @@ For each option, briefly explain what makes it different from the original."""
                 self._device = device
 
                 # Cache for future use
+                print(f"💾 Caching model for future use...")
                 _model_cache.set_model(model_id, model, tokenizer, device)
-                print(f"Local model loaded on {device}")
+                print(f"[OK] Model cached - next load will be instant!")
 
             finally:
                 # Always restore original recursion limit
@@ -849,7 +932,7 @@ For each option, briefly explain what makes it different from the original."""
         try:
             print("\n[1/4] Initializing MLX model...")
             self._init_mlx_model()
-            print(f"✓ MLX model initialized: {self._mlx_model_id}")
+            print(f"[OK] MLX model initialized: {self._mlx_model_id}")
 
             print("\n[2/4] Preparing prompt...")
             messages = [
@@ -863,13 +946,16 @@ For each option, briefly explain what makes it different from the original."""
                 tokenize=False,
                 add_generation_prompt=True
             )
-            print(f"✓ Prompt prepared ({len(prompt_text)} chars)")
+            print(f"[OK] Prompt prepared ({len(prompt_text)} chars)")
 
             print("\n[3/4] Generating with MLX...")
             print(f"  Parameters:")
             print(f"    - max_tokens: {max_tokens}")
             print(f"    - temp: 0.7")
-            print(f"  Starting generation...")
+
+            # Track generation time
+            gen_start_time = time.time()
+            print(f"  ⏱️  Starting generation at {time.strftime('%H:%M:%S')}...")
 
             from mlx_lm import generate as mlx_generate
             from mlx_lm.sample_utils import make_sampler
@@ -885,20 +971,33 @@ For each option, briefly explain what makes it different from the original."""
                 sampler=sampler,
                 verbose=False
             )
-            print(f"✓ Generation complete!")
+
+            # Calculate and log generation time
+            gen_end_time = time.time()
+            gen_elapsed = gen_end_time - gen_start_time
+            print(f"[OK] Generation complete!")
+            print(f"  ⏱️  Generation took {gen_elapsed:.2f} seconds")
 
             print(f"\n[4/4] Extracting response...")
             # Extract just the generated part (remove the prompt)
             if response.startswith(prompt_text):
                 response = response[len(prompt_text):].strip()
 
-            print(f"✓ Response extracted ({len(response)} chars)")
+            print(f"[OK] Response extracted ({len(response)} chars)")
+
+            print(f"\n{'='*60}")
+            print(f"✅ GENERATION COMPLETE (MLX)")
+            print(f"{'='*60}")
+            print(f"📦 Model: {self._mlx_model_id}")
+            print(f"🖥️  Device: MPS (Apple Silicon)")
+            print(f"⏱️  Time: {gen_elapsed:.2f}s")
+            print(f"📝 Output: {len(response)} chars")
             print(f"{'='*60}\n")
 
             return response
 
         except Exception as e:
-            print(f"✗ MLX generation failed: {e}")
+            print(f"[FAIL] MLX generation failed: {e}")
             raise
 
     def _generate_local(self, prompt: str, max_tokens: int = 500) -> str:
@@ -908,12 +1007,41 @@ For each option, briefly explain what makes it different from the original."""
         - Apple Silicon: Tries MLX first (faster), falls back to PyTorch
         - Other platforms: Uses PyTorch
         """
+        # Determine backend and device info upfront
+        backend = "MLX" if (_MLX_AVAILABLE and can_use_mlx()) else "PyTorch"
+        device = "Unknown"
+
+        if backend == "PyTorch":
+            # Check current device or detect it
+            if hasattr(self, '_device') and self._device:
+                device = self._device.upper()
+            else:
+                from src.ai.device_utils import detect_device
+                device_name, _, _ = detect_device()
+                device = device_name.upper()
+        else:
+            device = "MPS (Apple Silicon)"
+
+        # Check if model is cached
+        is_cached = False
+        if backend == "MLX":
+            from src.ai.mlx_model_cache import get_mlx_cache
+            cache = get_mlx_cache()
+            is_cached = cache.is_model_loaded(self.local_model_id)
+        else:
+            is_cached = (hasattr(self, '_local_model') and self._local_model is not None and
+                        hasattr(self, '_cached_model_id') and self._cached_model_id == self.local_model_id)
+
+        # Log model request summary with prominent device info
         print(f"\n{'='*60}")
-        print(f"BACKEND SELECTION")
+        print(f"🤖 LOCAL MODEL GENERATION")
         print(f"{'='*60}")
-        print(f"_MLX_AVAILABLE: {_MLX_AVAILABLE}")
-        print(f"can_use_mlx(): {can_use_mlx()}")
-        print(f"Will use MLX: {_MLX_AVAILABLE and can_use_mlx()}")
+        print(f"📦 Model: {self.local_model_id or '(not set)'}")
+        print(f"⚙️  Backend: {backend}")
+        print(f"🖥️  Device: {device}")
+        print(f"💾 Cached: {'Yes (instant)' if is_cached else 'No (loading...)'}")
+        print(f"📊 Max tokens: {max_tokens}")
+        print(f"📝 Prompt: {len(prompt)} chars")
         print(f"{'='*60}\n")
 
         # Prefer MLX on Apple Silicon for better performance
@@ -944,7 +1072,7 @@ For each option, briefly explain what makes it different from the original."""
         try:
             print("\n[1/7] Initializing local model...")
             self._init_local_model()
-            print(f"✓ Model initialized on device: {self._device}")
+            print(f"[OK] Model initialized on device: {self._device}")
             print(f"  Model class: {type(self._local_model).__name__}")
 
             print("\n[2/7] Preparing messages...")
@@ -964,20 +1092,55 @@ For each option, briefly explain what makes it different from the original."""
                     {"role": "user", "content": combined_prompt}
                 ]
                 print("  (Gemma detected - embedding system prompt in user message)")
-            print(f"✓ Messages prepared (prompt: {len(prompt)} chars)")
+            print(f"[OK] Messages prepared (prompt: {len(prompt)} chars)")
 
             print("\n[3/7] Applying chat template...")
-            inputs = self._local_tokenizer.apply_chat_template(
-                messages,
-                return_tensors="pt",
-                add_generation_prompt=True
-            )
-            print(f"✓ Template applied (shape: {inputs.shape}, tokens: {inputs.shape[1]})")
+
+            # Check if tokenizer has a chat template
+            has_chat_template = hasattr(self._local_tokenizer, 'chat_template') and self._local_tokenizer.chat_template is not None
+
+            if has_chat_template:
+                # Use the model's chat template
+                result = self._local_tokenizer.apply_chat_template(
+                    messages,
+                    return_tensors="pt",
+                    add_generation_prompt=True
+                )
+                # Extract input_ids if result is a BatchEncoding, otherwise use directly
+                if hasattr(result, 'input_ids'):
+                    inputs = result.input_ids
+                    print(f"[OK] Template applied (BatchEncoding -> extracted input_ids)")
+                else:
+                    inputs = result
+                    print(f"[OK] Template applied (got tensor directly)")
+
+                if hasattr(inputs, 'shape'):
+                    print(f"  Shape: {inputs.shape}, tokens: {inputs.shape[1]}")
+                else:
+                    print(f"  Warning: unexpected type: {type(inputs)}")
+            else:
+                # Fallback: manually format prompt for models without chat templates
+                print("  ⚠ Model has no chat template - using simple prompt format")
+
+                # Simple formatting for non-chat models
+                if supports_system_role and len(messages) > 1:
+                    formatted_prompt = f"{messages[0]['content']}\n\n{messages[1]['content']}"
+                else:
+                    formatted_prompt = messages[0]['content']
+
+                # Tokenize directly
+                inputs = self._local_tokenizer(
+                    formatted_prompt,
+                    return_tensors="pt",
+                    truncation=True,
+                    max_length=2048
+                )["input_ids"]
+                print(f"[OK] Prompt tokenized (shape: {inputs.shape}, tokens: {inputs.shape[1]})")
 
             print("\n[4/7] Creating attention mask...")
             # Create attention mask (1 for all tokens since there's no padding)
             attention_mask = torch.ones_like(inputs)
-            print(f"✓ Attention mask created (shape: {attention_mask.shape})")
+            print(f"[OK] Attention mask created (shape: {attention_mask.shape})")
 
             print("\n[5/7] Moving tensors to device...")
             # Move inputs to the same device as the model
@@ -985,13 +1148,13 @@ For each option, briefly explain what makes it different from the original."""
                 print(f"  Moving to {self._device}...")
                 inputs = inputs.to(self._device)
                 attention_mask = attention_mask.to(self._device)
-                print(f"✓ Tensors moved to {self._device}")
+                print(f"[OK] Tensors moved to {self._device}")
             elif hasattr(self._local_model, 'device'):
                 device = self._local_model.device
                 print(f"  Moving to {device}...")
                 inputs = inputs.to(device)
                 attention_mask = attention_mask.to(device)
-                print(f"✓ Tensors moved to {device}")
+                print(f"[OK] Tensors moved to {device}")
 
             # Limit input length to prevent excessive memory/computation
             max_input_length = 2048
@@ -1000,15 +1163,43 @@ For each option, briefly explain what makes it different from the original."""
                 inputs = inputs[:, -max_input_length:]
                 attention_mask = attention_mask[:, -max_input_length:]
 
+            # CRITICAL: Validate token IDs are within vocabulary range
+            vocab_size = self._local_model.config.vocab_size
+            max_token_id = inputs.max().item()
+            min_token_id = inputs.min().item()
+            print(f"\n[Token Validation]")
+            print(f"  Model vocab size: {vocab_size}")
+            print(f"  Input token range: {min_token_id} to {max_token_id}")
+
+            if max_token_id >= vocab_size:
+                error_msg = (
+                    f"Token ID out of range! Max token ID ({max_token_id}) >= vocab size ({vocab_size})\n"
+                    f"This means the tokenizer and model are incompatible.\n"
+                    f"Model: {self._local_model_id}\n"
+                    f"Solution: Try a different model that doesn't require trust_remote_code"
+                )
+                print(f"[FAIL] {error_msg}")
+                raise ValueError(error_msg)
+
+            if min_token_id < 0:
+                error_msg = f"Invalid negative token ID: {min_token_id}"
+                print(f"[FAIL] {error_msg}")
+                raise ValueError(error_msg)
+
+            print(f"[OK] Token IDs are valid")
+
             print(f"\n[6/7] Calling model.generate()...")
             print(f"  Parameters:")
             print(f"    - max_new_tokens: {max_tokens}")
             print(f"    - temperature: 0.7")
             print(f"    - do_sample: True")
-            print(f"    - use_cache: False")
+            print(f"    - use_cache: True")
             print(f"    - num_beams: 1")
             print(f"    - attn_implementation: eager")
-            print(f"  Starting generation... (this may take a while)")
+
+            # Track generation time
+            gen_start_time = time.time()
+            print(f"  ⏱️  Starting generation at {time.strftime('%H:%M:%S')}...")
 
             # Use pad_token_id from tokenizer (we set it during init if it was None)
             pad_token_id = self._local_tokenizer.pad_token_id
@@ -1026,7 +1217,7 @@ For each option, briefly explain what makes it different from the original."""
                     "max_new_tokens": max_tokens,
                     "pad_token_id": pad_token_id,
                     "eos_token_id": self._local_tokenizer.eos_token_id,
-                    "use_cache": False,  # Disable KV cache to avoid DynamicCache compatibility issues
+                    "use_cache": True,  # Enable KV cache for fast generation (critical for long outputs)
                     "num_beams": 1,  # Disable beam search to reduce complexity
                 }
 
@@ -1047,7 +1238,7 @@ For each option, briefly explain what makes it different from the original."""
             except RuntimeError as e:
                 error_str = str(e).lower()
                 if "cuda" in error_str and ("assert" in error_str or "device-side" in error_str):
-                    print(f"✗ CUDA assertion error detected!")
+                    print(f"[FAIL] CUDA assertion error detected!")
                     print(f"  Error: {e}")
 
                     # Clear CUDA state
@@ -1068,9 +1259,9 @@ For each option, briefly explain what makes it different from the original."""
                             use_cache=False,
                             num_beams=1,
                         )
-                        print(f"  ✓ Greedy decoding succeeded!")
+                        print(f"  [OK] Greedy decoding succeeded!")
                     except RuntimeError as retry_error:
-                        print(f"  ✗ Greedy decoding also failed: {retry_error}")
+                        print(f"  [FAIL] Greedy decoding also failed: {retry_error}")
                         print(f"\n  Suggestions:")
                         print(f"    1. Try a different model (e.g., microsoft/Phi-3.5-mini-instruct)")
                         print(f"    2. Use CPU instead of CUDA (slower but more stable)")
@@ -1078,7 +1269,12 @@ For each option, briefly explain what makes it different from the original."""
                         raise
                 else:
                     raise
-            print(f"✓ Generation complete! (output shape: {outputs.shape})")
+
+            # Calculate and log generation time
+            gen_end_time = time.time()
+            gen_elapsed = gen_end_time - gen_start_time
+            print(f"[OK] Generation complete! (output shape: {outputs.shape})")
+            print(f"  ⏱️  Generation took {gen_elapsed:.2f} seconds")
 
             print(f"\n[7/7] Decoding output...")
         finally:
@@ -1089,6 +1285,19 @@ For each option, briefly explain what makes it different from the original."""
             outputs[0][inputs.shape[1]:],
             skip_special_tokens=True
         )
+        print(f"[OK] Decoded {len(response)} characters")
+        print(f"  Response preview: {repr(response[:200])}")
+        if not response.strip():
+            print(f"  ⚠ WARNING: Response is empty or only whitespace!")
+
+        print(f"\n{'='*60}")
+        print(f"✅ GENERATION COMPLETE")
+        print(f"{'='*60}")
+        print(f"📦 Model: {self.local_model_id}")
+        print(f"🖥️  Device: {self._device.upper() if hasattr(self, '_device') else 'Unknown'}")
+        print(f"⏱️  Time: {gen_elapsed:.2f}s")
+        print(f"📝 Output: {len(response)} chars")
+        print(f"{'='*60}\n")
 
         return response
 
@@ -2262,14 +2471,42 @@ For each option, briefly explain what makes it different from the original."""
             RephraseResult with multiple options
         """
         import sys
-        print(f"\n{'='*60}")
-        print("REPHRASE METHOD CALLED")
-        print(f"{'='*60}")
-        print(f"use_local_model: {self.use_local_model}")
-        print(f"use_python_libraries: {self.use_python_libraries}")
-        print(f"text length: {len(text)} chars")
-        print(f"recursion limit: {sys.getrecursionlimit()}")
-        print(f"{'='*60}\n")
+
+        # Prominent model logging at the start
+        print(f"\n{'#'*70}")
+        print(f"{'#'*70}")
+        print(f"# REPHRASING / GENERAL AI ASSISTANT")
+        print(f"{'#'*70}")
+
+        if self.use_python_libraries:
+            print(f"🔧 Mode: Python Libraries Only (No AI)")
+        elif self.use_local_model:
+            model_id = self.local_model_id or "(not set)"
+            print(f"🤖 Mode: Local Model")
+            print(f"📦 Model: {model_id}")
+
+            # Check if model is cached
+            cached_model, _, cached_device = _model_cache.get_model(model_id)
+            if cached_model:
+                print(f"💾 Cache: [OK] CACHED (instant load)")
+                print(f"🖥️  Device: {cached_device.upper()}")
+            else:
+                print(f"💾 Cache: Not cached (will load - may take 30-120s)")
+                try:
+                    from src.ai.device_utils import detect_device
+                    device_name, _, _ = detect_device()
+                    print(f"🖥️  Device: {device_name.upper()}")
+                except:
+                    print(f"🖥️  Device: Detecting...")
+        else:
+            print(f"☁️  Mode: Cloud LLM")
+            if hasattr(self, '_llm_client') and self._llm_client:
+                print(f"📦 Provider: {self._llm_client._provider.value}")
+
+        print(f"📝 Text: {len(text)} chars")
+        print(f"🎨 Styles: {len(styles) if styles else 'default'}")
+        print(f"🎭 Tone: {tone.value}")
+        print(f"{'#'*70}\n")
 
         if not styles:
             # Default styles for variety

@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QLineEdit, QComboBox, QPushButton, QGroupBox, QLabel,
     QCheckBox, QSlider, QSpinBox, QDoubleSpinBox, QTabWidget,
     QWidget, QScrollArea, QListWidget, QListWidgetItem,
-    QProgressBar, QMessageBox, QFrame
+    QProgressBar, QMessageBox, QFrame, QButtonGroup, QRadioButton
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor
@@ -69,6 +69,53 @@ MLX_MODELS: List[LocalModelInfo] = [
         best_for="Creative writing, dialogue",
         requires_trust_remote_code=False
     ),
+    LocalModelInfo(
+        model_id="roneneldan/TinyStories-33M",
+        display_name="📖 TinyStories (33M) - MLX [Ultra Fast]",
+        size_gb=0.07,
+        description="Tiny story-focused model, runs instantly on Apple Silicon",
+        ram_required="1GB+",
+        best_for="Quick story drafts, testing, ultra-fast generation",
+        requires_trust_remote_code=False
+    ),
+
+    # === Reasoning Models for Planning & Critique ===
+    LocalModelInfo(
+        model_id="mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit",
+        display_name="🧠 DeepSeek-R1 Qwen 7B - MLX [Reasoning]",
+        size_gb=4.0,
+        description="Chain-of-thought reasoning for plot analysis and planning",
+        ram_required="12GB+",
+        best_for="Chapter planning, outline critique, continuity checking",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="mlx-community/Phi-4-reasoning-plus-4bit",
+        display_name="🧠 Phi-4 Reasoning Plus - MLX [Recommended]",
+        size_gb=7.0,
+        description="Microsoft's 14B reasoning model for story analysis (128K context)",
+        ram_required="16GB+",
+        best_for="Story planning, plot analysis, character consistency, critique",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="mlx-community/DeepSeek-R1-Distill-Qwen-14B-4bit",
+        display_name="🧠 DeepSeek-R1 Qwen 14B - MLX [High Quality]",
+        size_gb=7.0,
+        description="Advanced reasoning for complex plot and multi-character tracking",
+        ram_required="16GB+",
+        best_for="Complex plot analysis, logic verification, full critique",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="mlx-community/Ministral-3-3B-Reasoning-2512-bf16",
+        display_name="🧠 Ministral 3 3B Reasoning - MLX [Lightweight]",
+        size_gb=6.0,
+        description="Mistral's compact reasoning model with 128K context",
+        ram_required="8GB+",
+        best_for="Quick plot checks, outline validation, fast iterations",
+        requires_trust_remote_code=False
+    ),
 
     # === Medium Models (16GB RAM) ===
     LocalModelInfo(
@@ -107,13 +154,33 @@ MLX_MODELS: List[LocalModelInfo] = [
         best_for="Creative writing, complex tasks",
         requires_trust_remote_code=False
     ),
+    # === Storytelling-Specialized Models (Latest Mistral Models) ===
+    # Note: Using verified mlx-community models optimized for Apple Silicon
+    LocalModelInfo(
+        model_id="mlx-community/Ministral-3-8B-Instruct-2512-4bit",
+        display_name="⭐ Ministral 3 8B - MLX [Latest, Dec 2024]",
+        size_gb=5.6,
+        description="Latest Mistral model with 256K context, excellent for storytelling",
+        ram_required="8GB+",
+        best_for="Creative writing, storytelling, dialogue, long narratives",
+        requires_trust_remote_code=False
+    ),
     LocalModelInfo(
         model_id="mlx-community/Mistral-Nemo-Instruct-2407-4bit",
-        display_name="Mistral Nemo (12B) - MLX",
-        size_gb=7.0,
-        description="Mistral's excellent 12B model",
-        ram_required="16GB+",
-        best_for="Quality writing with good speed",
+        display_name="⭐ Mistral Nemo 12B - MLX [High Quality]",
+        size_gb=6.89,
+        description="Mistral-NVIDIA collaboration, 128K context for long-form writing",
+        ram_required="12GB+",
+        best_for="High-quality creative writing, complex narratives",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="mlx-community/Meta-Llama-3.1-8B-Instruct-4bit",
+        display_name="📝 Llama 3.1 8B - MLX (128K context)",
+        size_gb=5.0,
+        description="Meta's Llama 3.1 with 128K context window, excellent for long-form",
+        ram_required="12GB+",
+        best_for="Long chapters, extended narratives, worldbuilding documents",
         requires_trust_remote_code=False
     ),
 
@@ -125,6 +192,15 @@ MLX_MODELS: List[LocalModelInfo] = [
         description="High-quality 14B model with excellent reasoning",
         ram_required="16GB+",
         best_for="Complex writing, long context (128K)",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="mlx-community/Qwen3-14B-4bit",
+        display_name="📝 Qwen 3 (14B) - MLX [Latest, High Quality]",
+        size_gb=7.0,
+        description="Latest Qwen 3 with exceptional creative writing, 128K context",
+        ram_required="16GB+",
+        best_for="High-quality storytelling, long chapters, worldbuilding",
         requires_trust_remote_code=False
     ),
     LocalModelInfo(
@@ -213,6 +289,80 @@ PYTORCH_MODELS: List[LocalModelInfo] = [
         best_for="Quick suggestions, low-resource systems",
         requires_trust_remote_code=False
     ),
+    LocalModelInfo(
+        model_id="roneneldan/TinyStories-33M",
+        display_name="📖 TinyStories (33M) [Ultra Fast]",
+        size_gb=0.07,
+        description="Tiny model trained specifically on story generation, runs instantly on CPU",
+        ram_required="1GB+",
+        best_for="Quick story drafts, testing, CPU-only systems",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="roneneldan/TinyStories-8M",
+        display_name="📖 TinyStories (8M) [Fastest]",
+        size_gb=0.02,
+        description="Ultra-lightweight story model, instant generation on any device",
+        ram_required="512MB+",
+        best_for="Rapid prototyping, story outlines, minimal resources",
+        requires_trust_remote_code=False
+    ),
+
+    # === Reasoning Models for Planning & Critique ===
+    LocalModelInfo(
+        model_id="deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+        display_name="🧠 DeepSeek-R1 Qwen 7B [Reasoning, Fits 16GB]",
+        size_gb=14.0,
+        description="Chain-of-thought reasoning for plot analysis and planning",
+        ram_required="16GB+",
+        best_for="Chapter planning, outline critique, continuity checking",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="mistralai/Ministral-3-8B-Reasoning-2512",
+        display_name="🧠 Ministral 3 8B Reasoning [Balanced]",
+        size_gb=16.0,
+        description="Mistral's reasoning model with 128K context, vision-capable",
+        ram_required="16GB+",
+        best_for="Plot structure, character arcs, scene analysis",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="Qwen/Qwen3-4B-Thinking-2507",
+        display_name="🧠 Qwen3 4B Thinking [Efficient, 262K context]",
+        size_gb=8.0,
+        description="Latest Qwen3 thinking model with massive 262K context",
+        ram_required="12GB+",
+        best_for="Long narrative analysis, multi-chapter tracking, continuity",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="microsoft/Phi-4-reasoning-plus",
+        display_name="🧠 Phi-4 Reasoning Plus [Recommended]",
+        size_gb=28.0,
+        description="Microsoft's 14B reasoning model with 128K context, enhanced RL",
+        ram_required="32GB+",
+        best_for="Story planning, plot analysis, character consistency, critique",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
+        display_name="🧠 DeepSeek-R1 Qwen 14B [High Quality]",
+        size_gb=28.0,
+        description="Advanced reasoning for complex plot and multi-character tracking",
+        ram_required="32GB+",
+        best_for="Complex plot analysis, logic verification, full critique",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="Qwen/QwQ-32B",
+        display_name="🧠 QwQ 32B [High Performance]",
+        size_gb=64.0,
+        description="Qwen's powerful 32B reasoning model with 131K context",
+        ram_required="64GB+",
+        best_for="Deep plot analysis, complex worldbuilding, full manuscript",
+        requires_trust_remote_code=False
+    ),
 
     # === Medium Models (8-16GB RAM) ===
     LocalModelInfo(
@@ -299,6 +449,36 @@ PYTORCH_MODELS: List[LocalModelInfo] = [
         requires_trust_remote_code=False
     ),
 
+    # === Storytelling-Specialized Models ===
+    # Note: These are verified HuggingFace models optimized for creative writing
+    LocalModelInfo(
+        model_id="NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO",
+        display_name="⭐ Nous Hermes 2 Mixtral (47B)",
+        size_gb=90.0,
+        description="Excellent creative writing model from Nous Research, DPO fine-tuned",
+        ram_required="64GB+ (or use with CPU offloading)",
+        best_for="Story writing, character dialogue, creative fiction",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="mistralai/Ministral-3-8B-Instruct-2512",
+        display_name="⭐ Ministral 3 8B [Latest, Dec 2024]",
+        size_gb=16.0,
+        description="Latest Mistral model with 256K context, excellent for storytelling",
+        ram_required="16GB+",
+        best_for="Creative writing, storytelling, dialogue, long narratives",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="Qwen/Qwen2.5-7B-Instruct",
+        display_name="📝 Qwen 2.5 7B (128K context)",
+        size_gb=14.0,
+        description="Excellent for long-form writing with massive 128K context window",
+        ram_required="16GB+",
+        best_for="Long chapters, extended narratives, worldbuilding documents",
+        requires_trust_remote_code=True
+    ),
+
     # === High-Performance Models (32GB RAM, optimized for M5 Mac) ===
     LocalModelInfo(
         model_id="Qwen/Qwen2.5-14B-Instruct",
@@ -307,6 +487,15 @@ PYTORCH_MODELS: List[LocalModelInfo] = [
         description="Alibaba's powerful 14B model with excellent reasoning and coding",
         ram_required="32GB+",
         best_for="High-quality writing, complex reasoning, long context (128K)",
+        requires_trust_remote_code=True
+    ),
+    LocalModelInfo(
+        model_id="Qwen/Qwen3-14B-Instruct",
+        display_name="📝 Qwen 3 (14B) [Latest, High Quality]",
+        size_gb=28.0,
+        description="Latest Qwen 3 with exceptional creative writing, 128K context",
+        ram_required="32GB+",
+        best_for="High-quality storytelling, long chapters, worldbuilding",
         requires_trust_remote_code=True
     ),
     LocalModelInfo(
@@ -320,11 +509,11 @@ PYTORCH_MODELS: List[LocalModelInfo] = [
     ),
     LocalModelInfo(
         model_id="mistralai/Mistral-Nemo-Instruct-2407",
-        display_name="Mistral Nemo (12B)",
+        display_name="⭐ Mistral Nemo 12B [High Quality]",
         size_gb=24.0,
-        description="Mistral's collaboration with NVIDIA, 128K context window",
-        ram_required="32GB+",
-        best_for="Long-form writing, coding, reasoning with large context",
+        description="Mistral-NVIDIA collaboration, 128K context for long-form writing",
+        ram_required="24GB+",
+        best_for="High-quality creative writing, complex narratives, long chapters",
         requires_trust_remote_code=False
     ),
     LocalModelInfo(
@@ -1218,6 +1407,56 @@ class SettingsDialog(QDialog):
         explain_label.setStyleSheet("color: #6b7280; font-size: 10px; padding: 10px;")
         layout.addWidget(explain_label)
 
+        # Chapter Planning Configuration
+        chapter_planning_group = QGroupBox("Chapter Planning & Storytelling")
+        chapter_planning_layout = QVBoxLayout()
+
+        planning_info = QLabel(
+            "Configure which AI to use for chapter planning, event generation, and creative writing assistance."
+        )
+        planning_info.setWordWrap(True)
+        planning_info.setStyleSheet("color: #374151; font-size: 11px; padding: 4px;")
+        chapter_planning_layout.addWidget(planning_info)
+
+        # Radio button group for chapter planning model choice
+        self.chapter_planning_button_group = QButtonGroup()
+
+        self.use_cloud_for_planning = QRadioButton("Use cloud AI (configured above)")
+        self.use_cloud_for_planning.setToolTip("Uses your default cloud LLM (Claude, GPT-4, or Gemini)")
+        self.chapter_planning_button_group.addButton(self.use_cloud_for_planning, 0)
+        chapter_planning_layout.addWidget(self.use_cloud_for_planning)
+
+        self.use_local_for_planning = QRadioButton("Use local storytelling model (configure in 'Local Models' tab)")
+        self.use_local_for_planning.setToolTip("Uses a specialized storytelling model running on your device")
+        self.chapter_planning_button_group.addButton(self.use_local_for_planning, 1)
+        chapter_planning_layout.addWidget(self.use_local_for_planning)
+
+        # Set current selection based on settings
+        use_local = self.settings.get("use_local_for_chapter_planning", False)
+        if use_local:
+            self.use_local_for_planning.setChecked(True)
+        else:
+            self.use_cloud_for_planning.setChecked(True)
+
+        # Info about local models
+        local_models_info = QLabel(
+            "📝 Storytelling models available for download:\n"
+            "  ⭐ Hermes 2 Pro Mistral - Creative writing specialist (14GB)\n"
+            "  📝 Qwen 2.5 7B - Long chapters with 128K context (14GB)\n"
+            "  📖 TinyStories - Ultra-fast CPU story generation (70MB)\n"
+            "  • Gemma, Phi - General purpose storytelling\n\n"
+            "Go to the 'Local Models' tab to download and configure storytelling models."
+        )
+        local_models_info.setWordWrap(True)
+        local_models_info.setStyleSheet(
+            "color: #6b7280; font-size: 10px; padding: 8px; "
+            "background-color: #f9fafb; border-radius: 4px; border-left: 3px solid #6366f1;"
+        )
+        chapter_planning_layout.addWidget(local_models_info)
+
+        chapter_planning_group.setLayout(chapter_planning_layout)
+        layout.addWidget(chapter_planning_group)
+
         layout.addStretch()
 
         # Set widget to scroll area and return scroll area
@@ -1265,6 +1504,19 @@ class SettingsDialog(QDialog):
         download_info.setWordWrap(True)
         download_info.setStyleSheet("color: #6b7280; font-size: 11px; padding: 4px;")
         download_layout.addWidget(download_info)
+
+        # Storytelling models highlight
+        storytelling_highlight = QLabel(
+            "📝 Storytelling models: ⭐ (creative writing), 📝 (long-form), 📖 (ultra-fast CPU). "
+            "🧠 Reasoning models: For planning, plotting, and critique. "
+            "Models optimized for specific tasks appear first in the list."
+        )
+        storytelling_highlight.setWordWrap(True)
+        storytelling_highlight.setStyleSheet(
+            "color: #059669; font-size: 10px; padding: 6px; "
+            "background-color: #ecfdf5; border-radius: 4px; font-weight: 500;"
+        )
+        download_layout.addWidget(storytelling_highlight)
 
         # Model list
         self.model_list = QListWidget()
@@ -1463,6 +1715,175 @@ class SettingsDialog(QDialog):
         active_group.setLayout(active_layout)
         layout.addWidget(active_group)
 
+        # Storytelling / Chapter Planning Model
+        storytelling_group = QGroupBox("Storytelling Model (Chapter Planning)")
+        storytelling_layout = QFormLayout()
+
+        storytelling_info = QLabel(
+            "Choose a model optimized for creative writing, chapter planning, and story development. "
+            "If not set, the active local model will be used."
+        )
+        storytelling_info.setWordWrap(True)
+        storytelling_info.setStyleSheet("color: #6b7280; font-size: 11px; padding: 4px;")
+        storytelling_layout.addRow("", storytelling_info)
+
+        self.storytelling_model_combo = QComboBox()
+        self.storytelling_model_combo.setEditable(True)
+        self.storytelling_model_combo.setPlaceholderText("Use active model (default)")
+
+        # Add "(Use active model)" as first option
+        self.storytelling_model_combo.addItem("(Use active model)", "")
+
+        # Add storytelling-optimized models from storytelling_config
+        try:
+            from src.config.storytelling_config import get_available_storytelling_models
+            storytelling_models = get_available_storytelling_models()
+
+            # Group models by category based on actual models in storytelling_config
+            specialized = []  # Latest/recommended models
+            longform = []  # Models with 128K+ context
+            lightweight = []  # Ultra-fast/tiny models
+            general = []  # Everything else
+
+            for model in storytelling_models:
+                display_text = f"{model.display_name} ({model.vram_gb}GB)"
+
+                # Ultra lightweight models (TinyStories, TinyLlama)
+                if "Tiny" in model.display_name:
+                    lightweight.append((display_text, model.model_id))
+                # Long-form models with 128K+ context
+                elif model.context_length >= 128000:
+                    longform.append((display_text, model.model_id))
+                # Latest/recommended models (Qwen 3, Ministral 3, marked with [Latest] or [Recommended])
+                elif "[Latest]" in model.display_name or "[Recommended]" in model.display_name or "Qwen 3" in model.display_name or "Ministral 3" in model.display_name:
+                    specialized.append((display_text, model.model_id))
+                else:
+                    general.append((display_text, model.model_id))
+
+            # Add specialized/latest models first
+            if specialized:
+                for display, model_id in specialized:
+                    self.storytelling_model_combo.addItem(f"⭐ {display}", model_id)
+
+            # Add long-form models
+            if longform:
+                for display, model_id in longform:
+                    self.storytelling_model_combo.addItem(f"📝 {display}", model_id)
+
+            # Add general models
+            if general:
+                for display, model_id in general:
+                    self.storytelling_model_combo.addItem(display, model_id)
+
+            # Add lightweight models last
+            if lightweight:
+                for display, model_id in lightweight:
+                    self.storytelling_model_combo.addItem(f"⚡ {display}", model_id)
+
+        except Exception as e:
+            # Fallback to basic list if storytelling_config import fails
+            print(f"Could not load storytelling models: {e}")
+            basic_models = [
+                ("Gemma 3 4B (8GB VRAM)", "google/gemma-3-4b-it"),
+                ("Qwen 2.5 7B (14GB VRAM)", "Qwen/Qwen2.5-7B-Instruct"),
+                ("Phi 3.5 Mini (6GB VRAM)", "microsoft/Phi-3.5-mini-instruct"),
+            ]
+            for display_name, model_id in basic_models:
+                self.storytelling_model_combo.addItem(display_name, model_id)
+
+        # Set current value
+        current_storytelling = self.settings.get("storytelling_model_id", "")
+        if current_storytelling:
+            index = self.storytelling_model_combo.findData(current_storytelling)
+            if index >= 0:
+                self.storytelling_model_combo.setCurrentIndex(index)
+            else:
+                # Custom model - add it
+                self.storytelling_model_combo.setEditText(current_storytelling)
+        else:
+            self.storytelling_model_combo.setCurrentIndex(0)  # Default to "(Use active model)"
+
+        storytelling_layout.addRow("Model:", self.storytelling_model_combo)
+
+        storytelling_note = QLabel(
+            "⭐ = Latest/recommended models for creative writing\n"
+            "📝 = Long-form writing with extended context (128K+ tokens)\n"
+            "⚡ = Ultra-fast lightweight models for quick drafts\n"
+            "These models are optimized for storytelling and narrative generation."
+        )
+        storytelling_note.setWordWrap(True)
+        storytelling_note.setStyleSheet("color: #6b7280; font-size: 10px; font-style: italic;")
+        storytelling_layout.addRow("", storytelling_note)
+
+        storytelling_group.setLayout(storytelling_layout)
+        layout.addWidget(storytelling_group)
+
+        # === Reasoning Models Configuration ===
+        reasoning_group = QGroupBox("Reasoning Models for Planning & Critique")
+        reasoning_layout = QFormLayout()
+
+        reasoning_info = QLabel(
+            "Reasoning models use chain-of-thought to analyze plot structure, check continuity, "
+            "critique narratives, and help with story planning."
+        )
+        reasoning_info.setWordWrap(True)
+        reasoning_info.setStyleSheet("color: #6b7280; font-size: 11px; padding: 4px;")
+        reasoning_layout.addRow("", reasoning_info)
+
+        self.reasoning_model_combo = QComboBox()
+        self.reasoning_model_combo.setEditable(True)
+        self.reasoning_model_combo.setPlaceholderText("Use storytelling model (default)")
+
+        # Add "(Use storytelling model)" as first option
+        self.reasoning_model_combo.addItem("(Use storytelling model)", "")
+
+        # Add reasoning-optimized models from reasoning_config
+        try:
+            from src.config.reasoning_config import get_available_reasoning_models
+            reasoning_models = get_available_reasoning_models()
+
+            for model in reasoning_models:
+                display_text = f"{model.display_name} ({model.vram_gb}GB)"
+                self.reasoning_model_combo.addItem(f"🧠 {display_text}", model.model_id)
+
+        except Exception as e:
+            # Fallback to basic list if reasoning_config import fails
+            print(f"Could not load reasoning models: {e}")
+            basic_reasoning = [
+                ("DeepSeek-R1 Qwen 7B (14GB)", "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"),
+                ("Phi-4 Reasoning Plus (28GB)", "microsoft/Phi-4-reasoning-plus"),
+            ]
+            for display_name, model_id in basic_reasoning:
+                self.reasoning_model_combo.addItem(f"🧠 {display_name}", model_id)
+
+        # Set current value
+        current_reasoning = self.settings.get("reasoning_model_id", "")
+        if current_reasoning:
+            index = self.reasoning_model_combo.findData(current_reasoning)
+            if index >= 0:
+                self.reasoning_model_combo.setCurrentIndex(index)
+            else:
+                # Custom model - add it
+                self.reasoning_model_combo.setEditText(current_reasoning)
+        else:
+            self.reasoning_model_combo.setCurrentIndex(0)  # Default to "(Use storytelling model)"
+
+        reasoning_layout.addRow("Model:", self.reasoning_model_combo)
+
+        reasoning_note = QLabel(
+            "🧠 = Reasoning models with chain-of-thought\n"
+            "These models show their reasoning process, ideal for:\n"
+            "• Plot structure analysis and planning\n"
+            "• Character consistency and continuity checking\n"
+            "• Narrative critique and feedback"
+        )
+        reasoning_note.setWordWrap(True)
+        reasoning_note.setStyleSheet("color: #6b7280; font-size: 10px; font-style: italic;")
+        reasoning_layout.addRow("", reasoning_note)
+
+        reasoning_group.setLayout(reasoning_layout)
+        layout.addWidget(reasoning_group)
+
         # Use local instead of API
         preference_group = QGroupBox("Model Preference")
         preference_layout = QVBoxLayout()
@@ -1621,7 +2042,19 @@ class SettingsDialog(QDialog):
         # Add models to list with download indicator
         # Use get_available_models() to get platform-specific list (MLX on Apple Silicon, PyTorch elsewhere)
         available_models = get_available_models()
+
+        # Separate storytelling models to show them first
+        storytelling_models = []
+        other_models = []
+
         for model in available_models:
+            if "⭐" in model.display_name or "📝" in model.display_name or "storytelling" in model.best_for.lower():
+                storytelling_models.append(model)
+            else:
+                other_models.append(model)
+
+        # Add storytelling models first, then others
+        for model in storytelling_models + other_models:
             is_downloaded = model.model_id in downloaded_ids
             download_indicator = "✓ " if is_downloaded else ""
             item_text = f"{download_indicator}{model.display_name} - {model.size_gb}GB"
@@ -1629,7 +2062,7 @@ class SettingsDialog(QDialog):
             item = QListWidgetItem(item_text)
             item.setData(Qt.ItemDataRole.UserRole, model)
 
-            # Color downloaded models green
+            # Color downloaded models green, storytelling models in bold
             if is_downloaded:
                 item.setForeground(QColor("#059669"))
                 item.setToolTip(f"✓ Downloaded: {model.model_id}")
@@ -1701,6 +2134,58 @@ class SettingsDialog(QDialog):
         # If text contains parentheses (our display format), extract model_id
         if "(" in text and ")" in text:
             # Extract text between last ( and )
+            start = text.rfind("(")
+            end = text.rfind(")")
+            if start < end:
+                return text[start+1:end].strip()
+
+        # Otherwise, treat entire text as model ID
+        return text.strip()
+
+    def _get_storytelling_model_id(self) -> str:
+        """Get the storytelling model ID from the combo box.
+
+        Returns empty string if "(Use active model)" is selected.
+        """
+        current_data = self.storytelling_model_combo.currentData()
+        if current_data:
+            return current_data  # Empty string for default, or model ID
+
+        # User typed a custom entry
+        text = self.storytelling_model_combo.currentText()
+
+        # If it's the default placeholder, return empty
+        if text == "(Use active model)" or not text.strip():
+            return ""
+
+        # If text contains parentheses (our display format), extract model_id
+        if "(" in text and ")" in text:
+            start = text.rfind("(")
+            end = text.rfind(")")
+            if start < end:
+                return text[start+1:end].strip()
+
+        # Otherwise, treat entire text as model ID
+        return text.strip()
+
+    def _get_reasoning_model_id(self) -> str:
+        """Get the reasoning model ID from the combo box.
+
+        Returns empty string if "(Use storytelling model)" is selected.
+        """
+        current_data = self.reasoning_model_combo.currentData()
+        if current_data:
+            return current_data  # Empty string for default, or model ID
+
+        # User typed a custom entry
+        text = self.reasoning_model_combo.currentText()
+
+        # If it's the default placeholder, return empty
+        if text == "(Use storytelling model)" or not text.strip():
+            return ""
+
+        # If text contains parentheses (our display format), extract model_id
+        if "(" in text and ")" in text:
             start = text.rfind("(")
             end = text.rfind(")")
             if start < end:
@@ -3275,10 +3760,15 @@ class SettingsDialog(QDialog):
             "max_tokens": self.max_tokens_spin.value(),
             "top_p": self.top_p_slider.value() / 100,
 
+            # Chapter Planning
+            "use_local_for_chapter_planning": self.use_local_for_planning.isChecked(),
+
             # Hugging Face / Local Models
             "enable_local_models": self.enable_local_models.isChecked(),
             # Note: HF token is stored in Windows Credential Manager, not in config file
             "local_model_id": self._get_selected_model_id(),
+            "storytelling_model_id": self._get_storytelling_model_id(),
+            "reasoning_model_id": self._get_reasoning_model_id(),
             "local_model_quantization": quant_map.get(self.quantization_combo.currentIndex(), "8bit"),
             "local_model_device": device_map.get(self.device_combo.currentIndex(), "auto"),
             "local_model_trust_remote_code": self.trust_remote_code.isChecked(),
