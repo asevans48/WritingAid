@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QTabWidget, QMenuBar, QMenu, QFileDialog, QMessageBox,
     QToolBar, QStatusBar, QSplitter, QLabel, QSystemTrayIcon
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QPoint
+from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QThread
 from PyQt6.QtGui import QAction, QKeySequence, QIcon
 from pathlib import Path
 from typing import Optional
@@ -33,6 +33,153 @@ from src.ui.styles import get_modern_style, get_icon
 from src.config import get_ai_config
 
 
+class ChatWorker(QThread):
+    """Background worker for AI chat operations with full project context."""
+    finished = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, message: str, context: dict = None):
+        super().__init__()
+        self.message = message
+        self.context = context or {}
+
+    def _build_context_prompt(self) -> str:
+        """Build comprehensive context from project data."""
+        parts = []
+
+        # Project info
+        if self.context.get('project_name'):
+            parts.append(f"PROJECT: {self.context['project_name']}")
+            if self.context.get('project_description'):
+                parts.append(f"Description: {self.context['project_description'][:300]}")
+
+        # Plot/Story planning
+        if self.context.get('plot_summary'):
+            parts.append(f"\nPLOT OUTLINE:\n{self.context['plot_summary'][:2000]}")
+
+        # Characters
+        if self.context.get('characters'):
+            chars = self.context['characters'][:1500]
+            parts.append(f"\nMAIN CHARACTERS:\n{chars}")
+
+        # Worldbuilding
+        if self.context.get('worldbuilding'):
+            wb = self.context['worldbuilding'][:1500]
+            parts.append(f"\nWORLDBUILDING:\n{wb}")
+
+        # Current chapter context
+        if self.context.get('current_chapter_title'):
+            parts.append(f"\nCURRENT CHAPTER: {self.context['current_chapter_title']}")
+            if self.context.get('current_chapter_content'):
+                # Include excerpt of current chapter (beginning and end)
+                content = self.context['current_chapter_content']
+                if len(content) > 2000:
+                    parts.append(f"Chapter excerpt (beginning):\n{content[:1000]}...")
+                    parts.append(f"...{content[-500:]}")
+                else:
+                    parts.append(f"Chapter content:\n{content}")
+
+        # All chapters summary (for cross-chapter questions)
+        if self.context.get('all_chapters'):
+            chapters_info = self.context['all_chapters'][:1500]
+            parts.append(f"\nMANUSCRIPT CHAPTERS:\n{chapters_info}")
+
+        return "\n".join(parts) if parts else ""
+
+    def run(self):
+        """Process the chat message with AI."""
+        try:
+            from src.ai.llm_client import LLMClient, LLMProvider, HuggingFaceConfig
+
+            ai_config = get_ai_config()
+            settings = ai_config.get_settings()
+
+            # Check if AI is disabled
+            if ai_config.is_ai_disabled():
+                self.error.emit("AI features are disabled. Enable them in Settings > AI Settings.")
+                return
+
+            # Check if local models are preferred and configured
+            prefer_local = settings.get("prefer_local_model", False)
+            enable_local = settings.get("enable_local_models", False)
+            local_model_id = settings.get("local_model_id", "")
+
+            if prefer_local and enable_local and local_model_id:
+                # Use local model - detect if it's an MLX model
+                is_mlx_model = "mlx" in local_model_id.lower()
+
+                hf_config = HuggingFaceConfig(
+                    model_id=local_model_id,
+                    use_local=True,
+                    device=settings.get("local_model_device", "auto"),
+                    quantization=settings.get("local_model_quantization", "none") if settings.get("local_model_quantization") != "none" else None,
+                    trust_remote_code=settings.get("local_model_trust_remote_code", False)
+                )
+
+                # Use MLX provider for MLX models, HuggingFace for others
+                provider = LLMProvider.MLX_LOCAL if is_mlx_model else LLMProvider.HUGGINGFACE_LOCAL
+                llm = LLMClient(
+                    provider=provider,
+                    hf_config=hf_config
+                )
+            else:
+                # Use cloud provider
+                default_provider = settings.get("default_llm", "claude")
+                api_key = ai_config.get_api_key(default_provider)
+
+                if not api_key:
+                    self.error.emit(f"No API key configured for {default_provider}. Please add your API key in Settings > AI Settings, or enable local models.")
+                    return
+
+                # Map provider name to enum
+                provider_map = {
+                    "claude": LLMProvider.CLAUDE,
+                    "chatgpt": LLMProvider.CHATGPT,
+                    "openai": LLMProvider.CHATGPT,
+                    "gemini": LLMProvider.GEMINI
+                }
+                provider = provider_map.get(default_provider, LLMProvider.CLAUDE)
+
+                llm = LLMClient(
+                    provider=provider,
+                    api_key=api_key,
+                    model=ai_config.get_model(default_provider)
+                )
+
+            # Build system prompt for writing assistant
+            system_prompt = """You are a helpful creative writing assistant integrated into a writer's platform.
+You have access to the author's full project context including plot, characters, worldbuilding, and manuscript chapters.
+
+You help authors with:
+- Answering questions about their story, characters, and world
+- Analyzing chapters for consistency, pacing, and character development
+- Brainstorming ideas that fit their established story
+- Providing feedback on specific passages or the overall narrative
+- Suggesting improvements that align with their style and voice
+- Identifying plot holes or inconsistencies across chapters
+
+Be encouraging, creative, and constructive. Reference specific details from their project when relevant.
+Keep responses focused and actionable."""
+
+            # Add project context
+            context_prompt = self._build_context_prompt()
+            if context_prompt:
+                system_prompt += f"\n\n{'='*60}\nPROJECT CONTEXT:\n{'='*60}\n{context_prompt}"
+
+            # Generate response
+            response = llm.generate_text(
+                prompt=self.message,
+                system_prompt=system_prompt,
+                max_tokens=settings.get("max_tokens", 2000),
+                temperature=settings.get("temperature", 0.7)
+            )
+
+            self.finished.emit(response)
+
+        except Exception as e:
+            self.error.emit(f"Error: {str(e)}")
+
+
 class MainWindow(QMainWindow):
     """Main application window with all features."""
 
@@ -49,6 +196,9 @@ class MainWindow(QMainWindow):
         # Find/Replace dialogs
         self.find_dialog: Optional[FindReplaceDialog] = None
         self.replace_dialog: Optional[FindReplaceDialog] = None
+
+        # Chat worker for AI assistant
+        self._chat_worker: Optional[ChatWorker] = None
 
         # Register with window manager
         self.window_manager = WindowManager()
@@ -628,8 +778,116 @@ class MainWindow(QMainWindow):
 
     def _handle_chat_message(self, message: str):
         """Handle chat message from user."""
-        # TODO: Integrate with AI client
-        self.chat_widget.add_message("Assistant", "AI integration pending...")
+        # Check if already processing
+        if self._chat_worker and self._chat_worker.isRunning():
+            self.chat_widget.add_message("Assistant", "Please wait, I'm still thinking...")
+            return
+
+        # Build comprehensive project context
+        context = self._build_chat_context()
+
+        # Show thinking indicator
+        self.chat_widget.add_message("Assistant", "Thinking...")
+
+        # Start background worker
+        self._chat_worker = ChatWorker(message, context)
+        self._chat_worker.finished.connect(self._on_chat_response)
+        self._chat_worker.error.connect(self._on_chat_error)
+        self._chat_worker.start()
+
+    def _build_chat_context(self) -> dict:
+        """Build comprehensive context dict for AI chat, similar to chapter planner."""
+        context = {}
+
+        if not self.current_project:
+            return context
+
+        project = self.current_project
+
+        # Basic project info
+        context['project_name'] = project.name
+        context['project_description'] = project.description or ""
+
+        # Try to use AI-generated summaries if available (more efficient)
+        use_ai_summary = (hasattr(project, 'ai_summary') and
+                         project.ai_summary and
+                         not project.ai_summary.is_empty())
+
+        if use_ai_summary:
+            summary = project.ai_summary
+            context['plot_summary'] = summary.plot_summary or ""
+            context['worldbuilding'] = summary.worldbuilding_summary or ""
+            context['characters'] = summary.character_summary or ""
+        else:
+            # Fallback: extract from story planning and worldbuilding
+            # Plot from story planning
+            if hasattr(project, 'story_planning') and project.story_planning:
+                plot_parts = []
+                sp = project.story_planning
+                if sp.premise:
+                    plot_parts.append(f"Premise: {sp.premise}")
+                if sp.synopsis:
+                    plot_parts.append(f"Synopsis: {sp.synopsis}")
+                if sp.plot_events:
+                    events = [f"- {e.title}: {e.description}" for e in sp.plot_events[:10]]
+                    plot_parts.append("Key Events:\n" + "\n".join(events))
+                context['plot_summary'] = "\n\n".join(plot_parts)
+
+            # Characters
+            if hasattr(project, 'characters') and project.characters:
+                char_summaries = []
+                for char in project.characters[:10]:  # Limit to 10 characters
+                    char_info = f"- {char.name} ({char.character_type})"
+                    if char.personality:
+                        char_info += f": {char.personality[:100]}"
+                    char_summaries.append(char_info)
+                context['characters'] = "\n".join(char_summaries)
+
+            # Worldbuilding (extract key sections)
+            if hasattr(project, 'worldbuilding') and project.worldbuilding:
+                wb = project.worldbuilding
+                wb_parts = []
+                if wb.mythology:
+                    wb_parts.append(f"Mythology: {wb.mythology[:300]}")
+                if wb.history:
+                    wb_parts.append(f"History: {wb.history[:300]}")
+                if wb.politics:
+                    wb_parts.append(f"Politics: {wb.politics[:300]}")
+                if wb.factions:
+                    faction_names = [f.name for f in wb.factions[:5]]
+                    wb_parts.append(f"Factions: {', '.join(faction_names)}")
+                if wb.places:
+                    place_names = [p.name for p in wb.places[:5]]
+                    wb_parts.append(f"Places: {', '.join(place_names)}")
+                context['worldbuilding'] = "\n".join(wb_parts)
+
+        # Current chapter context
+        if hasattr(self, 'manuscript_editor'):
+            content, title = self.manuscript_editor.get_current_chapter_info()
+            if title:
+                context['current_chapter_title'] = title
+                context['current_chapter_content'] = content or ""
+
+        # All chapters list (for cross-chapter questions)
+        if hasattr(project, 'manuscript') and project.manuscript and project.manuscript.chapters:
+            chapter_list = []
+            for i, ch in enumerate(project.manuscript.chapters[:20]):  # Limit to 20
+                word_count = len(ch.content.split()) if ch.content else 0
+                chapter_list.append(f"{i+1}. {ch.title} ({word_count} words)")
+            context['all_chapters'] = "\n".join(chapter_list)
+
+        return context
+
+    def _on_chat_response(self, response: str):
+        """Handle successful AI response."""
+        # Remove the "Thinking..." message by clearing and re-adding
+        # Actually we can't easily remove the last message, so just add the response
+        # The "Thinking..." will scroll up naturally
+        self.chat_widget.add_message("Assistant", response)
+
+    def _on_chat_error(self, error: str):
+        """Handle AI chat error."""
+        self.chat_widget.add_message("Assistant", f"Sorry, I encountered an issue: {error}")
 
     def _show_find_dialog(self):
         """Show Find dialog."""

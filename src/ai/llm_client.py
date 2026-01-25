@@ -18,6 +18,7 @@ class LLMProvider(Enum):
     GEMINI = "gemini"
     HUGGINGFACE = "huggingface"
     HUGGINGFACE_LOCAL = "huggingface_local"  # Local model via transformers
+    MLX_LOCAL = "mlx_local"  # Local model via MLX (Apple Silicon)
 
 
 class HuggingFaceConfig:
@@ -78,6 +79,8 @@ class LLMClient:
         self.client = None
         self._hf_pipeline = None
         self._hf_tokenizer = None
+        self._mlx_model = None
+        self._mlx_tokenizer = None
 
         if provider == LLMProvider.CLAUDE:
             self.client = anthropic.Anthropic(api_key=api_key)
@@ -90,6 +93,8 @@ class LLMClient:
             self._init_huggingface_api()
         elif provider == LLMProvider.HUGGINGFACE_LOCAL:
             self._init_huggingface_local()
+        elif provider == LLMProvider.MLX_LOCAL:
+            self._init_mlx_local()
 
     def _init_huggingface_api(self) -> None:
         """Initialize Hugging Face Inference API client."""
@@ -223,6 +228,27 @@ class LLMClient:
                 f"Install with: pip install transformers torch. Error: {e}"
             )
 
+    def _init_mlx_local(self) -> None:
+        """Initialize local MLX model for Apple Silicon."""
+        if not self.hf_config:
+            raise ValueError("HuggingFaceConfig is required for MLX models")
+
+        try:
+            from mlx_lm import load, generate
+
+            print(f"Loading MLX model: {self.hf_config.model_id}")
+
+            # Load MLX model and tokenizer
+            self._mlx_model, self._mlx_tokenizer = load(self.hf_config.model_id)
+
+            print(f"MLX model initialized successfully: {self.hf_config.model_id}")
+
+        except ImportError as e:
+            raise ImportError(
+                f"mlx-lm is required for MLX models on Apple Silicon. "
+                f"Install with: pip install mlx-lm. Error: {e}"
+            )
+
     def _get_default_model(self) -> str:
         """Get default model for provider."""
         defaults = {
@@ -230,7 +256,8 @@ class LLMClient:
             LLMProvider.CHATGPT: "gpt-4-turbo-preview",
             LLMProvider.GEMINI: "gemini-2.0-flash-exp",
             LLMProvider.HUGGINGFACE: "mistralai/Mistral-7B-Instruct-v0.2",
-            LLMProvider.HUGGINGFACE_LOCAL: "microsoft/phi-2"
+            LLMProvider.HUGGINGFACE_LOCAL: "microsoft/phi-2",
+            LLMProvider.MLX_LOCAL: "mlx-community/Llama-3.2-3B-Instruct-4bit"
         }
         return defaults.get(self.provider, "")
 
@@ -271,6 +298,8 @@ class LLMClient:
                 response = self._generate_huggingface_api(prompt, system_prompt, max_tokens, temperature)
             elif self.provider == LLMProvider.HUGGINGFACE_LOCAL:
                 response = self._generate_huggingface_local(prompt, system_prompt, max_tokens, temperature)
+            elif self.provider == LLMProvider.MLX_LOCAL:
+                response = self._generate_mlx_local(prompt, system_prompt, max_tokens, temperature)
             else:
                 response = f"Error: Unknown provider {self.provider}"
 
@@ -330,6 +359,50 @@ class LLMClient:
         )
 
         return outputs[0]['generated_text'].strip()
+
+    def _generate_mlx_local(
+        self,
+        prompt: str,
+        system_prompt: Optional[str],
+        max_tokens: int,
+        temperature: float
+    ) -> str:
+        """Generate text using local MLX model on Apple Silicon."""
+        if not self._mlx_model or not self._mlx_tokenizer:
+            raise RuntimeError("MLX model not initialized")
+
+        from mlx_lm import generate
+
+        # Build prompt using chat template if available
+        if hasattr(self._mlx_tokenizer, 'apply_chat_template'):
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": prompt})
+
+            full_prompt = self._mlx_tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+        else:
+            # Fallback to simple format
+            if system_prompt:
+                full_prompt = f"{system_prompt}\n\nUser: {prompt}\n\nAssistant:"
+            else:
+                full_prompt = f"User: {prompt}\n\nAssistant:"
+
+        # Generate response
+        response = generate(
+            self._mlx_model,
+            self._mlx_tokenizer,
+            prompt=full_prompt,
+            max_tokens=max_tokens,
+            temp=temperature,
+            verbose=False
+        )
+
+        return response.strip()
 
     def save_current_conversation(
         self,
