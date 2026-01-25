@@ -1,14 +1,13 @@
 """Annotation system for manuscript editor - notes and attributions at specific lines."""
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QTextEdit,
-    QDialog, QDialogButtonBox, QComboBox, QFormLayout, QListWidget,
-    QListWidgetItem, QSplitter, QGroupBox, QMessageBox, QLineEdit,
-    QScrollArea, QFrame
+    QWidget, QVBoxLayout, QPushButton, QLabel, QTextEdit, QDialog,
+    QDialogButtonBox, QComboBox, QFormLayout, QListWidget, QListWidgetItem,
+    QGroupBox, QMessageBox, QScrollArea
 )
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont, QTextCharFormat, QColor, QBrush
-from typing import List, Optional, Dict
+from PyQt6.QtGui import QColor, QBrush
+from typing import List, Optional
 import uuid
 
 from src.models.project import Annotation

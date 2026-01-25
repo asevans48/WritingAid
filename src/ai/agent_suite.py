@@ -17,7 +17,7 @@ from src.ai.semantic_search import SearchMethod
 from src.ai.mlx_utils import can_use_mlx
 from src.config.ai_config import get_ai_config
 from src.services.tts_service import get_tts_service
-from src.services.tts_document_generator import TTSDocumentGenerator, TTSDocumentConfig, create_default_config, get_tts_output_dir
+from src.services.tts_document_generator import TTSDocumentGenerator, create_default_config, get_tts_output_dir
 
 if TYPE_CHECKING:
     from src.models.project import WriterProject

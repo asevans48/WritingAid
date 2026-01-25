@@ -8,7 +8,6 @@ from PyQt6.QtWidgets import (
     QCheckBox, QFrame, QSplitter, QWidget, QScrollArea
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QFont
 
 from src.ai.rephrasing_agent import RephrasingAgent, RephraseStyle, RephraseTone, RephraseResult
 from src.ai.mlx_utils import can_use_mlx

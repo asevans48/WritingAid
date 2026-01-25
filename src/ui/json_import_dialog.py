@@ -2,16 +2,13 @@
 
 import json
 import uuid
-from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import List
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QTabWidget, QWidget,
-    QTextEdit, QPushButton, QLabel, QScrollArea, QFrame,
-    QComboBox, QGroupBox, QCheckBox, QMessageBox, QFileDialog,
-    QTreeWidget, QTreeWidgetItem, QSplitter
+    QDialog, QVBoxLayout, QHBoxLayout, QWidget, QTextEdit,
+    QPushButton, QLabel, QGroupBox, QCheckBox, QMessageBox,
+    QFileDialog, QTreeWidget, QTreeWidgetItem, QSplitter
 )
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont
 
 
 class JSONImportDialog(QDialog):
@@ -1110,7 +1107,6 @@ class JSONImportDialog(QDialog):
             return {}
 
         from src.models.worldbuilding_objects import Faction, Myth, Place
-        from src.models.project import WorldBuilding
 
         stats = {'factions': 0, 'myths': 0, 'places': 0, 'text_fields': 0}
 

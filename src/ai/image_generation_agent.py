@@ -3,7 +3,7 @@
 Supports both Apple Silicon (MLX) and NVIDIA/CPU (PyTorch) backends.
 """
 
-from typing import Optional, Dict, Any
+from typing import Optional
 from pathlib import Path
 from datetime import datetime
 import logging

@@ -2,12 +2,11 @@
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QPushButton,
-    QLabel, QSplitter, QGroupBox, QComboBox, QMessageBox,
-    QProgressBar, QScrollArea, QFrame, QTabWidget, QListWidget,
-    QListWidgetItem, QLineEdit, QCheckBox, QSlider, QSpinBox,
-    QSizePolicy, QApplication
+    QLabel, QGroupBox, QComboBox, QMessageBox, QProgressBar,
+    QScrollArea, QFrame, QTabWidget, QLineEdit, QCheckBox,
+    QSlider, QSizePolicy
 )
-from PyQt6.QtCore import pyqtSignal, Qt, QRectF, QPointF, QMimeData
+from PyQt6.QtCore import pyqtSignal, Qt, QPointF, QMimeData
 from PyQt6.QtGui import QFont, QTextCursor, QPainter, QPen, QBrush, QColor, QPainterPath, QDrag, QPixmap
 from typing import Optional, Callable, List
 import threading

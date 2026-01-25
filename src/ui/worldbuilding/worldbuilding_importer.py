@@ -3,13 +3,13 @@
 import json
 import uuid
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Tuple, Set
+from typing import Dict, List, Optional, Tuple, Set
 from dataclasses import dataclass
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QFileDialog, QTextEdit, QGroupBox, QCheckBox, QScrollArea,
-    QWidget, QDialogButtonBox, QMessageBox, QTreeWidget, QTreeWidgetItem
+    QFileDialog, QTextEdit, QGroupBox, QCheckBox, QDialogButtonBox,
+    QMessageBox, QTreeWidget, QTreeWidgetItem
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
@@ -17,8 +17,8 @@ from PyQt6.QtGui import QFont
 from src.models.worldbuilding_objects import (
     CompleteWorldBuilding, Faction, Planet, Star, StarSystem, HistoricalEvent,
     EnhancedCharacter, Army, Economy, Good, PowerHierarchy,
-    PoliticalSystem, Myth, WorldMap, MilitaryBranch, Place, Culture,
-    Flora, Fauna, Technology, ClimatePreset
+    PoliticalSystem, Myth, WorldMap, Place, Culture, Flora,
+    Fauna, Technology, ClimatePreset
 )
 
 

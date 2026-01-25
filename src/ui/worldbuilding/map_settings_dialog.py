@@ -7,9 +7,9 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
-from typing import Optional, List
+from typing import List
 
-from src.models.worldbuilding_objects import WorldMap, Planet, GridSettings
+from src.models.worldbuilding_objects import WorldMap, Planet
 
 
 class MapSettingsDialog(QDialog):

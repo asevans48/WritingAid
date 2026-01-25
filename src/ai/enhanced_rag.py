@@ -6,7 +6,7 @@ import uuid
 
 from src.models.project import WriterProject
 from src.ai.semantic_search import (
-    SemanticSearchEngine, SearchMethod, DocumentChunk, SearchResult
+    SemanticSearchEngine, SearchMethod, DocumentChunk
 )
 
 if TYPE_CHECKING:

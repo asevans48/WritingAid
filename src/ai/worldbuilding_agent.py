@@ -12,9 +12,6 @@ from dataclasses import dataclass
 if TYPE_CHECKING:
     from src.ai.llm_client import LLMClient
     from src.models.project import WriterProject
-    from src.models.worldbuilding_objects import (
-        Character, Faction, EconomySystem, WorldMap, Place, Planet
-    )
 
 
 class TaskComplexity(Enum):

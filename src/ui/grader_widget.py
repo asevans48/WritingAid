@@ -8,10 +8,9 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QPushButton, QLabel, QTextEdit, QComboBox, QGroupBox,
     QMessageBox, QCheckBox, QLineEdit, QProgressBar,
-    QScrollArea, QFrame, QFileDialog
+    QScrollArea, QFileDialog
 )
 from PyQt6.QtCore import pyqtSignal, QThread, Qt
-from PyQt6.QtGui import QFont
 
 from src.ai.chapter_analysis_agent import (
     ChapterAnalysisAgent, ChapterAnalysis, CritiqueContext,
@@ -1070,7 +1069,6 @@ class GraderWidget(QWidget):
 
     def load_data(self, data):
         """Load grader data (placeholder for future use)."""
-        pass
 
     def get_data(self):
         """Get grader data (placeholder for future use)."""

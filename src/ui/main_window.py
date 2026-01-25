@@ -1,9 +1,9 @@
 """Main application window for Writer Platform."""
 
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QTabWidget, QMenuBar, QMenu, QFileDialog, QMessageBox,
-    QToolBar, QStatusBar, QSplitter, QLabel, QSystemTrayIcon
+    QMainWindow, QWidget, QHBoxLayout, QTabWidget,
+    QMenu, QFileDialog, QMessageBox, QToolBar, QSplitter,
+    QLabel, QSystemTrayIcon
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QThread
 from PyQt6.QtGui import QAction, QKeySequence, QIcon
@@ -824,13 +824,19 @@ class MainWindow(QMainWindow):
             if hasattr(project, 'story_planning') and project.story_planning:
                 plot_parts = []
                 sp = project.story_planning
-                if sp.premise:
-                    plot_parts.append(f"Premise: {sp.premise}")
-                if sp.synopsis:
-                    plot_parts.append(f"Synopsis: {sp.synopsis}")
-                if sp.plot_events:
-                    events = [f"- {e.title}: {e.description}" for e in sp.plot_events[:10]]
-                    plot_parts.append("Key Events:\n" + "\n".join(events))
+                if sp.main_plot:
+                    plot_parts.append(f"Main Plot: {sp.main_plot}")
+                if sp.themes:
+                    plot_parts.append(f"Themes: {', '.join(sp.themes)}")
+                if sp.subplots:
+                    subplots = [f"- {s.title}: {s.description}" for s in sp.subplots[:5]]
+                    plot_parts.append("Subplots:\n" + "\n".join(subplots))
+                if sp.freytag_pyramid:
+                    fp = sp.freytag_pyramid
+                    if fp.exposition:
+                        plot_parts.append(f"Exposition: {fp.exposition[:200]}")
+                    if fp.climax:
+                        plot_parts.append(f"Climax: {fp.climax[:200]}")
                 context['plot_summary'] = "\n\n".join(plot_parts)
 
             # Characters

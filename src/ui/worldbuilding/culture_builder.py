@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import pyqtSignal, Qt
 
 from src.models.worldbuilding_objects import (
-    Culture, Ritual, Language, MusicStyle, ArtForm, Tradition, Cuisine, Faction, Planet
+    Culture, Ritual, Language, MusicStyle, ArtForm, Tradition, Cuisine, Faction
 )
 from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
 

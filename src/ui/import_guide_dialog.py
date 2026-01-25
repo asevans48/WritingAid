@@ -1,14 +1,12 @@
 """Import Guide Dialog - Comprehensive prompts for building project data with external LLMs."""
 
-import os
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTabWidget, QWidget,
-    QTextEdit, QPushButton, QLabel, QScrollArea, QFrame,
-    QComboBox, QGroupBox, QSplitter, QFileDialog, QMessageBox
+    QTextEdit, QPushButton, QLabel, QScrollArea, QComboBox,
+    QFileDialog, QMessageBox
 )
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
 
 
 # Platform-specific instructions and prompt adaptations

@@ -2,32 +2,29 @@
 
 from PyQt6.QtWidgets import (
     QTextEdit, QMenu, QDialog, QVBoxLayout, QLabel,
-    QListWidget, QListWidgetItem, QPushButton, QTextBrowser,
-    QHBoxLayout, QMessageBox, QToolBar, QComboBox, QToolTip,
-    QWidgetAction, QFrame, QSlider, QGroupBox
+    QListWidget, QPushButton, QTextBrowser, QHBoxLayout,
+    QMessageBox, QComboBox, QToolTip, QWidgetAction, QSlider,
+    QGroupBox
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QTimer, QPoint, QEvent
 from PyQt6.QtGui import (
     QAction, QTextCursor, QTextCharFormat, QColor, QFont,
     QTextBlockFormat, QSyntaxHighlighter, QTextDocument,
-    QTextBlockUserData, QIcon
+    QTextBlockUserData
 )
 from typing import Optional, Callable, List, Set, Dict, Tuple
 from dataclasses import dataclass
 from enum import Enum
 from collections import Counter
 from docx import Document
-from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from pathlib import Path
 import re
-import os
 
 # Markdown utilities
 from src.utils.markdown_editor import (
-    MarkdownStyle, HEADING_PREFIXES, STYLE_NAMES, STYLE_TO_NAME,
-    get_line_style, apply_heading_to_line, toggle_inline_style,
-    is_text_bold, is_text_italic, strip_markdown
+    MarkdownStyle, STYLE_NAMES, STYLE_TO_NAME, get_line_style,
+    apply_heading_to_line, strip_markdown
 )
 
 # TTS imports (lazy loaded)
@@ -35,7 +32,7 @@ try:
     from src.services.tts_service import get_tts_service, TTSEngine
     from src.services.tts_document_generator import (
         TTSDocumentGenerator, TTSDocumentConfig, TTSFormat,
-        SpeakerConfig, create_default_config, get_tts_output_dir
+        SpeakerConfig, get_tts_output_dir
     )
     TTS_AVAILABLE = True
 except ImportError:
@@ -976,7 +973,6 @@ class ProWritingAnalyzer:
 
     def __init__(self):
         """Initialize analyzer."""
-        pass
 
     def analyze(self, text: str) -> WritingStats:
         """Perform comprehensive text analysis.
@@ -1426,7 +1422,7 @@ class GrammarChecker:
     def _check_language_tool_available(self) -> bool:
         """Check if language-tool-python is available (requires Java)."""
         try:
-            import language_tool_python
+            pass
             # Also check if Java is available
             if not self._check_java_available():
                 print("Grammar checker: language-tool-python installed but Java not available")
@@ -1438,7 +1434,6 @@ class GrammarChecker:
     def _check_gingerit_available(self) -> bool:
         """Check if gingerit is available as a fallback."""
         try:
-            import gingerit
             return True
         except ImportError:
             return False

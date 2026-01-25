@@ -443,17 +443,3 @@ def get_available_storytelling_models() -> List[StorytellingModelInfo]:
         return TORCH_STORYTELLING_MODELS
 
 
-def get_storytelling_model_by_id(model_id: str) -> StorytellingModelInfo:
-    """Get model info by model ID.
-
-    Args:
-        model_id: HuggingFace model ID
-
-    Returns:
-        StorytellingModelInfo if found, None otherwise
-    """
-    all_models = MLX_STORYTELLING_MODELS + TORCH_STORYTELLING_MODELS
-    for model in all_models:
-        if model.model_id == model_id:
-            return model
-    return None

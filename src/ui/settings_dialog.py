@@ -1,6 +1,6 @@
 """Settings dialog for API keys and preferences."""
 
-from typing import List, Dict, Optional
+from typing import List, Optional
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -2565,7 +2565,6 @@ class SettingsDialog(QDialog):
     def _on_local_models_toggled(self, checked: bool):
         """Handle local models toggle."""
         # Could enable/disable related controls
-        pass
 
     def _on_critique_source_changed(self, index: int):
         """Handle critique model source change."""
@@ -2590,7 +2589,6 @@ class SettingsDialog(QDialog):
     def _on_collection_toggled(self, checked: bool):
         """Handle collection toggle."""
         # Could enable/disable related controls
-        pass
 
     def _on_disable_ai_toggled(self, checked: bool):
         """Handle disable all AI toggle."""
@@ -3544,11 +3542,8 @@ class SettingsDialog(QDialog):
     def _download_image_model(self):
         """Download or verify the selected image generation model."""
         from PyQt6.QtWidgets import QMessageBox, QProgressDialog
-        from PyQt6.QtCore import QThread, pyqtSignal
         from src.config.genai_config import get_available_image_models
         from src.ai.mlx_utils import can_use_mlx
-        import subprocess
-        import sys
 
         model_id = self.image_model_combo.currentData()
         if not model_id:

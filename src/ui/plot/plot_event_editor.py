@@ -4,9 +4,9 @@ from typing import List, Optional
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QTextEdit,
     QComboBox, QSlider, QFormLayout, QGroupBox, QDialog, QDialogButtonBox,
-    QListWidget, QCheckBox, QScrollArea, QSpinBox
+    QCheckBox, QScrollArea, QSpinBox
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt
 
 from src.models.project import PlotEvent
 

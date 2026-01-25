@@ -6,7 +6,6 @@ to provide efficient context for AI assistants without overwhelming token limits
 
 import hashlib
 import json
-from typing import Optional
 from datetime import datetime
 
 

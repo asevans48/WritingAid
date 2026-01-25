@@ -5,11 +5,11 @@ import re
 import threading
 import platform
 import time
-from typing import List, Dict, Any, Optional, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING
 from dataclasses import dataclass
 from enum import Enum
 from src.ai.device_utils import detect_device, print_device_info
-from src.ai.mlx_utils import can_use_mlx, print_mlx_info, _mlx_cache as mlx_cache
+from src.ai.mlx_utils import can_use_mlx, _mlx_cache as mlx_cache
 
 # macOS-specific: Increase stack size (addresses C stack overflow issues)
 # macOS has a default C stack size of 500KB which is too small for deep model architectures
@@ -81,8 +81,6 @@ except Exception as e:
 # Import MLX for Apple Silicon optimization
 try:
     if can_use_mlx():
-        import mlx.core as mx
-        from mlx_lm import load, generate
         _MLX_AVAILABLE = True
         print("[MODULE INIT] [OK] MLX available - using Apple Silicon optimized inference")
     else:
@@ -1060,9 +1058,9 @@ For each option, briefly explain what makes it different from the original."""
         # Check if model is cached
         is_cached = False
         if backend == "MLX":
-            from src.ai.mlx_model_cache import get_mlx_cache
+            from src.ai.mlx_utils import get_mlx_cache
             cache = get_mlx_cache()
-            is_cached = cache.is_model_loaded(self.local_model_id)
+            is_cached = cache.is_loaded(self.local_model_id)
         else:
             is_cached = (hasattr(self, '_local_model') and self._local_model is not None and
                         hasattr(self, '_cached_model_id') and self._cached_model_id == self.local_model_id)
@@ -2351,7 +2349,6 @@ For each option, briefly explain what makes it different from the original."""
     def _try_active_voice(self, text: str) -> str:
         """Attempt to convert passive voice to active voice."""
         try:
-            import nltk
             from nltk import pos_tag, word_tokenize
 
             # Ensure NLTK data is available (uses global cache)
@@ -2505,7 +2502,6 @@ For each option, briefly explain what makes it different from the original."""
         Returns:
             RephraseResult with multiple options
         """
-        import sys
 
         # Prominent model logging at the start
         print(f"\n{'#'*70}")

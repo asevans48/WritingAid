@@ -297,17 +297,3 @@ def get_available_reasoning_models() -> List[ReasoningModelInfo]:
         return TORCH_REASONING_MODELS
 
 
-def get_reasoning_model_by_id(model_id: str) -> ReasoningModelInfo:
-    """Get model info by model ID.
-
-    Args:
-        model_id: HuggingFace model ID
-
-    Returns:
-        ReasoningModelInfo if found, None otherwise
-    """
-    all_models = MLX_REASONING_MODELS + TORCH_REASONING_MODELS
-    for model in all_models:
-        if model.model_id == model_id:
-            return model
-    return None

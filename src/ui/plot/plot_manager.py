@@ -3,11 +3,11 @@
 from typing import List
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget,
-    QLabel, QTabWidget, QSplitter, QListWidgetItem, QInputDialog,
-    QTextEdit, QGroupBox, QDialog, QDialogButtonBox, QLineEdit, QFormLayout,
-    QScrollArea, QFrame, QToolButton, QSpinBox
+    QLabel, QTabWidget, QListWidgetItem, QTextEdit, QGroupBox,
+    QDialog, QDialogButtonBox, QLineEdit, QFormLayout, QScrollArea, QFrame,
+    QToolButton, QSpinBox
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QPropertyAnimation, QEasingCurve
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 
 from src.models.project import FreytagPyramid, PlotEvent, Subplot, StoryPromise

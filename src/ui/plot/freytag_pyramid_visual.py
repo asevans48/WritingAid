@@ -1,10 +1,10 @@
 """Visual Freytag Pyramid with intensity-based event positioning and act divisions."""
 
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple
 import math
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtCore import Qt, QPointF, pyqtSignal
-from PyQt6.QtGui import QPainter, QPen, QColor, QFont, QBrush, QPainterPath, QMouseEvent
+from PyQt6.QtGui import QPainter, QPen, QColor, QFont, QBrush, QMouseEvent
 
 from src.models.project import PlotEvent
 

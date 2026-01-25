@@ -1,10 +1,10 @@
 """Reusable filter and sort widget for worldbuilding lists."""
 
-from typing import List, Callable, Any, Optional
+from typing import List, Callable, Any
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QLineEdit, QComboBox, QLabel
 )
-from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtCore import pyqtSignal
 
 
 class FilterSortWidget(QWidget):

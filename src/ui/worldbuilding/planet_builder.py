@@ -2,16 +2,15 @@
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
-    QPushButton, QLabel, QLineEdit, QTextEdit, QComboBox, QSpinBox,
-    QGroupBox, QFormLayout, QTabWidget, QMessageBox, QFileDialog,
-    QScrollArea, QSplitter
+    QPushButton, QLabel, QLineEdit, QTextEdit, QComboBox, QGroupBox,
+    QFormLayout, QTabWidget, QFileDialog, QScrollArea, QSplitter
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from typing import List
 import uuid
 
-from src.models.worldbuilding_objects import Planet, Moon, Continent, City, ClimateZone, PlanetType, ClimatePreset
+from src.models.worldbuilding_objects import Planet, PlanetType
 
 
 class PlanetEditor(QWidget):

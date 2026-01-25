@@ -2,20 +2,19 @@
 
 from PyQt6.QtWidgets import (
     QGraphicsView, QGraphicsScene, QGraphicsItem, QGraphicsPixmapItem,
-    QGraphicsEllipseItem, QGraphicsPolygonItem, QGraphicsPathItem,
-    QGraphicsRectItem, QMenu, QColorDialog
+    QGraphicsPathItem, QGraphicsRectItem, QMenu
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF, QLineF
+from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF
 from PyQt6.QtGui import (
     QPainter, QPen, QColor, QBrush, QPixmap, QPainterPath,
-    QTransform, QPolygonF, QImage, QFont
+    QPolygonF, QFont
 )
-from typing import List, Optional, Dict, Tuple, Any
+from typing import List, Optional, Tuple, Any
 from pathlib import Path
 import math
 
 from src.models.worldbuilding_objects import (
-    WorldMap, MapPlace, MapLandmark, MapEvent, Planet, ClimateZone
+    WorldMap, Planet, ClimateZone
 )
 from src.ui.worldbuilding.map_builder import MapElementItem, MapLandmarkItem
 

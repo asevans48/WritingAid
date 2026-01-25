@@ -1,7 +1,7 @@
 """Story planning widget with enhanced Freytag pyramid, visual events, and subplots."""
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QGroupBox, QTextEdit, QPushButton, QLabel, QScrollArea
+    QWidget, QVBoxLayout, QGroupBox, QTextEdit, QLabel
 )
 from PyQt6.QtCore import pyqtSignal
 from typing import List

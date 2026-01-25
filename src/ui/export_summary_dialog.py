@@ -271,7 +271,6 @@ class ExportSummaryDialog(QDialog):
     def _update_ml_status(self):
         """Update ML model availability status."""
         try:
-            import transformers
             self.ml_status_label.setText("✅ Available")
             self.ml_status_label.setStyleSheet("color: #059669;")
         except ImportError:

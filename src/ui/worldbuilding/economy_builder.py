@@ -2,9 +2,9 @@
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
-    QPushButton, QLabel, QLineEdit, QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox,
-    QFormLayout, QGroupBox, QScrollArea, QInputDialog,
-    QMessageBox, QDialog, QDialogButtonBox
+    QPushButton, QLabel, QLineEdit, QTextEdit, QComboBox, QDoubleSpinBox, QFormLayout,
+    QGroupBox, QScrollArea, QInputDialog, QMessageBox,
+    QDialog, QDialogButtonBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QRectF
 from PyQt6.QtGui import QPainter, QPen, QColor, QFont

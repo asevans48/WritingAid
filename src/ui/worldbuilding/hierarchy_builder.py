@@ -2,12 +2,12 @@
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
-    QPushButton, QLabel, QLineEdit, QTextEdit, QComboBox, QSpinBox,
-    QFormLayout, QGroupBox, QScrollArea, QSplitter, QInputDialog,
-    QTreeWidget, QTreeWidgetItem
+    QPushButton, QLabel, QLineEdit, QTextEdit, QSpinBox, QFormLayout,
+    QGroupBox, QScrollArea, QSplitter, QInputDialog, QTreeWidget,
+    QTreeWidgetItem
 )
 from PyQt6.QtCore import Qt, pyqtSignal
-from typing import List, Optional, Dict
+from typing import List, Optional
 import uuid
 
 from src.models.worldbuilding_objects import PowerHierarchy, HierarchyNode

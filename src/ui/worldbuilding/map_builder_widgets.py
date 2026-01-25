@@ -3,22 +3,19 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTreeWidget, QTreeWidgetItem,
     QPushButton, QLabel, QDialog, QDialogButtonBox, QFormLayout, QLineEdit,
-    QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox, QFileDialog, QColorDialog,
-    QSlider, QCheckBox, QGroupBox, QListWidget, QSplitter, QMenu, QInputDialog,
-    QMessageBox, QToolBar, QDockWidget, QTabWidget
+    QTextEdit, QComboBox, QSpinBox, QFileDialog, QColorDialog, QGroupBox,
+    QListWidget, QListWidgetItem, QSplitter, QMenu, QInputDialog, QMessageBox, QToolBar, QTabWidget
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QKeySequence, QColor
 from typing import List, Optional
 import uuid
-import os
 
 from src.models.worldbuilding_objects import (
-    WorldMap, MapPlace, MapLandmark, MapEvent, MapLayer,
-    PlaceType, LandmarkType, EventType, MarkerStyle, GridSettings,
+    WorldMap, MapLandmark, MapEvent, LandmarkType, EventType,
     Faction, Planet, EnhancedCharacter
 )
-from src.ui.worldbuilding.map_builder import MapCanvas, PlaceEditorDialog
+from src.ui.worldbuilding.map_builder import PlaceEditorDialog
 from src.ui.worldbuilding.enhanced_map_canvas import EnhancedMapCanvas
 
 

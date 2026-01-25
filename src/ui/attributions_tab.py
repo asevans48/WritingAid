@@ -2,13 +2,11 @@
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTreeWidget, QTreeWidgetItem,
-    QPushButton, QLabel, QComboBox, QTextEdit, QSplitter, QGroupBox,
-    QScrollArea
+    QPushButton, QLabel, QComboBox, QTextEdit, QSplitter, QGroupBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal
-from typing import List, Dict
 
-from src.models.project import Manuscript, Annotation
+from src.models.project import Manuscript
 
 
 class AttributionsTab(QWidget):

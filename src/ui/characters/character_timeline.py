@@ -8,7 +8,6 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal, QRect
 from PyQt6.QtGui import QPainter, QPen, QColor, QFont
 from typing import List, Optional
-import uuid
 
 from src.models.worldbuilding_objects import CharacterLifeEvent, EnhancedCharacter
 

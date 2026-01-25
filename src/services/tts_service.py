@@ -68,7 +68,6 @@ class TTSService:
     def _check_pyttsx3(self) -> bool:
         """Check if pyttsx3 is available."""
         try:
-            import pyttsx3
             return True
         except ImportError:
             return False
@@ -76,7 +75,6 @@ class TTSService:
     def _check_edge_tts(self) -> bool:
         """Check if edge-tts is available."""
         try:
-            import edge_tts
             return True
         except ImportError:
             return False
@@ -601,16 +599,6 @@ class TTSService:
         # Call end callback to ensure UI is updated
         if self._on_end:
             self._on_end()
-
-    def pause(self):
-        """Pause speaking (if supported)."""
-        # pyttsx3 doesn't support pause well
-        # For edge-tts, we'd need to track position
-        pass
-
-    def resume(self):
-        """Resume speaking (if supported)."""
-        pass
 
     def speak_to_file(self, text: str, output_path: str) -> bool:
         """Save speech to an audio file.

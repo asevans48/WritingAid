@@ -1,6 +1,6 @@
 """LLM Client for AI integration with Claude, ChatGPT, Gemini, and Hugging Face models."""
 
-from typing import Optional, Dict, List, Any, TYPE_CHECKING
+from typing import Optional, Dict, List, TYPE_CHECKING
 from enum import Enum
 import anthropic
 import openai
@@ -8,7 +8,7 @@ from google import genai
 from src.ai.device_utils import detect_device, can_use_quantization
 
 if TYPE_CHECKING:
-    from src.ai.conversation_store import ConversationStore, RatedConversation
+    from src.ai.conversation_store import ConversationStore
 
 
 class LLMProvider(Enum):
@@ -234,7 +234,7 @@ class LLMClient:
             raise ValueError("HuggingFaceConfig is required for MLX models")
 
         try:
-            from mlx_lm import load, generate
+            from mlx_lm import load
 
             print(f"Loading MLX model: {self.hf_config.model_id}")
 
@@ -392,13 +392,16 @@ class LLMClient:
             else:
                 full_prompt = f"User: {prompt}\n\nAssistant:"
 
-        # Generate response
+        # Generate response with sampler for temperature control
+        from mlx_lm.sample_utils import make_sampler
+        sampler = make_sampler(temp=temperature)
+
         response = generate(
             self._mlx_model,
             self._mlx_tokenizer,
             prompt=full_prompt,
             max_tokens=max_tokens,
-            temp=temperature,
+            sampler=sampler,
             verbose=False
         )
 

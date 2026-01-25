@@ -2,10 +2,9 @@
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton,
-    QLabel, QCheckBox, QWidget, QFrame
+    QLabel, QCheckBox, QFrame
 )
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QTextDocument, QTextCursor
 
 
 class FindReplaceDialog(QDialog):

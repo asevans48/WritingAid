@@ -1,28 +1,21 @@
 """Interactive map builder with drag-and-drop elements."""
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGraphicsView, QGraphicsScene,
-    QGraphicsItem, QGraphicsPixmapItem, QGraphicsEllipseItem, QGraphicsPolygonItem,
-    QGraphicsLineItem, QToolBar, QDockWidget, QTreeWidget, QTreeWidgetItem,
-    QPushButton, QLabel, QDialog, QDialogButtonBox, QFormLayout, QLineEdit,
-    QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox, QFileDialog, QColorDialog,
-    QSlider, QCheckBox, QGroupBox, QListWidget, QSplitter, QMenu, QInputDialog,
-    QMessageBox, QGraphicsPathItem
+    QVBoxLayout, QHBoxLayout, QGraphicsView, QGraphicsScene, QGraphicsItem,
+    QGraphicsPixmapItem, QGraphicsEllipseItem, QPushButton, QDialog,
+    QDialogButtonBox, QFormLayout, QLineEdit, QTextEdit, QComboBox,
+    QSpinBox, QColorDialog, QGroupBox, QListWidget, QInputDialog, QGraphicsPathItem
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF, QLineF, QTimer
+from PyQt6.QtCore import Qt, pyqtSignal, QPointF
 from PyQt6.QtGui import (
-    QPainter, QPen, QColor, QBrush, QPixmap, QPainterPath, QAction,
-    QTransform, QPolygonF, QFont, QImage, QKeySequence
+    QPainter, QPen, QColor, QBrush, QPixmap, QPainterPath
 )
-from typing import List, Optional, Dict, Tuple, Any
+from typing import List, Optional, Tuple, Any
 import uuid
-import os
 from pathlib import Path
 
 from src.models.worldbuilding_objects import (
-    WorldMap, MapPlace, MapLandmark, MapEvent, MapLayer,
-    PlaceType, LandmarkType, EventType, MarkerStyle, GridSettings,
-    Faction, Planet
+    WorldMap, MapPlace, MapLandmark, PlaceType, Faction
 )
 
 
@@ -34,11 +27,9 @@ class MapUndoCommand:
 
     def undo(self):
         """Undo the command."""
-        pass
 
     def redo(self):
         """Redo the command."""
-        pass
 
 
 class AddElementCommand(MapUndoCommand):

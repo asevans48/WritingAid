@@ -1,6 +1,5 @@
 """MLX utilities for Apple Silicon optimized inference."""
 
-import sys
 import platform
 
 
@@ -15,8 +14,6 @@ def can_use_mlx():
         return False
 
     try:
-        import mlx
-        import mlx.core as mx
         return True
     except ImportError:
         return False
@@ -34,7 +31,6 @@ def get_mlx_info():
 
     if can_use_mlx():
         try:
-            import mlx
             info["mlx_available"] = True
             # MLX doesn't have __version__, just confirm it's importable
             info["mlx_version"] = "installed"
@@ -113,3 +109,8 @@ class MLXModelCache:
 
 # Global MLX model cache
 _mlx_cache = MLXModelCache()
+
+
+def get_mlx_cache() -> MLXModelCache:
+    """Get the global MLX model cache instance."""
+    return _mlx_cache

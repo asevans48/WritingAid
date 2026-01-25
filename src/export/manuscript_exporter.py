@@ -1,14 +1,11 @@
 """Manuscript export functionality for various formats."""
 
-from pathlib import Path
-from typing import Optional
 from docx import Document
 from docx.shared import Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-import ebooklib
 from ebooklib import epub
 
-from src.models.project import Manuscript, Chapter
+from src.models.project import Manuscript
 
 
 class ManuscriptExporter:

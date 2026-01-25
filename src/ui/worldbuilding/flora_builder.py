@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal
 from typing import List, Optional
 
-from src.models.worldbuilding_objects import Flora, FloraType, SpeciesInteraction
+from src.models.worldbuilding_objects import Flora, FloraType
 from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
 
 

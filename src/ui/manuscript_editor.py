@@ -4,15 +4,14 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QPushButton, QLabel, QTextEdit, QToolBar, QComboBox, QSpinBox,
     QMessageBox, QInputDialog, QGroupBox, QSplitter, QFileDialog,
-    QDialog, QMenu, QCheckBox, QLineEdit, QScrollArea, QFrame,
-    QProgressBar, QRadioButton, QButtonGroup, QTabWidget
+    QDialog, QMenu, QCheckBox
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QSize
 from PyQt6.QtGui import QFont, QTextCursor, QAction, QTextCharFormat, QColor, QPainter
 from typing import List, Optional
 import uuid
 
-from src.models.project import Manuscript, Chapter, Annotation, ChapterTodo, ChapterPlanning, StoryEvent
+from src.models.project import Manuscript, Chapter, Annotation, ChapterTodo, StoryEvent
 from src.ui.enhanced_text_editor import EnhancedTextEditor, CheckMode
 from src.ui.annotations import AnnotationDialog
 from src.ui.annotation_list_dialog import AnnotationListDialog

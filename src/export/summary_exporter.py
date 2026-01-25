@@ -1,12 +1,12 @@
 """Export project as a comprehensive summary with optional AI summarization."""
 
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Callable
+from typing import Optional, Dict, List, Callable
 from datetime import datetime
 from dataclasses import dataclass
 from enum import Enum
 
-from src.models.project import WriterProject, StoryPlanning, Character
+from src.models.project import WriterProject
 
 
 class SummarizationMethod(Enum):
