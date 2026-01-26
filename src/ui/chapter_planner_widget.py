@@ -774,6 +774,67 @@ class ChapterPlannerWidget(QWidget):
         chars_locs_layout.addWidget(locs_group)
 
         description_layout.addLayout(chars_locs_layout)
+
+        # Writing Style Metadata section
+        style_group = QGroupBox("Writing Style (for AI Writer)")
+        style_group.setStyleSheet("QGroupBox { font-size: 11px; font-weight: bold; }")
+        style_layout = QVBoxLayout(style_group)
+        style_layout.setContentsMargins(4, 8, 4, 4)
+        style_layout.setSpacing(4)
+
+        # Tone and Voice row
+        tone_voice_layout = QHBoxLayout()
+        tone_voice_layout.setSpacing(4)
+
+        tone_label = QLabel("Tone:")
+        tone_label.setStyleSheet("font-size: 11px;")
+        tone_voice_layout.addWidget(tone_label)
+        self.tone_edit = QLineEdit()
+        self.tone_edit.setPlaceholderText("e.g., dark, hopeful, tense")
+        self.tone_edit.setStyleSheet("font-size: 11px;")
+        self.tone_edit.setToolTip("Emotional quality/mood of the chapter")
+        self.tone_edit.textChanged.connect(self._on_plan_changed)
+        tone_voice_layout.addWidget(self.tone_edit)
+
+        voice_label = QLabel("Voice:")
+        voice_label.setStyleSheet("font-size: 11px;")
+        tone_voice_layout.addWidget(voice_label)
+        self.voice_edit = QLineEdit()
+        self.voice_edit.setPlaceholderText("e.g., sardonic, lyrical")
+        self.voice_edit.setStyleSheet("font-size: 11px;")
+        self.voice_edit.setToolTip("Narrative voice/personality")
+        self.voice_edit.textChanged.connect(self._on_plan_changed)
+        tone_voice_layout.addWidget(self.voice_edit)
+
+        style_layout.addLayout(tone_voice_layout)
+
+        # Style and Pacing row
+        style_pacing_layout = QHBoxLayout()
+        style_pacing_layout.setSpacing(4)
+
+        prose_label = QLabel("Style:")
+        prose_label.setStyleSheet("font-size: 11px;")
+        style_pacing_layout.addWidget(prose_label)
+        self.style_edit = QLineEdit()
+        self.style_edit.setPlaceholderText("e.g., sparse, flowery")
+        self.style_edit.setStyleSheet("font-size: 11px;")
+        self.style_edit.setToolTip("Prose style notes")
+        self.style_edit.textChanged.connect(self._on_plan_changed)
+        style_pacing_layout.addWidget(self.style_edit)
+
+        pacing_label = QLabel("Pacing:")
+        pacing_label.setStyleSheet("font-size: 11px;")
+        style_pacing_layout.addWidget(pacing_label)
+        self.pacing_edit = QLineEdit()
+        self.pacing_edit.setPlaceholderText("e.g., slow build, rapid")
+        self.pacing_edit.setStyleSheet("font-size: 11px;")
+        self.pacing_edit.setToolTip("Pacing notes for this chapter")
+        self.pacing_edit.textChanged.connect(self._on_plan_changed)
+        style_pacing_layout.addWidget(self.pacing_edit)
+
+        style_layout.addLayout(style_pacing_layout)
+
+        description_layout.addWidget(style_group)
         description_layout.addStretch()
 
         self.tab_widget.addTab(description_tab, "Description")
@@ -1146,6 +1207,12 @@ class ChapterPlannerWidget(QWidget):
         # Notes
         self.notes_editor.setPlainText(planning_data.get('notes', ''))
 
+        # Writing style metadata
+        self.tone_edit.setText(planning_data.get('tone', ''))
+        self.voice_edit.setText(planning_data.get('voice', ''))
+        self.style_edit.setText(planning_data.get('style', ''))
+        self.pacing_edit.setText(planning_data.get('pacing', ''))
+
         # Todos - clear existing and add new
         for widget in self._todo_widgets[:]:
             widget.deleteLater()
@@ -1235,7 +1302,12 @@ class ChapterPlannerWidget(QWidget):
             'pov_character': self.pov_edit.text(),
             'timeline_position': self.timeline_edit.text(),
             'scene_list': [],  # Could be expanded later
-            'themes': []  # Could be expanded later
+            'themes': [],  # Could be expanded later
+            # Writing style metadata
+            'tone': self.tone_edit.text(),
+            'voice': self.voice_edit.text(),
+            'style': self.style_edit.text(),
+            'pacing': self.pacing_edit.text()
         }
 
     def _events_to_outline_text(self, events: list) -> str:

@@ -194,6 +194,11 @@ class ChapterPlanning(BaseModel):
     themes: List[str] = Field(default_factory=list)  # Themes explored
     pov_character: str = ""  # Point of view character
     timeline_position: str = ""  # When this chapter occurs in story timeline
+    # Writing style metadata for AI-assisted writing
+    tone: str = ""  # Emotional quality/mood (e.g., "dark and brooding", "lighthearted", "tense")
+    voice: str = ""  # Narrative voice style (e.g., "sardonic", "lyrical", "matter-of-fact")
+    style: str = ""  # Prose style notes (e.g., "short punchy sentences", "flowery descriptions")
+    pacing: str = ""  # Pacing notes (e.g., "slow build", "rapid-fire action", "contemplative")
 
 
 class Chapter(BaseModel):

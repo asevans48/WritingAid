@@ -38,10 +38,138 @@ class ChatWorker(QThread):
     finished = pyqtSignal(str)
     error = pyqtSignal(str)
 
-    def __init__(self, message: str, context: dict = None):
+    # System prompts for different modes
+    SYSTEM_PROMPTS = {
+        "general": """You are a helpful creative writing assistant integrated into a writer's platform.
+You have access to the author's full project context including plot, characters, worldbuilding, and manuscript chapters.
+
+You help authors with:
+- Answering questions about their story, characters, and world
+- Analyzing chapters for consistency, pacing, and character development
+- Brainstorming ideas that fit their established story
+- Providing feedback on specific passages or the overall narrative
+- Suggesting improvements that align with their style and voice
+- Identifying plot holes or inconsistencies across chapters
+
+Be encouraging, creative, and constructive. Reference specific details from their project when relevant.
+Keep responses focused and actionable.""",
+
+        "chapter_focus": """You are a focused chapter editor and writing coach. You are helping the author work on their CURRENT CHAPTER.
+
+Your role is to:
+- Answer specific questions about this chapter's content, pacing, and structure
+- Help identify issues with character voice, dialogue, or scene transitions
+- Suggest improvements to specific paragraphs or sections
+- Check consistency with established characters, plot points, and world details
+- Help with word choice, sentence rhythm, and prose flow
+- Identify areas that need more development or could be tightened
+
+Focus your responses specifically on the current chapter. When referencing the broader story, explain how it connects to this chapter.
+Be specific and cite passages when giving feedback. Maintain the author's voice and style.""",
+
+        "writer": """You are a skilled creative writer working as a ghostwriter/collaborator. Your job is to WRITE prose based on the author's outline, world, and characters.
+
+=== SCENE-BY-SCENE WRITING ===
+If a CHAPTER OUTLINE or SCENE LIST is provided:
+1. Write each scene as a complete, immersive unit
+2. Follow the scene order in the outline
+3. Flesh out each scene with rich sensory details, character actions, and dialogue
+4. Create smooth, natural transitions between scenes (time skips, location changes, or flowing action)
+5. Mark your progress: mention which scene you're writing if continuing later
+
+If NO outline is provided:
+1. Infer the scene structure from the user's prompt
+2. Break the writing into logical scenes with clear beats
+3. Ask clarifying questions if the scene direction is unclear
+
+=== POINT OF VIEW - STRICT REQUIREMENT ===
+You MUST follow the specified NARRATIVE POV exactly. This is non-negotiable.
+
+NARRATIVE POV RULES:
+- FIRST PERSON: Use "I/we/my/me". The POV character narrates their own story.
+- THIRD PERSON LIMITED: Use "he/she/they/his/her/their" for the POV character. NEVER use "I" or "my" except in dialogue. Write their thoughts as: "She wondered if..." NOT "I wonder if..."
+- THIRD PERSON OMNISCIENT: Use "he/she/they". Can access multiple characters' thoughts.
+- SECOND PERSON: Use "you/your". The reader is the protagonist.
+
+CRITICAL: If Third Person is specified, NEVER write "I thought" or "I felt" or "I saw" outside of dialogue. Use the character's name or pronouns: "Marcus thought", "She felt", "He saw".
+
+CHARACTER POV: Write from this character's perspective only. The reader experiences the story through their senses and thoughts (but in the correct narrative voice).
+
+If TEXT BEFORE CURSOR is provided:
+- Match the existing narrative voice and pronouns exactly
+- Continue mid-sentence or mid-paragraph if that's where it ends
+- Maintain the same tense (past/present) as the existing text
+- If the existing text uses "she/he", continue using "she/he" - do NOT switch to "I"
+
+=== SHOW DON'T TELL - CRITICAL ===
+NEVER write: "She felt angry" or "He was nervous"
+INSTEAD write: "Her jaw tightened, fingers curling into fists" or "He drummed his fingers on the table, eyes darting to the door"
+
+Apply this to:
+- Emotions: Show through body language, actions, dialogue subtext, physiological responses
+- Character traits: Reveal through choices, reactions, and speech patterns
+- Atmosphere: Build through sensory details (what they see, hear, smell, feel, taste)
+- Backstory: Weave in through natural conversation, memories triggered by present events
+- Relationships: Demonstrate through interactions, not exposition
+
+=== WRITING STYLE (from chapter planning) ===
+If WRITING STYLE metadata is provided in the context (Tone, Voice, Style, Pacing), follow it exactly:
+- TONE: The emotional quality/mood to convey (e.g., "dark and brooding", "lighthearted", "tense")
+- VOICE: The narrative personality (e.g., "sardonic", "lyrical", "matter-of-fact")
+- STYLE: Prose approach (e.g., "short punchy sentences", "flowery descriptions", "sparse")
+- PACING: How fast scenes should move (e.g., "slow contemplative", "rapid-fire action")
+
+If no style metadata is provided, analyze the existing chapter content to match the author's established style.
+
+=== PROSE GUIDELINES ===
+1. Follow the specified Tone, Voice, Style, and Pacing from WRITING STYLE above
+2. Stay consistent with characters - their voice, speech patterns, motivations, quirks
+3. Incorporate worldbuilding naturally through character interaction with the environment
+4. Write natural, character-appropriate dialogue with distinct voices
+5. Maintain POV consistency throughout
+
+=== SCENE STRUCTURE ===
+Each scene should have:
+- A clear goal or purpose (what changes by the end?)
+- Grounding in setting (where are we? what's the atmosphere?)
+- Character action and reaction
+- Tension or forward momentum
+- A hook or pivot point leading to the next beat
+
+=== TRANSITIONS ===
+Between scenes, use:
+- Time transitions: "Three days later..." or "By the time the sun set..."
+- Space transitions: Describe arrival at new location through character senses
+- Emotional bridges: End one scene with an emotion, begin next with its consequence
+- Action continuity: End mid-action, resume with result
+
+=== OUTPUT FORMAT - CRITICAL ===
+Output ONLY the prose content. Do NOT include:
+- Chapter titles, headers, or "Chapter X" labels
+- Scene numbers, scene headings, or "Scene X" labels
+- The prompts or instructions you were given
+- Metadata, notes, or author commentary
+- Preambles like "Here's the scene..." or "I'll write..."
+- Closing remarks like "Let me know if you want more..."
+
+Just write the prose exactly as it would appear in the final manuscript.
+
+When asked to write:
+- Produce actual prose, not summaries
+- Write at least several paragraphs per scene
+- End at a natural scene break or beat
+
+When asked to continue:
+- Pick up exactly where the text ends
+- If mid-scene, complete it before transitioning
+- Maintain narrative momentum"""
+    }
+
+    def __init__(self, message: str, context: dict = None, mode: str = "general"):
         super().__init__()
         self.message = message
         self.context = context or {}
+        self.mode = mode
 
     def _build_context_prompt(self) -> str:
         """Build comprehensive context from project data."""
@@ -70,14 +198,101 @@ class ChatWorker(QThread):
         # Current chapter context
         if self.context.get('current_chapter_title'):
             parts.append(f"\nCURRENT CHAPTER: {self.context['current_chapter_title']}")
+
+            # Chapter planning/outline (critical for writer mode)
+            if self.context.get('chapter_planning'):
+                planning = self.context['chapter_planning']
+                parts.append("\n=== CHAPTER OUTLINE (Follow this scene-by-scene) ===")
+
+                if planning.get('description'):
+                    parts.append(f"Chapter Goal: {planning['description']}")
+
+                if planning.get('pov_character'):
+                    parts.append(f"POV Character: {planning['pov_character']}")
+
+                if planning.get('scene_list'):
+                    parts.append("\nSCENE LIST (write in order):")
+                    for i, scene in enumerate(planning['scene_list'], 1):
+                        parts.append(f"  {i}. {scene}")
+
+                if planning.get('events'):
+                    parts.append("\nSTORY EVENTS/BEATS:")
+                    for event in planning['events']:
+                        status = "✓" if event.get('completed') else "○"
+                        parts.append(f"  {status} {event['text']}")
+                        if event.get('description'):
+                            parts.append(f"      {event['description'][:150]}")
+
+                if planning.get('outline') and not planning.get('scene_list'):
+                    # Fallback to text outline if no scene list
+                    parts.append(f"\nOUTLINE:\n{planning['outline'][:1000]}")
+
+                if planning.get('characters_featured'):
+                    parts.append(f"\nFeatured Characters: {', '.join(planning['characters_featured'])}")
+
+                if planning.get('locations'):
+                    parts.append(f"Locations: {', '.join(planning['locations'])}")
+
+                if planning.get('themes'):
+                    parts.append(f"Themes: {', '.join(planning['themes'])}")
+
+                # Writing style metadata (critical for writer mode)
+                style_parts = []
+                if planning.get('tone'):
+                    style_parts.append(f"Tone: {planning['tone']}")
+                if planning.get('voice'):
+                    style_parts.append(f"Voice: {planning['voice']}")
+                if planning.get('style'):
+                    style_parts.append(f"Style: {planning['style']}")
+                if planning.get('pacing'):
+                    style_parts.append(f"Pacing: {planning['pacing']}")
+
+                if style_parts:
+                    parts.append("\n=== WRITING STYLE (Follow these guidelines) ===")
+                    parts.extend(style_parts)
+
+            # Writer mode: POV settings (override chapter defaults if specified)
+            if self.mode == "writer":
+                pov_parts = []
+                char_pov = self.context.get('writer_character_pov')
+                narrative_pov = self.context.get('writer_narrative_pov')
+
+                if char_pov:
+                    pov_parts.append(f"Character POV: {char_pov}")
+                elif planning and planning.get('pov_character'):
+                    pov_parts.append(f"Character POV: {planning['pov_character']} (from chapter)")
+
+                if narrative_pov:
+                    pov_map = {
+                        'first_person': 'First Person (I/we)',
+                        'third_person_limited': 'Third Person Limited (follows one character)',
+                        'third_person_omniscient': 'Third Person Omniscient (all-knowing)',
+                        'second_person': 'Second Person (you)'
+                    }
+                    pov_parts.append(f"Narrative POV: {pov_map.get(narrative_pov, narrative_pov)}")
+
+                if pov_parts:
+                    parts.append("\n=== POINT OF VIEW ===\n" + "\n".join(pov_parts))
+
+            # Writer mode: Preceding text for continuity
+            if self.mode == "writer" and self.context.get('preceding_text'):
+                parts.append(f"\n=== TEXT IMMEDIATELY BEFORE CURSOR (continue from here) ===\n{self.context['preceding_text']}")
+
+                if self.context.get('content_before_summary'):
+                    parts.append(f"\n{self.context['content_before_summary']}")
+
+            # Previous chapter ending for continuity
+            if self.context.get('previous_chapter_ending'):
+                parts.append(f"\n=== PREVIOUS CHAPTER ENDING (for continuity) ===\n...{self.context['previous_chapter_ending']}")
+
+            # Current chapter content
             if self.context.get('current_chapter_content'):
-                # Include excerpt of current chapter (beginning and end)
                 content = self.context['current_chapter_content']
                 if len(content) > 2000:
-                    parts.append(f"Chapter excerpt (beginning):\n{content[:1000]}...")
-                    parts.append(f"...{content[-500:]}")
+                    parts.append(f"\n=== CURRENT CHAPTER CONTENT ===\n{content[:1000]}...")
+                    parts.append(f"...(content continues)...\n...{content[-500:]}")
                 else:
-                    parts.append(f"Chapter content:\n{content}")
+                    parts.append(f"\n=== CURRENT CHAPTER CONTENT ===\n{content}")
 
         # All chapters summary (for cross-chapter questions)
         if self.context.get('all_chapters'):
@@ -146,25 +361,17 @@ class ChatWorker(QThread):
                     model=ai_config.get_model(default_provider)
                 )
 
-            # Build system prompt for writing assistant
-            system_prompt = """You are a helpful creative writing assistant integrated into a writer's platform.
-You have access to the author's full project context including plot, characters, worldbuilding, and manuscript chapters.
-
-You help authors with:
-- Answering questions about their story, characters, and world
-- Analyzing chapters for consistency, pacing, and character development
-- Brainstorming ideas that fit their established story
-- Providing feedback on specific passages or the overall narrative
-- Suggesting improvements that align with their style and voice
-- Identifying plot holes or inconsistencies across chapters
-
-Be encouraging, creative, and constructive. Reference specific details from their project when relevant.
-Keep responses focused and actionable."""
+            # Build system prompt based on mode
+            system_prompt = self.SYSTEM_PROMPTS.get(self.mode, self.SYSTEM_PROMPTS["general"])
 
             # Add project context
             context_prompt = self._build_context_prompt()
             if context_prompt:
                 system_prompt += f"\n\n{'='*60}\nPROJECT CONTEXT:\n{'='*60}\n{context_prompt}"
+
+            # For writer mode, add extra emphasis on current chapter
+            if self.mode == "writer" and self.context.get('current_chapter_content'):
+                system_prompt += "\n\nIMPORTANT: Write prose that seamlessly continues or fits with the existing chapter content above."
 
             # Generate response
             response = llm.generate_text(
@@ -199,6 +406,8 @@ class MainWindow(QMainWindow):
 
         # Chat worker for AI assistant
         self._chat_worker: Optional[ChatWorker] = None
+        self._pending_mode: str = ""
+        self._pending_insert_mode: str = ""
 
         # Register with window manager
         self.window_manager = WindowManager()
@@ -560,6 +769,23 @@ class MainWindow(QMainWindow):
         # Connect chat to AI assistance
         self.chat_widget.message_sent.connect(self._handle_chat_message)
 
+        # Connect manuscript editor selection changes to chat widget
+        self._setup_editor_selection_tracking()
+
+    def _setup_editor_selection_tracking(self):
+        """Set up tracking of editor selection state for Writer mode."""
+        # This will be called again when chapter changes
+        if hasattr(self, 'manuscript_editor') and self.manuscript_editor.current_chapter_editor:
+            editor = self.manuscript_editor.current_chapter_editor.editor
+            editor.selectionChanged.connect(self._on_editor_selection_changed)
+
+    def _on_editor_selection_changed(self):
+        """Handle editor selection change - update chat widget."""
+        if hasattr(self, 'manuscript_editor') and self.manuscript_editor.current_chapter_editor:
+            editor = self.manuscript_editor.current_chapter_editor.editor
+            has_selection = editor.textCursor().hasSelection()
+            self.chat_widget.update_selection_state(has_selection)
+
     def _startup_load_project(self):
         """Load last project on startup, or prompt for new one."""
         from pathlib import Path
@@ -710,6 +936,10 @@ class MainWindow(QMainWindow):
         # Set up grader widget with project reference
         self.grader_widget.set_project(self.current_project)
 
+        # Update chat widget with characters for POV selection
+        if self.current_project.characters:
+            self.chat_widget.set_characters(self.current_project.characters)
+
         self.project_changed.emit()
 
     def _collect_project_data(self):
@@ -769,6 +999,10 @@ class MainWindow(QMainWindow):
             content, title = self.manuscript_editor.get_current_chapter_info()
             self.grader_widget.set_current_chapter(content, title)
 
+        # Update editor selection tracking when manuscript tab is active
+        if index == 0:  # Manuscript tab
+            self._setup_editor_selection_tracking()
+
     def _toggle_chat(self):
         """Toggle chat widget visibility."""
         if self.chat_widget.isVisible():
@@ -776,28 +1010,78 @@ class MainWindow(QMainWindow):
         else:
             self.chat_widget.show()
 
-    def _handle_chat_message(self, message: str):
-        """Handle chat message from user."""
+    def _handle_chat_message(self, message: str, mode: str = "general", insert_mode: str = ""):
+        """Handle chat message from user.
+
+        Args:
+            message: The user's message
+            mode: The chat mode (general, chapter_focus, writer)
+            insert_mode: For writer mode, how to insert text (replace_selection, insert_at_cursor, append_to_chapter, replace_chapter)
+        """
         # Check if already processing
         if self._chat_worker and self._chat_worker.isRunning():
             self.chat_widget.add_message("Assistant", "Please wait, I'm still thinking...")
             return
 
-        # Build comprehensive project context
-        context = self._build_chat_context()
+        # Build comprehensive project context based on mode
+        context = self._build_chat_context(mode)
 
-        # Show thinking indicator
-        self.chat_widget.add_message("Assistant", "Thinking...")
+        # For writer mode, add POV settings and cursor context
+        if mode == "writer":
+            writer_settings = self.chat_widget.get_writer_settings()
+            context['writer_character_pov'] = writer_settings.get('character_pov', '')
+            context['writer_narrative_pov'] = writer_settings.get('writing_pov', '')
 
-        # Start background worker
-        self._chat_worker = ChatWorker(message, context)
+            # Get text before and after cursor for continuity
+            if hasattr(self, 'manuscript_editor') and self.manuscript_editor.current_chapter_editor:
+                editor = self.manuscript_editor.current_chapter_editor.editor
+                cursor = editor.textCursor()
+                full_text = editor.toPlainText()
+
+                cursor_pos = cursor.position()
+                text_before = full_text[:cursor_pos]
+                text_after = full_text[cursor_pos:]
+
+                # Get last 2-3 paragraphs before cursor for continuity
+                paragraphs_before = text_before.split('\n\n')
+                if paragraphs_before:
+                    context['preceding_text'] = '\n\n'.join(paragraphs_before[-3:])[-1500:]
+
+                # Summary of what's written so far
+                if text_before:
+                    word_count = len(text_before.split())
+                    context['content_before_summary'] = f"[{word_count} words written before cursor]"
+
+                # Store cursor position for context
+                context['cursor_position'] = cursor_pos
+                context['has_content_after'] = bool(text_after.strip())
+
+        # Store insert mode for writer responses
+        self._pending_insert_mode = insert_mode if mode == "writer" else ""
+        self._pending_mode = mode
+
+        # Show thinking indicator based on mode
+        if mode == "writer":
+            self.chat_widget.add_message("Assistant", "Writing...")
+        elif mode == "chapter_focus":
+            self.chat_widget.add_message("Assistant", "Analyzing chapter...")
+        else:
+            self.chat_widget.add_message("Assistant", "Thinking...")
+
+        # Start background worker with mode
+        self._chat_worker = ChatWorker(message, context, mode)
         self._chat_worker.finished.connect(self._on_chat_response)
         self._chat_worker.error.connect(self._on_chat_error)
         self._chat_worker.start()
 
-    def _build_chat_context(self) -> dict:
-        """Build comprehensive context dict for AI chat, similar to chapter planner."""
+    def _build_chat_context(self, mode: str = "general") -> dict:
+        """Build comprehensive context dict for AI chat, similar to chapter planner.
+
+        Args:
+            mode: The chat mode (general, chapter_focus, writer)
+        """
         context = {}
+        context['mode'] = mode
 
         if not self.current_project:
             return context
@@ -807,6 +1091,9 @@ class MainWindow(QMainWindow):
         # Basic project info
         context['project_name'] = project.name
         context['project_description'] = project.description or ""
+
+        # For chapter_focus and writer modes, we want MORE context about the current chapter
+        is_chapter_focused = mode in ("chapter_focus", "writer")
 
         # Try to use AI-generated summaries if available (more efficient)
         use_ai_summary = (hasattr(project, 'ai_summary') and
@@ -839,40 +1126,95 @@ class MainWindow(QMainWindow):
                         plot_parts.append(f"Climax: {fp.climax[:200]}")
                 context['plot_summary'] = "\n\n".join(plot_parts)
 
-            # Characters
+            # Characters - include more detail for writer mode
             if hasattr(project, 'characters') and project.characters:
                 char_summaries = []
-                for char in project.characters[:10]:  # Limit to 10 characters
-                    char_info = f"- {char.name} ({char.character_type})"
-                    if char.personality:
-                        char_info += f": {char.personality[:100]}"
+                char_limit = 15 if is_chapter_focused else 10
+                for char in project.characters[:char_limit]:
+                    if is_chapter_focused:
+                        # Include more character detail for writing
+                        char_info = f"- {char.name} ({char.character_type})"
+                        if char.personality:
+                            char_info += f"\n  Personality: {char.personality[:200]}"
+                        if hasattr(char, 'speaking_style') and char.speaking_style:
+                            char_info += f"\n  Speech: {char.speaking_style[:100]}"
+                        if hasattr(char, 'motivations') and char.motivations:
+                            char_info += f"\n  Motivations: {char.motivations[:100]}"
+                    else:
+                        char_info = f"- {char.name} ({char.character_type})"
+                        if char.personality:
+                            char_info += f": {char.personality[:100]}"
                     char_summaries.append(char_info)
                 context['characters'] = "\n".join(char_summaries)
 
-            # Worldbuilding (extract key sections)
+            # Worldbuilding - include more detail for writer mode
             if hasattr(project, 'worldbuilding') and project.worldbuilding:
                 wb = project.worldbuilding
                 wb_parts = []
+                detail_limit = 500 if is_chapter_focused else 300
                 if wb.mythology:
-                    wb_parts.append(f"Mythology: {wb.mythology[:300]}")
+                    wb_parts.append(f"Mythology: {wb.mythology[:detail_limit]}")
                 if wb.history:
-                    wb_parts.append(f"History: {wb.history[:300]}")
+                    wb_parts.append(f"History: {wb.history[:detail_limit]}")
                 if wb.politics:
-                    wb_parts.append(f"Politics: {wb.politics[:300]}")
+                    wb_parts.append(f"Politics: {wb.politics[:detail_limit]}")
                 if wb.factions:
-                    faction_names = [f.name for f in wb.factions[:5]]
-                    wb_parts.append(f"Factions: {', '.join(faction_names)}")
+                    if is_chapter_focused:
+                        faction_info = [f"{f.name}: {f.description[:100] if hasattr(f, 'description') and f.description else ''}" for f in wb.factions[:8]]
+                    else:
+                        faction_info = [f.name for f in wb.factions[:5]]
+                    wb_parts.append(f"Factions: {', '.join(faction_info)}")
                 if wb.places:
-                    place_names = [p.name for p in wb.places[:5]]
-                    wb_parts.append(f"Places: {', '.join(place_names)}")
+                    if is_chapter_focused:
+                        place_info = [f"{p.name}: {p.description[:100] if hasattr(p, 'description') and p.description else ''}" for p in wb.places[:8]]
+                    else:
+                        place_info = [p.name for p in wb.places[:5]]
+                    wb_parts.append(f"Places: {', '.join(place_info)}")
                 context['worldbuilding'] = "\n".join(wb_parts)
 
-        # Current chapter context
+        # Current chapter context - include MORE for chapter_focus and writer modes
         if hasattr(self, 'manuscript_editor'):
             content, title = self.manuscript_editor.get_current_chapter_info()
             if title:
                 context['current_chapter_title'] = title
-                context['current_chapter_content'] = content or ""
+                if is_chapter_focused:
+                    # Include FULL chapter content for focused modes
+                    context['current_chapter_content'] = content or ""
+                else:
+                    # General mode: just include excerpt
+                    context['current_chapter_content'] = content[:2000] if content else ""
+
+                # Get chapter planning/outline if available (especially for writer mode)
+                if is_chapter_focused and self.manuscript_editor.current_chapter_editor:
+                    chapter = self.manuscript_editor.current_chapter_editor.chapter
+                    if hasattr(chapter, 'planning') and chapter.planning:
+                        planning = chapter.planning
+                        context['chapter_planning'] = {
+                            'outline': planning.outline,
+                            'description': planning.description,
+                            'pov_character': planning.pov_character,
+                            'scene_list': planning.scene_list,
+                            'events': [
+                                {
+                                    'id': e.id,
+                                    'text': e.text,
+                                    'description': e.description,
+                                    'completed': e.completed,
+                                    'stage': e.stage
+                                }
+                                for e in planning.events
+                            ] if planning.events else [],
+                            'characters_featured': planning.characters_featured,
+                            'locations': planning.locations,
+                            'themes': planning.themes,
+                            'timeline_position': planning.timeline_position,
+                            'notes': planning.notes,
+                            # Writing style metadata
+                            'tone': getattr(planning, 'tone', ''),
+                            'voice': getattr(planning, 'voice', ''),
+                            'style': getattr(planning, 'style', ''),
+                            'pacing': getattr(planning, 'pacing', '')
+                        }
 
         # All chapters list (for cross-chapter questions)
         if hasattr(project, 'manuscript') and project.manuscript and project.manuscript.chapters:
@@ -882,14 +1224,95 @@ class MainWindow(QMainWindow):
                 chapter_list.append(f"{i+1}. {ch.title} ({word_count} words)")
             context['all_chapters'] = "\n".join(chapter_list)
 
+            # For writer mode, include previous chapter ending for continuity
+            if mode == "writer" and hasattr(self, 'manuscript_editor'):
+                # Get current chapter index from the chapter list widget
+                if hasattr(self.manuscript_editor, 'chapter_list'):
+                    current_idx = self.manuscript_editor.chapter_list.currentRow()
+                    if current_idx > 0:
+                        prev_ch = project.manuscript.chapters[current_idx - 1]
+                        if prev_ch.content:
+                            # Last 500 chars of previous chapter
+                            context['previous_chapter_ending'] = prev_ch.content[-500:]
+
         return context
 
     def _on_chat_response(self, response: str):
         """Handle successful AI response."""
-        # Remove the "Thinking..." message by clearing and re-adding
-        # Actually we can't easily remove the last message, so just add the response
-        # The "Thinking..." will scroll up naturally
-        self.chat_widget.add_message("Assistant", response)
+        # Check if this was a writer mode request
+        if getattr(self, '_pending_mode', '') == 'writer' and hasattr(self, '_pending_insert_mode'):
+            self._handle_writer_response(response)
+        else:
+            # Regular chat response - show in chat
+            self.chat_widget.add_message("Assistant", response)
+
+    def _handle_writer_response(self, response: str):
+        """Handle AI response in writer mode - insert into editor.
+
+        Args:
+            response: The AI-generated text to insert
+        """
+        insert_mode = getattr(self, '_pending_insert_mode', 'insert_at_cursor')
+
+        # Get the current chapter editor
+        if not hasattr(self, 'manuscript_editor') or not self.manuscript_editor.current_chapter_editor:
+            self.chat_widget.add_message("Assistant", "No chapter is open. Please select a chapter first.")
+            return
+
+        editor = self.manuscript_editor.current_chapter_editor.editor
+        word_count = len(response.split())
+
+        try:
+            if insert_mode == 'replace_selection':
+                # Replace selected text
+                cursor = editor.textCursor()
+                if cursor.hasSelection():
+                    cursor.insertText(response)
+                    action = "replaced selection"
+                else:
+                    # Fallback to insert at cursor if no selection
+                    cursor.insertText(response)
+                    action = "inserted at cursor"
+
+            elif insert_mode == 'insert_at_cursor':
+                # Insert at current cursor position
+                cursor = editor.textCursor()
+                cursor.insertText(response)
+                action = "inserted at cursor"
+
+            elif insert_mode == 'append_to_chapter':
+                # Append to end of chapter
+                cursor = editor.textCursor()
+                cursor.movePosition(cursor.MoveOperation.End)
+                # Add spacing before appending
+                current_text = editor.toPlainText()
+                if current_text and not current_text.endswith('\n\n'):
+                    cursor.insertText('\n\n')
+                cursor.insertText(response)
+                action = "appended to chapter"
+
+            elif insert_mode == 'replace_chapter':
+                # Replace entire chapter content
+                editor.setPlainText(response)
+                action = "replaced chapter"
+
+            else:
+                # Fallback
+                cursor = editor.textCursor()
+                cursor.insertText(response)
+                action = "inserted"
+
+            # Show confirmation in chat (not the full text)
+            self.chat_widget.add_message(
+                "Assistant",
+                f"Done! {word_count} words {action}."
+            )
+
+            # Show status bar notification
+            self.statusBar().showMessage(f"Writer: {word_count} words {action}", 5000)
+
+        except Exception as e:
+            self.chat_widget.add_message("Assistant", f"Error inserting text: {str(e)}")
 
     def _on_chat_error(self, error: str):
         """Handle AI chat error."""
