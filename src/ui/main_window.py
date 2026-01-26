@@ -10,7 +10,12 @@ from PyQt6.QtGui import QAction, QKeySequence, QIcon
 from pathlib import Path
 from typing import Optional
 
-from src.models.project import WriterProject, Manuscript
+from src.models.project import WriterProject, Manuscript, Character, Chapter
+from src.models.worldbuilding_objects import (
+    Place, PlaceType, Faction, FactionType, Culture, Myth,
+    HistoricalEvent, Technology, TechnologyType, Flora, FloraType, Fauna, FaunaType,
+    ClimatePreset, Planet, PlanetType, StarSystem
+)
 from src.ui.comprehensive_worldbuilding_widget import ComprehensiveWorldBuildingWidget
 from src.ui.characters_widget import CharactersWidget
 from src.ui.story_planning_widget import StoryPlanningWidget
@@ -43,6 +48,8 @@ class ChatWorker(QThread):
         "general": """You are a helpful creative writing assistant integrated into a writer's platform.
 You have access to the author's full project context including plot, characters, worldbuilding, and manuscript chapters.
 
+IMPORTANT: Keep responses focused and concise. Answer what's asked, then stop. Don't ramble or analyze unrelated parts of the project.
+
 You help authors with:
 - Answering questions about their story, characters, and world
 - Analyzing chapters for consistency, pacing, and character development
@@ -50,6 +57,291 @@ You help authors with:
 - Providing feedback on specific passages or the overall narrative
 - Suggesting improvements that align with their style and voice
 - Identifying plot holes or inconsistencies across chapters
+- CREATING new characters, places, factions, cultures, myths, historical events, technologies, flora, fauna, chapters, climate presets, planets, and star systems when asked
+
+=== CREATING PROJECT ELEMENTS ===
+
+When the user asks you to CREATE, ADD, or MAKE any worldbuilding element, you have the ability to actually add it to their project.
+
+Supported elements: characters, places, factions, cultures, myths, historical events, technologies, flora (plants), fauna (animals), chapters, climate presets, planets, star systems.
+
+CRITICAL: To create an element, you MUST wrap the JSON data in the appropriate XML-like tags. Do NOT just provide JSON without tags.
+
+WRONG (will not work):
+{
+  "name": "Example",
+  "description": "This won't be created"
+}
+
+CORRECT (will create the element):
+<create_place>
+{
+  "name": "Example",
+  "description": "This will be created"
+}
+</create_place>
+
+To create an element, include one of these special blocks in your response:
+
+FOR CHARACTERS:
+<create_character>
+{
+  "name": "Character Name",
+  "character_type": "protagonist|antagonist|major|minor",
+  "personality": "Personality description",
+  "backstory": "Character backstory",
+  "physical_description": "Physical appearance for visualization",
+  "notes": "Additional notes"
+}
+</create_character>
+
+FOR PLACES/LOCATIONS:
+<create_place>
+{
+  "name": "Place Name",
+  "description": "Description of the place",
+  "location_type": "city|town|landmark|region|building|etc",
+  "significance": "Why this place matters to the story"
+}
+</create_place>
+
+FOR FACTIONS/ORGANIZATIONS:
+<create_faction>
+{
+  "name": "Faction Name",
+  "description": "Description of the faction",
+  "ideology": "Beliefs and goals",
+  "leadership": "How they're organized/led",
+  "relationships": "Allies and enemies"
+}
+</create_faction>
+
+FOR CULTURES:
+<create_culture>
+{
+  "name": "Culture Name",
+  "description": "Overview of the culture",
+  "customs": "Key customs and traditions",
+  "values": "Core values and beliefs"
+}
+</create_culture>
+
+FOR MYTHS/LEGENDS:
+<create_myth>
+{
+  "name": "Myth Name",
+  "myth_type": "creation|hero|prophecy|cautionary|origin|religious",
+  "description": "Summary of the myth",
+  "full_text": "The full story/legend (optional)",
+  "moral_lesson": "What lesson does this myth teach?",
+  "key_figures": "Gods, heroes, or important figures in the myth"
+}
+</create_myth>
+
+FOR HISTORICAL EVENTS:
+<create_historical_event>
+{
+  "name": "Event Name",
+  "date": "When it occurred (any format)",
+  "event_type": "war|treaty|discovery|disaster|founding|coronation|revolution|general",
+  "description": "What happened",
+  "consequences": "Long-term effects of this event",
+  "key_figures": "Important people involved (comma-separated)",
+  "factions_involved": "Factions/nations involved (comma-separated)",
+  "location": "Where it happened"
+}
+</create_historical_event>
+
+FOR TECHNOLOGIES:
+<create_technology>
+{
+  "name": "Technology Name",
+  "technology_type": "weapon|transportation|communication|medical|energy|computing|manufacturing|other",
+  "description": "What it is and how it works",
+  "applications": "How it's used (comma-separated)",
+  "limitations": "What it can't do",
+  "story_relevance": "Why this matters to the plot"
+}
+</create_technology>
+
+FOR FLORA (PLANTS):
+<create_flora>
+{
+  "name": "Plant Name",
+  "flora_type": "tree|shrub|flower|grass|vine|fungus|crop|herb|medicinal|toxic|other",
+  "description": "Physical description and characteristics",
+  "habitat": "Where it grows",
+  "edible": true/false,
+  "medicinal_properties": "Any healing uses",
+  "toxicity": "If poisonous, describe effects",
+  "cultural_significance": "Symbolic or cultural meaning"
+}
+</create_flora>
+
+FOR FAUNA (ANIMALS):
+<create_fauna>
+{
+  "name": "Animal Name",
+  "fauna_type": "mammal|bird|reptile|fish|insect|mythical_creature|predator|herbivore|other",
+  "description": "Physical description",
+  "habitat": "Where it lives",
+  "diet": "What it eats",
+  "behavior": "How it acts",
+  "danger_level": 0-100,
+  "cultural_significance": "Symbolic or cultural meaning"
+}
+</create_fauna>
+
+FOR NEW CHAPTERS:
+<create_chapter>
+{
+  "title": "Chapter Title",
+  "description": "Brief description of what happens in this chapter",
+  "pov_character": "Point of view character (optional)",
+  "content": "Initial chapter content (optional)"
+}
+</create_chapter>
+
+FOR CLIMATE PRESETS:
+<create_climate_preset>
+{
+  "name": "Climate Preset Name",
+  "description": "Description of this climate type",
+  "temperature_range": "Temperature range (e.g., '20-30°C')",
+  "precipitation_pattern": "Rainfall pattern",
+  "seasons": "Season names (comma-separated)",
+  "atmospheric_composition": "Atmosphere composition if relevant",
+  "weather_patterns": "Typical weather patterns",
+  "extreme_events": "Extreme weather events (comma-separated)"
+}
+</create_climate_preset>
+
+FOR PLANETS:
+<create_planet>
+{
+  "name": "Planet Name",
+  "planet_type": "terrestrial|gas_giant|ice_giant|desert|ocean|jungle|arctic|volcanic",
+  "description": "Physical description and notable features",
+  "star_system": "Star system name (optional)",
+  "orbital_period": "Year length (e.g., '365 days')",
+  "rotation_period": "Day length (e.g., '24 hours')",
+  "atmosphere": "Atmospheric composition",
+  "population": "Population if inhabited",
+  "dominant_climate": "Primary climate type"
+}
+</create_planet>
+
+FOR STAR SYSTEMS:
+<create_star_system>
+{
+  "name": "System Name",
+  "system_type": "single|binary|trinary",
+  "description": "Description of the star system",
+  "galaxy": "Galaxy name (optional)",
+  "location": "Location within galaxy (optional)"
+}
+</create_star_system>
+
+RULES FOR CREATING ELEMENTS:
+
+**WHEN TO CREATE (include a create block):**
+The user's INTENT is to add something to their project. Look for:
+- Direct requests: "add a character", "create a place", "I want a new faction", "we need a villain", "let's add a historical event", "add a new chapter", "add a climate preset", "create a planet", "add a technology"
+- Providing concrete details with expectation of addition: giving a name + role + details
+- Confirmation after discussion: "yes", "do it", "sounds good, add them", "go ahead"
+- Imperative mood: "make them a blacksmith", "put them in the story", "add them to the character section", "add that to the history"
+
+**WHEN NOT TO CREATE (no create block):**
+The user is exploring/brainstorming, not requesting addition:
+- Questions: "what kind of character would work?", "should I have a mentor?"
+- Hypotheticals: "what if there was a...", "maybe something like..."
+- Requests for suggestions: "give me some ideas for..."
+
+**KEY PRINCIPLE:** If the user provides a NAME and specific DETAILS and their message implies they want this in their project, CREATE IT. Don't just discuss it.
+
+**CRITICAL - YOU MUST USE THE XML TAGS:**
+When creating ANY element, you MUST wrap the JSON in the appropriate tags (e.g., <create_place>...</create_place>).
+If you provide JSON WITHOUT the tags, the element will NOT be created - it will only appear as text in the chat.
+The system only recognizes and creates elements when they are properly wrapped in creation tags.
+
+**OTHER RULES:**
+- When you create, include a brief conversational confirmation (1-2 sentences) and STOP
+- DO NOT ramble, analyze other parts of the project, or start critiquing things after creating
+- Keep your ENTIRE response short and focused on the creation - no tangents
+- Fit new elements to existing project context
+- Only ONE create block per response
+
+**RESPONSE FORMAT AFTER CREATING:**
+Good: "I've added [element name] to your [element type]. [One sentence about what was created]."
+Bad: Long explanations, analysis of other story elements, critiques, or suggestions beyond the creation
+
+EXAMPLES:
+
+User: "add a new character. supervisor at the cannery named diane fleming, promoted from fish gutter"
+→ CREATE immediately (name + role + details + "add" intent)
+
+User: "we want a new character for the resistance. someone tough."
+→ CREATE (they said "we want" which signals intent, fill in reasonable details, ask if they want changes)
+
+User: "I need a tavern for chapter 3"
+→ CREATE a place (clear need expressed)
+
+User: "let's add a historical event where the king was assassinated"
+→ CREATE a historical event (clear intent to add)
+
+User: "add a new chapter where they arrive at the castle"
+→ CREATE a chapter (explicit request)
+
+User: "there should be a medicinal herb that cures the plague"
+→ CREATE flora (they're describing something they want in the world)
+
+User: "what kind of villain would work here?"
+→ DON'T CREATE (asking for suggestions, not requesting addition)
+
+User: "maybe a corrupt merchant?"
+→ DON'T CREATE yet (hypothetical, ask if they want to add it)
+
+User: "yes, add them"
+→ CREATE (confirmation of previous discussion)
+
+**EXAMPLE RESPONSES (Good vs Bad):**
+
+GOOD - Character creation with tags:
+User: "add a character named John, a blacksmith"
+Assistant: "I've added John the blacksmith to your characters.
+<create_character>
+{
+  "name": "John",
+  "character_type": "minor",
+  "personality": "Skilled craftsman with a gruff exterior",
+  "backstory": "Village blacksmith",
+  "physical_description": "Muscular build, calloused hands, soot-stained apron"
+}
+</create_character>"
+
+GOOD - Climate preset with tags:
+User: "add a climate preset for a hot, humid coastal climate"
+Assistant: "I've added the coastal climate preset to your worldbuilding.
+<create_climate_preset>
+{
+  "name": "Tropical Coastal",
+  "description": "Hot, humid equatorial coastal climate",
+  "temperature_range": "28-35°C",
+  "precipitation_pattern": "Heavy seasonal rainfall",
+  "weather_patterns": "Frequent storms and high humidity"
+}
+</create_climate_preset>"
+
+BAD - No tags (ELEMENT WILL NOT BE CREATED):
+User: "add a climate preset for a hot, humid coastal climate"
+Assistant: "Here's your climate preset: { \"name\": \"Tropical Coastal\", \"description\": \"Hot and humid\" }"
+[This will NOT create anything - tags are required!]
+
+BAD - Rambling and unfocused:
+User: "add a character named John, a blacksmith"
+Assistant: "I've added John the blacksmith. <create_character>...</create_character> This is interesting because blacksmiths play an important role in medieval societies. Looking at your Act 1, I notice the pacing could be improved. Also, the character development in Chapter 3 needs work, and your villain's motivation isn't clear..."
+
+REMEMBER: After creating an element, confirm briefly and STOP. Don't analyze, critique, or discuss other parts of the project unless specifically asked.
 
 Be encouraging, creative, and constructive. Reference specific details from their project when relevant.
 Keep responses focused and actionable.""",
@@ -927,6 +1219,7 @@ class MainWindow(QMainWindow):
         self.manuscript_editor.set_project(self.current_project)
 
         self.worldbuilding_widget.load_data(self.current_project.worldbuilding)
+        self.characters_widget.set_project(self.current_project)
         self.characters_widget.load_data(self.current_project.characters)
         self.story_planning_widget.load_data(self.current_project.story_planning)
         self.manuscript_editor.load_manuscript(self.current_project.manuscript)
@@ -936,8 +1229,9 @@ class MainWindow(QMainWindow):
         self.agent_manager.load_data(self.current_project.agent_contacts)
         self.attributions_tab.set_manuscript(self.current_project.manuscript)
 
-        # Set up grader widget with project reference
+        # Set up grader widget with project reference and content provider
         self.grader_widget.set_project(self.current_project)
+        self.grader_widget.set_content_provider(self.manuscript_editor.get_current_chapter_info)
 
         # Update chat widget with characters for POV selection
         if self.current_project.characters:
@@ -1246,8 +1540,20 @@ class MainWindow(QMainWindow):
         if getattr(self, '_pending_mode', '') == 'writer' and hasattr(self, '_pending_insert_mode'):
             self._handle_writer_response(response)
         else:
-            # Regular chat response - show in chat
-            self.chat_widget.add_message("Assistant", response)
+            # Check for and handle element creation blocks in general mode
+            display_response, created_elements = self._parse_and_create_elements(response)
+
+            # Show the conversational part of the response
+            self.chat_widget.add_message("Assistant", display_response)
+
+            # If elements were created, show confirmation and refresh UI
+            if created_elements:
+                for element_type, element_name in created_elements:
+                    self.statusBar().showMessage(
+                        f"Created {element_type}: {element_name}", 5000
+                    )
+                # Refresh relevant UI widgets
+                self._refresh_project_widgets()
 
     def _handle_writer_response(self, response: str):
         """Handle AI response in writer mode - insert into editor.
@@ -1320,6 +1626,625 @@ class MainWindow(QMainWindow):
     def _on_chat_error(self, error: str):
         """Handle AI chat error."""
         self.chat_widget.add_message("Assistant", f"Sorry, I encountered an issue: {error}")
+
+    def _parse_and_create_elements(self, response: str) -> tuple:
+        """Parse AI response for element creation blocks and create elements.
+
+        Args:
+            response: The AI response text
+
+        Returns:
+            Tuple of (display_response, created_elements)
+            - display_response: Response with creation blocks removed for display
+            - created_elements: List of (element_type, element_name) tuples
+        """
+        import re
+        import json
+        from datetime import datetime
+
+        if not self.current_project:
+            return response, []
+
+        created_elements = []
+        display_response = response
+
+        # Define creation patterns and handlers
+        creation_patterns = [
+            (r'<create_character>\s*(.*?)\s*</create_character>', self._create_character_from_json),
+            (r'<create_place>\s*(.*?)\s*</create_place>', self._create_place_from_json),
+            (r'<create_faction>\s*(.*?)\s*</create_faction>', self._create_faction_from_json),
+            (r'<create_culture>\s*(.*?)\s*</create_culture>', self._create_culture_from_json),
+            (r'<create_myth>\s*(.*?)\s*</create_myth>', self._create_myth_from_json),
+            (r'<create_historical_event>\s*(.*?)\s*</create_historical_event>', self._create_historical_event_from_json),
+            (r'<create_technology>\s*(.*?)\s*</create_technology>', self._create_technology_from_json),
+            (r'<create_flora>\s*(.*?)\s*</create_flora>', self._create_flora_from_json),
+            (r'<create_fauna>\s*(.*?)\s*</create_fauna>', self._create_fauna_from_json),
+            (r'<create_chapter>\s*(.*?)\s*</create_chapter>', self._create_chapter_from_json),
+            (r'<create_climate_preset>\s*(.*?)\s*</create_climate_preset>', self._create_climate_preset_from_json),
+            (r'<create_planet>\s*(.*?)\s*</create_planet>', self._create_planet_from_json),
+            (r'<create_star_system>\s*(.*?)\s*</create_star_system>', self._create_star_system_from_json),
+        ]
+
+        for pattern, handler in creation_patterns:
+            matches = re.findall(pattern, response, re.DOTALL | re.IGNORECASE)
+            for match in matches:
+                try:
+                    # Try to parse JSON from the match
+                    json_str = match.strip()
+                    # Handle potential JSON issues (single quotes, trailing commas)
+                    json_str = re.sub(r",\s*}", "}", json_str)
+                    json_str = re.sub(r",\s*]", "]", json_str)
+
+                    data = json.loads(json_str)
+                    result = handler(data)
+                    if result:
+                        created_elements.append(result)
+                except json.JSONDecodeError as e:
+                    print(f"Failed to parse creation JSON: {e}")
+                    print(f"JSON string was: {match[:200]}...")
+                except Exception as e:
+                    print(f"Failed to create element: {e}")
+
+        # Remove creation blocks from display response
+        for pattern, _ in creation_patterns:
+            display_response = re.sub(pattern, '', display_response, flags=re.DOTALL | re.IGNORECASE)
+
+        # Clean up extra whitespace
+        display_response = re.sub(r'\n{3,}', '\n\n', display_response).strip()
+
+        return display_response, created_elements
+
+    def _create_character_from_json(self, data: dict) -> tuple:
+        """Create a character from JSON data.
+
+        Args:
+            data: Dictionary with character fields
+
+        Returns:
+            Tuple of (element_type, element_name) or None
+        """
+        from datetime import datetime
+
+        name = data.get('name', '').strip()
+        if not name:
+            return None
+
+        # Generate unique ID
+        char_id = f"char_{datetime.now().strftime('%Y%m%d%H%M%S')}_{len(self.current_project.characters)}"
+
+        # Map character_type to valid values
+        char_type = data.get('character_type', 'minor').lower()
+        if char_type not in ['protagonist', 'antagonist', 'major', 'minor']:
+            char_type = 'minor'
+
+        character = Character(
+            id=char_id,
+            name=name,
+            character_type=char_type,
+            personality=data.get('personality', ''),
+            backstory=data.get('backstory', ''),
+            physical_description=data.get('physical_description', ''),
+            notes=data.get('notes', ''),
+        )
+
+        self.current_project.characters.append(character)
+        print(f"Created character: {name} ({char_type})")
+        return ('character', name)
+
+    def _create_place_from_json(self, data: dict) -> tuple:
+        """Create a place from JSON data.
+
+        Args:
+            data: Dictionary with place fields
+
+        Returns:
+            Tuple of (element_type, element_name) or None
+        """
+        from datetime import datetime
+
+        name = data.get('name', '').strip()
+        if not name:
+            return None
+
+        # Generate unique ID
+        place_id = f"place_{datetime.now().strftime('%Y%m%d%H%M%S')}_{len(self.current_project.worldbuilding.places)}"
+
+        # Map location_type to PlaceType enum
+        loc_type = data.get('location_type', 'other').lower().replace(' ', '_')
+        try:
+            place_type = PlaceType(loc_type)
+        except ValueError:
+            place_type = PlaceType.OTHER
+
+        place = Place(
+            id=place_id,
+            name=name,
+            place_type=place_type,
+            description=data.get('description', ''),
+            story_relevance=data.get('significance', ''),
+            notes=data.get('notes', ''),
+        )
+
+        self.current_project.worldbuilding.places.append(place)
+        print(f"Created place: {name} ({place_type.value})")
+        return ('place', name)
+
+    def _create_faction_from_json(self, data: dict) -> tuple:
+        """Create a faction from JSON data.
+
+        Args:
+            data: Dictionary with faction fields
+
+        Returns:
+            Tuple of (element_type, element_name) or None
+        """
+        from datetime import datetime
+
+        name = data.get('name', '').strip()
+        if not name:
+            return None
+
+        # Generate unique ID
+        faction_id = f"faction_{datetime.now().strftime('%Y%m%d%H%M%S')}_{len(self.current_project.worldbuilding.factions)}"
+
+        # Default to organization type
+        faction_type = FactionType.ORGANIZATION
+
+        # Build description from provided fields
+        description_parts = []
+        if data.get('description'):
+            description_parts.append(data['description'])
+        if data.get('ideology'):
+            description_parts.append(f"Ideology: {data['ideology']}")
+        if data.get('leadership'):
+            description_parts.append(f"Leadership: {data['leadership']}")
+        if data.get('relationships'):
+            description_parts.append(f"Relationships: {data['relationships']}")
+
+        faction = Faction(
+            id=faction_id,
+            name=name,
+            faction_type=faction_type,
+            description='\n\n'.join(description_parts),
+            notes=data.get('notes', ''),
+        )
+
+        self.current_project.worldbuilding.factions.append(faction)
+        print(f"Created faction: {name}")
+        return ('faction', name)
+
+    def _create_culture_from_json(self, data: dict) -> tuple:
+        """Create a culture from JSON data.
+
+        Args:
+            data: Dictionary with culture fields
+
+        Returns:
+            Tuple of (element_type, element_name) or None
+        """
+        from datetime import datetime
+
+        name = data.get('name', '').strip()
+        if not name:
+            return None
+
+        # Generate unique ID
+        culture_id = f"culture_{datetime.now().strftime('%Y%m%d%H%M%S')}_{len(self.current_project.worldbuilding.cultures)}"
+
+        # Build description from provided fields
+        description_parts = []
+        if data.get('description'):
+            description_parts.append(data['description'])
+        if data.get('customs'):
+            description_parts.append(f"Customs: {data['customs']}")
+        if data.get('values'):
+            description_parts.append(f"Values: {data['values']}")
+
+        # Extract core values as list
+        core_values = []
+        if data.get('values'):
+            # Try to parse comma-separated values
+            core_values = [v.strip() for v in data['values'].split(',') if v.strip()]
+
+        culture = Culture(
+            id=culture_id,
+            name=name,
+            description='\n\n'.join(description_parts),
+            core_values=core_values,
+            notes=data.get('notes', ''),
+        )
+
+        self.current_project.worldbuilding.cultures.append(culture)
+        print(f"Created culture: {name}")
+        return ('culture', name)
+
+    def _create_myth_from_json(self, data: dict) -> tuple:
+        """Create a myth from JSON data.
+
+        Args:
+            data: Dictionary with myth fields
+
+        Returns:
+            Tuple of (element_type, element_name) or None
+        """
+        from datetime import datetime
+
+        name = data.get('name', '').strip()
+        if not name:
+            return None
+
+        # Generate unique ID
+        myth_id = f"myth_{datetime.now().strftime('%Y%m%d%H%M%S')}_{len(self.current_project.worldbuilding.myths)}"
+
+        # Parse key_figures - could be string or list
+        key_figures = data.get('key_figures', [])
+        if isinstance(key_figures, str):
+            key_figures = [f.strip() for f in key_figures.split(',') if f.strip()]
+
+        myth = Myth(
+            id=myth_id,
+            name=name,
+            myth_type=data.get('myth_type', 'origin'),
+            description=data.get('description', ''),
+            full_text=data.get('full_text', ''),
+            moral_lesson=data.get('moral_lesson', ''),
+            key_figures=key_figures,
+        )
+
+        self.current_project.worldbuilding.myths.append(myth)
+        print(f"Created myth: {name}")
+        return ('myth', name)
+
+    def _create_historical_event_from_json(self, data: dict) -> tuple:
+        """Create a historical event from JSON data.
+
+        Args:
+            data: Dictionary with historical event fields
+
+        Returns:
+            Tuple of (element_type, element_name) or None
+        """
+        from datetime import datetime
+
+        name = data.get('name', '').strip()
+        if not name:
+            return None
+
+        # Generate unique ID
+        event_id = f"event_{datetime.now().strftime('%Y%m%d%H%M%S')}_{len(self.current_project.worldbuilding.historical_events)}"
+
+        # Parse key_figures - could be string or list
+        key_figures = data.get('key_figures', [])
+        if isinstance(key_figures, str):
+            key_figures = [f.strip() for f in key_figures.split(',') if f.strip()]
+
+        # Parse factions_involved - could be string or list
+        factions_involved = data.get('factions_involved', [])
+        if isinstance(factions_involved, str):
+            factions_involved = [f.strip() for f in factions_involved.split(',') if f.strip()]
+
+        event = HistoricalEvent(
+            id=event_id,
+            name=name,
+            date=data.get('date', ''),
+            event_type=data.get('event_type', 'general'),
+            description=data.get('description', ''),
+            consequences=data.get('consequences', ''),
+            key_figures=key_figures,
+            factions_involved=factions_involved,
+            location=data.get('location', None),
+        )
+
+        self.current_project.worldbuilding.historical_events.append(event)
+        print(f"Created historical event: {name}")
+        return ('historical_event', name)
+
+    def _create_technology_from_json(self, data: dict) -> tuple:
+        """Create a technology from JSON data.
+
+        Args:
+            data: Dictionary with technology fields
+
+        Returns:
+            Tuple of (element_type, element_name) or None
+        """
+        from datetime import datetime
+
+        name = data.get('name', '').strip()
+        if not name:
+            return None
+
+        # Generate unique ID
+        tech_id = f"tech_{datetime.now().strftime('%Y%m%d%H%M%S')}_{len(self.current_project.worldbuilding.technologies)}"
+
+        # Map technology_type to TechnologyType enum
+        tech_type = data.get('technology_type', 'other').lower().replace(' ', '_')
+        try:
+            technology_type = TechnologyType(tech_type)
+        except ValueError:
+            technology_type = TechnologyType.OTHER
+
+        # Parse applications - could be string or list
+        applications = data.get('applications', [])
+        if isinstance(applications, str):
+            applications = [a.strip() for a in applications.split(',') if a.strip()]
+
+        technology = Technology(
+            id=tech_id,
+            name=name,
+            technology_type=technology_type,
+            description=data.get('description', ''),
+            applications=applications,
+            limitations=data.get('limitations', ''),
+            story_relevance=data.get('story_relevance', ''),
+        )
+
+        self.current_project.worldbuilding.technologies.append(technology)
+        print(f"Created technology: {name}")
+        return ('technology', name)
+
+    def _create_flora_from_json(self, data: dict) -> tuple:
+        """Create a flora (plant) from JSON data.
+
+        Args:
+            data: Dictionary with flora fields
+
+        Returns:
+            Tuple of (element_type, element_name) or None
+        """
+        from datetime import datetime
+
+        name = data.get('name', '').strip()
+        if not name:
+            return None
+
+        # Generate unique ID
+        flora_id = f"flora_{datetime.now().strftime('%Y%m%d%H%M%S')}_{len(self.current_project.worldbuilding.flora)}"
+
+        # Map flora_type to FloraType enum
+        flora_type_str = data.get('flora_type', 'other').lower().replace(' ', '_')
+        try:
+            flora_type = FloraType(flora_type_str)
+        except ValueError:
+            flora_type = FloraType.OTHER
+
+        flora = Flora(
+            id=flora_id,
+            name=name,
+            flora_type=flora_type,
+            description=data.get('description', ''),
+            habitat=data.get('habitat', ''),
+            edible=data.get('edible', False),
+            medicinal_properties=data.get('medicinal_properties', ''),
+            toxicity=data.get('toxicity', ''),
+            cultural_significance=data.get('cultural_significance', ''),
+        )
+
+        self.current_project.worldbuilding.flora.append(flora)
+        print(f"Created flora: {name}")
+        return ('flora', name)
+
+    def _create_fauna_from_json(self, data: dict) -> tuple:
+        """Create a fauna (animal) from JSON data.
+
+        Args:
+            data: Dictionary with fauna fields
+
+        Returns:
+            Tuple of (element_type, element_name) or None
+        """
+        from datetime import datetime
+
+        name = data.get('name', '').strip()
+        if not name:
+            return None
+
+        # Generate unique ID
+        fauna_id = f"fauna_{datetime.now().strftime('%Y%m%d%H%M%S')}_{len(self.current_project.worldbuilding.fauna)}"
+
+        # Map fauna_type to FaunaType enum
+        fauna_type_str = data.get('fauna_type', 'other').lower().replace(' ', '_')
+        try:
+            fauna_type = FaunaType(fauna_type_str)
+        except ValueError:
+            fauna_type = FaunaType.OTHER
+
+        fauna = Fauna(
+            id=fauna_id,
+            name=name,
+            fauna_type=fauna_type,
+            description=data.get('description', ''),
+            habitat=data.get('habitat', ''),
+            diet=data.get('diet', ''),
+            behavior=data.get('behavior', ''),
+            danger_level=data.get('danger_level', 0),
+            cultural_significance=data.get('cultural_significance', ''),
+        )
+
+        self.current_project.worldbuilding.fauna.append(fauna)
+        print(f"Created fauna: {name}")
+        return ('fauna', name)
+
+    def _create_chapter_from_json(self, data: dict) -> tuple:
+        """Create a chapter from JSON data.
+
+        Args:
+            data: Dictionary with chapter fields
+
+        Returns:
+            Tuple of (element_type, element_name) or None
+        """
+        from datetime import datetime
+        from src.models.project import ChapterPlanning
+
+        title = data.get('title', '').strip()
+        if not title:
+            return None
+
+        # Generate unique ID and chapter number
+        next_number = len(self.current_project.manuscript.chapters) + 1
+        chapter_id = f"chapter_{datetime.now().strftime('%Y%m%d%H%M%S')}_{next_number}"
+
+        # Create chapter planning
+        planning = ChapterPlanning(
+            description=data.get('description', ''),
+            pov_character=data.get('pov_character', ''),
+        )
+
+        chapter = Chapter(
+            id=chapter_id,
+            number=next_number,
+            title=title,
+            content=data.get('content', ''),
+            html_content=data.get('content', ''),  # Set same as content initially
+            planning=planning,
+        )
+
+        self.current_project.manuscript.chapters.append(chapter)
+        print(f"Created chapter: {title} (Chapter {next_number})")
+
+        # Refresh manuscript editor to show the new chapter
+        if hasattr(self, 'manuscript_editor'):
+            self.manuscript_editor.load_manuscript(self.current_project.manuscript)
+
+        return ('chapter', f"{next_number}. {title}")
+
+    def _create_climate_preset_from_json(self, data: dict) -> tuple:
+        """Create a climate preset from JSON data.
+
+        Args:
+            data: Dictionary with climate preset fields
+
+        Returns:
+            Tuple of (element_type, element_name) or None
+        """
+        from datetime import datetime
+
+        name = data.get('name', '').strip()
+        if not name:
+            return None
+
+        # Generate unique ID
+        preset_id = f"climate_{datetime.now().strftime('%Y%m%d%H%M%S')}_{len(self.current_project.worldbuilding.climate_presets)}"
+
+        # Parse seasons - could be string or list
+        seasons = data.get('seasons', [])
+        if isinstance(seasons, str):
+            seasons = [s.strip() for s in seasons.split(',') if s.strip()]
+
+        # Parse extreme_events - could be string or list
+        extreme_events = data.get('extreme_events', [])
+        if isinstance(extreme_events, str):
+            extreme_events = [e.strip() for e in extreme_events.split(',') if e.strip()]
+
+        climate_preset = ClimatePreset(
+            id=preset_id,
+            name=name,
+            description=data.get('description', ''),
+            temperature_range=data.get('temperature_range', None),
+            precipitation_pattern=data.get('precipitation_pattern', None),
+            seasons=seasons,
+            atmospheric_composition=data.get('atmospheric_composition', None),
+            weather_patterns=data.get('weather_patterns', ''),
+            extreme_events=extreme_events,
+        )
+
+        self.current_project.worldbuilding.climate_presets.append(climate_preset)
+        print(f"Created climate preset: {name}")
+        return ('climate_preset', name)
+
+    def _create_planet_from_json(self, data: dict) -> tuple:
+        """Create a planet from JSON data.
+
+        Args:
+            data: Dictionary with planet fields
+
+        Returns:
+            Tuple of (element_type, element_name) or None
+        """
+        from datetime import datetime
+
+        name = data.get('name', '').strip()
+        if not name:
+            return None
+
+        # Generate unique ID
+        planet_id = f"planet_{datetime.now().strftime('%Y%m%d%H%M%S')}_{len(self.current_project.worldbuilding.planets)}"
+
+        # Map planet_type to PlanetType enum
+        planet_type_str = data.get('planet_type', 'terrestrial').lower().replace(' ', '_')
+        try:
+            planet_type = PlanetType(planet_type_str)
+        except ValueError:
+            planet_type = PlanetType.TERRESTRIAL
+
+        planet = Planet(
+            id=planet_id,
+            name=name,
+            planet_type=planet_type,
+            description=data.get('description', ''),
+            star_system=data.get('star_system', None),
+            orbital_period=data.get('orbital_period', None),
+            rotation_period=data.get('rotation_period', None),
+            atmosphere=data.get('atmosphere', ''),
+            population=data.get('population', None),
+            dominant_climate=data.get('dominant_climate', None),
+        )
+
+        self.current_project.worldbuilding.planets.append(planet)
+        print(f"Created planet: {name}")
+        return ('planet', name)
+
+    def _create_star_system_from_json(self, data: dict) -> tuple:
+        """Create a star system from JSON data.
+
+        Args:
+            data: Dictionary with star system fields
+
+        Returns:
+            Tuple of (element_type, element_name) or None
+        """
+        from datetime import datetime
+
+        name = data.get('name', '').strip()
+        if not name:
+            return None
+
+        # Generate unique ID
+        system_id = f"system_{datetime.now().strftime('%Y%m%d%H%M%S')}_{len(self.current_project.worldbuilding.star_systems)}"
+
+        star_system = StarSystem(
+            id=system_id,
+            name=name,
+            system_type=data.get('system_type', 'single'),
+            description=data.get('description', ''),
+            galaxy=data.get('galaxy', None),
+            location=data.get('location', None),
+        )
+
+        self.current_project.worldbuilding.star_systems.append(star_system)
+        print(f"Created star system: {name}")
+        return ('star_system', name)
+
+    def _refresh_project_widgets(self):
+        """Refresh UI widgets after creating project elements."""
+        if not self.current_project:
+            return
+
+        # Refresh characters widget
+        self.characters_widget.load_data(self.current_project.characters)
+
+        # Refresh worldbuilding widget
+        self.worldbuilding_widget.load_data(self.current_project.worldbuilding)
+
+        # Update characters in image generator
+        self.image_generator.set_characters(self.current_project.characters)
+
+        # Update characters in chat widget for POV selection
+        self.chat_widget.set_characters(self.current_project.characters)
+
+        # Mark project as modified
+        self._on_content_changed()
 
     def _show_find_dialog(self):
         """Show Find dialog."""
@@ -1673,11 +2598,12 @@ class MainWindow(QMainWindow):
                         self.manuscript_editor.current_chapter_editor._jump_to_line(annotation.line_number)
                 break
 
-    def _go_to_critique_line(self, sentence_number: int):
-        """Navigate to a specific sentence from critique feedback.
+    def _go_to_critique_line(self, number: int):
+        """Navigate to a specific sentence or paragraph from critique feedback.
 
         Args:
-            sentence_number: The sentence number (1-indexed) from the critique
+            number: The sentence number (positive, 1-indexed) or
+                   paragraph number (negative, 1-indexed as -N) from the critique
         """
         import re
 
@@ -1697,56 +2623,85 @@ class MainWindow(QMainWindow):
         if not text:
             return
 
-        # Split into sentences the same way the critique does
-        sentences = re.split(r'(?<=[.!?])\s+', text)
-        sentences = [s.strip() for s in sentences if s.strip()]
+        # Determine mode: positive = sentence, negative = paragraph
+        is_paragraph_mode = number < 0
+        target_number = abs(number)
 
-        # Get the target sentence (1-indexed)
-        if sentence_number < 1 or sentence_number > len(sentences):
-            return
+        if is_paragraph_mode:
+            # Paragraph navigation
+            paragraphs = text.split('\n\n')
+            paragraphs = [p.strip() for p in paragraphs if p.strip()]
 
-        target_sentence = sentences[sentence_number - 1]
+            if target_number < 1 or target_number > len(paragraphs):
+                return
 
-        # Find the position of this sentence in the text
-        # We need to find the Nth sentence occurrence
-        position = 0
-        current_sentence = 0
-        for match in re.finditer(r'[^.!?]*[.!?]', text):
-            sentence_text = match.group().strip()
-            if sentence_text:
-                current_sentence += 1
-                if current_sentence == sentence_number:
-                    position = match.start()
-                    break
+            target_text = paragraphs[target_number - 1]
 
-        # If regex approach didn't work, try direct search
-        if position == 0 and sentence_number > 1:
-            # Find by counting sentences
-            pos = 0
-            for i in range(sentence_number - 1):
-                if i < len(sentences):
-                    found = text.find(sentences[i], pos)
+            # Find position of the paragraph
+            position = 0
+            for i in range(target_number - 1):
+                if i < len(paragraphs):
+                    found = text.find(paragraphs[i], position)
                     if found >= 0:
-                        pos = found + len(sentences[i])
-            position = text.find(target_sentence, pos)
+                        position = found + len(paragraphs[i])
 
-        # Move cursor to the sentence and select it
+            position = text.find(target_text, position)
+            if position < 0:
+                position = 0
+
+            # Select the paragraph
+            end_pos = position + len(target_text)
+            status_msg = f"Navigated to paragraph {target_number}"
+        else:
+            # Sentence navigation (original behavior)
+            sentences = re.split(r'(?<=[.!?])\s+', text)
+            sentences = [s.strip() for s in sentences if s.strip()]
+
+            if target_number < 1 or target_number > len(sentences):
+                return
+
+            target_text = sentences[target_number - 1]
+
+            # Find the position of this sentence in the text
+            position = 0
+            current_sentence = 0
+            for match in re.finditer(r'[^.!?]*[.!?]', text):
+                sentence_text = match.group().strip()
+                if sentence_text:
+                    current_sentence += 1
+                    if current_sentence == target_number:
+                        position = match.start()
+                        break
+
+            # If regex approach didn't work, try direct search
+            if position == 0 and target_number > 1:
+                pos = 0
+                for i in range(target_number - 1):
+                    if i < len(sentences):
+                        found = text.find(sentences[i], pos)
+                        if found >= 0:
+                            pos = found + len(sentences[i])
+                position = text.find(target_text, pos)
+
+            end_pos = position + len(target_text)
+            status_msg = f"Navigated to sentence {target_number}"
+
+        # Move cursor and select the text
         cursor = editor.textCursor()
         cursor.setPosition(position)
-        cursor.movePosition(cursor.MoveOperation.EndOfBlock, cursor.MoveMode.KeepAnchor)
 
-        # Try to select the whole sentence
-        end_pos = position + len(target_sentence)
         if end_pos <= len(text):
             cursor.setPosition(position)
             cursor.setPosition(end_pos, cursor.MoveMode.KeepAnchor)
+        else:
+            cursor.movePosition(cursor.MoveOperation.EndOfBlock, cursor.MoveMode.KeepAnchor)
 
         editor.setTextCursor(cursor)
-        editor.centerCursor()
+        editor.ensureCursorVisible()
         editor.setFocus()
 
         # Show a brief status message
-        self.statusBar().showMessage(f"Navigated to sentence {sentence_number}", 3000)
+        self.statusBar().showMessage(status_msg, 3000)
 
     def _toggle_multi_window_mode(self, checked: bool):
         """Toggle multi-window mode on/off."""

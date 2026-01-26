@@ -261,6 +261,70 @@ PRIORITY: [high/medium/low]
 
 Skip lines that work. Only flag genuine problems."""
 
+    # Two-stage line analysis prompts for handling longer texts without cutoffs
+    LINE_IDENTIFICATION_PROMPT = """You are a professional editor scanning text for publishability issues.
+
+CONTEXT PROVIDED BY AUTHOR:
+- Genre/Style: {style_context}
+- Intended Tone: {tone_context}
+- Narrative Voice: {voice_context}
+- Additional Notes: {additional_instructions}
+
+SCAN FOR THESE ISSUES:
+- Show vs Tell: Emotional states told baldly, important moments summarized
+- Transitions: Clunky connectors, disorienting time jumps
+- Voice/Tone: Shifts that don't match intended style
+- Clichés: Overused phrases, purple prose
+- Filter Words: "she saw", "he felt", "she noticed"
+- Adverbs: Adverb-heavy dialogue tags
+- POV: Head-hopping, POV breaks
+- Passive Voice: Where active would be stronger
+
+YOUR TASK:
+Scan all numbered lines. Output ONLY the line numbers that have genuine issues.
+Be selective - most lines should NOT be flagged.
+
+OUTPUT FORMAT (one line per issue):
+[line_number]|[issue_type]
+
+Example:
+3|show_dont_tell
+7|cliche
+12|filter_words
+15|passive_voice
+
+Only output lines with issues. No explanations. No other text."""
+
+    LINE_DETAIL_PROMPT = """You are a professional editor providing detailed feedback on specific lines.
+
+CONTEXT PROVIDED BY AUTHOR:
+- Genre/Style: {style_context}
+- Intended Tone: {tone_context}
+- Narrative Voice: {voice_context}
+- Plot Goals: {plot_context}
+- Key Characters: {character_context}
+- Worldbuilding: {worldbuilding_context}
+- Additional Instructions: {additional_instructions}
+
+For each line below, provide:
+1. Why this line has issues (specific to publishability)
+2. What the author should consider changing
+3. An example of how it could be revised (keeping author's voice)
+
+OUTPUT FORMAT for each line:
+
+LINE [number]:
+ORIGINAL: "[the line text]"
+ISSUE_TYPE: [Show-Don't-Tell/Transition/Voice/Cliché/Filter Words/POV/Adverb/Passive Voice/Style]
+REASONING: [2-3 sentences explaining why this hurts publishability]
+SUGGESTION: [Frame as "Consider..." - actionable advice, NOT a rewrite]
+EXAMPLE: [One possible revision that addresses the issue]
+PRIORITY: [high/medium/low]
+
+---
+
+Be thorough but constructive. Explain the "why" clearly."""
+
     def __init__(
         self,
         primary_llm: 'LLMClient',
@@ -448,9 +512,228 @@ Keep feedback constructive and actionable.
         self,
         text: str,
         critique_context: Optional[CritiqueContext] = None,
+        max_lines: int = 150,
+        progress_callback: Optional[callable] = None
+    ) -> List[LineItemSuggestion]:
+        """Perform two-stage line-by-line analysis of text.
+
+        Stage 1: Quick scan to identify which lines have issues
+        Stage 2: Detailed analysis of flagged lines in batches
+
+        Args:
+            text: The text to analyze
+            critique_context: Author-provided context for targeted critique
+            max_lines: Maximum number of lines to analyze
+            progress_callback: Optional callback for progress updates
+
+        Returns:
+            List of LineItemSuggestion objects, one per flagged line
+        """
+        import re
+
+        # Split text into lines (sentences)
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        sentences = [s.strip() for s in sentences if s.strip()]
+
+        # Limit lines for token management
+        if len(sentences) > max_lines:
+            sentences = sentences[:max_lines]
+
+        if progress_callback:
+            progress_callback(f"Scanning {len(sentences)} lines for issues...")
+
+        # === STAGE 1: Identify problem lines ===
+        numbered_text = "\n".join([f"{i+1}. {s}" for i, s in enumerate(sentences)])
+
+        # Build identification prompt with context
+        id_prompt = self.LINE_IDENTIFICATION_PROMPT.format(
+            style_context=critique_context.style if critique_context else "Not specified",
+            tone_context=critique_context.tone if critique_context else "Not specified",
+            voice_context=critique_context.voice if critique_context else "Not specified",
+            additional_instructions=critique_context.additional_instructions if critique_context else "None"
+        )
+
+        id_request = f"""Scan these numbered lines and identify which ones have publishability issues.
+Output ONLY line numbers with issue types (format: number|issue_type).
+
+TEXT TO SCAN:
+{numbered_text}"""
+
+        id_response = self.primary_llm.generate_text(
+            id_request,
+            id_prompt,
+            max_tokens=500,
+            temperature=0.3
+        )
+
+        # Parse identified lines
+        flagged_lines = self._parse_line_identification(id_response)
+
+        if not flagged_lines:
+            if progress_callback:
+                progress_callback("No issues found!")
+            return []
+
+        if progress_callback:
+            progress_callback(f"Found {len(flagged_lines)} lines to analyze...")
+
+        # === STAGE 2: Get detailed analysis for flagged lines ===
+        # Process in batches to avoid token limits
+        batch_size = 10
+        all_suggestions = []
+
+        for batch_start in range(0, len(flagged_lines), batch_size):
+            batch = flagged_lines[batch_start:batch_start + batch_size]
+
+            if progress_callback:
+                progress_callback(f"Analyzing lines {batch_start + 1}-{min(batch_start + batch_size, len(flagged_lines))}...")
+
+            # Build detail prompt
+            detail_prompt = self.LINE_DETAIL_PROMPT.format(
+                style_context=critique_context.style if critique_context else "Not specified",
+                tone_context=critique_context.tone if critique_context else "Not specified",
+                voice_context=critique_context.voice if critique_context else "Not specified",
+                plot_context=critique_context.plot_goals if critique_context else "Not specified",
+                character_context=critique_context.characters if critique_context else "Not specified",
+                worldbuilding_context=critique_context.worldbuilding if critique_context else "Not specified",
+                additional_instructions=critique_context.additional_instructions if critique_context else "None"
+            )
+
+            # Build request with actual line texts
+            lines_to_analyze = []
+            for line_num, issue_type in batch:
+                if 0 < line_num <= len(sentences):
+                    lines_to_analyze.append(f"Line {line_num} (flagged as {issue_type}): \"{sentences[line_num - 1]}\"")
+
+            if not lines_to_analyze:
+                continue
+
+            detail_request = f"""Provide detailed feedback for these specific lines:
+
+{chr(10).join(lines_to_analyze)}
+
+For each line, explain WHY it's a problem and HOW to fix it."""
+
+            detail_response = self.primary_llm.generate_text(
+                detail_request,
+                detail_prompt,
+                max_tokens=1500,
+                temperature=0.4
+            )
+
+            # Parse detailed suggestions
+            batch_suggestions = self._parse_line_detail_response(detail_response, sentences, batch)
+            all_suggestions.extend(batch_suggestions)
+
+        if progress_callback:
+            progress_callback(f"Complete! {len(all_suggestions)} suggestions.")
+
+        return all_suggestions
+
+    def _parse_line_identification(self, response: str) -> List[tuple]:
+        """Parse the line identification response.
+
+        Args:
+            response: The LLM response with format "line_num|issue_type"
+
+        Returns:
+            List of (line_number, issue_type) tuples
+        """
+        import re
+        flagged = []
+
+        for line in response.strip().split('\n'):
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+
+            # Match patterns like "3|show_dont_tell" or "3 | show_dont_tell"
+            match = re.match(r'(\d+)\s*\|\s*(\w+)', line)
+            if match:
+                line_num = int(match.group(1))
+                issue_type = match.group(2).lower()
+                flagged.append((line_num, issue_type))
+
+        return flagged
+
+    def _parse_line_detail_response(
+        self,
+        response: str,
+        original_sentences: List[str],
+        flagged_batch: List[tuple]
+    ) -> List[LineItemSuggestion]:
+        """Parse detailed line analysis response.
+
+        Args:
+            response: The LLM response with detailed analysis
+            original_sentences: Original sentences for reference
+            flagged_batch: The batch of (line_num, issue_type) that was analyzed
+
+        Returns:
+            List of LineItemSuggestion objects
+        """
+        import re
+        suggestions = []
+
+        # Create a lookup of flagged lines for this batch
+        flagged_lookup = {line_num: issue_type for line_num, issue_type in flagged_batch}
+
+        # Split response into blocks by LINE marker
+        blocks = re.split(r'(?=LINE\s*\d+)', response, flags=re.IGNORECASE)
+
+        for block in blocks:
+            block = block.strip()
+            if not block:
+                continue
+
+            # Extract line number
+            line_match = re.search(r'LINE\s*(\d+)', block, re.IGNORECASE)
+            if not line_match:
+                continue
+
+            line_num = int(line_match.group(1))
+
+            # Get the original text
+            if 0 < line_num <= len(original_sentences):
+                original_text = original_sentences[line_num - 1]
+            else:
+                continue
+
+            # Extract fields
+            issue_type = self._extract_field(block, 'ISSUE_TYPE') or self._extract_field(block, 'ISSUE')
+            reasoning = self._extract_field(block, 'REASONING')
+            suggestion = self._extract_field(block, 'SUGGESTION')
+            example_fix = self._extract_field(block, 'EXAMPLE')
+            priority = self._extract_field(block, 'PRIORITY').lower()
+
+            # Normalize priority
+            if priority not in ['high', 'medium', 'low']:
+                priority = 'medium'
+
+            # Map issue type to enum
+            stype = self._map_issue_to_type(issue_type or flagged_lookup.get(line_num, 'style'))
+
+            suggestions.append(LineItemSuggestion(
+                line_number=line_num,
+                paragraph_number=1,
+                suggestion_type=stype,
+                original_text=original_text,
+                suggestion=suggestion or "Consider revising this line.",
+                explanation=issue_type or "Style issue",
+                priority=priority,
+                reasoning=reasoning or "",
+                example_fix=example_fix or ""
+            ))
+
+        return suggestions
+
+    def analyze_lines_legacy(
+        self,
+        text: str,
+        critique_context: Optional[CritiqueContext] = None,
         max_lines: int = 100
     ) -> List[LineItemSuggestion]:
-        """Perform line-by-line analysis of text.
+        """Legacy single-pass line-by-line analysis (kept for comparison).
 
         Args:
             text: The text to analyze
@@ -460,20 +743,15 @@ Keep feedback constructive and actionable.
         Returns:
             List of LineItemSuggestion objects, one per flagged line
         """
-        # Split text into lines (sentences)
         import re
-        # Split on sentence-ending punctuation while keeping the punctuation
         sentences = re.split(r'(?<=[.!?])\s+', text)
         sentences = [s.strip() for s in sentences if s.strip()]
 
-        # Limit lines for token management
         if len(sentences) > max_lines:
             sentences = sentences[:max_lines]
 
-        # Number the lines
         numbered_text = "\n".join([f"{i+1}. {s}" for i, s in enumerate(sentences)])
 
-        # Build system prompt with context
         if critique_context:
             system_prompt = self.LINE_BY_LINE_PROMPT.format(
                 style_context=critique_context.style or "Not specified",
@@ -510,7 +788,6 @@ Provide your line-by-line feedback now. Use the format specified in your instruc
             temperature=0.4
         )
 
-        # Parse line-by-line suggestions
         suggestions = self._parse_line_by_line_response(response, sentences)
 
         return suggestions
@@ -623,11 +900,48 @@ Provide your line-by-line feedback now. Use the format specified in your instruc
             The extracted value or empty string
         """
         import re
-        # Match field_name followed by colon and capture until next field or end
-        pattern = rf'{field_name}[:\s]*([^\n]+(?:\n(?!LINE|ISSUE|REASONING|SUGGESTION|EXAMPLE|PRIORITY)[^\n]+)*)'
-        match = re.search(pattern, block, re.IGNORECASE)
+
+        # List of all field keywords (case-insensitive boundary markers)
+        field_markers = ['LINE', 'ISSUE', 'REASONING', 'SUGGESTION', 'EXAMPLE', 'PRIORITY']
+
+        # Try multiple patterns for field extraction
+
+        # Pattern 1: Field name followed by colon, capture until next field marker
+        # Using word boundary and flexible spacing
+        pattern1 = rf'\b{field_name}\s*:\s*(.+?)(?=\n\s*(?:{"|".join(field_markers)})\s*:|$)'
+        match = re.search(pattern1, block, re.IGNORECASE | re.DOTALL)
         if match:
-            return match.group(1).strip()
+            result = match.group(1).strip()
+            # Clean up any trailing dashes (separator lines)
+            result = re.sub(r'\n*-+\s*$', '', result).strip()
+            if result:
+                return result
+
+        # Pattern 2: Field name at start of line, capture until next line starting with known field
+        lines = block.split('\n')
+        capturing = False
+        captured_lines = []
+        field_pattern = re.compile(rf'^{field_name}\s*:\s*(.*)$', re.IGNORECASE)
+        end_pattern = re.compile(rf'^({"|".join(field_markers)})\s*:', re.IGNORECASE)
+
+        for line in lines:
+            if capturing:
+                # Check if this line starts a new field
+                if end_pattern.match(line.strip()) or line.strip().startswith('---'):
+                    break
+                captured_lines.append(line)
+            else:
+                field_match = field_pattern.match(line.strip())
+                if field_match:
+                    # Start capturing - include content on same line as field name
+                    first_content = field_match.group(1).strip()
+                    if first_content:
+                        captured_lines.append(first_content)
+                    capturing = True
+
+        if captured_lines:
+            return ' '.join(captured_lines).strip()
+
         return ""
 
     def _map_issue_to_type(self, issue_type: str) -> SuggestionType:
@@ -851,7 +1165,8 @@ Be brief and specific.
     def _create_suggestion(
         self,
         data: Dict[str, str],
-        paragraph_num: int
+        paragraph_num: int,
+        paragraphs: List[str] = None
     ) -> LineItemSuggestion:
         """Create LineItemSuggestion from parsed data."""
         # Map type string to enum
@@ -863,14 +1178,25 @@ Be brief and specific.
                 suggestion_type = stype
                 break
 
+        # Get original text - prefer quote, fallback to paragraph text
+        quote = data.get("quote", "").strip()
+        if quote:
+            original_text = quote[:200]
+        elif paragraphs and 0 < paragraph_num <= len(paragraphs):
+            # Use the actual paragraph text as fallback
+            original_text = paragraphs[paragraph_num - 1][:200]
+        else:
+            original_text = "[Text not available]"
+
         return LineItemSuggestion(
             line_number=None,
             paragraph_number=paragraph_num,
             suggestion_type=suggestion_type,
-            original_text=data.get("quote", "")[:200],
+            original_text=original_text,
             suggestion=data.get("suggestion", ""),
             explanation=data.get("why", ""),
             priority=data.get("priority", "medium"),
+            reasoning=data.get("why", ""),  # Use same as explanation for general critique
             example_fix=data.get("example", "")
         )
 
@@ -925,11 +1251,15 @@ Be brief and specific.
         line_items = []
         current_item = {}
 
+        import re as parse_re
         for line in sections["suggestions"]:
             if 'Paragraph' in line or 'Para' in line:
                 if current_item:
                     line_items.append(current_item)
-                current_item = {"paragraph": 1}  # Extract number if possible
+                # Extract paragraph number from line like "Paragraph 3:" or "Para # 2"
+                para_match = parse_re.search(r'(?:Paragraph|Para)\s*#?\s*(\d+)', line, parse_re.IGNORECASE)
+                para_num = int(para_match.group(1)) if para_match else 1
+                current_item = {"paragraph": para_num}
             elif 'Quote:' in line:
                 current_item["quote"] = line.split('Quote:')[1].strip(' "')
             elif 'Type:' in line:
@@ -950,7 +1280,7 @@ Be brief and specific.
         parsed_suggestions = []
         for item in line_items:
             parsed_suggestions.append(
-                self._create_suggestion(item, item.get("paragraph", 1))
+                self._create_suggestion(item, item.get("paragraph", 1), paragraphs)
             )
 
         return ChapterAnalysis(

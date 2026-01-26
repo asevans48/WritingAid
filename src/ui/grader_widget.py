@@ -123,8 +123,163 @@ class CritiqueMetadataStore:
         for key, data in self._metadata.items():
             if data.get("project_path") == project_path:
                 chapter_title = data.get("chapter_title", "Unknown")
-                result[chapter_title] = data.get("context", {})
+                if chapter_title != "__PROJECT_GLOBAL__":
+                    result[chapter_title] = data.get("context", {})
         return result
+
+    def get_project_context(self, project_path: str) -> Optional[Dict[str, Any]]:
+        """Get saved project-wide critique context.
+
+        Args:
+            project_path: Path to the project file
+
+        Returns:
+            Dictionary with context fields or None if not found
+        """
+        return self.get_context(project_path, "__PROJECT_GLOBAL__")
+
+    def save_project_context(self, project_path: str, context: Dict[str, Any]):
+        """Save project-wide critique context.
+
+        Args:
+            project_path: Path to the project file
+            context: Dictionary with style, tone, voice, etc.
+        """
+        self.save_context(project_path, "__PROJECT_GLOBAL__", context)
+
+    def delete_project_context(self, project_path: str):
+        """Delete saved project-wide context."""
+        self.delete_context(project_path, "__PROJECT_GLOBAL__")
+
+    # === Critique Results Storage ===
+
+    def _get_critique_key(self, project_path: str, chapter_title: str) -> str:
+        """Generate a unique key for critique results (separate from context)."""
+        key_source = f"CRITIQUE::{project_path}::{chapter_title}"
+        return hashlib.sha256(key_source.encode()).hexdigest()[:16]
+
+    def save_critique(
+        self,
+        project_path: str,
+        chapter_title: str,
+        critique_data: Dict[str, Any],
+        critique_type: str = "general"
+    ) -> str:
+        """Save critique results for a chapter.
+
+        Args:
+            project_path: Path to the project file
+            chapter_title: Title of the chapter
+            critique_data: Serialized critique data (analysis or line suggestions)
+            critique_type: Type of critique ("general", "line_by_line", "quick_stats")
+
+        Returns:
+            The critique ID (timestamp-based)
+        """
+        from datetime import datetime
+
+        key = self._get_critique_key(project_path, chapter_title)
+        critique_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # Get or create critique history for this chapter
+        if key not in self._metadata:
+            self._metadata[key] = {
+                "project_path": project_path,
+                "chapter_title": chapter_title,
+                "critiques": {}
+            }
+
+        # Save critique with ID
+        self._metadata[key]["critiques"][critique_id] = {
+            "type": critique_type,
+            "timestamp": datetime.now().isoformat(),
+            "data": critique_data
+        }
+
+        # Keep only the last 10 critiques per chapter
+        critiques = self._metadata[key]["critiques"]
+        if len(critiques) > 10:
+            sorted_ids = sorted(critiques.keys())
+            for old_id in sorted_ids[:-10]:
+                del critiques[old_id]
+
+        self._save()
+        return critique_id
+
+    def get_critique(
+        self,
+        project_path: str,
+        chapter_title: str,
+        critique_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Get a saved critique.
+
+        Args:
+            project_path: Path to the project file
+            chapter_title: Title of the chapter
+            critique_id: Specific critique ID, or None for the latest
+
+        Returns:
+            Critique data dict with type, timestamp, and data fields
+        """
+        key = self._get_critique_key(project_path, chapter_title)
+        entry = self._metadata.get(key)
+
+        if not entry or "critiques" not in entry:
+            return None
+
+        critiques = entry["critiques"]
+        if not critiques:
+            return None
+
+        if critique_id:
+            return critiques.get(critique_id)
+        else:
+            # Return the latest critique
+            latest_id = max(critiques.keys())
+            return critiques.get(latest_id)
+
+    def list_critiques(
+        self,
+        project_path: str,
+        chapter_title: str
+    ) -> List[Dict[str, str]]:
+        """List all saved critiques for a chapter.
+
+        Returns:
+            List of dicts with id, type, and timestamp
+        """
+        key = self._get_critique_key(project_path, chapter_title)
+        entry = self._metadata.get(key)
+
+        if not entry or "critiques" not in entry:
+            return []
+
+        result = []
+        for cid, cdata in entry["critiques"].items():
+            result.append({
+                "id": cid,
+                "type": cdata.get("type", "unknown"),
+                "timestamp": cdata.get("timestamp", "")
+            })
+
+        # Sort by ID (which is timestamp-based) descending
+        result.sort(key=lambda x: x["id"], reverse=True)
+        return result
+
+    def delete_critique(
+        self,
+        project_path: str,
+        chapter_title: str,
+        critique_id: str
+    ):
+        """Delete a specific critique."""
+        key = self._get_critique_key(project_path, chapter_title)
+        entry = self._metadata.get(key)
+
+        if entry and "critiques" in entry and critique_id in entry["critiques"]:
+            del entry["critiques"][critique_id]
+            self._save()
 
 
 # Global instance
@@ -222,11 +377,15 @@ class CritiqueWorker(QThread):
             agent = ChapterAnalysisAgent(primary_llm=llm)
 
             if self.line_by_line:
-                # Line-by-line analysis mode
-                self.progress.emit("Analyzing text line by line...")
+                # Line-by-line analysis mode using two-stage approach
+                # Pass progress callback to get detailed status updates
+                def progress_update(msg: str):
+                    self.progress.emit(msg)
+
                 line_suggestions = agent.analyze_lines(
                     text=self.text,
-                    critique_context=self.critique_context
+                    critique_context=self.critique_context,
+                    progress_callback=progress_update
                 )
                 self.progress.emit("Complete!")
                 # Return as dict to distinguish from ChapterAnalysis
@@ -269,6 +428,7 @@ class GraderWidget(QWidget):
         self._last_analysis: Optional[ChapterAnalysis] = None
         self._last_stats: Optional[WritingStats] = None
         self._metadata_store = get_critique_metadata_store()
+        self._content_provider: Optional[callable] = None  # Callback to get fresh content
         self._init_ui()
 
     def _init_ui(self):
@@ -410,13 +570,43 @@ class GraderWidget(QWidget):
         self.additional_edit.setPlaceholderText("Any specific things to look for or ignore...")
         context_layout.addWidget(self.additional_edit)
 
-        # Save/Load context buttons
-        context_buttons_layout = QHBoxLayout()
-        context_buttons_layout.addStretch()
+        # Context scope and save/load controls
+        context_controls_layout = QHBoxLayout()
+
+        # Context scope selector
+        scope_label = QLabel("Save to:")
+        scope_label.setStyleSheet("font-size: 11px;")
+        context_controls_layout.addWidget(scope_label)
+
+        self.context_scope_combo = QComboBox()
+        self.context_scope_combo.addItem("This Chapter", "chapter")
+        self.context_scope_combo.addItem("Entire Project", "project")
+        self.context_scope_combo.setToolTip("Choose where to save/load context from")
+        self.context_scope_combo.setStyleSheet("font-size: 11px; min-width: 100px;")
+        self.context_scope_combo.currentIndexChanged.connect(self._on_context_scope_changed)
+        context_controls_layout.addWidget(self.context_scope_combo)
+
+        context_controls_layout.addStretch()
+
+        # Import from chapter planner button
+        self.import_planner_btn = QPushButton("Import from Planner")
+        self.import_planner_btn.setToolTip("Import tone, voice, style from this chapter's planner")
+        self.import_planner_btn.clicked.connect(self._import_from_chapter_planner)
+        self.import_planner_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #8b5cf6;
+                color: white;
+                padding: 5px 12px;
+                border-radius: 3px;
+                font-size: 11px;
+            }
+            QPushButton:hover { background-color: #7c3aed; }
+        """)
+        context_controls_layout.addWidget(self.import_planner_btn)
 
         self.save_context_btn = QPushButton("Save Context")
-        self.save_context_btn.setToolTip("Save this context for the current chapter (persists across sessions)")
-        self.save_context_btn.clicked.connect(self._save_chapter_context)
+        self.save_context_btn.setToolTip("Save this context (persists across sessions)")
+        self.save_context_btn.clicked.connect(self._save_context)
         self.save_context_btn.setStyleSheet("""
             QPushButton {
                 background-color: #3b82f6;
@@ -427,18 +617,33 @@ class GraderWidget(QWidget):
             QPushButton:hover { background-color: #2563eb; }
             QPushButton:disabled { background-color: #9ca3af; }
         """)
-        context_buttons_layout.addWidget(self.save_context_btn)
+        context_controls_layout.addWidget(self.save_context_btn)
+
+        self.load_context_btn = QPushButton("Load")
+        self.load_context_btn.setToolTip("Load saved context")
+        self.load_context_btn.clicked.connect(self._load_context)
+        self.load_context_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #059669;
+                color: white;
+                padding: 5px 12px;
+                border-radius: 3px;
+            }
+            QPushButton:hover { background-color: #047857; }
+        """)
+        context_controls_layout.addWidget(self.load_context_btn)
 
         self.clear_context_btn = QPushButton("Clear")
         self.clear_context_btn.setToolTip("Clear all context fields")
         self.clear_context_btn.clicked.connect(self._clear_context_fields)
-        context_buttons_layout.addWidget(self.clear_context_btn)
+        context_controls_layout.addWidget(self.clear_context_btn)
 
+        context_layout.addLayout(context_controls_layout)
+
+        # Status label on its own row
         self.context_status_label = QLabel("")
         self.context_status_label.setStyleSheet("color: #059669; font-size: 11px;")
-        context_buttons_layout.addWidget(self.context_status_label)
-
-        context_layout.addLayout(context_buttons_layout)
+        context_layout.addWidget(self.context_status_label)
 
         context_group.setLayout(context_layout)
         layout.addWidget(context_group)
@@ -533,11 +738,51 @@ class GraderWidget(QWidget):
         self.results_display.setMinimumHeight(300)
         results_layout.addWidget(self.results_display)
 
-        # Export buttons
+        # Export and save/load buttons
         export_layout = QHBoxLayout()
+
+        # Save/Load critique buttons on the left
+        self.save_critique_btn = QPushButton("Save Critique")
+        self.save_critique_btn.setToolTip("Save this critique to work on later")
+        self.save_critique_btn.clicked.connect(self._save_critique_results)
+        self.save_critique_btn.setEnabled(False)
+        self.save_critique_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3b82f6;
+                color: white;
+                padding: 6px 12px;
+                border-radius: 4px;
+                font-weight: 500;
+            }
+            QPushButton:hover { background-color: #2563eb; }
+            QPushButton:disabled { background-color: #9ca3af; color: #e5e7eb; }
+        """)
+        export_layout.addWidget(self.save_critique_btn)
+
+        self.load_critique_btn = QPushButton("Load Critique")
+        self.load_critique_btn.setToolTip("Load a previously saved critique")
+        self.load_critique_btn.clicked.connect(self._load_critique_results)
+        self.load_critique_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #059669;
+                color: white;
+                padding: 6px 12px;
+                border-radius: 4px;
+                font-weight: 500;
+            }
+            QPushButton:hover { background-color: #047857; }
+        """)
+        export_layout.addWidget(self.load_critique_btn)
+
+        # Saved critique indicator
+        self.saved_critique_label = QLabel("")
+        self.saved_critique_label.setStyleSheet("color: #6b7280; font-size: 11px;")
+        export_layout.addWidget(self.saved_critique_label)
+
         export_layout.addStretch()
 
-        self.export_btn = QPushButton("Export Critique")
+        self.export_btn = QPushButton("Export to File")
+        self.export_btn.setToolTip("Export critique as markdown file")
         self.export_btn.clicked.connect(self._export_critique)
         self.export_btn.setEnabled(False)
         export_layout.addWidget(self.export_btn)
@@ -579,6 +824,30 @@ class GraderWidget(QWidget):
         # Load saved context for this chapter
         self._load_chapter_context()
 
+    def set_content_provider(self, provider: callable):
+        """Set a callback to get fresh chapter content.
+
+        The provider should return a tuple of (content: str, title: str).
+        """
+        self._content_provider = provider
+
+    def _refresh_content(self):
+        """Refresh chapter content from the manuscript editor.
+
+        This ensures we're always critiquing the latest content,
+        even if the user edited after switching to this tab.
+        """
+        if self._content_provider is not None:
+            try:
+                content, title = self._content_provider()
+                if content:  # Only update if we got content
+                    self._current_chapter_text = content
+                    self._current_chapter_title = title
+                    word_count = len(content.split())
+                    self.chapter_info_label.setText(f"Chapter: {title} ({word_count:,} words)")
+            except Exception as e:
+                print(f"Error refreshing content: {e}")
+
     def _on_type_changed(self, content_type: str):
         """Handle content type change."""
         is_custom = content_type == "Custom Text"
@@ -587,9 +856,12 @@ class GraderWidget(QWidget):
 
     def _get_critique(self):
         """Get AI critique of the content."""
-        # Get content
+        # Refresh content from manuscript editor to ensure we have latest text
         content_type = self.type_combo.currentText()
+        if content_type != "Custom Text":
+            self._refresh_content()
 
+        # Get content
         if content_type == "Custom Text":
             text = self.custom_text_edit.toPlainText()
             title = "Custom Text"
@@ -643,9 +915,12 @@ class GraderWidget(QWidget):
 
     def _get_line_by_line_critique(self):
         """Get line-by-line AI critique with reasoning for each edit."""
-        # Get content
+        # Refresh content from manuscript editor to ensure we have latest text
         content_type = self.type_combo.currentText()
+        if content_type != "Custom Text":
+            self._refresh_content()
 
+        # Get content
         if content_type == "Custom Text":
             text = self.custom_text_edit.toPlainText()
             title = "Custom Text"
@@ -710,18 +985,31 @@ class GraderWidget(QWidget):
 
         # Check if this is a line-by-line result (dict) or standard analysis
         if isinstance(result, dict) and result.get("type") == "line_by_line":
-            # Line-by-line results
+            # Line-by-line results - convert to ChapterAnalysis for storage
             suggestions = result.get("suggestions", [])
             html = self._format_line_by_line_html(suggestions)
             self.results_display.setHtml(html)
-            self.export_btn.setEnabled(True)
-            self._last_analysis = None  # Clear standard analysis
+
+            # Store as ChapterAnalysis for save/export compatibility
+            self._last_analysis = ChapterAnalysis(
+                overall_assessment="Line-by-line analysis",
+                strengths=[],
+                areas_for_improvement=[],
+                line_item_suggestions=suggestions,
+                pacing_notes="",
+                character_consistency_notes="",
+                estimated_cost=0.0
+            )
         else:
             # Standard ChapterAnalysis
             self._last_analysis = result
             html = self._format_analysis_html(result)
             self.results_display.setHtml(html)
-            self.export_btn.setEnabled(True)
+
+        # Enable save/export buttons
+        self.save_critique_btn.setEnabled(True)
+        self.export_btn.setEnabled(True)
+        self.saved_critique_label.setText("")  # Clear any previous status
 
     def _on_critique_error(self, error: str):
         """Handle critique error."""
@@ -746,6 +1034,8 @@ class GraderWidget(QWidget):
             .priority-low { border-left: 3px solid #6b7280; }
             .quote { color: #6b7280; font-style: italic; }
             .type { font-weight: bold; color: #6366f1; }
+            .location-link { display: inline-block; background-color: #8b5cf6; color: white; padding: 2px 8px; border-radius: 4px; font-weight: bold; font-size: 11px; margin-right: 8px; cursor: pointer; text-decoration: none; }
+            .location-link:hover { background-color: #7c3aed; }
         </style>
         """
 
@@ -769,13 +1059,25 @@ class GraderWidget(QWidget):
         # Line-Item Suggestions
         if analysis.line_item_suggestions:
             html += "<h2>Line-Item Suggestions</h2>"
+            html += "<p style='color: #6b7280; font-size: 12px;'>Click location badges to navigate to the text.</p>"
             for suggestion in analysis.line_item_suggestions:
                 priority_class = f"priority-{suggestion.priority}"
                 example_html = ""
                 if suggestion.example_fix:
                     example_html = f"<div style='background-color: #ecfdf5; padding: 8px; margin: 8px 0; border-radius: 4px; border-left: 3px solid #10b981;'><strong style='color: #059669;'>Example:</strong> <em>\"{suggestion.example_fix}\"</em></div>"
+
+                # Create clickable location link
+                # Use line number if available, otherwise paragraph number
+                if suggestion.line_number and suggestion.line_number > 0:
+                    location_link = f"<a href='goto:line:{suggestion.line_number}' class='location-link'>Line {suggestion.line_number}</a>"
+                elif suggestion.paragraph_number and suggestion.paragraph_number > 0:
+                    location_link = f"<a href='goto:para:{suggestion.paragraph_number}' class='location-link'>Para {suggestion.paragraph_number}</a>"
+                else:
+                    location_link = ""
+
                 html += f"""
                 <div class='suggestion {priority_class}'>
+                    {location_link}
                     <span class='type'>[{suggestion.suggestion_type.value.replace('_', ' ').title()}]</span>
                     <span style='float: right; font-size: 11px;'>Priority: {suggestion.priority.upper()}</span><br>
                     <span class='quote'>"{suggestion.original_text}"</span><br>
@@ -885,6 +1187,187 @@ class GraderWidget(QWidget):
 
         return html
 
+    def _save_critique_results(self):
+        """Save the current critique results for later reference."""
+        if not self._last_analysis:
+            QMessageBox.warning(self, "No Critique", "No critique results to save.")
+            return
+
+        if not self._project_path:
+            QMessageBox.warning(self, "No Project", "Please save your project first.")
+            return
+
+        chapter_title = self._current_chapter_title or "Custom Text"
+
+        # Serialize the analysis
+        critique_data = self._serialize_analysis(self._last_analysis)
+
+        # Determine critique type
+        critique_type = "line_by_line" if self._last_analysis.line_item_suggestions and \
+            any(s.line_number for s in self._last_analysis.line_item_suggestions) else "general"
+
+        # Save it
+        critique_id = self._metadata_store.save_critique(
+            self._project_path,
+            chapter_title,
+            critique_data,
+            critique_type
+        )
+
+        self.saved_critique_label.setText(f"✓ Saved ({critique_id})")
+
+    def _load_critique_results(self):
+        """Load a previously saved critique."""
+        if not self._project_path:
+            QMessageBox.warning(self, "No Project", "Please open a project first.")
+            return
+
+        chapter_title = self._current_chapter_title or "Custom Text"
+
+        # Get list of saved critiques
+        critiques = self._metadata_store.list_critiques(self._project_path, chapter_title)
+
+        if not critiques:
+            QMessageBox.information(
+                self, "No Saved Critiques",
+                f"No saved critiques found for '{chapter_title}'."
+            )
+            return
+
+        # Show selection dialog
+        from PyQt6.QtWidgets import QInputDialog
+        from datetime import datetime
+
+        # Format options for display
+        options = []
+        for c in critiques:
+            try:
+                dt = datetime.fromisoformat(c["timestamp"])
+                formatted_time = dt.strftime("%b %d, %Y %I:%M %p")
+            except (ValueError, KeyError):
+                formatted_time = c.get("timestamp", "Unknown time")
+
+            options.append(f"{formatted_time} ({c['type']})")
+
+        selected, ok = QInputDialog.getItem(
+            self,
+            "Load Critique",
+            "Select a saved critique to load:",
+            options,
+            0,  # Default to most recent
+            False  # Not editable
+        )
+
+        if not ok or not selected:
+            return
+
+        # Get the critique ID from selection
+        selected_idx = options.index(selected)
+        critique_id = critiques[selected_idx]["id"]
+
+        # Load the critique
+        critique_entry = self._metadata_store.get_critique(
+            self._project_path,
+            chapter_title,
+            critique_id
+        )
+
+        if not critique_entry or "data" not in critique_entry:
+            QMessageBox.warning(self, "Load Failed", "Could not load the selected critique.")
+            return
+
+        # Deserialize and display
+        try:
+            analysis = self._deserialize_analysis(critique_entry["data"])
+            self._last_analysis = analysis
+            self._display_analysis(analysis)
+            self.save_critique_btn.setEnabled(True)
+            self.export_btn.setEnabled(True)
+
+            # Show load status
+            try:
+                dt = datetime.fromisoformat(critique_entry["timestamp"])
+                formatted_time = dt.strftime("%b %d %I:%M %p")
+            except (ValueError, KeyError):
+                formatted_time = "unknown time"
+
+            self.saved_critique_label.setText(f"Loaded from {formatted_time}")
+        except Exception as e:
+            QMessageBox.warning(self, "Load Failed", f"Error loading critique: {e}")
+
+    def _serialize_analysis(self, analysis: ChapterAnalysis) -> Dict[str, Any]:
+        """Serialize a ChapterAnalysis to a dictionary for storage."""
+        return {
+            "overall_assessment": analysis.overall_assessment,
+            "strengths": analysis.strengths,
+            "areas_for_improvement": analysis.areas_for_improvement,
+            "pacing_notes": analysis.pacing_notes,
+            "character_consistency_notes": analysis.character_consistency_notes,
+            "estimated_cost": analysis.estimated_cost,
+            "line_item_suggestions": [
+                {
+                    "line_number": s.line_number,
+                    "paragraph_number": s.paragraph_number,
+                    "suggestion_type": s.suggestion_type.value,
+                    "original_text": s.original_text,
+                    "suggestion": s.suggestion,
+                    "explanation": s.explanation,
+                    "priority": s.priority,
+                    "reasoning": s.reasoning,
+                    "example_fix": s.example_fix
+                }
+                for s in analysis.line_item_suggestions
+            ]
+        }
+
+    def _deserialize_analysis(self, data: Dict[str, Any]) -> ChapterAnalysis:
+        """Deserialize a ChapterAnalysis from a dictionary."""
+        suggestions = []
+        for s in data.get("line_item_suggestions", []):
+            try:
+                stype = SuggestionType(s["suggestion_type"])
+            except (ValueError, KeyError):
+                stype = SuggestionType.STYLE
+
+            suggestions.append(LineItemSuggestion(
+                line_number=s.get("line_number"),
+                paragraph_number=s.get("paragraph_number", 1),
+                suggestion_type=stype,
+                original_text=s.get("original_text", ""),
+                suggestion=s.get("suggestion", ""),
+                explanation=s.get("explanation", ""),
+                priority=s.get("priority", "medium"),
+                reasoning=s.get("reasoning", ""),
+                example_fix=s.get("example_fix", "")
+            ))
+
+        return ChapterAnalysis(
+            overall_assessment=data.get("overall_assessment", ""),
+            strengths=data.get("strengths", []),
+            areas_for_improvement=data.get("areas_for_improvement", []),
+            line_item_suggestions=suggestions,
+            pacing_notes=data.get("pacing_notes", ""),
+            character_consistency_notes=data.get("character_consistency_notes", ""),
+            estimated_cost=data.get("estimated_cost", 0.0)
+        )
+
+    def _display_analysis(self, analysis: ChapterAnalysis):
+        """Display a ChapterAnalysis in the results area."""
+        # Check if this is line-by-line (has line numbers) or general analysis
+        has_line_numbers = any(
+            s.line_number and s.line_number > 0
+            for s in analysis.line_item_suggestions
+        )
+
+        if has_line_numbers:
+            # Display as line-by-line analysis
+            html = self._format_line_by_line_html(analysis.line_item_suggestions)
+        else:
+            # Display as general analysis
+            html = self._format_analysis_html(analysis)
+
+        self.results_display.setHtml(html)
+
     def _export_critique(self):
         """Export critique results to file."""
         if not self._last_analysis:
@@ -949,9 +1432,12 @@ class GraderWidget(QWidget):
 
     def _get_quick_stats(self):
         """Get quick local statistics (ProWritingAid-style analysis without AI)."""
-        # Get content
+        # Refresh content from manuscript editor to ensure we have latest text
         content_type = self.type_combo.currentText()
+        if content_type != "Custom Text":
+            self._refresh_content()
 
+        # Get content
         if content_type == "Custom Text":
             text = self.custom_text_edit.toPlainText()
             if not text.strip():
@@ -1062,12 +1548,13 @@ class GraderWidget(QWidget):
             self.context_status_label.setText(f"✓ Saved for '{self._current_chapter_title}'")
 
     def _load_chapter_context(self):
-        """Load saved context for the current chapter."""
+        """Load saved context for the current chapter (or fallback to project context)."""
         self.context_status_label.setText("")
 
         if not self._project_path or not self._current_chapter_title:
             return
 
+        # First try chapter-specific context
         saved_data = self._metadata_store.get_context(
             self._project_path,
             self._current_chapter_title
@@ -1075,10 +1562,188 @@ class GraderWidget(QWidget):
 
         if saved_data and "context" in saved_data:
             self._set_context_from_dict(saved_data["context"])
-            self.context_status_label.setText("✓ Loaded saved context")
+            self.context_status_label.setText("✓ Loaded chapter context")
+            self.context_scope_combo.setCurrentIndex(0)  # Set to "This Chapter"
+            return
+
+        # Fallback to project-wide context
+        project_data = self._metadata_store.get_project_context(self._project_path)
+        if project_data and "context" in project_data:
+            self._set_context_from_dict(project_data["context"])
+            self.context_status_label.setText("✓ Using project context")
+            self.context_scope_combo.setCurrentIndex(1)  # Set to "Entire Project"
+            return
+
+        # No saved context - clear fields
+        self._clear_context_fields(silent=True)
+
+    def _on_context_scope_changed(self, index: int):
+        """Handle context scope combo box change."""
+        scope = self.context_scope_combo.currentData()
+        if scope == "chapter":
+            self.save_context_btn.setToolTip("Save this context for the current chapter")
+            self.load_context_btn.setToolTip("Load saved context for this chapter")
         else:
-            # Clear fields if no saved context
-            self._clear_context_fields(silent=True)
+            self.save_context_btn.setToolTip("Save this context for the entire project")
+            self.load_context_btn.setToolTip("Load saved project-wide context")
+
+    def _save_context(self):
+        """Save context based on current scope selection."""
+        scope = self.context_scope_combo.currentData()
+
+        if not self._project_path:
+            QMessageBox.warning(
+                self, "No Project",
+                "Please save your project first before saving context."
+            )
+            return
+
+        context = self._get_context_dict()
+
+        # Only save if there's actual content
+        if not any(v for v in context.values()):
+            self.context_status_label.setText("Nothing to save")
+            return
+
+        if scope == "chapter":
+            if not self._current_chapter_title:
+                QMessageBox.warning(
+                    self, "No Chapter",
+                    "Please select a chapter first, or choose 'Entire Project' scope."
+                )
+                return
+            self._metadata_store.save_context(
+                self._project_path,
+                self._current_chapter_title,
+                context
+            )
+            self.context_status_label.setText(f"✓ Saved for '{self._current_chapter_title}'")
+        else:
+            # Project-wide
+            self._metadata_store.save_project_context(self._project_path, context)
+            self.context_status_label.setText("✓ Saved as project-wide context")
+
+    def _load_context(self):
+        """Load context based on current scope selection."""
+        scope = self.context_scope_combo.currentData()
+
+        if not self._project_path:
+            QMessageBox.warning(
+                self, "No Project",
+                "Please open a project first."
+            )
+            return
+
+        if scope == "chapter":
+            if not self._current_chapter_title:
+                QMessageBox.warning(
+                    self, "No Chapter",
+                    "Please select a chapter first, or choose 'Entire Project' scope."
+                )
+                return
+            saved_data = self._metadata_store.get_context(
+                self._project_path,
+                self._current_chapter_title
+            )
+            if saved_data and "context" in saved_data:
+                self._set_context_from_dict(saved_data["context"])
+                self.context_status_label.setText(f"✓ Loaded context for '{self._current_chapter_title}'")
+            else:
+                self.context_status_label.setText("No saved chapter context found")
+        else:
+            # Project-wide
+            project_data = self._metadata_store.get_project_context(self._project_path)
+            if project_data and "context" in project_data:
+                self._set_context_from_dict(project_data["context"])
+                self.context_status_label.setText("✓ Loaded project-wide context")
+            else:
+                self.context_status_label.setText("No saved project context found")
+
+    def _import_from_chapter_planner(self):
+        """Import tone, voice, style from the current chapter's planner."""
+        if not self.project:
+            QMessageBox.warning(
+                self, "No Project",
+                "Please open a project first."
+            )
+            return
+
+        if not self._current_chapter_title:
+            QMessageBox.warning(
+                self, "No Chapter",
+                "Please select a chapter first."
+            )
+            return
+
+        # Find the chapter in the project manuscript
+        chapter = None
+        for ch in self.project.manuscript.chapters:
+            if ch.title == self._current_chapter_title:
+                chapter = ch
+                break
+
+        if not chapter:
+            self.context_status_label.setText("Chapter not found in project")
+            return
+
+        # Get planning data from chapter
+        planning_data = getattr(chapter, 'planning_data', {}) or {}
+
+        # Import available fields
+        imported = []
+
+        tone = planning_data.get('tone', '')
+        if tone:
+            self.tone_edit.setText(tone)
+            imported.append('tone')
+
+        voice = planning_data.get('voice', '')
+        if voice:
+            self.voice_edit.setText(voice)
+            imported.append('voice')
+
+        style = planning_data.get('style', '')
+        if style:
+            self.style_edit.setText(style)
+            imported.append('style')
+
+        # Import pacing as part of additional instructions if present
+        pacing = planning_data.get('pacing', '')
+        if pacing:
+            current_additional = self.additional_edit.toPlainText()
+            pacing_note = f"Pacing: {pacing}"
+            if current_additional and pacing_note not in current_additional:
+                self.additional_edit.setPlainText(f"{current_additional}\n{pacing_note}")
+            elif not current_additional:
+                self.additional_edit.setPlainText(pacing_note)
+            imported.append('pacing')
+
+        # Import POV character as part of characters if present
+        pov_char = planning_data.get('pov_character', '')
+        if pov_char:
+            current_chars = self.characters_edit.toPlainText()
+            pov_note = f"POV: {pov_char}"
+            if current_chars and pov_note not in current_chars:
+                self.characters_edit.setPlainText(f"{pov_note}\n{current_chars}")
+            elif not current_chars:
+                self.characters_edit.setPlainText(pov_note)
+            imported.append('POV character')
+
+        # Import featured characters
+        featured_chars = planning_data.get('characters_featured', [])
+        if featured_chars:
+            current_chars = self.characters_edit.toPlainText()
+            chars_text = ', '.join(featured_chars)
+            if current_chars and chars_text not in current_chars:
+                self.characters_edit.setPlainText(f"{current_chars}\nFeatured: {chars_text}")
+            elif not current_chars:
+                self.characters_edit.setPlainText(f"Featured: {chars_text}")
+            imported.append('characters')
+
+        if imported:
+            self.context_status_label.setText(f"✓ Imported: {', '.join(imported)}")
+        else:
+            self.context_status_label.setText("No planner metadata found for this chapter")
 
     def _clear_context_fields(self, silent: bool = False):
         """Clear all context input fields.
@@ -1105,11 +1770,21 @@ class GraderWidget(QWidget):
         """
         url_str = url.toString()
 
-        # Handle goto:line:N links
+        # Handle goto:line:N links (sentence-based navigation)
         if url_str.startswith("goto:line:"):
             try:
                 line_num = int(url_str.split(":")[-1])
                 self.go_to_line_requested.emit(line_num)
+            except ValueError:
+                pass
+
+        # Handle goto:para:N links (paragraph-based navigation)
+        elif url_str.startswith("goto:para:"):
+            try:
+                para_num = int(url_str.split(":")[-1])
+                # Emit with negative number to signal paragraph mode
+                # The receiver will handle this specially
+                self.go_to_line_requested.emit(-para_num)
             except ValueError:
                 pass
 
