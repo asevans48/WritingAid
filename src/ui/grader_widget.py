@@ -6,11 +6,11 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, TYPE_CHECKING
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QPushButton, QLabel, QTextEdit, QComboBox, QGroupBox,
+    QPushButton, QLabel, QTextEdit, QTextBrowser, QComboBox, QGroupBox,
     QMessageBox, QCheckBox, QLineEdit, QProgressBar,
     QScrollArea, QFileDialog
 )
-from PyQt6.QtCore import pyqtSignal, QThread, Qt
+from PyQt6.QtCore import pyqtSignal, QThread, Qt, QUrl
 
 from src.ai.chapter_analysis_agent import (
     ChapterAnalysisAgent, ChapterAnalysis, CritiqueContext,
@@ -256,6 +256,7 @@ class GraderWidget(QWidget):
     """Widget for comprehensive manuscript and chapter critique."""
 
     content_changed = pyqtSignal()
+    go_to_line_requested = pyqtSignal(int)  # Emits line number to navigate to
 
     def __init__(self):
         """Initialize grader widget."""
@@ -525,10 +526,11 @@ class GraderWidget(QWidget):
         results_group = QGroupBox("Critique Results")
         results_layout = QVBoxLayout()
 
-        self.results_display = QTextEdit()
-        self.results_display.setReadOnly(True)
+        self.results_display = QTextBrowser()
+        self.results_display.setOpenExternalLinks(False)  # Handle links ourselves
+        self.results_display.setOpenLinks(False)
+        self.results_display.anchorClicked.connect(self._handle_link_click)
         self.results_display.setMinimumHeight(300)
-        self.results_display.setPlaceholderText("Critique results will appear here...")
         results_layout.addWidget(self.results_display)
 
         # Export buttons
@@ -556,8 +558,9 @@ class GraderWidget(QWidget):
         """Set the project for accessing chapters."""
         self.project = project
         # Store project path for metadata storage
-        if project and hasattr(project, 'file_path') and project.file_path:
-            self._project_path = str(project.file_path)
+        # WriterProject uses 'project_path' to store the path to project.json
+        if project and hasattr(project, 'project_path') and project.project_path:
+            self._project_path = str(project.project_path)
         else:
             self._project_path = ""
 
@@ -768,12 +771,16 @@ class GraderWidget(QWidget):
             html += "<h2>Line-Item Suggestions</h2>"
             for suggestion in analysis.line_item_suggestions:
                 priority_class = f"priority-{suggestion.priority}"
+                example_html = ""
+                if suggestion.example_fix:
+                    example_html = f"<div style='background-color: #ecfdf5; padding: 8px; margin: 8px 0; border-radius: 4px; border-left: 3px solid #10b981;'><strong style='color: #059669;'>Example:</strong> <em>\"{suggestion.example_fix}\"</em></div>"
                 html += f"""
                 <div class='suggestion {priority_class}'>
                     <span class='type'>[{suggestion.suggestion_type.value.replace('_', ' ').title()}]</span>
                     <span style='float: right; font-size: 11px;'>Priority: {suggestion.priority.upper()}</span><br>
                     <span class='quote'>"{suggestion.original_text}"</span><br>
                     <strong>Suggestion:</strong> {suggestion.suggestion}<br>
+                    {example_html}
                     <em>Why:</em> {suggestion.explanation}
                 </div>
                 """
@@ -805,7 +812,9 @@ class GraderWidget(QWidget):
         <style>
             h2 { color: #1f2937; margin-top: 15px; margin-bottom: 8px; }
             .line-item { background-color: #f8fafc; padding: 12px; margin: 10px 0; border-radius: 6px; border: 1px solid #e2e8f0; }
-            .line-number { display: inline-block; background-color: #8b5cf6; color: white; padding: 2px 8px; border-radius: 4px; font-weight: bold; font-size: 12px; margin-right: 8px; }
+            .line-number { display: inline-block; background-color: #8b5cf6; color: white; padding: 2px 8px; border-radius: 4px; font-weight: bold; font-size: 12px; margin-right: 8px; cursor: pointer; }
+            .line-number:hover { background-color: #7c3aed; }
+            a.goto-link { color: white; text-decoration: none; }
             .issue-type { display: inline-block; background-color: #6366f1; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-left: 8px; }
             .priority-high { border-left: 4px solid #dc2626; }
             .priority-medium { border-left: 4px solid #f59e0b; }
@@ -830,14 +839,29 @@ class GraderWidget(QWidget):
             return html
 
         html += f"<h2>Line-by-Line Analysis</h2>"
-        html += f"<p style='color: #6b7280; font-size: 13px; margin-bottom: 15px;'>{len(suggestions)} line(s) flagged for potential revision</p>"
+        html += f"<p style='color: #6b7280; font-size: 13px; margin-bottom: 15px;'>{len(suggestions)} line(s) flagged for potential revision. Click line numbers to navigate.</p>"
 
         for suggestion in suggestions:
             priority_class = f"priority-{suggestion.priority}"
-            line_num_display = f"Line {suggestion.line_number}" if suggestion.line_number else "Section"
+            line_num = suggestion.line_number if suggestion.line_number else 0
+
+            # Make line number clickable
+            if line_num > 0:
+                line_num_display = f"<a href='goto:line:{line_num}' class='goto-link'>Line {line_num}</a>"
+            else:
+                line_num_display = "Section"
 
             # Get issue type display
             issue_type = suggestion.suggestion_type.value.replace('_', ' ').title()
+
+            example_html = ""
+            if suggestion.example_fix:
+                example_html = f"""
+                <div style='background-color: #ecfdf5; padding: 10px; margin: 8px 0; border-radius: 4px; border-left: 3px solid #10b981;'>
+                    <span style='color: #059669; font-weight: bold;'>Example revision:</span><br>
+                    <em style='color: #065f46;'>"{suggestion.example_fix}"</em>
+                </div>
+                """
 
             html += f"""
             <div class='line-item {priority_class}'>
@@ -855,6 +879,7 @@ class GraderWidget(QWidget):
                 <div class='suggestion-text'>
                     <span class='suggestion-label'>Consider:</span> {suggestion.suggestion}
                 </div>
+                {example_html}
             </div>
             """
 
@@ -909,6 +934,8 @@ class GraderWidget(QWidget):
                 md += f"### [{suggestion.suggestion_type.value.replace('_', ' ').title()}] - {suggestion.priority.upper()} priority\n\n"
                 md += f"> \"{suggestion.original_text}\"\n\n"
                 md += f"**Suggestion:** {suggestion.suggestion}\n\n"
+                if suggestion.example_fix:
+                    md += f"**Example revision:** \"{suggestion.example_fix}\"\n\n"
                 md += f"*Why:* {suggestion.explanation}\n\n"
                 md += "---\n\n"
 
@@ -1069,6 +1096,22 @@ class GraderWidget(QWidget):
 
         if not silent:
             self.context_status_label.setText("Cleared")
+
+    def _handle_link_click(self, url: QUrl):
+        """Handle clicks on links in the results display.
+
+        Args:
+            url: The clicked URL
+        """
+        url_str = url.toString()
+
+        # Handle goto:line:N links
+        if url_str.startswith("goto:line:"):
+            try:
+                line_num = int(url_str.split(":")[-1])
+                self.go_to_line_requested.emit(line_num)
+            except ValueError:
+                pass
 
     def load_data(self, data):
         """Load grader data (placeholder for future use)."""

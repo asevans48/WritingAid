@@ -460,6 +460,9 @@ class MainWindow(QMainWindow):
         self.agent_manager = AgentManagerWidget()
         self.attributions_tab = AttributionsTab()
 
+        # Connect grader widget signals
+        self.grader_widget.go_to_line_requested.connect(self._go_to_critique_line)
+
         # Connect attributions tab jump signal
         self.attributions_tab.jump_to_annotation.connect(self._jump_to_annotation)
 
@@ -1669,6 +1672,81 @@ class MainWindow(QMainWindow):
                     if annotation:
                         self.manuscript_editor.current_chapter_editor._jump_to_line(annotation.line_number)
                 break
+
+    def _go_to_critique_line(self, sentence_number: int):
+        """Navigate to a specific sentence from critique feedback.
+
+        Args:
+            sentence_number: The sentence number (1-indexed) from the critique
+        """
+        import re
+
+        # Switch to Write tab
+        self.tab_widget.setCurrentWidget(self.manuscript_editor)
+
+        # Get current chapter editor
+        if not self.manuscript_editor.current_chapter_editor:
+            return
+
+        editor = self.manuscript_editor.current_chapter_editor.editor
+        if not editor:
+            return
+
+        # Get the chapter text
+        text = editor.toPlainText()
+        if not text:
+            return
+
+        # Split into sentences the same way the critique does
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        sentences = [s.strip() for s in sentences if s.strip()]
+
+        # Get the target sentence (1-indexed)
+        if sentence_number < 1 or sentence_number > len(sentences):
+            return
+
+        target_sentence = sentences[sentence_number - 1]
+
+        # Find the position of this sentence in the text
+        # We need to find the Nth sentence occurrence
+        position = 0
+        current_sentence = 0
+        for match in re.finditer(r'[^.!?]*[.!?]', text):
+            sentence_text = match.group().strip()
+            if sentence_text:
+                current_sentence += 1
+                if current_sentence == sentence_number:
+                    position = match.start()
+                    break
+
+        # If regex approach didn't work, try direct search
+        if position == 0 and sentence_number > 1:
+            # Find by counting sentences
+            pos = 0
+            for i in range(sentence_number - 1):
+                if i < len(sentences):
+                    found = text.find(sentences[i], pos)
+                    if found >= 0:
+                        pos = found + len(sentences[i])
+            position = text.find(target_sentence, pos)
+
+        # Move cursor to the sentence and select it
+        cursor = editor.textCursor()
+        cursor.setPosition(position)
+        cursor.movePosition(cursor.MoveOperation.EndOfBlock, cursor.MoveMode.KeepAnchor)
+
+        # Try to select the whole sentence
+        end_pos = position + len(target_sentence)
+        if end_pos <= len(text):
+            cursor.setPosition(position)
+            cursor.setPosition(end_pos, cursor.MoveMode.KeepAnchor)
+
+        editor.setTextCursor(cursor)
+        editor.centerCursor()
+        editor.setFocus()
+
+        # Show a brief status message
+        self.statusBar().showMessage(f"Navigated to sentence {sentence_number}", 3000)
 
     def _toggle_multi_window_mode(self, checked: bool):
         """Toggle multi-window mode on/off."""

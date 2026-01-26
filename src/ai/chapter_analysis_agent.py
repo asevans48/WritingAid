@@ -68,6 +68,7 @@ class LineItemSuggestion:
     explanation: str  # Why this matters (reasoning)
     priority: str  # "high", "medium", "low"
     reasoning: str = ""  # Detailed reasoning for the edit (separate from brief explanation)
+    example_fix: str = ""  # Example of how the text could be revised
 
 
 @dataclass
@@ -174,6 +175,7 @@ For each suggestion:
 - Identify the issue type
 - Explain why this hurts publishability
 - Suggest an improvement approach (not a rewrite)
+- Provide an example fix showing one possible revision
 - Rate priority: high/medium/low
 """
 
@@ -252,6 +254,7 @@ LINE [number]: "[exact line text]"
 ISSUE: [Show-Don't-Tell/Transition/Voice/Cliché/Filter Words/POV/Pacing/Style]
 REASONING: [Why this specific issue hurts publishability]
 SUGGESTION: [What to consider - frame as "Consider..." - NOT a rewrite]
+EXAMPLE: [One possible revision showing how this could be fixed - keep the author's voice]
 PRIORITY: [high/medium/low]
 
 ---
@@ -416,6 +419,7 @@ For each suggestion, provide:
 - Quote: "[relevant text]"
 - Type: [issue type]
 - Suggestion: [what to improve]
+- Example: [one possible revision of the quoted text]
 - Why: [explanation]
 - Priority: [high/medium/low]
 
@@ -528,71 +532,65 @@ Provide your line-by-line feedback now. Use the format specified in your instruc
         import re
         suggestions = []
 
-        # Split by line entries (LINE [number])
-        # Pattern matches "LINE 1:", "LINE 23:", etc.
-        line_pattern = re.compile(
-            r'LINE\s*(\d+)[:\s]*["\u201c]?([^"\u201d\n]+)["\u201d]?\s*'
-            r'(?:ISSUE[:\s]*([^\n]+))?\s*'
-            r'(?:REASONING[:\s]*([^\n]+(?:\n(?!LINE|ISSUE|SUGGESTION|PRIORITY)[^\n]+)*))?\s*'
-            r'(?:SUGGESTION[:\s]*([^\n]+(?:\n(?!LINE|ISSUE|REASONING|PRIORITY)[^\n]+)*))?\s*'
-            r'(?:PRIORITY[:\s]*(\w+))?',
-            re.IGNORECASE | re.MULTILINE
-        )
+        # Try multiple patterns to split into blocks
+        # Pattern 1: LINE [number] format
+        # Pattern 2: Numbered list format (1., 2., etc.)
+        # Pattern 3: Separator lines (---)
 
-        for match in line_pattern.finditer(response):
+        # First try LINE format
+        line_blocks = re.split(r'(?=LINE\s*\d+)', response, flags=re.IGNORECASE)
+
+        # If that doesn't work well, try separator-based splitting
+        if len(line_blocks) <= 1:
+            line_blocks = re.split(r'\n---+\n|\n\n(?=\d+\.|\[)', response)
+
+        for block in line_blocks:
+            block = block.strip()
+            if not block:
+                continue
+
+            # Try multiple patterns to extract line number
+            line_num = None
+            quoted_text = ""
+
+            # Pattern 1: LINE [number]: "text" or LINE [number]
+            line_match = re.search(r'LINE\s*(\d+)[:\s]*["\u201c]?([^"\u201d\n]*)["\u201d]?', block, re.IGNORECASE)
+            if line_match:
+                line_num = int(line_match.group(1))
+                quoted_text = line_match.group(2).strip() if line_match.group(2) else ""
+
+            # Pattern 2: Just a number at start (e.g., "3. ")
+            if line_num is None:
+                num_match = re.match(r'^(\d+)\.\s', block)
+                if num_match:
+                    line_num = int(num_match.group(1))
+
+            # Pattern 3: Look for "Line X" anywhere in the block
+            if line_num is None:
+                line_ref = re.search(r'[Ll]ine\s+(\d+)', block)
+                if line_ref:
+                    line_num = int(line_ref.group(1))
+
+            if line_num is None:
+                continue
+
             try:
-                line_num = int(match.group(1))
-                quoted_text = match.group(2).strip() if match.group(2) else ""
-                issue_type = match.group(3).strip() if match.group(3) else "General"
-                reasoning = match.group(4).strip() if match.group(4) else ""
-                suggestion = match.group(5).strip() if match.group(5) else ""
-                priority = match.group(6).strip().lower() if match.group(6) else "medium"
+                # Parse fields using simple line-by-line extraction
+                issue_type = self._extract_field(block, 'ISSUE')
+                reasoning = self._extract_field(block, 'REASONING')
+                suggestion = self._extract_field(block, 'SUGGESTION')
+                example_fix = self._extract_field(block, 'EXAMPLE')
+                priority = self._extract_field(block, 'PRIORITY').lower()
 
-                # Get original text if we have it
-                original_text = quoted_text
+                # ALWAYS use original sentence from the array if we have a valid line number
+                # This ensures we show the actual text even if LLM didn't quote it
                 if 0 < line_num <= len(original_sentences):
                     original_text = original_sentences[line_num - 1]
+                else:
+                    original_text = quoted_text or f"[Line {line_num} - text not available]"
 
                 # Map issue type to SuggestionType
-                issue_lower = issue_type.lower()
-                if 'show' in issue_lower or 'tell' in issue_lower:
-                    stype = SuggestionType.SHOW_DONT_TELL
-                elif 'clich' in issue_lower:  # cliche, cliché
-                    stype = SuggestionType.CLICHE
-                elif 'filter' in issue_lower:
-                    stype = SuggestionType.FILTER_WORDS
-                elif 'transition' in issue_lower:
-                    stype = SuggestionType.TRANSITION
-                elif 'pov' in issue_lower or 'point of view' in issue_lower or 'head-hop' in issue_lower or 'headhop' in issue_lower:
-                    stype = SuggestionType.POV
-                elif 'adverb' in issue_lower:
-                    stype = SuggestionType.ADVERB
-                elif 'passive' in issue_lower:
-                    stype = SuggestionType.PASSIVE_VOICE
-                elif 'info' in issue_lower and 'dump' in issue_lower:
-                    stype = SuggestionType.INFO_DUMP
-                elif 'style' in issue_lower:
-                    stype = SuggestionType.STYLE
-                elif 'tone' in issue_lower:
-                    stype = SuggestionType.TONE
-                elif 'voice' in issue_lower:
-                    stype = SuggestionType.VOICE
-                elif 'plot' in issue_lower:
-                    stype = SuggestionType.PLOT
-                elif 'world' in issue_lower:
-                    stype = SuggestionType.WORLDBUILDING
-                elif 'pacing' in issue_lower:
-                    stype = SuggestionType.PACING
-                elif 'word' in issue_lower or 'choice' in issue_lower:
-                    stype = SuggestionType.WORD_CHOICE
-                elif 'character' in issue_lower:
-                    stype = SuggestionType.CHARACTER_VOICE
-                elif 'tension' in issue_lower:
-                    stype = SuggestionType.TENSION
-                elif 'clarity' in issue_lower:
-                    stype = SuggestionType.CLARITY
-                else:
-                    stype = SuggestionType.STYLE
+                stype = self._map_issue_to_type(issue_type)
 
                 # Normalize priority
                 if priority not in ['high', 'medium', 'low']:
@@ -606,10 +604,80 @@ Provide your line-by-line feedback now. Use the format specified in your instruc
                     suggestion=suggestion,
                     explanation=issue_type,  # Brief issue type
                     priority=priority,
-                    reasoning=reasoning  # Detailed reasoning
+                    reasoning=reasoning,
+                    example_fix=example_fix
                 ))
             except (ValueError, IndexError):
                 continue
+
+        return suggestions
+
+    def _extract_field(self, block: str, field_name: str) -> str:
+        """Extract a field value from a text block.
+
+        Args:
+            block: The text block to search
+            field_name: The field name to extract (e.g., 'ISSUE', 'SUGGESTION')
+
+        Returns:
+            The extracted value or empty string
+        """
+        import re
+        # Match field_name followed by colon and capture until next field or end
+        pattern = rf'{field_name}[:\s]*([^\n]+(?:\n(?!LINE|ISSUE|REASONING|SUGGESTION|EXAMPLE|PRIORITY)[^\n]+)*)'
+        match = re.search(pattern, block, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+        return ""
+
+    def _map_issue_to_type(self, issue_type: str) -> SuggestionType:
+        """Map an issue type string to a SuggestionType enum.
+
+        Args:
+            issue_type: The issue type string from the LLM response
+
+        Returns:
+            The corresponding SuggestionType
+        """
+        issue_lower = issue_type.lower()
+        if 'show' in issue_lower or 'tell' in issue_lower:
+            return SuggestionType.SHOW_DONT_TELL
+        elif 'clich' in issue_lower:  # cliche, cliché
+            return SuggestionType.CLICHE
+        elif 'filter' in issue_lower:
+            return SuggestionType.FILTER_WORDS
+        elif 'transition' in issue_lower:
+            return SuggestionType.TRANSITION
+        elif 'pov' in issue_lower or 'point of view' in issue_lower or 'head-hop' in issue_lower or 'headhop' in issue_lower:
+            return SuggestionType.POV
+        elif 'adverb' in issue_lower:
+            return SuggestionType.ADVERB
+        elif 'passive' in issue_lower:
+            return SuggestionType.PASSIVE_VOICE
+        elif 'info' in issue_lower and 'dump' in issue_lower:
+            return SuggestionType.INFO_DUMP
+        elif 'style' in issue_lower:
+            return SuggestionType.STYLE
+        elif 'tone' in issue_lower:
+            return SuggestionType.TONE
+        elif 'voice' in issue_lower:
+            return SuggestionType.VOICE
+        elif 'plot' in issue_lower:
+            return SuggestionType.PLOT
+        elif 'world' in issue_lower:
+            return SuggestionType.WORLDBUILDING
+        elif 'pacing' in issue_lower:
+            return SuggestionType.PACING
+        elif 'word' in issue_lower or 'choice' in issue_lower:
+            return SuggestionType.WORD_CHOICE
+        elif 'character' in issue_lower:
+            return SuggestionType.CHARACTER_VOICE
+        elif 'tension' in issue_lower:
+            return SuggestionType.TENSION
+        elif 'clarity' in issue_lower:
+            return SuggestionType.CLARITY
+        else:
+            return SuggestionType.STYLE
 
         return suggestions
 
@@ -802,7 +870,8 @@ Be brief and specific.
             original_text=data.get("quote", "")[:200],
             suggestion=data.get("suggestion", ""),
             explanation=data.get("why", ""),
-            priority=data.get("priority", "medium")
+            priority=data.get("priority", "medium"),
+            example_fix=data.get("example", "")
         )
 
     def _parse_chapter_analysis(
@@ -867,6 +936,8 @@ Be brief and specific.
                 current_item["type"] = line.split('Type:')[1].strip()
             elif 'Suggestion:' in line:
                 current_item["suggestion"] = line.split('Suggestion:')[1].strip()
+            elif 'Example:' in line:
+                current_item["example"] = line.split('Example:')[1].strip(' "')
             elif 'Why:' in line:
                 current_item["why"] = line.split('Why:')[1].strip()
             elif 'Priority:' in line:
