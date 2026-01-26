@@ -200,6 +200,8 @@ python main.py
 
 ### Using AI Features
 
+**📘 For detailed AI usage guide with 100+ example queries, see [AI_AGENTS_GUIDE.md](AI_AGENTS_GUIDE.md)**
+
 #### Configure AI Provider
 1. Go to **Settings** → **AI Settings**
 2. Enter your API key for your preferred provider (Claude, OpenAI, Gemini)
@@ -325,6 +327,15 @@ sudo apt-get install default-jre
 ```
 
 ## 📖 Documentation
+
+### AI Agents Guide
+
+**📘 See [AI_AGENTS_GUIDE.md](AI_AGENTS_GUIDE.md) for comprehensive documentation on:**
+- All AI modes (General, Chapter Focus, Writer, Planning)
+- Example queries for every agent
+- Best practices and troubleshooting
+- Cost optimization strategies
+- TTS features and multi-speaker synthesis
 
 ### Project Structure
 ```
