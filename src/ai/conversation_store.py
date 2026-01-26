@@ -57,6 +57,20 @@ class ConversationMetadata(BaseModel):
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
 
+    # Writing style parameters (critical for learning author's voice)
+    tone: Optional[str] = None  # e.g., "dark and brooding", "lighthearted", "tense"
+    voice: Optional[str] = None  # e.g., "sardonic", "lyrical", "matter-of-fact"
+    writing_style: Optional[str] = None  # e.g., "short punchy sentences", "flowery descriptions"
+    pacing: Optional[str] = None  # e.g., "slow build", "rapid-fire action", "contemplative"
+
+    # POV parameters (for narrative consistency)
+    narrative_pov: Optional[str] = None  # first_person, third_person_limited, etc.
+    character_pov: Optional[str] = None  # Which character's perspective
+
+    # Chapter context (for chapter-specific work)
+    chapter_title: Optional[str] = None
+    chapter_number: Optional[int] = None
+
     # Additional context tags
     tags: List[str] = Field(default_factory=list)
 

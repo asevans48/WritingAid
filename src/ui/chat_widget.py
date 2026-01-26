@@ -107,6 +107,18 @@ class ChatWidget(QWidget):
         self._project_name: Optional[str] = None
         self._ai_config = get_ai_config()
 
+        # Chapter/writing context for style metadata
+        self._chapter_context: Dict[str, any] = {
+            'tone': None,
+            'voice': None,
+            'style': None,
+            'pacing': None,
+            'narrative_pov': None,
+            'character_pov': None,
+            'chapter_title': None,
+            'chapter_number': None
+        }
+
         self._init_ui()
 
     def _init_ui(self):
@@ -566,13 +578,14 @@ class ChatWidget(QWidget):
             insert_mode = self.get_insert_mode() if self._current_mode == ChatMode.WRITER else ""
             self.message_sent.emit(message, self._current_mode.value, insert_mode)
 
-    def add_message(self, sender: str, message: str, system_prompt: Optional[str] = None):
+    def add_message(self, sender: str, message: str, system_prompt: Optional[str] = None, original_response: Optional[str] = None):
         """Add message to chat history with modern bubble styling.
 
         Args:
             sender: "You" for user, "Assistant" for AI
-            message: The message content
+            message: The message content (may be cleaned for display)
             system_prompt: Optional system prompt (for AI responses)
+            original_response: Optional original AI response WITH tool calls (for training data)
         """
         is_user = sender == "You"
 
@@ -593,9 +606,14 @@ class ChatWidget(QWidget):
                         "content": system_prompt
                     })
 
+            # CRITICAL: Save the ORIGINAL response with tool calls for training
+            # If original_response is provided, use it; otherwise use the display message
+            # This preserves creation blocks like <create_character>...</create_character>
+            training_content = original_response if original_response else message
+
             self._current_conversation.append({
                 "role": "assistant",
-                "content": message
+                "content": training_content
             })
 
         # Different styling for user vs AI
@@ -673,6 +691,70 @@ class ChatWidget(QWidget):
         """
         self._project_name = project_name
 
+    def set_chapter_context(self, chapter_planning=None, chapter_title: str = None, chapter_number: int = None):
+        """Set chapter context for style/voice metadata in training data.
+
+        Args:
+            chapter_planning: ChapterPlanning object with tone, voice, style, pacing
+            chapter_title: Current chapter title
+            chapter_number: Current chapter number
+        """
+        # Reset context
+        self._chapter_context = {
+            'tone': None,
+            'voice': None,
+            'style': None,
+            'pacing': None,
+            'narrative_pov': None,
+            'character_pov': None,
+            'chapter_title': chapter_title,
+            'chapter_number': chapter_number
+        }
+
+        # Extract from chapter planning if provided
+        if chapter_planning:
+            if hasattr(chapter_planning, 'tone') and chapter_planning.tone:
+                self._chapter_context['tone'] = chapter_planning.tone
+            if hasattr(chapter_planning, 'voice') and chapter_planning.voice:
+                self._chapter_context['voice'] = chapter_planning.voice
+            if hasattr(chapter_planning, 'style') and chapter_planning.style:
+                self._chapter_context['style'] = chapter_planning.style
+            if hasattr(chapter_planning, 'pacing') and chapter_planning.pacing:
+                self._chapter_context['pacing'] = chapter_planning.pacing
+            if hasattr(chapter_planning, 'pov_character') and chapter_planning.pov_character:
+                self._chapter_context['character_pov'] = chapter_planning.pov_character
+
+    def _build_context_tags(self) -> List[str]:
+        """Build list of context tags for training data categorization.
+
+        Returns:
+            List of tags describing this conversation context
+        """
+        tags = []
+
+        # Add mode tag
+        tags.append(f"mode:{self._current_mode.value}")
+
+        # Add style tags if present
+        if self._chapter_context.get('tone'):
+            tags.append(f"tone:{self._chapter_context['tone'][:20]}")  # Truncate long values
+        if self._chapter_context.get('voice'):
+            tags.append(f"voice:{self._chapter_context['voice'][:20]}")
+        if self._chapter_context.get('pacing'):
+            tags.append(f"pacing:{self._chapter_context['pacing'][:20]}")
+
+        # Add POV tags
+        if self._chapter_context.get('narrative_pov'):
+            tags.append(f"pov:{self._chapter_context['narrative_pov']}")
+        if self._chapter_context.get('character_pov'):
+            tags.append(f"character:{self._chapter_context['character_pov']}")
+
+        # Add chapter tag if applicable
+        if self._chapter_context.get('chapter_number'):
+            tags.append(f"chapter:{self._chapter_context['chapter_number']}")
+
+        return tags
+
     def _hide_rating_widget(self):
         """Hide the rating widget (skip rating)."""
         self.rating_widget.setVisible(False)
@@ -694,6 +776,11 @@ class ChatWidget(QWidget):
 
         # Create metadata for this conversation
         settings = self._ai_config.get_settings()
+
+        # Get current writer settings (POV)
+        writer_settings = self.get_writer_settings()
+
+        # Build comprehensive metadata including style/voice parameters
         metadata = ConversationMetadata(
             project_name=self._project_name or "Unknown Project",
             task_type=self._current_mode.value,  # general, chapter_focus, writer
@@ -701,6 +788,23 @@ class ChatWidget(QWidget):
             model_name=self._ai_config.get_model(settings.get("default_llm", "claude")),
             temperature=settings.get("temperature", 0.7),
             max_tokens=settings.get("max_tokens", 2000),
+
+            # Style parameters (critical for learning author's voice)
+            tone=self._chapter_context.get('tone'),
+            voice=self._chapter_context.get('voice'),
+            writing_style=self._chapter_context.get('style'),
+            pacing=self._chapter_context.get('pacing'),
+
+            # POV parameters (for narrative consistency)
+            narrative_pov=self._chapter_context.get('narrative_pov') or writer_settings.get('writing_pov'),
+            character_pov=self._chapter_context.get('character_pov') or writer_settings.get('character_pov'),
+
+            # Chapter context
+            chapter_title=self._chapter_context.get('chapter_title'),
+            chapter_number=self._chapter_context.get('chapter_number'),
+
+            # Add task-specific tags
+            tags=self._build_context_tags()
         )
 
         # Create conversation from tracked messages

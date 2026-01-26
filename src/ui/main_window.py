@@ -1458,6 +1458,31 @@ class MainWindow(QMainWindow):
         self._pending_insert_mode = insert_mode if mode == "writer" else ""
         self._pending_mode = mode
 
+        # Set chapter context for training data metadata (style/voice/tone)
+        # This captures the author's intended style for this specific work
+        if mode in ("chapter_focus", "writer") and hasattr(self, 'manuscript_editor'):
+            chapter_planning = None
+            chapter_title = None
+            chapter_number = None
+
+            if self.manuscript_editor.current_chapter_editor:
+                chapter = self.manuscript_editor.current_chapter_editor.chapter
+                if hasattr(chapter, 'planning') and chapter.planning:
+                    chapter_planning = chapter.planning
+                if hasattr(chapter, 'title'):
+                    chapter_title = chapter.title
+                if hasattr(chapter, 'number'):
+                    chapter_number = chapter.number
+
+            self.chat_widget.set_chapter_context(
+                chapter_planning=chapter_planning,
+                chapter_title=chapter_title,
+                chapter_number=chapter_number
+            )
+        else:
+            # Clear chapter context for general mode
+            self.chat_widget.set_chapter_context()
+
         # Show thinking indicator based on mode
         if mode == "writer":
             self.chat_widget.add_message("Assistant", "Writing...")
@@ -1654,7 +1679,7 @@ class MainWindow(QMainWindow):
         """Handle successful AI response.
 
         Args:
-            response: The AI's response text
+            response: The AI's response text (original, with tool calls)
             system_prompt: The system prompt used for this response
         """
         # Check if this was a writer mode request
@@ -1664,8 +1689,14 @@ class MainWindow(QMainWindow):
             # Check for and handle element creation blocks in general mode
             display_response, created_elements = self._parse_and_create_elements(response)
 
-            # Show the conversational part of the response (with system prompt for training)
-            self.chat_widget.add_message("Assistant", display_response, system_prompt=system_prompt)
+            # Show the conversational part of the response
+            # IMPORTANT: Pass BOTH display_response (for UI) AND original response (for training with tool calls)
+            self.chat_widget.add_message(
+                "Assistant",
+                display_response,
+                system_prompt=system_prompt,
+                original_response=response  # Preserve tool calls for training data
+            )
 
             # If elements were created, show confirmation and refresh UI
             if created_elements:
