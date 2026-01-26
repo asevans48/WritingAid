@@ -2,10 +2,19 @@
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QLineEdit,
-    QPushButton, QLabel, QFrame, QComboBox
+    QPushButton, QLabel, QFrame, QComboBox, QToolButton
 )
 from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtGui import QIcon
 from enum import Enum
+from typing import List, Dict, Optional
+from datetime import datetime
+from src.ai.conversation_store import (
+    ConversationStore, RatedConversation, ConversationMessage,
+    ConversationMetadata, ConversationRating, MessageRole,
+    create_conversation_from_messages
+)
+from src.config import get_ai_config
 
 
 class ChatMode(Enum):
@@ -89,6 +98,15 @@ class ChatWidget(QWidget):
         self._current_mode = ChatMode.GENERAL
         self._insert_mode = WriterInsertMode.INSERT_AT_CURSOR
         self._has_selection = False  # Track if editor has selection
+
+        # Conversation tracking for training data collection
+        self._conversation_store = ConversationStore()
+        self._current_conversation: List[Dict[str, str]] = []
+        self._system_prompt: Optional[str] = None
+        self._last_response_id: Optional[str] = None  # Track last AI response for rating
+        self._project_name: Optional[str] = None
+        self._ai_config = get_ai_config()
+
         self._init_ui()
 
     def _init_ui(self):
@@ -352,6 +370,82 @@ class ChatWidget(QWidget):
         """)
         content_layout.addWidget(self.input_field)
 
+        # Rating widget (hidden by default, shown after AI responses)
+        self.rating_widget = QFrame()
+        self.rating_widget.setStyleSheet("""
+            QFrame {
+                background-color: #f3f4f6;
+                border: 1px solid #e5e7eb;
+                border-radius: 6px;
+                padding: 4px;
+            }
+        """)
+        rating_layout = QHBoxLayout(self.rating_widget)
+        rating_layout.setContentsMargins(8, 4, 8, 4)
+        rating_layout.setSpacing(6)
+
+        rating_label = QLabel("Rate this response:")
+        rating_label.setStyleSheet("color: #6b7280; font-size: 11px;")
+        rating_layout.addWidget(rating_label)
+
+        self.rating_excellent_btn = QPushButton("⭐ Excellent")
+        self.rating_excellent_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #10b981;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 4px 10px;
+                font-size: 11px;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: #059669;
+            }
+        """)
+        self.rating_excellent_btn.clicked.connect(lambda: self._rate_response(ConversationRating.EXCELLENT))
+        rating_layout.addWidget(self.rating_excellent_btn)
+
+        self.rating_good_btn = QPushButton("👍 Good")
+        self.rating_good_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3b82f6;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 4px 10px;
+                font-size: 11px;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: #2563eb;
+            }
+        """)
+        self.rating_good_btn.clicked.connect(lambda: self._rate_response(ConversationRating.GOOD))
+        rating_layout.addWidget(self.rating_good_btn)
+
+        self.rating_skip_btn = QPushButton("Skip")
+        self.rating_skip_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #6b7280;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 4px 10px;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #4b5563;
+            }
+        """)
+        self.rating_skip_btn.clicked.connect(self._hide_rating_widget)
+        rating_layout.addWidget(self.rating_skip_btn)
+
+        rating_layout.addStretch()
+
+        self.rating_widget.setVisible(False)  # Hidden by default
+        content_layout.addWidget(self.rating_widget)
+
         # Send button with modern styling
         send_button = QPushButton("Send")
         send_button.setStyleSheet("""
@@ -472,9 +566,37 @@ class ChatWidget(QWidget):
             insert_mode = self.get_insert_mode() if self._current_mode == ChatMode.WRITER else ""
             self.message_sent.emit(message, self._current_mode.value, insert_mode)
 
-    def add_message(self, sender: str, message: str):
-        """Add message to chat history with modern bubble styling."""
+    def add_message(self, sender: str, message: str, system_prompt: Optional[str] = None):
+        """Add message to chat history with modern bubble styling.
+
+        Args:
+            sender: "You" for user, "Assistant" for AI
+            message: The message content
+            system_prompt: Optional system prompt (for AI responses)
+        """
         is_user = sender == "You"
+
+        # Track message for training data collection
+        if is_user:
+            # User message
+            self._current_conversation.append({
+                "role": "user",
+                "content": message
+            })
+        else:
+            # AI response - also track system prompt if provided
+            if system_prompt:
+                # Add system message at start if not already present
+                if not self._current_conversation or self._current_conversation[0].get("role") != "system":
+                    self._current_conversation.insert(0, {
+                        "role": "system",
+                        "content": system_prompt
+                    })
+
+            self._current_conversation.append({
+                "role": "assistant",
+                "content": message
+            })
 
         # Different styling for user vs AI
         if is_user:
@@ -483,6 +605,14 @@ class ChatWidget(QWidget):
         else:
             bubble_style = "background-color: white; color: #1a1a1a; border: 1px solid #e5e7eb; border-radius: 12px 12px 12px 4px; padding: 8px 12px; margin: 4px 40px 4px 0; display: inline-block;"
             formatted = f'<div style="text-align: left;"><span style="{bubble_style}"><strong style="color: #6366f1;">AI:</strong> {message}</span></div>'
+
+            # Check if training is enabled to show rating widget
+            settings = self._ai_config.get_settings()
+            enable_training = settings.get("enable_conversation_collection", False)
+
+            if enable_training:
+                # Show rating widget for user to rate this response
+                self.rating_widget.setVisible(True)
 
         self.chat_history.append(formatted)
 
@@ -534,3 +664,77 @@ class ChatWidget(QWidget):
             "character_pov": self.get_character_pov(),
             "writing_pov": self.get_writing_pov()
         }
+
+    def set_project_name(self, project_name: str):
+        """Set the current project name for training data metadata.
+
+        Args:
+            project_name: Name of the current project
+        """
+        self._project_name = project_name
+
+    def _hide_rating_widget(self):
+        """Hide the rating widget (skip rating)."""
+        self.rating_widget.setVisible(False)
+        # Clear current conversation without saving
+        self._current_conversation = []
+
+    def _rate_response(self, rating: ConversationRating):
+        """Rate the current AI response and save to training data.
+
+        Args:
+            rating: The rating to assign (EXCELLENT or GOOD typically)
+        """
+        if not self._current_conversation:
+            print("No conversation to rate")
+            return
+
+        # Hide rating widget
+        self.rating_widget.setVisible(False)
+
+        # Create metadata for this conversation
+        settings = self._ai_config.get_settings()
+        metadata = ConversationMetadata(
+            project_name=self._project_name or "Unknown Project",
+            task_type=self._current_mode.value,  # general, chapter_focus, writer
+            provider=settings.get("default_llm", "claude"),
+            model_name=self._ai_config.get_model(settings.get("default_llm", "claude")),
+            temperature=settings.get("temperature", 0.7),
+            max_tokens=settings.get("max_tokens", 2000),
+        )
+
+        # Create conversation from tracked messages
+        conversation = create_conversation_from_messages(
+            messages=self._current_conversation,
+            metadata=metadata
+        )
+
+        # Rate it
+        conversation.rating = rating
+        conversation.rated_at = datetime.now()
+
+        # Save to store
+        try:
+            conv_id = self._conversation_store.add_conversation(conversation)
+            print(f"Saved rated conversation {conv_id} with rating: {rating.value}")
+
+            # Show feedback to user
+            self.chat_history.append(
+                f'<div style="text-align: center; color: #10b981; font-size: 11px; margin: 4px 0;">'
+                f'✓ Response rated as {rating.value.title()} and saved for training</div>'
+            )
+
+        except Exception as e:
+            print(f"Failed to save conversation: {e}")
+            self.chat_history.append(
+                f'<div style="text-align: center; color: #ef4444; font-size: 11px; margin: 4px 0;">'
+                f'Failed to save rating: {str(e)}</div>'
+            )
+
+        # Clear current conversation for next exchange
+        self._current_conversation = []
+
+    def clear_conversation(self):
+        """Clear the current conversation tracking (start fresh)."""
+        self._current_conversation = []
+        self.rating_widget.setVisible(False)

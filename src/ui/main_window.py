@@ -36,11 +36,13 @@ from src.export.llm_context_exporter import LLMContextExporter
 from src.ui.export_summary_dialog import ExportSummaryDialog
 from src.ui.styles import get_modern_style, get_icon
 from src.config import get_ai_config
+from src.ai.enhanced_rag import EnhancedRAGSystem
+from src.ai.semantic_search import SearchMethod
 
 
 class ChatWorker(QThread):
     """Background worker for AI chat operations with full project context."""
-    finished = pyqtSignal(str)
+    finished = pyqtSignal(str, str)  # response, system_prompt
     error = pyqtSignal(str)
 
     # System prompts for different modes
@@ -473,6 +475,23 @@ When asked to continue:
             if self.context.get('project_description'):
                 parts.append(f"Description: {self.context['project_description'][:300]}")
 
+        # For GENERAL mode: Use RAG-enhanced semantic context if available
+        # This provides BOTH creation and discussion capabilities with relevant context
+        if self.mode == "general" and self.context.get('rag_context'):
+            parts.append(f"\n{'='*60}")
+            parts.append("RELEVANT PROJECT CONTEXT (Semantic Search):")
+            parts.append(f"{'='*60}")
+            parts.append(self.context['rag_context'])
+
+            # Add plot summary if available for broader context
+            if self.context.get('plot_summary'):
+                parts.append(f"\nPLOT OVERVIEW:\n{self.context['plot_summary']}")
+
+            # Return early - RAG context has all relevant details
+            return "\n".join(parts) if parts else ""
+
+        # For other modes: Continue with standard comprehensive context
+
         # Plot/Story planning
         if self.context.get('plot_summary'):
             parts.append(f"\nPLOT OUTLINE:\n{self.context['plot_summary'][:2000]}")
@@ -673,7 +692,7 @@ When asked to continue:
                 temperature=settings.get("temperature", 0.7)
             )
 
-            self.finished.emit(response)
+            self.finished.emit(response, system_prompt)
 
         except Exception as e:
             self.error.emit(f"Error: {str(e)}")
@@ -700,6 +719,10 @@ class MainWindow(QMainWindow):
         self._chat_worker: Optional[ChatWorker] = None
         self._pending_mode: str = ""
         self._pending_insert_mode: str = ""
+
+        # RAG system for semantic context retrieval
+        self._rag_system: Optional[EnhancedRAGSystem] = None
+        self._rag_initialized = False
 
         # Register with window manager
         self.window_manager = WindowManager()
@@ -1237,7 +1260,84 @@ class MainWindow(QMainWindow):
         if self.current_project.characters:
             self.chat_widget.set_characters(self.current_project.characters)
 
+        # Set project name for training data metadata
+        self.chat_widget.set_project_name(self.current_project.name)
+
+        # Initialize/refresh RAG system for semantic context retrieval
+        self._init_rag_system()
+
         self.project_changed.emit()
+
+    def _init_rag_system(self):
+        """Initialize or refresh the RAG system for semantic context retrieval."""
+        if not self.current_project:
+            return
+
+        try:
+            # Initialize RAG system with current project
+            if not self._rag_system:
+                from src.ai.llm_client import LLMClient, LLMProvider
+
+                # Create a simple LLM client for RAG embeddings
+                ai_config = get_ai_config()
+                default_provider = self.settings.get("default_llm", "claude")
+                api_key = ai_config.get_api_key(default_provider)
+
+                if not api_key:
+                    print("No API key for RAG initialization - RAG will be disabled")
+                    return
+
+                provider_map = {
+                    "claude": LLMProvider.CLAUDE,
+                    "chatgpt": LLMProvider.CHATGPT,
+                    "openai": LLMProvider.CHATGPT,
+                    "gemini": LLMProvider.GEMINI
+                }
+                provider = provider_map.get(default_provider, LLMProvider.CLAUDE)
+
+                llm_client = LLMClient(
+                    provider=provider,
+                    api_key=api_key,
+                    model=ai_config.get_model(default_provider)
+                )
+
+                self._rag_system = EnhancedRAGSystem(
+                    project=self.current_project,
+                    llm_client=llm_client
+                )
+
+            # Rebuild index with current project data
+            self._rag_system.rebuild_index()
+            self._rag_initialized = True
+            print("RAG system initialized successfully")
+
+        except Exception as e:
+            print(f"Failed to initialize RAG system: {e}")
+            self._rag_initialized = False
+
+    def _get_rag_context(self, query: str, max_tokens: int = 2000) -> str:
+        """Get RAG-enhanced context for a query.
+
+        Args:
+            query: User's question or request
+            max_tokens: Maximum tokens for context
+
+        Returns:
+            Relevant context from project data
+        """
+        if not self._rag_initialized or not self._rag_system:
+            return ""
+
+        try:
+            context = self._rag_system.get_context_for_ai(
+                query=query,
+                max_tokens=max_tokens,
+                method=SearchMethod.HYBRID
+            )
+            return context if context else ""
+        except Exception as e:
+            print(f"RAG context retrieval failed: {e}")
+            return ""
 
     def _collect_project_data(self):
         """Collect data from UI widgets into project model."""
@@ -1321,7 +1421,8 @@ class MainWindow(QMainWindow):
             return
 
         # Build comprehensive project context based on mode
-        context = self._build_chat_context(mode)
+        # Pass the user message so RAG can retrieve relevant context
+        context = self._build_chat_context(mode, user_message=message)
 
         # For writer mode, add POV settings and cursor context
         if mode == "writer":
@@ -1371,11 +1472,12 @@ class MainWindow(QMainWindow):
         self._chat_worker.error.connect(self._on_chat_error)
         self._chat_worker.start()
 
-    def _build_chat_context(self, mode: str = "general") -> dict:
+    def _build_chat_context(self, mode: str = "general", user_message: str = "") -> dict:
         """Build comprehensive context dict for AI chat, similar to chapter planner.
 
         Args:
             mode: The chat mode (general, chapter_focus, writer)
+            user_message: The user's message for RAG-based context retrieval
         """
         context = {}
         context['mode'] = mode
@@ -1388,6 +1490,20 @@ class MainWindow(QMainWindow):
         # Basic project info
         context['project_name'] = project.name
         context['project_description'] = project.description or ""
+
+        # For GENERAL mode, use RAG for semantic context retrieval
+        # This allows both element creation AND discussion based on relevant context
+        if mode == "general" and user_message and self._rag_initialized:
+            rag_context = self._get_rag_context(user_message, max_tokens=2000)
+            if rag_context:
+                context['rag_context'] = rag_context
+                # Also add a summary for discussion
+                context['semantic_context'] = rag_context
+                # Return early with RAG context - it already has relevant info
+                # But still add basic summaries if available
+                if hasattr(project, 'ai_summary') and project.ai_summary and not project.ai_summary.is_empty():
+                    context['plot_summary'] = project.ai_summary.plot_summary[:500] if project.ai_summary.plot_summary else ""
+                return context
 
         # For chapter_focus and writer modes, we want MORE context about the current chapter
         is_chapter_focused = mode in ("chapter_focus", "writer")
@@ -1534,8 +1650,13 @@ class MainWindow(QMainWindow):
 
         return context
 
-    def _on_chat_response(self, response: str):
-        """Handle successful AI response."""
+    def _on_chat_response(self, response: str, system_prompt: str = ""):
+        """Handle successful AI response.
+
+        Args:
+            response: The AI's response text
+            system_prompt: The system prompt used for this response
+        """
         # Check if this was a writer mode request
         if getattr(self, '_pending_mode', '') == 'writer' and hasattr(self, '_pending_insert_mode'):
             self._handle_writer_response(response)
@@ -1543,8 +1664,8 @@ class MainWindow(QMainWindow):
             # Check for and handle element creation blocks in general mode
             display_response, created_elements = self._parse_and_create_elements(response)
 
-            # Show the conversational part of the response
-            self.chat_widget.add_message("Assistant", display_response)
+            # Show the conversational part of the response (with system prompt for training)
+            self.chat_widget.add_message("Assistant", display_response, system_prompt=system_prompt)
 
             # If elements were created, show confirmation and refresh UI
             if created_elements:
@@ -2242,6 +2363,14 @@ class MainWindow(QMainWindow):
 
         # Update characters in chat widget for POV selection
         self.chat_widget.set_characters(self.current_project.characters)
+
+        # Refresh RAG index with new/updated elements
+        if self._rag_initialized and self._rag_system:
+            try:
+                self._rag_system.rebuild_index()
+                print("RAG index refreshed after element creation")
+            except Exception as e:
+                print(f"Failed to refresh RAG index: {e}")
 
         # Mark project as modified
         self._on_content_changed()
