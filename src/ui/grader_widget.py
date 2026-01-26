@@ -167,33 +167,56 @@ class CritiqueWorker(QThread):
         try:
             self.progress.emit("Initializing critique model...")
 
-            # Get LLM client based on settings
-            from src.ai.llm_client import LLMClient, LLMProvider
+            # Get LLM client based on settings (same logic as ChatWorker)
+            from src.ai.llm_client import LLMClient, LLMProvider, HuggingFaceConfig
             ai_config = get_ai_config()
-            critique_settings = ai_config.get_critique_model_settings()
+            settings = ai_config.get_settings()
 
-            # Determine which LLM to use
-            source = critique_settings.get("source", "default")
+            # Check if AI is disabled
+            if ai_config.is_ai_disabled():
+                self.error.emit("AI features are disabled. Enable them in Settings > AI Settings.")
+                return
 
-            if source == "local":
-                # Use specific local model
-                local_model_id = critique_settings.get("local_model_id", "")
-                if local_model_id:
-                    llm = LLMClient(provider=LLMProvider.HUGGINGFACE_LOCAL)
-                else:
-                    llm = self._get_default_llm(ai_config)
-            elif source == "cloud":
-                # Use specific cloud provider
-                provider = critique_settings.get("cloud_provider", "claude")
+            # Check if local models are preferred and configured
+            prefer_local = settings.get("prefer_local_model", False)
+            enable_local = settings.get("enable_local_models", False)
+            local_model_id = settings.get("local_model_id", "")
+
+            if prefer_local and enable_local and local_model_id:
+                # Use local model - detect if it's an MLX model
+                is_mlx_model = "mlx" in local_model_id.lower()
+
+                hf_config = HuggingFaceConfig(
+                    model_id=local_model_id,
+                    use_local=True,
+                    device=settings.get("local_model_device", "auto"),
+                    quantization=settings.get("local_model_quantization", "none") if settings.get("local_model_quantization") != "none" else None,
+                    trust_remote_code=settings.get("local_model_trust_remote_code", False)
+                )
+
+                # Use MLX provider for MLX models, HuggingFace for others
+                provider = LLMProvider.MLX_LOCAL if is_mlx_model else LLMProvider.HUGGINGFACE_LOCAL
+                llm = LLMClient(
+                    provider=provider,
+                    hf_config=hf_config
+                )
+            else:
+                # Use cloud provider
+                default_provider = settings.get("default_llm", "claude")
+                api_key = ai_config.get_api_key(default_provider)
+
+                if not api_key:
+                    self.error.emit(f"No API key configured for {default_provider}. Please add your API key in Settings > AI Settings, or enable local models.")
+                    return
+
+                # Map provider name to enum
                 provider_map = {
                     "claude": LLMProvider.CLAUDE,
                     "chatgpt": LLMProvider.CHATGPT,
+                    "openai": LLMProvider.CHATGPT,
                     "gemini": LLMProvider.GEMINI
                 }
-                llm = LLMClient(provider=provider_map.get(provider, LLMProvider.CLAUDE))
-            else:
-                # Use default
-                llm = self._get_default_llm(ai_config)
+                llm = LLMClient(provider=provider_map.get(default_provider, LLMProvider.CLAUDE))
 
             # Create agent
             agent = ChapterAnalysisAgent(primary_llm=llm)
@@ -227,26 +250,6 @@ class CritiqueWorker(QThread):
 
         except Exception as e:
             self.error.emit(str(e))
-
-    def _get_default_llm(self, ai_config):
-        """Get the default LLM based on settings."""
-        from src.ai.llm_client import LLMClient, LLMProvider
-
-        settings = ai_config.get_settings()
-
-        # Check if local models preferred
-        if settings.get("prefer_local_model", False) and settings.get("enable_local_models", False):
-            return LLMClient(provider=LLMProvider.HUGGINGFACE_LOCAL)
-
-        # Use default cloud provider
-        default_provider = settings.get("default_llm", "claude")
-        provider_map = {
-            "claude": LLMProvider.CLAUDE,
-            "chatgpt": LLMProvider.CHATGPT,
-            "openai": LLMProvider.CHATGPT,
-            "gemini": LLMProvider.GEMINI
-        }
-        return LLMClient(provider=provider_map.get(default_provider, LLMProvider.CLAUDE))
 
 
 class GraderWidget(QWidget):
