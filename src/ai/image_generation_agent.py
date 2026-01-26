@@ -173,8 +173,8 @@ class ImageGenerationAgent:
         style = self.settings.get("prompt_enhancement_style", "detailed")
         logger.info(f"Enhancement style: {style}")
 
-        system_prompt = f"""You are an expert at crafting prompts for AI image generation.
-Your task is to enhance the user's prompt while maintaining their core intent.
+        system_prompt = f"""You are an expert at crafting prompts for AI image generation for STORYTELLING and CHARACTER DESIGN.
+Your task is to enhance the user's prompt while maintaining their core intent and ENSURING story-appropriate, focused results.
 
 Style: {style}
 - concise: Keep it brief but descriptive (1-2 sentences)
@@ -182,20 +182,35 @@ Style: {style}
 - artistic: Include artistic style references and techniques (2-3 sentences)
 
 CRITICAL RULES FOR CHARACTER PORTRAITS:
-1. ALWAYS describe as: "portrait photograph", "character portrait", "painted portrait", or "headshot"
-2. NEVER use: social media, profile picture, avatar, selfie, phone camera, screenshot, app icon
-3. Include proper framing: "head and shoulders", "bust portrait", "3/4 view", "close-up portrait"
-4. Add professional lighting: "studio lighting", "soft natural light", "dramatic rim lighting"
-5. Specify a proper background: "neutral background", "blurred background", "atmospheric background"
-6. For artistic styles, reference traditional art: "oil painting", "digital painting", "concept art"
+1. SINGLE CHARACTER ONLY: Describe ONE person. Say "solo character", "single person", "individual portrait"
+2. PROFESSIONAL FORMATS ONLY: Use "portrait photograph", "character portrait", "character design", "concept art", "painted portrait"
+3. NEVER USE: social media, profile picture, avatar, selfie, phone camera, screenshot, app icon, facebook, instagram, dating app, ID photo, mugshot
+4. FRAMING: "head and shoulders", "bust portrait", "3/4 view", "close-up portrait" (for headshots), "full body standing pose" (for full body)
+5. LIGHTING: "studio lighting", "soft natural light", "dramatic rim lighting", "cinematic lighting"
+6. BACKGROUND: Match the character's environment (e.g., "workshop background" for blacksmith, "urban alley" for street hacker)
+   - Use "neutral background", "blurred background", or contextual settings ONLY
+   - NEVER: UI elements, frames, borders, windows, screens
+7. ART STYLE: "digital painting", "concept art", "oil painting", "photorealistic portrait", "character sheet"
+
+STORY-APPROPRIATE CONTEXT:
+- If character has a profession, include environmental hints (tools, setting)
+- Capture PERSONALITY through expression, posture, and style
+- Maintain GENRE consistency (fantasy characters shouldn't look modern, sci-fi shouldn't look medieval)
+- Emphasize STYLE OF DRESS mentioned in the character description
+
+ABSOLUTE PROHIBITIONS:
+- DO NOT add extra people, crowds, or background characters
+- DO NOT reference any modern social media or digital UI
+- DO NOT include text, logos, captions, or overlays
+- DO NOT create unrealistic mashups (e.g., "alien in business suit" unless that's the story)
 
 General Rules:
-1. Preserve the user's core description and physical features
-2. Add visual details (lighting, colors, composition, camera angle)
-3. Specify art style if not mentioned (prefer traditional portraiture or photography)
+1. Preserve the user's EXACT physical features and descriptions
+2. Add visual details that ENHANCE storytelling (lighting, colors, composition, expression)
+3. Keep environmental details RELEVANT to the character's role/world
 4. Keep it under 150 words
 5. Do NOT add NSFW content
-6. Focus on visual elements only - this is for a character portrait, NOT a social media profile
+6. GENRE CONSISTENCY: Fantasy stays fantasy, sci-fi stays sci-fi, historical stays historical
 {character_context}"""
 
         try:
@@ -240,21 +255,53 @@ General Rules:
             return None
 
         # Build base prompt from character with explicit portrait framing
-        # This helps avoid social media profile-style outputs
+        # CRITICAL: Emphasize SINGLE character to avoid group shots
         base_prompt_parts = [
-            f"Character portrait of {character.name}",
-            "head and shoulders framing",
+            f"Solo character portrait of {character.name}",
+            "single person",
+            "individual character design",
             "professional portrait photography"
         ]
 
+        # Add physical description first (most important)
         if character.physical_description:
             base_prompt_parts.append(character.physical_description)
 
+        # Add personality cues for expression/posture
+        if character.personality:
+            # Extract visual personality hints
+            personality_lower = character.personality.lower()
+            if any(word in personality_lower for word in ['confident', 'bold', 'strong', 'determined']):
+                base_prompt_parts.append("confident expression, strong posture")
+            elif any(word in personality_lower for word in ['shy', 'nervous', 'timid', 'anxious']):
+                base_prompt_parts.append("reserved expression, subtle body language")
+            elif any(word in personality_lower for word in ['friendly', 'warm', 'kind', 'gentle']):
+                base_prompt_parts.append("warm expression, approachable demeanor")
+            elif any(word in personality_lower for word in ['serious', 'stern', 'stoic']):
+                base_prompt_parts.append("serious expression, focused gaze")
+            elif any(word in personality_lower for word in ['mischievous', 'playful', 'clever']):
+                base_prompt_parts.append("slight smirk, intelligent eyes")
+
+        # Add environmental context from role/backstory
+        if character.role:
+            role_lower = character.role.lower()
+            if any(word in role_lower for word in ['blacksmith', 'smith', 'forge']):
+                base_prompt_parts.append("workshop setting, leather apron")
+            elif any(word in role_lower for word in ['hacker', 'programmer', 'tech']):
+                base_prompt_parts.append("urban tech environment, hooded jacket")
+            elif any(word in role_lower for word in ['soldier', 'warrior', 'fighter']):
+                base_prompt_parts.append("battle-worn armor, determined stance")
+            elif any(word in role_lower for word in ['noble', 'lord', 'lady', 'royal']):
+                base_prompt_parts.append("elegant formal attire, refined setting")
+            elif any(word in role_lower for word in ['merchant', 'trader']):
+                base_prompt_parts.append("practical clothing, weathered appearance")
+
+        # Add additional prompt (from UI - headshot vs full body)
         if additional_prompt:
             base_prompt_parts.append(additional_prompt)
         else:
             # Add default quality terms if no additional prompt
-            base_prompt_parts.append("neutral background, soft lighting")
+            base_prompt_parts.append("neutral background, soft cinematic lighting")
 
         base_prompt = ", ".join(base_prompt_parts)
 
@@ -278,7 +325,7 @@ General Rules:
         style: str = "",
         save_path: Optional[Path] = None
     ) -> Optional[Path]:
-        """Generate scene visualization.
+        """Generate scene visualization focused on STORY ELEMENTS.
 
         Args:
             scene_description: Description of the scene
@@ -292,18 +339,113 @@ General Rules:
             logger.warning("Image generation is disabled in settings")
             return None
 
-        # Combine description and style
-        prompt = scene_description
+        # Build story-focused prompt
+        prompt_parts = [scene_description]
+
+        # Add story/narrative framing
+        prompt_parts.append("story illustration")
+        prompt_parts.append("narrative scene")
+
+        # Add style
         if style:
-            prompt = f"{scene_description}, style: {style}"
+            prompt_parts.append(f"style: {style}")
+        else:
+            # Default to cinematic/illustrative if no style specified
+            prompt_parts.append("cinematic composition")
 
-        # Enhance prompt
-        enhanced_prompt = self.enhance_prompt(prompt)
+        # Combine
+        prompt = ", ".join(prompt_parts)
 
-        logger.info("Generating scene image")
+        # Enhance prompt with story-focused system prompt
+        enhanced_prompt = self._enhance_scene_prompt(prompt)
+
+        logger.info("Generating scene image (story-focused)")
         logger.debug(f"Enhanced prompt: {enhanced_prompt}")
 
         return self._generate_image(prompt=enhanced_prompt, save_path=save_path)
+
+    def _enhance_scene_prompt(self, base_prompt: str) -> str:
+        """Enhance scene prompt with story-focused guidance.
+
+        Args:
+            base_prompt: Basic scene description
+
+        Returns:
+            Enhanced prompt optimized for story illustration
+        """
+        logger.info("=" * 60)
+        logger.info("SCENE PROMPT ENHANCEMENT")
+        logger.info("=" * 60)
+        logger.info(f"Base prompt: {base_prompt}")
+
+        llm = self._get_prompt_llm()
+        if not llm:
+            logger.info("Prompt enhancement disabled, returning base prompt")
+            logger.info("=" * 60)
+            return base_prompt
+
+        style = self.settings.get("prompt_enhancement_style", "detailed")
+        logger.info(f"Enhancement style: {style}")
+
+        system_prompt = f"""You are an expert at crafting prompts for AI image generation of STORY SCENES and ILLUSTRATIONS.
+Your task is to enhance the user's scene description while keeping it STORY-APPROPRIATE and COHERENT.
+
+Style: {style}
+- concise: Keep it brief but vivid (1-2 sentences)
+- detailed: Add rich environmental details, atmosphere, composition (2-3 sentences)
+- artistic: Include artistic style references and cinematic techniques (2-3 sentences)
+
+CRITICAL RULES FOR SCENE GENERATION:
+1. STORY CONSISTENCY: Keep all elements consistent with the genre (fantasy/sci-fi/historical/modern)
+2. COHERENT ELEMENTS: All objects, characters, and settings should make sense together
+3. NO RANDOM MASHUPS: Don't combine incompatible elements (e.g., "alien on a ranch" unless that's the story)
+4. NARRATIVE FOCUS: Emphasize the STORY moment being depicted
+5. ENVIRONMENTAL CONTEXT: Add weather, time of day, atmosphere that fits the scene
+
+WHAT TO INCLUDE:
+- Setting details (location, time of day, weather)
+- Mood and atmosphere (tense, peaceful, dramatic, mysterious)
+- Lighting (golden hour, stormy, moonlit, harsh daylight)
+- Composition (wide shot, close-up, dramatic angle)
+- Art style (digital painting, concept art, photorealistic, oil painting)
+
+WHAT TO AVOID:
+- Social media elements (profile pictures, UI, screenshots)
+- Modern tech in fantasy settings (unless it's sci-fi/cyberpunk)
+- Unrealistic genre mixing (medieval knights with smartphones)
+- Out-of-place elements (random objects that don't fit the scene)
+- Text, logos, watermarks, frames
+
+EXAMPLE ENHANCEMENTS:
+User: "A person ranching"
+Good: "Western ranch scene at golden hour, cowboy on horseback herding cattle across open prairie, dramatic clouds, warm sunset lighting, cinematic wide shot, photorealistic western art"
+Bad: "Alien facebook profile in ranch setting" ❌
+
+User: "Tavern scene"
+Good: "Medieval tavern interior, warm fireplace light, wooden tables with patrons drinking, stone walls, atmospheric smoke, oil painting style, cozy and rustic"
+Bad: "Tavern with modern smartphones and neon signs" ❌
+
+Keep it under 150 words. Focus on VISUAL storytelling."""
+
+        try:
+            logger.info(f"Calling LLM for scene prompt enhancement")
+
+            response = llm.generate_text(
+                prompt=base_prompt,
+                system_prompt=system_prompt,
+                temperature=0.7,
+                max_tokens=200
+            )
+
+            enhanced = response.strip()
+            logger.info(f"Enhanced scene prompt: {enhanced}")
+            logger.info("=" * 60)
+            return enhanced
+        except Exception as e:
+            logger.error(f"Failed to enhance scene prompt: {e}", exc_info=True)
+            logger.info("Returning base prompt due to enhancement failure")
+            logger.info("=" * 60)
+            return base_prompt
 
     def _generate_image(
         self,
@@ -329,7 +471,19 @@ General Rules:
         height = self.settings.get("image_height", 1024)
         num_steps = self.settings.get("image_num_inference_steps", 20)
         guidance_scale = self.settings.get("image_guidance_scale", 7.5)
-        negative_prompt = self.settings.get("image_negative_prompt", "blurry, low quality, distorted, deformed, ugly, bad anatomy")
+
+        # Enhanced negative prompt to exclude unwanted elements
+        default_negative = (
+            "blurry, low quality, distorted, deformed, ugly, bad anatomy, "
+            "multiple people, group photo, crowd, extra people, "
+            "social media, profile picture, selfie, phone screen, screenshot, "
+            "facebook, instagram, app interface, UI elements, text overlay, "
+            "watermark, logo, caption, frame, border, window, "
+            "alien profile, unrealistic mashup, out of genre, "
+            "modern clothing on fantasy character, "
+            "duplicate, clone, copy"
+        )
+        negative_prompt = self.settings.get("image_negative_prompt", default_negative)
         seed = self.settings.get("image_seed", -1)
 
         if seed == -1:

@@ -55,15 +55,22 @@ class ImageGenerationWorker(QThread):
             agent = get_image_generation_agent()
 
             # Build additional prompt based on image type
+            # CRITICAL: Emphasize SINGLE character and story-appropriate framing
             if self.image_type == "full_body":
                 additional_prompt = (
-                    "full body portrait, standing pose, character design, "
-                    "showing complete outfit and posture, neutral background"
+                    "solo full body character portrait, single person standing pose, "
+                    "character design sheet, showing complete outfit and posture from head to toe, "
+                    "personality shown through stance and expression, "
+                    "neutral or contextual background, cinematic lighting, "
+                    "character concept art style"
                 )
             else:
                 additional_prompt = (
-                    "head and shoulders portrait, professional headshot, "
-                    "neutral background, soft lighting, detailed facial features"
+                    "solo head and shoulders portrait, single character headshot, "
+                    "professional character portrait, detailed facial features and expression, "
+                    "personality captured in eyes and expression, "
+                    "neutral or atmospheric background, soft cinematic lighting, "
+                    "portrait photography or digital painting style"
                 )
 
             self.progress.emit(f"Generating {self.image_type} image for {self.character.name}...")
