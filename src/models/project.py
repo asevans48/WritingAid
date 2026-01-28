@@ -242,9 +242,14 @@ class Chapter(BaseModel):
             return False
         import shutil
         folder = project_dir / self.folder_path
-        if folder.exists():
-            shutil.rmtree(folder)
-            return True
+        try:
+            if folder.exists():
+                shutil.rmtree(folder, ignore_errors=True)
+                return True
+        except (FileNotFoundError, OSError):
+            # Folder may not exist yet (unsaved chapter) or be on
+            # an external drive with filesystem timing issues
+            pass
         return False
 
     # --- Revision management ---
