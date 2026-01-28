@@ -27,6 +27,7 @@ from src.ui.find_replace_dialog import FindReplaceDialog
 from src.ui.settings_dialog import SettingsDialog
 from src.ui.chat_widget import ChatWidget
 from src.ui.attributions_tab import AttributionsTab
+from src.ui.prose_profile_widget import ProseProfileWidget
 from src.ui.window_manager import WindowManager
 from src.ui.secondary_window import SecondaryWindow
 from src.ui.import_guide_dialog import ImportGuideDialog
@@ -774,6 +775,7 @@ class MainWindow(QMainWindow):
         self.grader_widget = GraderWidget()
         self.agent_manager = AgentManagerWidget()
         self.attributions_tab = AttributionsTab()
+        self.prose_profile_widget = ProseProfileWidget()
 
         # Connect grader widget signals
         self.grader_widget.go_to_line_requested.connect(self._go_to_critique_line)
@@ -788,6 +790,7 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(self.worldbuilding_widget, f"{get_icon('worldbuilding')} World")
         self.tab_widget.addTab(self.attributions_tab, "📚 Attributions")
         self.tab_widget.addTab(self.image_generator, f"{get_icon('images')} Visuals")
+        self.tab_widget.addTab(self.prose_profile_widget, "🎯 Prose Profile")
         self.tab_widget.addTab(self.grader_widget, f"{get_icon('grader')} Critique")
         self.tab_widget.addTab(self.agent_manager, f"{get_icon('agents')} Publishing")
 
@@ -1074,6 +1077,7 @@ class MainWindow(QMainWindow):
         self.characters_widget.content_changed.connect(self._on_content_changed)
         self.story_planning_widget.content_changed.connect(self._on_content_changed)
         self.manuscript_editor.content_changed.connect(self._on_content_changed)
+        self.prose_profile_widget.content_changed.connect(self._on_content_changed)
 
         # Connect annotation changes to update attributions tab
         self.manuscript_editor.annotations_changed.connect(self._on_annotations_changed)
@@ -1250,6 +1254,7 @@ class MainWindow(QMainWindow):
         # Update characters for image generation
         self.image_generator.set_characters(self.current_project.characters)
         self.agent_manager.load_data(self.current_project.agent_contacts)
+        self.prose_profile_widget.load_data(self.current_project.prose_profile)
         self.attributions_tab.set_manuscript(self.current_project.manuscript)
 
         # Set up grader widget with project reference and content provider
@@ -1350,6 +1355,7 @@ class MainWindow(QMainWindow):
         self.current_project.manuscript = self.manuscript_editor.get_manuscript()
         self.current_project.generated_images = self.image_generator.get_data()
         self.current_project.agent_contacts = self.agent_manager.get_data()
+        self.current_project.prose_profile = self.prose_profile_widget.get_data()
 
     def _confirm_unsaved_changes(self) -> bool:
         """Ask user to confirm discarding unsaved changes."""
