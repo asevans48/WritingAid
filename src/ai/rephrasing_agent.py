@@ -266,6 +266,9 @@ class _LocalModelCache:
 # Global instance
 _model_cache = _LocalModelCache()
 
+# Global flag: once CUDA assertion fails, all subsequent calls use CPU
+_cuda_failed = False
+
 
 class RephraseStyle(Enum):
     """Available rephrasing styles (structural/writing approach)."""
@@ -615,6 +618,7 @@ For each option, briefly explain what makes it different from the original."""
         Uses a global cache to keep models loaded in memory across agent instances.
         Only reloads if a different model is requested.
         """
+        global _cuda_failed
         # Use model from settings, or fall back to default
         original_model_id = self.local_model_id or "microsoft/Phi-3-mini-4k-instruct"
 
@@ -638,7 +642,18 @@ For each option, briefly explain what makes it different from the original."""
         # Check if model is already cached
         cached_model, cached_tokenizer, cached_device = _model_cache.get_model(model_id)
         if cached_model is not None:
-            print(f"\n✅ CACHED MODEL FOUND - INSTANT LOAD!")
+            # If CUDA previously failed, move cached model to CPU
+            if _cuda_failed and cached_device == "cuda":
+                print(f"\n⚠️  CACHED MODEL FOUND but CUDA failed previously — moving to CPU...")
+                import torch
+                cached_model = cached_model.to("cpu")
+                cached_device = "cpu"
+                _model_cache.set_model(model_id, cached_model, cached_tokenizer, "cpu")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                print(f"[OK] Model moved to CPU")
+            else:
+                print(f"\n✅ CACHED MODEL FOUND - INSTANT LOAD!")
             print(f"📦 Model: {model_id}")
             print(f"🖥️  Device: {cached_device.upper()}")
             print(f"{'='*60}\n")
@@ -722,6 +737,14 @@ For each option, briefly explain what makes it different from the original."""
                 step_start = time.time()
                 print_device_info()
                 device_name, dtype, use_device_map = detect_device()
+
+                # If CUDA previously failed with an assertion, force CPU
+                if _cuda_failed and device_name == "cuda":
+                    print("  ** CUDA previously failed with assertion error — forcing CPU **")
+                    device_name = "cpu"
+                    use_device_map = False
+                    import torch
+                    dtype = torch.float32
                 print(f"\n🖥️  HARDWARE DETECTED:")
                 print(f"  Device: {device_name.upper()}")
                 print(f"  Data type: {dtype}")
@@ -1007,6 +1030,7 @@ For each option, briefly explain what makes it different from the original."""
         - Apple Silicon: Tries MLX first (faster), falls back to PyTorch
         - Other platforms: Uses PyTorch
         """
+        global _cuda_failed
         # Determine backend and device info upfront
         backend = "MLX" if (_MLX_AVAILABLE and can_use_mlx()) else "PyTorch"
         device = "Unknown"
@@ -1241,31 +1265,41 @@ For each option, briefly explain what makes it different from the original."""
                     print(f"[FAIL] CUDA assertion error detected!")
                     print(f"  Error: {e}")
 
-                    # Clear CUDA state
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                        torch.cuda.synchronize()
+                    # Mark CUDA as failed globally so all future calls skip to CPU
+                    _cuda_failed = True
 
-                    # Try again with greedy decoding (no sampling)
-                    print(f"  Retrying with greedy decoding (do_sample=False)...")
+                    # CUDA context is corrupted after assertion — must fall back to CPU
+                    print(f"  CUDA context is poisoned after assertion. Falling back to CPU...")
                     try:
-                        outputs = self._local_model.generate(
-                            inputs,
-                            attention_mask=attention_mask,
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+
+                        # Move model and tensors to CPU
+                        cpu_model = self._local_model.to("cpu")
+                        cpu_inputs = inputs.to("cpu")
+                        cpu_mask = attention_mask.to("cpu")
+
+                        outputs = cpu_model.generate(
+                            cpu_inputs,
+                            attention_mask=cpu_mask,
                             max_new_tokens=max_tokens,
                             pad_token_id=pad_token_id,
                             eos_token_id=self._local_tokenizer.eos_token_id,
-                            do_sample=False,  # Greedy decoding
-                            use_cache=False,
+                            do_sample=False,  # Greedy decoding on CPU
+                            use_cache=True,
                             num_beams=1,
                         )
-                        print(f"  [OK] Greedy decoding succeeded!")
-                    except RuntimeError as retry_error:
-                        print(f"  [FAIL] Greedy decoding also failed: {retry_error}")
+                        # Keep model on CPU for this session to avoid further CUDA errors
+                        self._local_model = cpu_model
+                        self._device = "cpu"
+                        # Update global cache so new agent instances get the CPU model
+                        _model_cache.set_model(self._model_id, cpu_model, self._local_tokenizer, "cpu")
+                        print(f"  [OK] CPU fallback succeeded! Model will stay on CPU for this session.")
+                    except Exception as retry_error:
+                        print(f"  [FAIL] CPU fallback also failed: {retry_error}")
                         print(f"\n  Suggestions:")
-                        print(f"    1. Try a different model (e.g., microsoft/Phi-3.5-mini-instruct)")
-                        print(f"    2. Use CPU instead of CUDA (slower but more stable)")
-                        print(f"    3. Ensure sentencepiece is installed: pip install sentencepiece")
+                        print(f"    1. Try a different model (e.g., TinyLlama/TinyLlama-1.1B-Chat-v1.0)")
+                        print(f"    2. Restart the application to reset CUDA state")
                         raise
                 else:
                     raise
@@ -1285,21 +1319,146 @@ For each option, briefly explain what makes it different from the original."""
             outputs[0][inputs.shape[1]:],
             skip_special_tokens=True
         )
-        print(f"[OK] Decoded {len(response)} characters")
-        print(f"  Response preview: {repr(response[:200])}")
+        print(f"[OK] Decoded {len(response)} characters (raw)")
+        print(f"  Raw preview: {repr(response[:200])}")
+
+        # Clean response: strip echoed prompt content that small models often generate
+        response = self._clean_model_response(response, prompt)
+
+        print(f"[OK] Cleaned response: {len(response)} characters")
+        print(f"  Clean preview: {repr(response[:200])}")
         if not response.strip():
-            print(f"  ⚠ WARNING: Response is empty or only whitespace!")
+            print(f"  Warning: Response is empty or only whitespace!")
 
         print(f"\n{'='*60}")
-        print(f"✅ GENERATION COMPLETE")
+        print(f"[OK] GENERATION COMPLETE")
         print(f"{'='*60}")
-        print(f"📦 Model: {self.local_model_id}")
-        print(f"🖥️  Device: {self._device.upper() if hasattr(self, '_device') else 'Unknown'}")
-        print(f"⏱️  Time: {gen_elapsed:.2f}s")
-        print(f"📝 Output: {len(response)} chars")
+        print(f"Model: {self.local_model_id}")
+        print(f"Device: {self._device.upper() if hasattr(self, '_device') else 'Unknown'}")
+        print(f"Time: {gen_elapsed:.2f}s")
+        print(f"Output: {len(response)} chars")
         print(f"{'='*60}\n")
 
         return response
+
+    def _clean_model_response(self, response: str, prompt: str) -> str:
+        """Clean model response by removing echoed prompt content.
+
+        Small models often echo back parts of the prompt before giving
+        their actual response. This method strips that noise.
+
+        Args:
+            response: Raw model output (after input token removal)
+            prompt: The original prompt sent to the model
+
+        Returns:
+            Cleaned response with only the AI's actual output
+        """
+        if not response or not response.strip():
+            return response
+
+        original = response
+
+        # Strategy 1: If response starts with the prompt (or large portion), strip it
+        # Check if first 50+ chars of response match the prompt
+        prompt_stripped = prompt.strip()
+        response_stripped = response.strip()
+
+        if len(prompt_stripped) > 50:
+            # Check if response starts with the beginning of the prompt
+            check_len = min(80, len(prompt_stripped))
+            prompt_start = prompt_stripped[:check_len]
+            if response_stripped.startswith(prompt_start):
+                # Find where the prompt ends in the response
+                # Look for the prompt content and skip past it
+                prompt_len = len(prompt_stripped)
+                if len(response_stripped) > prompt_len:
+                    response = response_stripped[prompt_len:].strip()
+                    print(f"  [Clean] Stripped echoed prompt ({prompt_len} chars)")
+
+        # Strategy 2: Remove known prompt markers that shouldn't be in the response
+        prompt_markers = [
+            'Please rephrase the following text',
+            'Original text:',
+            'Generate these variations:',
+            'For each variation, provide:',
+            'Format your response as:',
+            'Apply a',
+            'PLOT OUTLINE:',
+            'MAIN CHARACTERS:',
+            'WORLDBUILDING:',
+            'CURRENT CHAPTER OUTLINE:',
+            'USER QUESTION:',
+            'INSTRUCTIONS:',
+            'TASK:',
+            'ANALYSIS REQUESTED:',
+            'PLANNED EVENTS:',
+            'CHAPTER DRAFT:',
+        ]
+
+        lines = response.split('\n')
+        clean_start = 0
+        found_content = False
+
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped:
+                continue
+
+            # Check if this line is part of an echoed prompt
+            is_prompt_echo = False
+            for marker in prompt_markers:
+                if stripped.startswith(marker) or stripped == marker.rstrip(':'):
+                    is_prompt_echo = True
+                    break
+
+            # Check for numbered instruction lines from the prompt (e.g. "1. Clearer and easier...")
+            if not is_prompt_echo and stripped and stripped[0].isdigit() and '. ' in stripped[:4]:
+                # Could be a prompt instruction line or an actual OPTION line
+                # If it contains style keywords from prompt, skip it
+                style_keywords = ['tone', 'easier to understand', 'more detailed', 'poetic and lyrical']
+                if any(kw in stripped.lower() for kw in style_keywords):
+                    is_prompt_echo = True
+
+            # Check for separator lines
+            if not is_prompt_echo and all(c in '=-_*' for c in stripped) and len(stripped) > 10:
+                is_prompt_echo = True
+
+            if is_prompt_echo:
+                clean_start = i + 1
+                continue
+
+            # Found real content - check if it looks like an actual response
+            if stripped.upper().startswith('OPTION') or stripped.startswith('1.') or stripped.startswith('Here'):
+                found_content = True
+                clean_start = i
+                break
+
+            # If we've been skipping echoed content and hit something new, start here
+            if clean_start > 0:
+                found_content = True
+                clean_start = i
+                break
+
+            # If first line doesn't match any marker, it's probably real content
+            found_content = True
+            break
+
+        if clean_start > 0:
+            response = '\n'.join(lines[clean_start:]).strip()
+            print(f"  [Clean] Skipped {clean_start} echoed prompt lines")
+
+        # Strategy 3: If the response still contains quoted original text at the start, skip it
+        if response.strip().startswith('"') and '"' in response[1:]:
+            # Response starts with a quoted string - might be echoed original text
+            end_quote = response.index('"', 1) + 1
+            remaining = response[end_quote:].strip()
+            # Only strip if there's substantial content after the quote
+            if len(remaining) > 50:
+                response = remaining
+                print(f"  [Clean] Stripped quoted echo at start")
+
+        return response.strip() if response else original
 
     def _build_style_tone_instruction(self, style: RephraseStyle, tone: RephraseTone) -> str:
         """Build a combined instruction for style and tone."""
@@ -2603,8 +2762,37 @@ Format your response as:
         options = []
         tone_value = tone.value if tone else "neutral"
 
-        # Split by option markers
+        # Pre-clean: skip any remaining prompt echo before the first OPTION marker
         lines = response.split('\n')
+
+        # Find where actual options begin
+        start_idx = 0
+        prompt_noise = [
+            'please rephrase', 'original text:', 'generate these',
+            'for each variation', 'format your response',
+            'apply a', 'tone to all variations',
+        ]
+        for i, line in enumerate(lines):
+            stripped = line.strip().lower()
+            if not stripped:
+                continue
+            # Skip lines that look like echoed prompt instructions
+            if any(marker in stripped for marker in prompt_noise):
+                start_idx = i + 1
+                continue
+            # Skip numbered instruction lines from prompt (e.g. "1. Clearer and easier...")
+            if stripped and stripped[0].isdigit() and '. ' in stripped[:4]:
+                style_hints = ['tone', 'easier to understand', 'more detailed', 'poetic and lyrical', 'descriptive with']
+                if any(hint in stripped for hint in style_hints):
+                    start_idx = i + 1
+                    continue
+            # Found real content
+            break
+
+        if start_idx > 0:
+            lines = lines[start_idx:]
+            print(f"  [Parse] Skipped {start_idx} prompt-echo lines before parsing")
+
         current_option = None
         current_text = []
         current_explanation = ""

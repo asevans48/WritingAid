@@ -140,9 +140,12 @@ class StoryPlanning(BaseModel):
 class ChapterRevision(BaseModel):
     """Revision history for a chapter."""
     revision_number: int
-    content: str
+    content: str = ""  # Plain text (loaded on demand from file when folder-based)
+    html_content: str = ""  # Rich text HTML snapshot for formatting preservation
+    file_path: str = ""  # Relative path to revision file (e.g. "chapters/chapter_001/revision_001.md")
     timestamp: datetime = Field(default_factory=datetime.now)
     notes: str = ""
+    word_count: int = 0  # Cached word count for this revision
 
 
 class Annotation(BaseModel):
@@ -201,70 +204,280 @@ class Chapter(BaseModel):
     id: str
     number: int
     title: str
-    content: str = ""  # Plain text content (for word count, search, AI analysis)
-    html_content: str = ""  # Rich text HTML content (for formatting preservation)
-    file_path: Optional[str] = None  # Relative path to chapter file within project
+    content: str = ""  # Plain text content of active revision
+    html_content: str = ""  # Rich text HTML content of active revision
+    file_path: Optional[str] = None  # Legacy: flat file path (pre-folder migration)
+    folder_path: Optional[str] = None  # Folder path e.g. "chapters/chapter_001"
+    active_revision_number: int = 1  # Which revision is currently active
     plan: str = ""  # Legacy: Chapter plan/outline (kept for backward compatibility)
-    plan_file_path: Optional[str] = None  # Relative path to plan file within project
-    planning: ChapterPlanning = Field(default_factory=ChapterPlanning)  # Full planning data
+    plan_file_path: Optional[str] = None  # Legacy: path to plan file
+    planning: ChapterPlanning = Field(default_factory=ChapterPlanning)
     revisions: List[ChapterRevision] = Field(default_factory=list)
-    annotations: List[Annotation] = Field(default_factory=list)  # Line-specific notes and attributions
-    notes: str = ""  # Legacy notes field (kept for backward compatibility)
+    annotations: List[Annotation] = Field(default_factory=list)
+    notes: str = ""  # Legacy notes field
     word_count: int = 0
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 
-    def add_revision(self, notes: str = ""):
-        """Save current content as a revision."""
-        revision = ChapterRevision(
-            revision_number=len(self.revisions) + 1,
-            content=self.content,
-            notes=notes
-        )
-        self.revisions.append(revision)
+    # --- Folder management ---
 
-    def load_content_from_file(self, project_dir: Path) -> bool:
-        """Load chapter content from external file."""
-        if not self.file_path:
+    def _folder_name(self) -> str:
+        """Get folder name based on chapter number."""
+        return f"chapters/chapter_{self.number:03d}"
+
+    def ensure_folder(self, project_dir: Path):
+        """Create the chapter folder if it doesn't exist."""
+        self.folder_path = self._folder_name()
+        folder = project_dir / self.folder_path
+        folder.mkdir(parents=True, exist_ok=True)
+
+    def delete_folder(self, project_dir: Path) -> bool:
+        """Delete the entire chapter folder from disk."""
+        if not self.folder_path:
             return False
-
-        full_path = project_dir / self.file_path
-        if full_path.exists():
-            self.content = full_path.read_text(encoding='utf-8')
+        import shutil
+        folder = project_dir / self.folder_path
+        if folder.exists():
+            shutil.rmtree(folder)
             return True
         return False
 
-    def save_content_to_file(self, project_dir: Path) -> bool:
-        """Save chapter content to external file."""
-        # Always regenerate file path based on current chapter number
-        # This ensures reordered chapters save to the correct files
-        self.file_path = f"chapters/chapter_{self.number:03d}.md"
+    # --- Revision management ---
 
-        full_path = project_dir / self.file_path
-        full_path.parent.mkdir(parents=True, exist_ok=True)
-        full_path.write_text(self.content, encoding='utf-8')
+    def add_revision(self, notes: str = "", html_content: str = "",
+                     content: str = "", project_dir: Path = None):
+        """Create a new revision from current content (or provided content).
+
+        Args:
+            notes: Optional revision notes
+            html_content: Optional HTML content
+            content: Content for the revision (defaults to self.content)
+            project_dir: If provided, saves revision file to disk
+        """
+        rev_content = content or self.content
+        rev_html = html_content or self.html_content
+        rev_num = len(self.revisions) + 1
+        rev_file = f"{self.folder_path}/revision_{rev_num:03d}.md" if self.folder_path else ""
+
+        revision = ChapterRevision(
+            revision_number=rev_num,
+            content=rev_content,
+            html_content=rev_html,
+            file_path=rev_file,
+            notes=notes,
+            word_count=len(rev_content.split()) if rev_content else 0
+        )
+        self.revisions.append(revision)
+        self.active_revision_number = rev_num
+
+        # Save revision file to disk
+        if project_dir and rev_file:
+            self.ensure_folder(project_dir)
+            full_path = project_dir / rev_file
+            full_path.write_text(rev_content, encoding='utf-8')
+
+        return revision
+
+    def create_blank_revision(self, project_dir: Path = None, notes: str = "Blank revision"):
+        """Create an empty revision for starting a fresh rewrite."""
+        return self.add_revision(notes=notes, content="", html_content="",
+                                 project_dir=project_dir)
+
+    def set_active_revision(self, revision_number: int, project_dir: Path = None):
+        """Switch the active revision. Loads content from that revision."""
+        for rev in self.revisions:
+            if rev.revision_number == revision_number:
+                self.active_revision_number = revision_number
+                # Load content from file if available, else from in-memory
+                if project_dir and rev.file_path:
+                    loaded = self.load_revision_content(project_dir, revision_number)
+                    if loaded is not None:
+                        self.content = loaded
+                        rev.content = loaded
+                else:
+                    self.content = rev.content
+                self.html_content = rev.html_content
+                self.word_count = len(self.content.split()) if self.content else 0
+                return True
+        return False
+
+    def load_revision_content(self, project_dir: Path, revision_number: int) -> Optional[str]:
+        """Read a specific revision file from disk."""
+        for rev in self.revisions:
+            if rev.revision_number == revision_number:
+                if rev.file_path:
+                    full_path = project_dir / rev.file_path
+                    if full_path.exists():
+                        return full_path.read_text(encoding='utf-8')
+                return rev.content
+        return None
+
+    def save_active_revision_to_file(self, project_dir: Path) -> bool:
+        """Save the active revision's content to its file."""
+        self.ensure_folder(project_dir)
+        for rev in self.revisions:
+            if rev.revision_number == self.active_revision_number:
+                rev.content = self.content
+                rev.html_content = self.html_content
+                rev.word_count = len(self.content.split()) if self.content else 0
+                if not rev.file_path:
+                    rev.file_path = f"{self.folder_path}/revision_{rev.revision_number:03d}.md"
+                full_path = project_dir / rev.file_path
+                full_path.parent.mkdir(parents=True, exist_ok=True)
+                full_path.write_text(self.content, encoding='utf-8')
+                return True
+        return False
+
+    # --- File I/O (folder-based, with legacy fallback) ---
+
+    def save_content_to_file(self, project_dir: Path) -> bool:
+        """Save chapter content to folder-based revision files."""
+        # Regenerate folder path based on current chapter number
+        self.folder_path = self._folder_name()
+        self.ensure_folder(project_dir)
+
+        # If no revisions exist yet, create the first one from current content
+        if not self.revisions:
+            self.add_revision(notes="Initial", project_dir=project_dir)
+        else:
+            # Save active revision content to file
+            self.save_active_revision_to_file(project_dir)
+
+        # Save plan inside chapter folder
+        if self.plan:
+            plan_path = project_dir / self.folder_path / "plan.md"
+            plan_path.write_text(self.plan, encoding='utf-8')
+
+        # Update legacy file_path to point to active revision for compat
+        active_rev = self._get_active_revision()
+        if active_rev:
+            self.file_path = active_rev.file_path
+
         return True
 
-    def load_plan_from_file(self, project_dir: Path) -> bool:
-        """Load chapter plan from external file."""
-        if not self.plan_file_path:
-            return False
+    def load_content_from_file(self, project_dir: Path) -> bool:
+        """Load chapter content from folder-based revision files."""
+        # Try folder-based loading first
+        if self.folder_path:
+            active_rev = self._get_active_revision()
+            if active_rev and active_rev.file_path:
+                full_path = project_dir / active_rev.file_path
+                if full_path.exists():
+                    self.content = full_path.read_text(encoding='utf-8')
+                    self.word_count = len(self.content.split()) if self.content else 0
+                    return True
 
-        full_path = project_dir / self.plan_file_path
-        if full_path.exists():
-            self.plan = full_path.read_text(encoding='utf-8')
-            return True
+        # Legacy fallback: flat file
+        if self.file_path:
+            full_path = project_dir / self.file_path
+            if full_path.exists():
+                self.content = full_path.read_text(encoding='utf-8')
+                self.word_count = len(self.content.split()) if self.content else 0
+                return True
+
+        return False
+
+    def load_plan_from_file(self, project_dir: Path) -> bool:
+        """Load chapter plan from file."""
+        # Try folder-based first
+        if self.folder_path:
+            plan_path = project_dir / self.folder_path / "plan.md"
+            if plan_path.exists():
+                self.plan = plan_path.read_text(encoding='utf-8')
+                return True
+
+        # Legacy fallback
+        if self.plan_file_path:
+            full_path = project_dir / self.plan_file_path
+            if full_path.exists():
+                self.plan = full_path.read_text(encoding='utf-8')
+                return True
+
         return False
 
     def save_plan_to_file(self, project_dir: Path) -> bool:
-        """Save chapter plan to external file (separate from content)."""
-        # Always regenerate file path based on current chapter number
-        self.plan_file_path = f"chapters/plans/chapter_{self.number:03d}_plan.md"
+        """Save chapter plan to file inside chapter folder."""
+        if self.folder_path:
+            self.ensure_folder(project_dir)
+            plan_path = project_dir / self.folder_path / "plan.md"
+            plan_path.write_text(self.plan, encoding='utf-8')
+            return True
 
+        # Legacy fallback
+        self.plan_file_path = f"chapters/plans/chapter_{self.number:03d}_plan.md"
         full_path = project_dir / self.plan_file_path
         full_path.parent.mkdir(parents=True, exist_ok=True)
         full_path.write_text(self.plan, encoding='utf-8')
         return True
+
+    def _get_active_revision(self) -> Optional[ChapterRevision]:
+        """Get the active revision object."""
+        for rev in self.revisions:
+            if rev.revision_number == self.active_revision_number:
+                return rev
+        # Fallback: return last revision
+        if self.revisions:
+            return self.revisions[-1]
+        return None
+
+    # --- Migration ---
+
+    def migrate_to_folder(self, project_dir: Path):
+        """Migrate from old flat-file format to folder-based format.
+
+        Moves chapter_NNN.md → chapter_NNN/revision_001.md
+        Moves plans/chapter_NNN_plan.md → chapter_NNN/plan.md
+        Migrates any in-memory revisions to files.
+        """
+        import shutil
+
+        self.folder_path = self._folder_name()
+        self.ensure_folder(project_dir)
+        folder = project_dir / self.folder_path
+
+        # Move main content file into folder as revision_001
+        if self.file_path:
+            old_content_path = project_dir / self.file_path
+            if old_content_path.exists():
+                new_path = folder / "revision_001.md"
+                if not new_path.exists():
+                    shutil.move(str(old_content_path), str(new_path))
+                    print(f"  Migrated {self.file_path} -> {self.folder_path}/revision_001.md")
+
+        # Move plan file into folder
+        if self.plan_file_path:
+            old_plan_path = project_dir / self.plan_file_path
+            if old_plan_path.exists():
+                new_plan = folder / "plan.md"
+                if not new_plan.exists():
+                    shutil.move(str(old_plan_path), str(new_plan))
+                    print(f"  Migrated {self.plan_file_path} -> {self.folder_path}/plan.md")
+
+        # Create revision entry if none exist
+        if not self.revisions:
+            rev_file = f"{self.folder_path}/revision_001.md"
+            wc = len(self.content.split()) if self.content else 0
+            self.revisions.append(ChapterRevision(
+                revision_number=1,
+                content=self.content,
+                html_content=self.html_content,
+                file_path=rev_file,
+                notes="Migrated from legacy format",
+                word_count=wc
+            ))
+        else:
+            # Migrate in-memory revisions to files
+            for rev in self.revisions:
+                rev_file = f"{self.folder_path}/revision_{rev.revision_number:03d}.md"
+                rev.file_path = rev_file
+                full_path = project_dir / rev_file
+                if not full_path.exists() and rev.content:
+                    full_path.write_text(rev.content, encoding='utf-8')
+                rev.word_count = len(rev.content.split()) if rev.content else 0
+
+        self.active_revision_number = max(r.revision_number for r in self.revisions)
+        self.file_path = f"{self.folder_path}/revision_{self.active_revision_number:03d}.md"
+        self.word_count = len(self.content.split()) if self.content else 0
 
 
 class Manuscript(BaseModel):
@@ -328,6 +541,15 @@ class ProjectSummary(BaseModel):
         return not (self.plot_summary or self.character_summary or self.worldbuilding_summary)
 
 
+class ProseProfile(BaseModel):
+    """Target prose profile for the project — tone, style, voice, genre."""
+    tone: str = ""  # e.g. "dark, tense, foreboding"
+    style: str = ""  # e.g. "minimalist, cinematic, short punchy sentences"
+    voice: str = ""  # e.g. "sardonic first-person, unreliable narrator"
+    genre: str = ""  # e.g. "noir thriller, southern gothic"
+    notes: str = ""  # freeform additional guidance
+
+
 class WriterProject(BaseModel):
     """Root project model encapsulating all writer work."""
     name: str
@@ -342,6 +564,9 @@ class WriterProject(BaseModel):
     generated_images: List[GeneratedImage] = Field(default_factory=list)
     agent_contacts: List[AgentContact] = Field(default_factory=list)
     dictionary: ProjectDictionary = Field(default_factory=ProjectDictionary)
+
+    # Prose profile — target tone, style, voice, genre
+    prose_profile: ProseProfile = Field(default_factory=ProseProfile)
 
     # AI-generated summaries for efficient context
     ai_summary: ProjectSummary = Field(default_factory=ProjectSummary)
@@ -362,21 +587,32 @@ class WriterProject(BaseModel):
 
         # Save chapters to separate files if enabled
         if save_chapters_separately:
+            # Save all chapter content/revisions to disk
             for chapter in self.manuscript.chapters:
                 chapter.save_content_to_file(project_dir)
-                # Clear content from JSON to save space
-                original_content = chapter.content
-                chapter.content = ""  # Will be loaded from file
+
+            # Temporarily clear content fields from JSON to save space
+            saved_state = []
+            for chapter in self.manuscript.chapters:
+                saved_state.append({
+                    'content': chapter.content,
+                    'rev_contents': [(r.content, r.html_content) for r in chapter.revisions]
+                })
+                chapter.content = ""
+                for rev in chapter.revisions:
+                    rev.content = ""  # Stored on disk, not in JSON
+                    rev.html_content = ""
 
             # Save project config
             with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump(self.model_dump(mode='json'), f, indent=2, default=str)
 
-            # Restore content in memory
-            for chapter in self.manuscript.chapters:
-                full_path = project_dir / chapter.file_path
-                if full_path.exists():
-                    chapter.content = full_path.read_text(encoding='utf-8')
+            # Restore in-memory state
+            for chapter, state in zip(self.manuscript.chapters, saved_state):
+                chapter.content = state['content']
+                for rev, (rc, rh) in zip(chapter.revisions, state['rev_contents']):
+                    rev.content = rc
+                    rev.html_content = rh
         else:
             # Legacy: save everything in one file
             with open(file_path, 'w', encoding='utf-8') as f:
@@ -401,11 +637,35 @@ class WriterProject(BaseModel):
 
         project.project_path = file_path
 
-        # Load chapter content from separate files if they exist
+        # Load chapter content and migrate to folder-based format if needed
         project_dir = Path(file_path).parent
+        needs_save = False
+
         for chapter in project.manuscript.chapters:
-            if chapter.file_path:
+            # Check if migration to folder-based format is needed
+            if not chapter.folder_path and chapter.file_path:
+                print(f"  Migrating chapter {chapter.number} '{chapter.title}' to folder format...")
+                # Load content first from legacy flat file
                 chapter.load_content_from_file(project_dir)
+                # Then migrate to folder structure
+                chapter.migrate_to_folder(project_dir)
+                needs_save = True
+            elif chapter.folder_path:
+                # Already folder-based, just load content
+                chapter.load_content_from_file(project_dir)
+                chapter.load_plan_from_file(project_dir)
+            elif chapter.file_path:
+                # Fallback: legacy flat file
+                chapter.load_content_from_file(project_dir)
+
+        # If we migrated, save the updated project metadata
+        if needs_save:
+            try:
+                print("  Saving migrated project metadata...")
+                project.save_project(file_path)
+                print("  Migration complete.")
+            except Exception as e:
+                print(f"  Warning: Could not save migration: {e}")
 
         return project
 

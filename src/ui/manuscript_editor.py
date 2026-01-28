@@ -5,12 +5,14 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QTextEdit, QToolBar, QComboBox, QSpinBox,
     QMessageBox, QInputDialog, QGroupBox, QSplitter, QFileDialog,
     QDialog, QMenu, QCheckBox, QLineEdit, QScrollArea, QFrame,
-    QProgressBar, QRadioButton, QButtonGroup, QTabWidget
+    QProgressBar, QRadioButton, QButtonGroup, QTabWidget,
+    QApplication
 )
-from PyQt6.QtCore import pyqtSignal, Qt, QSize
-from PyQt6.QtGui import QFont, QTextCursor, QAction, QTextCharFormat, QColor, QPainter
+from PyQt6.QtCore import pyqtSignal, Qt, QSize, QTimer
+from PyQt6.QtGui import QFont, QTextCursor, QAction, QTextCharFormat, QColor, QPainter, QTextDocument
 from typing import List, Optional
 import uuid
+from pathlib import Path
 
 from src.models.project import Manuscript, Chapter, Annotation, ChapterTodo, ChapterPlanning, StoryEvent
 from src.ui.enhanced_text_editor import EnhancedTextEditor, CheckMode
@@ -383,16 +385,23 @@ class ChapterEditor(QWidget):
         check_promises_button.clicked.connect(self._check_promises)
         bottom_toolbar.addWidget(check_promises_button)
 
-        # Save revision button
-        save_revision_button = QPushButton("Save Rev")
-        save_revision_button.setToolTip("Save revision")
+        # Prose Analysis button (AI)
+        prose_analysis_button = QPushButton("Prose")
+        prose_analysis_button.setToolTip("Analyze tone, style, and voice of this chapter using AI")
+        prose_analysis_button.setStyleSheet(compact_btn_style)
+        prose_analysis_button.clicked.connect(self._analyze_prose)
+        bottom_toolbar.addWidget(prose_analysis_button)
+
+        # Save draft button
+        save_revision_button = QPushButton("Save Draft")
+        save_revision_button.setToolTip("Save current content as a new draft")
         save_revision_button.setStyleSheet(compact_btn_style)
         save_revision_button.clicked.connect(self._save_revision)
         bottom_toolbar.addWidget(save_revision_button)
 
-        # View revisions button
-        view_revisions_button = QPushButton("Revisions")
-        view_revisions_button.setToolTip("View revisions")
+        # View drafts button
+        view_revisions_button = QPushButton("Drafts")
+        view_revisions_button.setToolTip("View and manage drafts")
         view_revisions_button.setStyleSheet(compact_btn_style)
         view_revisions_button.clicked.connect(self._view_revisions)
         bottom_toolbar.addWidget(view_revisions_button)
@@ -1311,6 +1320,137 @@ class ChapterEditor(QWidget):
         )
         dialog.exec()
 
+    def _analyze_prose(self):
+        """Analyze the tone, style, and voice of the current chapter using AI."""
+        text = self.editor.toPlainText()
+        if not text.strip():
+            QMessageBox.warning(self, "Empty Chapter", "Please write some content first.")
+            return
+
+        # Use a representative sample if the chapter is very long
+        word_count = len(text.split())
+        if word_count > 3000:
+            # Take first ~1500 words and last ~500 words for analysis
+            words = text.split()
+            sample = ' '.join(words[:1500]) + "\n\n[...]\n\n" + ' '.join(words[-500:])
+            sample_note = f"(Analyzed sample: first 1500 + last 500 of {word_count} words)"
+        else:
+            sample = text
+            sample_note = f"({word_count} words)"
+
+        # Build prose profile context if the project has targets set
+        profile_context = ""
+        profile_comparison_section = ""
+        project = self.project if hasattr(self, 'project') and self.project else None
+        if project and hasattr(project, 'prose_profile'):
+            pp = project.prose_profile
+            targets = []
+            if pp.tone:
+                targets.append(f"- **Target Tone:** {pp.tone}")
+            if pp.style:
+                targets.append(f"- **Target Style:** {pp.style}")
+            if pp.voice:
+                targets.append(f"- **Target Voice:** {pp.voice}")
+            if pp.genre:
+                targets.append(f"- **Target Genre:** {pp.genre}")
+            if pp.notes:
+                targets.append(f"- **Additional Notes:** {pp.notes}")
+            if targets:
+                profile_context = "\n\nPROJECT PROSE TARGETS (the author's intended direction):\n" + "\n".join(targets) + "\n"
+                profile_comparison_section = """
+
+## Alignment with Project Targets
+Compare this chapter's actual prose against the author's stated targets above. For each target dimension (tone, style, voice, genre), rate the alignment as Strong Match, Partial Match, or Divergent. Explain specifically where the prose aligns and where it drifts. If there are gaps, suggest concrete adjustments the author could make to close them. Be honest — if the prose already nails a target, say so; if it misses, explain exactly how."""
+
+        prompt = f"""Analyze the following prose excerpt and provide a detailed assessment. For every claim you make, explain your reasoning and cite short phrases from the text as evidence. Do not simply label — justify each observation.
+{profile_context}
+PROSE {sample_note}:
+---
+{sample}
+---
+
+Provide your analysis in these sections:
+
+## Tone
+Describe the emotional tone of the writing (e.g. dark, lighthearted, melancholic, tense, whimsical, foreboding, intimate, detached). Cite 2-3 short phrases that establish this tone and explain why each phrase produces that effect.
+
+## Style
+Describe the prose style. Consider sentence structure (short/punchy vs. flowing/complex), use of imagery, figurative language, level of detail, pacing, and paragraph rhythm. Is it minimalist, ornate, literary, conversational, cinematic? Explain what specific choices lead you to this conclusion.
+
+## Voice
+Describe the narrative voice. What personality comes through? Is it authoritative, confessional, sardonic, empathetic, clinical, poetic? How does the narrator relate to the reader? Point to specific passages that reveal the voice.
+
+## Genre
+Identify the genre and subgenre this prose belongs to. Consider the full range: literary fiction, dark fantasy, psychological thriller, magical realism, space opera, contemporary romance, horror, western, noir, dystopian, historical fiction, mystery, adventure, satire, southern gothic, cyberpunk, urban fantasy, military fiction, etc. Explain what genre signals are present — subject matter, tropes, conventions, setting cues, character archetypes, and reader expectations being set up. If the prose blends or subverts genre conventions, describe how and why that works or creates tension.
+{profile_comparison_section}
+## Comparable Authors
+Name 2-3 published authors whose style this prose most resembles. For each, explain specifically which aspects align (e.g. sentence rhythm, imagery density, emotional register, thematic concerns, subject matter treatment) and which aspects diverge.
+
+## Strengths
+List 2-3 specific things this prose does well. For each, quote a brief example from the text and explain why it works.
+
+## Areas to Watch
+List 2-3 aspects the writer should be mindful of (not necessarily weaknesses, but tendencies that could become issues at scale). For each, explain the risk and suggest what to watch for. Be constructive."""
+
+        # Show a progress indicator
+        self._prose_analysis_dialog = ProseAnalysisDialog(
+            chapter_title=self.chapter.title, parent=self)
+        self._prose_analysis_dialog.show()
+        self._prose_analysis_dialog.set_loading()
+
+        # Run AI request in background thread
+        import threading
+
+        def run_analysis():
+            try:
+                # Route through the same AI handler as chapter planner
+                # Walk up to find ManuscriptEditor for the AI handler
+                handler = self._get_ai_handler()
+                if handler:
+                    result = handler(prompt, "Auto")
+                else:
+                    result = self._fallback_local_analysis(prompt)
+
+                # Emit result back to main thread via a timer
+                QTimer.singleShot(0, lambda: self._on_prose_analysis_complete(result))
+
+            except Exception as e:
+                error = f"Analysis failed: {str(e)}"
+                QTimer.singleShot(0, lambda: self._on_prose_analysis_complete(error))
+
+        thread = threading.Thread(target=run_analysis, daemon=True)
+        thread.start()
+
+    def _get_ai_handler(self):
+        """Find the AI handler by walking up to the ManuscriptEditor."""
+        parent = self.parent()
+        while parent:
+            if hasattr(parent, '_handle_planner_ai_request'):
+                return parent._handle_planner_ai_request
+            parent = parent.parent() if hasattr(parent, 'parent') else None
+        return None
+
+    def _fallback_local_analysis(self, prompt: str) -> str:
+        """Fallback to local model if no handler found."""
+        try:
+            from src.ai.rephrasing_agent import RephrasingAgent
+            from src.config.ai_config import get_ai_config
+            config = get_ai_config()
+            settings = config.get_settings()
+            model_id = settings.get("reasoning_model_id") or settings.get("storytelling_model_id") or settings.get("local_model_id")
+            if not model_id:
+                return "No AI model configured. Please set up a model in Settings > Hugging Face / Local Models."
+            agent = RephrasingAgent()
+            agent.local_model_id = model_id
+            return agent._generate_local(prompt, max_tokens=2048)
+        except Exception as e:
+            return f"Local model error: {str(e)}"
+
+    def _on_prose_analysis_complete(self, result: str):
+        """Handle prose analysis result on the main thread."""
+        if hasattr(self, '_prose_analysis_dialog') and self._prose_analysis_dialog:
+            self._prose_analysis_dialog.set_result(result)
+
     def _lookup_selected_text(self, text: str):
         """Look up context for selected text."""
         if hasattr(self.editor, 'lookup_context_callback') and self.editor.lookup_context_callback:
@@ -1435,40 +1575,433 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
         """Save current content as a revision."""
         notes, ok = QInputDialog.getText(
             self,
-            "Save Revision",
-            "Enter revision notes (optional):"
+            "Save Draft",
+            "Enter draft notes (optional):"
         )
 
         if ok:
             self.save_to_model()
-            self.chapter.add_revision(notes)
+            html = self.editor.toHtml() if hasattr(self.editor, 'toHtml') else ""
+            project_dir = self._get_project_dir()
+            self.chapter.add_revision(notes, html_content=html, project_dir=project_dir)
             QMessageBox.information(
                 self,
-                "Revision Saved",
-                f"Revision #{len(self.chapter.revisions)} saved."
+                "Draft Saved",
+                f"Draft #{len(self.chapter.revisions)} saved."
             )
 
     def _view_revisions(self):
-        """View revision history."""
-        if not self.chapter.revisions:
-            QMessageBox.information(
-                self,
-                "No Revisions",
-                "No revision history available for this chapter."
-            )
+        """Open the revision management dialog."""
+        from src.ui.revision_dialog import RevisionDialog
+
+        # Get project directory
+        project_dir = self._get_project_dir()
+
+        # Get current editor content
+        current_content = self.editor.toPlainText() if hasattr(self.editor, 'toPlainText') else self.chapter.content
+        current_html = self.editor.toHtml() if hasattr(self.editor, 'toHtml') else self.chapter.html_content
+
+        dialog = RevisionDialog(
+            chapter=self.chapter,
+            project_dir=project_dir,
+            current_content=current_content,
+            current_html=current_html,
+            parent=self
+        )
+
+        # Handle revision restore
+        def on_restore(content, html):
+            if html:
+                self.editor.setHtml(html)
+            else:
+                self.editor.setPlainText(content)
+            self.content_changed.emit()
+
+        # Handle edit alongside
+        def on_edit_alongside(rev_number):
+            self._enter_side_by_side(rev_number)
+
+        dialog.revision_restored.connect(on_restore)
+        dialog.edit_alongside.connect(on_edit_alongside)
+        dialog.exec()
+
+        # If revisions were modified, mark content changed so project saves
+        self.content_changed.emit()
+
+    def _get_project_dir(self):
+        """Get the project directory path."""
+        # First check own project reference
+        if self.project and hasattr(self.project, 'project_path') and self.project.project_path:
+            return Path(self.project.project_path).parent
+        # Walk up to find ManuscriptEditor
+        parent = self.parent()
+        while parent:
+            if hasattr(parent, 'project') and parent.project:
+                if hasattr(parent.project, 'project_path') and parent.project.project_path:
+                    return Path(parent.project.project_path).parent
+            parent = parent.parent() if hasattr(parent, 'parent') else None
+        return None
+
+    # --- Side-by-side editing ---
+
+    def _is_wide_screen(self) -> bool:
+        """Check if the screen is wide enough for horizontal side-by-side."""
+        screen = QApplication.primaryScreen()
+        if screen:
+            return screen.availableGeometry().width() >= 1400
+        return True
+
+    def _enter_side_by_side(self, reference_revision_number: int):
+        """Enter side-by-side editing mode: current draft left/top, older draft right/bottom."""
+        if hasattr(self, '_side_by_side_mode') and self._side_by_side_mode:
+            self._exit_side_by_side()
+
+        self._side_by_side_mode = True
+        self._reference_revision = reference_revision_number
+
+        # Load reference content and metadata
+        project_dir = self._get_project_dir()
+        ref_content = ""
+        ref_notes = ""
+        ref_html = ""
+        ref_date = ""
+        if project_dir:
+            ref_content = self.chapter.load_revision_content(
+                project_dir, reference_revision_number) or ""
+        for rev in self.chapter.revisions:
+            if rev.revision_number == reference_revision_number:
+                ref_notes = rev.notes or ""
+                ref_html = rev.html_content or ""
+                ref_date = rev.timestamp.strftime("%b %d, %Y %H:%M") if rev.timestamp else ""
+                if not ref_content:
+                    ref_content = rev.content
+                break
+
+        # Determine layout orientation based on screen width
+        use_horizontal = self._is_wide_screen()
+        orientation = Qt.Orientation.Horizontal if use_horizontal else Qt.Orientation.Vertical
+
+        # --- Build the side-by-side container ---
+        self._sbs_container = QWidget()
+        sbs_outer = QVBoxLayout(self._sbs_container)
+        sbs_outer.setContentsMargins(0, 0, 0, 0)
+        sbs_outer.setSpacing(4)
+
+        # --- Search bar ---
+        search_bar = QHBoxLayout()
+        search_bar.setSpacing(4)
+
+        search_label = QLabel("Find:")
+        search_label.setStyleSheet("font-size: 11px; font-weight: bold; padding: 2px;")
+        search_bar.addWidget(search_label)
+
+        self._sbs_search_field = QLineEdit()
+        self._sbs_search_field.setPlaceholderText("Search in drafts...")
+        self._sbs_search_field.setStyleSheet("""
+            QLineEdit {
+                padding: 4px 8px; border: 1px solid #d1d5db; border-radius: 4px;
+                font-size: 11px; background: white;
+            }
+            QLineEdit:focus { border: 2px solid #6366f1; }
+        """)
+        self._sbs_search_field.returnPressed.connect(self._sbs_search_next)
+        search_bar.addWidget(self._sbs_search_field)
+
+        self._sbs_search_scope = QComboBox()
+        self._sbs_search_scope.addItems(["Both Drafts", "Current Draft", "Older Draft"])
+        self._sbs_search_scope.setStyleSheet("font-size: 11px; padding: 2px;")
+        self._sbs_search_scope.setMaximumWidth(120)
+        search_bar.addWidget(self._sbs_search_scope)
+
+        search_next_btn = QPushButton("Next")
+        search_next_btn.setStyleSheet(
+            "font-size: 11px; padding: 3px 8px; background: #6366f1; color: white;"
+            " border: none; border-radius: 4px;")
+        search_next_btn.clicked.connect(self._sbs_search_next)
+        search_bar.addWidget(search_next_btn)
+
+        search_prev_btn = QPushButton("Prev")
+        search_prev_btn.setStyleSheet(
+            "font-size: 11px; padding: 3px 8px; background: #6366f1; color: white;"
+            " border: none; border-radius: 4px;")
+        search_prev_btn.clicked.connect(self._sbs_search_prev)
+        search_bar.addWidget(search_prev_btn)
+
+        self._sbs_search_status = QLabel("")
+        self._sbs_search_status.setStyleSheet("font-size: 10px; color: #6b7280;")
+        search_bar.addWidget(self._sbs_search_status)
+
+        search_bar.addStretch()
+
+        close_sbs_btn = QPushButton("Close Side-by-Side")
+        close_sbs_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ef4444; color: white; border: none;
+                border-radius: 4px; padding: 4px 12px; font-size: 11px; font-weight: 500;
+            }
+            QPushButton:hover { background-color: #dc2626; }
+        """)
+        close_sbs_btn.clicked.connect(self._exit_side_by_side)
+        search_bar.addWidget(close_sbs_btn)
+
+        sbs_outer.addLayout(search_bar)
+
+        # --- Splitter with two panes ---
+        self._sbs_splitter = QSplitter(orientation)
+
+        # === Left/Top pane: CURRENT DRAFT ===
+        current_pane_widget = QWidget()
+        current_pane_layout = QVBoxLayout(current_pane_widget)
+        current_pane_layout.setContentsMargins(0, 0, 0, 0)
+        current_pane_layout.setSpacing(2)
+
+        current_label = QLabel("Current Draft (latest)")
+        current_label.setStyleSheet(
+            "font-weight: bold; font-size: 12px; color: #059669; padding: 4px 8px;"
+            "background-color: #ecfdf5; border-radius: 4px;")
+        current_pane_layout.addWidget(current_label)
+
+        # We'll reparent the main editor + annotation margin into this pane
+        # Store original parent so we can restore on exit
+        self._sbs_original_editor_parent = self.editor.parent()
+        self._sbs_original_margin_parent = self.annotation_margin.parent()
+        self._sbs_original_editor_layout = self._sbs_original_editor_parent.layout() if self._sbs_original_editor_parent else None
+
+        # Wrap editor + margin in a new horizontal layout
+        current_editor_row = QHBoxLayout()
+        current_editor_row.setContentsMargins(0, 0, 0, 0)
+        current_editor_row.setSpacing(0)
+        self.annotation_margin.setParent(None)
+        self.editor.setParent(None)
+        current_editor_row.addWidget(self.annotation_margin)
+        current_editor_row.addWidget(self.editor)
+        current_pane_layout.addLayout(current_editor_row)
+
+        current_wc = len(self.editor.toPlainText().split()) if self.editor.toPlainText().strip() else 0
+        self._current_wc_label = QLabel(f"Words: {current_wc}")
+        self._current_wc_label.setStyleSheet("font-size: 11px; color: #6b7280; padding: 2px;")
+        current_pane_layout.addWidget(self._current_wc_label)
+
+        self._sbs_splitter.addWidget(current_pane_widget)
+
+        # === Right/Bottom pane: OLDER DRAFT ===
+        older_pane_widget = QWidget()
+        older_pane_layout = QVBoxLayout(older_pane_widget)
+        older_pane_layout.setContentsMargins(0, 0, 0, 0)
+        older_pane_layout.setSpacing(2)
+
+        # Header with label + action buttons
+        older_header = QHBoxLayout()
+        older_title = f"Older Draft #{reference_revision_number}"
+        if ref_notes:
+            older_title += f" - {ref_notes}"
+        if ref_date:
+            older_title += f"  ({ref_date})"
+        older_label = QLabel(older_title)
+        older_label.setStyleSheet(
+            "font-weight: bold; font-size: 12px; color: #b45309; padding: 4px 8px;"
+            "background-color: #fffbeb; border-radius: 4px;")
+        older_header.addWidget(older_label)
+        older_header.addStretch()
+
+        # Toggle editable
+        self._ref_edit_btn = QPushButton("Make Editable")
+        self._ref_edit_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #6366f1; color: white; border: none;
+                border-radius: 4px; padding: 4px 10px; font-size: 11px;
+            }
+            QPushButton:hover { background-color: #4f46e5; }
+        """)
+        self._ref_edit_btn.clicked.connect(self._toggle_reference_editable)
+        older_header.addWidget(self._ref_edit_btn)
+
+        # Delete draft
+        delete_rev_btn = QPushButton("Delete Draft")
+        delete_rev_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ef4444; color: white; border: none;
+                border-radius: 4px; padding: 4px 10px; font-size: 11px;
+            }
+            QPushButton:hover { background-color: #dc2626; }
+        """)
+        delete_rev_btn.clicked.connect(self._delete_reference_revision)
+        older_header.addWidget(delete_rev_btn)
+
+        older_pane_layout.addLayout(older_header)
+
+        # Older draft text pane
+        self._reference_pane = QTextEdit()
+        self._reference_pane.setReadOnly(True)
+        self._reference_pane.setFont(QFont("Times New Roman", 12))
+        if ref_html:
+            self._reference_pane.setHtml(ref_html)
+        else:
+            self._reference_pane.setPlainText(ref_content)
+        self._reference_pane.setStyleSheet("""
+            QTextEdit {
+                background-color: #fffdf7;
+                border: 2px solid #fde68a;
+                border-radius: 4px;
+                padding: 8px;
+            }
+        """)
+        older_pane_layout.addWidget(self._reference_pane)
+
+        ref_wc = len(ref_content.split()) if ref_content.strip() else 0
+        self._ref_wc_label = QLabel(f"Words: {ref_wc}  |  Read-only")
+        self._ref_wc_label.setStyleSheet("font-size: 11px; color: #6b7280; padding: 2px;")
+        older_pane_layout.addWidget(self._ref_wc_label)
+
+        self._sbs_splitter.addWidget(older_pane_widget)
+
+        # Equal sizing
+        self._sbs_splitter.setSizes([500, 500])
+        sbs_outer.addWidget(self._sbs_splitter)
+
+        # --- Insert the side-by-side container into the editor's place ---
+        # The editor_widget (containing toolbar, title, editor_container, bottom_toolbar)
+        # is in the main_splitter. We insert our sbs_container into the editor_layout
+        # in place of the original editor_container.
+        # We stored editor_container as a QHBoxLayout at line ~298, but we need
+        # to find the parent widget that holds everything.
+        # The main_splitter's first widget is editor_widget.
+        editor_widget = self.main_splitter.widget(0)
+        if editor_widget and editor_widget.layout():
+            # Insert sbs_container before the bottom toolbar (at index 2, after toolbar + title)
+            # The layout is: toolbar(0), title_layout(1), editor_container(2), bottom_toolbar(3)
+            editor_widget.layout().insertWidget(2, self._sbs_container)
+
+    def _toggle_reference_editable(self):
+        """Toggle the older draft pane between read-only and editable."""
+        if not hasattr(self, '_reference_pane') or not self._reference_pane:
             return
 
-        # TODO: Create a proper revision viewer dialog
-        revision_list = "\n".join([
-            f"Revision {r.revision_number}: {r.timestamp.strftime('%Y-%m-%d %H:%M')} - {r.notes}"
-            for r in self.chapter.revisions
-        ])
+        is_readonly = self._reference_pane.isReadOnly()
+        self._reference_pane.setReadOnly(not is_readonly)
 
-        QMessageBox.information(
-            self,
-            "Revision History",
-            revision_list
+        if is_readonly:
+            self._ref_edit_btn.setText("Make Read-Only")
+            self._reference_pane.setStyleSheet("""
+                QTextEdit {
+                    background-color: #ffffff;
+                    border: 2px solid #f59e0b;
+                    border-radius: 4px;
+                    padding: 8px;
+                }
+            """)
+            wc = len(self._reference_pane.toPlainText().split()) if self._reference_pane.toPlainText().strip() else 0
+            self._ref_wc_label.setText(f"Words: {wc}  |  Editable")
+        else:
+            self._ref_edit_btn.setText("Make Editable")
+            self._reference_pane.setStyleSheet("""
+                QTextEdit {
+                    background-color: #fffdf7;
+                    border: 2px solid #fde68a;
+                    border-radius: 4px;
+                    padding: 8px;
+                }
+            """)
+            wc = len(self._reference_pane.toPlainText().split()) if self._reference_pane.toPlainText().strip() else 0
+            self._ref_wc_label.setText(f"Words: {wc}  |  Read-only")
+
+    def _delete_reference_revision(self):
+        """Delete the older draft currently shown in the reference pane."""
+        if not hasattr(self, '_reference_revision') or not self._reference_revision:
+            return
+
+        rev_num = self._reference_revision
+
+        if rev_num == self.chapter.active_revision_number:
+            QMessageBox.warning(
+                self, "Cannot Delete",
+                "Cannot delete the active draft.")
+            return
+
+        reply = QMessageBox.question(
+            self, "Delete Draft",
+            f"Permanently delete Draft #{rev_num}?\n\nThis cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
         )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Delete file from disk
+        project_dir = self._get_project_dir()
+        for rev in self.chapter.revisions:
+            if rev.revision_number == rev_num and rev.file_path and project_dir:
+                full_path = project_dir / rev.file_path
+                if full_path.exists():
+                    full_path.unlink()
+
+        self.chapter.revisions = [
+            r for r in self.chapter.revisions if r.revision_number != rev_num
+        ]
+
+        self._exit_side_by_side()
+        self.content_changed.emit()
+
+    def _sbs_search_next(self):
+        """Search forward in one or both draft panes."""
+        self._sbs_do_search(forward=True)
+
+    def _sbs_search_prev(self):
+        """Search backward in one or both draft panes."""
+        self._sbs_do_search(forward=False)
+
+    def _sbs_do_search(self, forward: bool = True):
+        """Execute search across selected draft panes."""
+        if not hasattr(self, '_sbs_search_field'):
+            return
+        query = self._sbs_search_field.text()
+        if not query:
+            return
+
+        scope = self._sbs_search_scope.currentText()
+        flags = QTextDocument.FindFlag(0)
+        if not forward:
+            flags = QTextDocument.FindFlag.FindBackward
+
+        found_in = []
+
+        if scope in ("Both Drafts", "Current Draft"):
+            if self.editor.find(query, flags):
+                found_in.append("current")
+
+        if scope in ("Both Drafts", "Older Draft"):
+            if hasattr(self, '_reference_pane') and self._reference_pane:
+                if self._reference_pane.find(query, flags):
+                    found_in.append("older")
+
+        if found_in:
+            label_parts = [{"current": "Current", "older": "Older"}[f] for f in found_in]
+            self._sbs_search_status.setText(f"Found in: {', '.join(label_parts)}")
+            self._sbs_search_status.setStyleSheet("font-size: 10px; color: #059669;")
+        else:
+            self._sbs_search_status.setText("Not found")
+            self._sbs_search_status.setStyleSheet("font-size: 10px; color: #ef4444;")
+
+    def _exit_side_by_side(self):
+        """Exit side-by-side editing mode, restoring the editor to its original position."""
+        if not hasattr(self, '_side_by_side_mode') or not self._side_by_side_mode:
+            return
+
+        self._side_by_side_mode = False
+
+        # Reparent editor + margin back to their original container
+        if hasattr(self, '_sbs_original_editor_layout') and self._sbs_original_editor_layout:
+            self.annotation_margin.setParent(None)
+            self.editor.setParent(None)
+            self._sbs_original_editor_layout.addWidget(self.annotation_margin)
+            self._sbs_original_editor_layout.addWidget(self.editor)
+
+        # Remove the side-by-side container
+        if hasattr(self, '_sbs_container') and self._sbs_container:
+            self._sbs_container.setParent(None)
+            self._sbs_container.deleteLater()
+            self._sbs_container = None
+            self._reference_pane = None
+            self._sbs_splitter = None
 
     def _import_from_word(self):
         """Import chapter content from Word document."""
@@ -2070,20 +2603,107 @@ class ManuscriptEditor(QWidget):
         menu = QMenu(self)
 
         # Rename action
-        rename_action = menu.addAction("✏️ Rename")
+        rename_action = menu.addAction("Rename")
         rename_action.triggered.connect(self._rename_chapter)
 
         # Insert before action
-        insert_action = menu.addAction("📄 Insert Before")
+        insert_action = menu.addAction("Insert Before")
         insert_action.triggered.connect(self._insert_chapter)
 
         menu.addSeparator()
 
+        # Draft actions
+        new_rev_action = menu.addAction("New Draft")
+        new_rev_action.triggered.connect(self._new_revision_from_context)
+
+        revisions_action = menu.addAction("Drafts...")
+        revisions_action.triggered.connect(self._view_revisions_from_context)
+
+        menu.addSeparator()
+
         # Delete action
-        delete_action = menu.addAction("🗑️ Delete")
+        delete_action = menu.addAction("Delete Chapter")
         delete_action.triggered.connect(self._remove_chapter)
 
         menu.exec(self.chapter_list.mapToGlobal(position))
+
+    def _get_context_chapter(self):
+        """Get the chapter for the currently selected list item."""
+        item = self.chapter_list.currentItem()
+        if not item:
+            return None
+        chapter_id = item.data(Qt.ItemDataRole.UserRole)
+        for ch in self.manuscript.chapters:
+            if ch.id == chapter_id:
+                return ch
+        return None
+
+    def _get_project_dir(self):
+        """Get the project directory path."""
+        if hasattr(self, 'project') and self.project and hasattr(self.project, 'project_path'):
+            return Path(self.project.project_path).parent
+        # Fallback: try to find from any chapter's file_path
+        for ch in self.manuscript.chapters:
+            if ch.folder_path or ch.file_path:
+                return None  # We need project_path set
+        return None
+
+    def _new_revision_from_context(self):
+        """Create a new revision for the selected chapter via context menu."""
+        chapter = self._get_context_chapter()
+        if not chapter:
+            return
+
+        project_dir = self._get_project_dir()
+
+        notes, ok = QInputDialog.getText(
+            self, "New Draft",
+            f"Create a new blank draft for '{chapter.title}'.\n"
+            "Draft notes (optional):",
+            text=""
+        )
+        if not ok:
+            return
+
+        # If this chapter is currently in the editor, save its content first
+        if self.current_chapter_editor and hasattr(self.current_chapter_editor, 'chapter') and \
+                self.current_chapter_editor.chapter and self.current_chapter_editor.chapter.id == chapter.id:
+            self.current_chapter_editor.save_to_model()
+
+        chapter.create_blank_revision(project_dir=project_dir, notes=notes or "New draft")
+
+        # If chapter is open in editor, enter side-by-side mode
+        if self.current_chapter_editor and hasattr(self.current_chapter_editor, 'chapter') and \
+                self.current_chapter_editor.chapter and self.current_chapter_editor.chapter.id == chapter.id:
+            # The previous active revision number (before the blank one)
+            prev_rev = chapter.active_revision_number - 1 if chapter.active_revision_number > 1 else 1
+            self.current_chapter_editor._enter_side_by_side(prev_rev)
+
+        self.content_changed.emit()
+
+    def _view_revisions_from_context(self):
+        """Open revision dialog for the selected chapter via context menu."""
+        chapter = self._get_context_chapter()
+        if not chapter:
+            return
+
+        # If this chapter is currently in the editor, use the editor's method
+        if self.current_chapter_editor and hasattr(self.current_chapter_editor, 'chapter') and \
+                self.current_chapter_editor.chapter and self.current_chapter_editor.chapter.id == chapter.id:
+            self.current_chapter_editor._view_revisions()
+        else:
+            # Open dialog directly for a chapter not currently displayed
+            project_dir = self._get_project_dir()
+            from src.ui.revision_dialog import RevisionDialog
+            dialog = RevisionDialog(
+                chapter=chapter,
+                project_dir=project_dir,
+                current_content=chapter.content,
+                current_html=chapter.html_content,
+                parent=self
+            )
+            dialog.exec()
+            self.content_changed.emit()
 
     def _add_chapter(self):
         """Add new chapter at the end."""
@@ -2195,20 +2815,43 @@ class ManuscriptEditor(QWidget):
             self.content_changed.emit()
 
     def _remove_chapter(self):
-        """Remove selected chapter."""
+        """Remove selected chapter and its folder from disk."""
         current_item = self.chapter_list.currentItem()
         if not current_item:
             return
 
-        reply = QMessageBox.question(
+        chapter_id = current_item.data(Qt.ItemDataRole.UserRole)
+        chapter = None
+        for ch in self.manuscript.chapters:
+            if ch.id == chapter_id:
+                chapter = ch
+                break
+
+        # Build warning message
+        rev_count = len(chapter.revisions) if chapter else 0
+        folder_info = ""
+        if chapter and chapter.folder_path:
+            folder_info = (
+                f"\n\nThis will permanently delete the chapter folder "
+                f"and all {rev_count} revision(s) from disk."
+            )
+
+        reply = QMessageBox.warning(
             self,
-            "Confirm Delete",
-            f"Are you sure you want to delete '{current_item.text()}'?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            "Delete Chapter",
+            f"Are you sure you want to delete '{current_item.text()}'?"
+            f"{folder_info}\n\nThis action cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
         )
 
         if reply == QMessageBox.StandardButton.Yes:
-            chapter_id = current_item.data(Qt.ItemDataRole.UserRole)
+            # Delete chapter folder from disk
+            if chapter and chapter.folder_path:
+                project_dir = self._get_project_dir()
+                if project_dir:
+                    chapter.delete_folder(project_dir)
+
             self.manuscript.chapters = [
                 c for c in self.manuscript.chapters if c.id != chapter_id
             ]
@@ -2528,6 +3171,161 @@ class ManuscriptEditor(QWidget):
         cursor.endEditBlock()
 
         return count
+
+
+class ProseAnalysisDialog(QDialog):
+    """Scrollable, copyable dialog for displaying prose analysis results."""
+
+    def __init__(self, chapter_title: str = "", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Prose Analysis - {chapter_title}" if chapter_title else "Prose Analysis")
+        self.setMinimumSize(650, 500)
+        self.resize(750, 600)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        # Header
+        header = QLabel(f"Prose Analysis: {chapter_title}")
+        header.setStyleSheet("font-weight: bold; font-size: 14px; padding: 4px;")
+        layout.addWidget(header)
+
+        # Results area - scrollable and copyable
+        self._results = QTextEdit()
+        self._results.setReadOnly(True)
+        self._results.setFont(QFont("Segoe UI", 11))
+        self._results.setStyleSheet("""
+            QTextEdit {
+                border: 1px solid #d1d5db;
+                border-radius: 6px;
+                padding: 12px;
+                background-color: #fefefe;
+                line-height: 1.6;
+            }
+        """)
+        layout.addWidget(self._results)
+
+        # Bottom buttons
+        btn_bar = QHBoxLayout()
+        btn_bar.addStretch()
+
+        copy_btn = QPushButton("Copy to Clipboard")
+        copy_btn.setStyleSheet("""
+            QPushButton {
+                padding: 8px 16px; border-radius: 6px; font-size: 12px;
+                background-color: #6366f1; color: white; border: none;
+            }
+            QPushButton:hover { background-color: #4f46e5; }
+        """)
+        copy_btn.clicked.connect(self._copy_results)
+        btn_bar.addWidget(copy_btn)
+
+        close_btn = QPushButton("Close")
+        close_btn.setStyleSheet("""
+            QPushButton {
+                padding: 8px 16px; border-radius: 6px; font-size: 12px;
+                background-color: #e5e7eb; border: none;
+            }
+            QPushButton:hover { background-color: #d1d5db; }
+        """)
+        close_btn.clicked.connect(self.close)
+        btn_bar.addWidget(close_btn)
+
+        layout.addLayout(btn_bar)
+
+    def set_loading(self):
+        """Show a loading state."""
+        self._results.setHtml(
+            '<div style="text-align: center; padding: 40px; color: #6b7280;">'
+            '<p style="font-size: 16px;">Analyzing prose...</p>'
+            '<p style="font-size: 12px;">This may take a moment depending on your AI model.</p>'
+            '</div>'
+        )
+
+    def set_result(self, text: str):
+        """Display the analysis result with markdown-like formatting."""
+        # Convert markdown headers and bold to HTML for display
+        html = self._markdown_to_html(text)
+        self._results.setHtml(html)
+
+    def _markdown_to_html(self, text: str) -> str:
+        """Convert basic markdown to HTML for display."""
+        import re
+        lines = text.split('\n')
+        html_lines = []
+        in_list = False
+
+        for line in lines:
+            stripped = line.strip()
+
+            # Headers
+            if stripped.startswith('## '):
+                if in_list:
+                    html_lines.append('</ul>')
+                    in_list = False
+                html_lines.append(
+                    f'<h3 style="color: #4f46e5; margin-top: 16px; margin-bottom: 4px;">'
+                    f'{stripped[3:]}</h3>')
+                continue
+            if stripped.startswith('# '):
+                if in_list:
+                    html_lines.append('</ul>')
+                    in_list = False
+                html_lines.append(
+                    f'<h2 style="color: #312e81; margin-top: 20px; margin-bottom: 6px;">'
+                    f'{stripped[2:]}</h2>')
+                continue
+
+            # List items
+            if stripped.startswith('- ') or stripped.startswith('* '):
+                if not in_list:
+                    html_lines.append('<ul style="margin: 4px 0;">')
+                    in_list = True
+                item_text = stripped[2:]
+                item_text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', item_text)
+                item_text = re.sub(r'\*(.+?)\*', r'<em>\1</em>', item_text)
+                html_lines.append(f'<li style="margin: 2px 0;">{item_text}</li>')
+                continue
+
+            # Numbered list items
+            if re.match(r'^\d+\.\s', stripped):
+                if not in_list:
+                    html_lines.append('<ul style="margin: 4px 0;">')
+                    in_list = True
+                item_text = re.sub(r'^\d+\.\s', '', stripped)
+                item_text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', item_text)
+                item_text = re.sub(r'\*(.+?)\*', r'<em>\1</em>', item_text)
+                html_lines.append(f'<li style="margin: 2px 0;">{item_text}</li>')
+                continue
+
+            # Close list if we hit a non-list line
+            if in_list:
+                html_lines.append('</ul>')
+                in_list = False
+
+            # Empty lines
+            if not stripped:
+                html_lines.append('<br>')
+                continue
+
+            # Regular paragraph with inline formatting
+            p = stripped
+            p = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', p)
+            p = re.sub(r'\*(.+?)\*', r'<em>\1</em>', p)
+            p = re.sub(r'"(.+?)"', r'<span style="color: #6d28d9;">&ldquo;\1&rdquo;</span>', p)
+            html_lines.append(f'<p style="margin: 4px 0; line-height: 1.5;">{p}</p>')
+
+        if in_list:
+            html_lines.append('</ul>')
+
+        return '<div style="font-family: Segoe UI, sans-serif; font-size: 13px;">' + '\n'.join(html_lines) + '</div>'
+
+    def _copy_results(self):
+        """Copy the plain text results to clipboard."""
+        text = self._results.toPlainText()
+        if text:
+            QApplication.clipboard().setText(text)
+            QMessageBox.information(self, "Copied", "Analysis copied to clipboard.")
 
 
 class PromiseCheckDialog(QDialog):

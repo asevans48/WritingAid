@@ -221,20 +221,40 @@ class TTSService:
         return voices
 
     def _get_edge_voices(self) -> List[TTSVoice]:
-        """Get edge-tts voices (common ones for quick access)."""
-        # Return a curated list of popular edge voices
-        # Full list requires async call to edge_tts.list_voices()
-        common_voices = [
-            TTSVoice("en-US-AriaNeural", "Aria (US)", "en-US", "female", TTSEngine.EDGE),
-            TTSVoice("en-US-GuyNeural", "Guy (US)", "en-US", "male", TTSEngine.EDGE),
-            TTSVoice("en-US-JennyNeural", "Jenny (US)", "en-US", "female", TTSEngine.EDGE),
-            TTSVoice("en-GB-SoniaNeural", "Sonia (UK)", "en-GB", "female", TTSEngine.EDGE),
-            TTSVoice("en-GB-RyanNeural", "Ryan (UK)", "en-GB", "male", TTSEngine.EDGE),
+        """Get edge-tts voices curated for narration and storytelling."""
+        # Curated list of the best Microsoft Edge neural voices for reading prose.
+        # Multilingual voices marked with (Multilingual) can switch styles/languages.
+        # Voices are sorted by quality for long-form narration.
+        voices = [
+            # --- Top picks for narration (US) ---
+            TTSVoice("en-US-AvaMultilingualNeural", "Ava (US, Multilingual) - warm narrator", "en-US", "female", TTSEngine.EDGE),
+            TTSVoice("en-US-AndrewMultilingualNeural", "Andrew (US, Multilingual) - calm narrator", "en-US", "male", TTSEngine.EDGE),
+            TTSVoice("en-US-EmmaMultilingualNeural", "Emma (US, Multilingual) - clear narrator", "en-US", "female", TTSEngine.EDGE),
+            TTSVoice("en-US-BrianMultilingualNeural", "Brian (US, Multilingual) - deep narrator", "en-US", "male", TTSEngine.EDGE),
+            TTSVoice("en-US-AriaNeural", "Aria (US) - expressive", "en-US", "female", TTSEngine.EDGE),
+            TTSVoice("en-US-JennyNeural", "Jenny (US) - friendly", "en-US", "female", TTSEngine.EDGE),
+            TTSVoice("en-US-GuyNeural", "Guy (US) - conversational", "en-US", "male", TTSEngine.EDGE),
+            TTSVoice("en-US-DavisNeural", "Davis (US) - authoritative", "en-US", "male", TTSEngine.EDGE),
+            TTSVoice("en-US-JaneNeural", "Jane (US) - professional", "en-US", "female", TTSEngine.EDGE),
+            TTSVoice("en-US-JasonNeural", "Jason (US) - steady", "en-US", "male", TTSEngine.EDGE),
+            TTSVoice("en-US-NancyNeural", "Nancy (US) - warm", "en-US", "female", TTSEngine.EDGE),
+            TTSVoice("en-US-TonyNeural", "Tony (US) - engaging", "en-US", "male", TTSEngine.EDGE),
+            TTSVoice("en-US-SaraNeural", "Sara (US) - gentle", "en-US", "female", TTSEngine.EDGE),
+            # --- British voices (great for literary prose) ---
+            TTSVoice("en-GB-SoniaNeural", "Sonia (UK) - refined", "en-GB", "female", TTSEngine.EDGE),
+            TTSVoice("en-GB-RyanNeural", "Ryan (UK) - articulate", "en-GB", "male", TTSEngine.EDGE),
+            TTSVoice("en-GB-LibbyNeural", "Libby (UK) - natural", "en-GB", "female", TTSEngine.EDGE),
+            TTSVoice("en-GB-MaisieNeural", "Maisie (UK) - young", "en-GB", "female", TTSEngine.EDGE),
+            # --- Other English variants ---
             TTSVoice("en-AU-NatashaNeural", "Natasha (AU)", "en-AU", "female", TTSEngine.EDGE),
+            TTSVoice("en-AU-WilliamNeural", "William (AU)", "en-AU", "male", TTSEngine.EDGE),
             TTSVoice("en-CA-ClaraNeural", "Clara (CA)", "en-CA", "female", TTSEngine.EDGE),
+            TTSVoice("en-CA-LiamNeural", "Liam (CA)", "en-CA", "male", TTSEngine.EDGE),
+            TTSVoice("en-IE-EmilyNeural", "Emily (IE)", "en-IE", "female", TTSEngine.EDGE),
+            TTSVoice("en-IE-ConnorNeural", "Connor (IE)", "en-IE", "male", TTSEngine.EDGE),
             TTSVoice("en-IN-NeerjaNeural", "Neerja (IN)", "en-IN", "female", TTSEngine.EDGE),
         ]
-        return common_voices
+        return voices
 
     def _get_vibevoice_voices(self) -> List[TTSVoice]:
         """Get VibeVoice voice presets."""
