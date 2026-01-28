@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QProgressBar, QRadioButton, QButtonGroup, QTabWidget,
     QApplication
 )
-from PyQt6.QtCore import pyqtSignal, Qt, QSize, QTimer
+from PyQt6.QtCore import pyqtSignal, Qt, QSize
 from PyQt6.QtGui import QFont, QTextCursor, QAction, QTextCharFormat, QColor, QPainter, QTextDocument
 from typing import List, Optional
 import uuid
@@ -112,6 +112,7 @@ class ChapterEditor(QWidget):
     content_changed = pyqtSignal()
     word_count_changed = pyqtSignal(int)
     annotations_changed = pyqtSignal()  # Signal when annotations are added/edited/deleted
+    _prose_analysis_ready = pyqtSignal(str)  # Signal to deliver prose analysis result to main thread
 
     def __init__(self, chapter: Chapter, project=None):
         """Initialize chapter editor."""
@@ -119,6 +120,7 @@ class ChapterEditor(QWidget):
         self.chapter = chapter
         self.project = project
         self._llm_client = None
+        self._prose_analysis_ready.connect(self._on_prose_analysis_complete)
         self._init_ui()
         self._init_ai()
         self._load_chapter()
@@ -1411,12 +1413,10 @@ List 2-3 aspects the writer should be mindful of (not necessarily weaknesses, bu
                 else:
                     result = self._fallback_local_analysis(prompt)
 
-                # Emit result back to main thread via a timer
-                QTimer.singleShot(0, lambda: self._on_prose_analysis_complete(result))
+                self._prose_analysis_ready.emit(result)
 
             except Exception as e:
-                error = f"Analysis failed: {str(e)}"
-                QTimer.singleShot(0, lambda: self._on_prose_analysis_complete(error))
+                self._prose_analysis_ready.emit(f"Analysis failed: {str(e)}")
 
         thread = threading.Thread(target=run_analysis, daemon=True)
         thread.start()
