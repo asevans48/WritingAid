@@ -756,7 +756,6 @@ For each option, briefly explain what makes it different from the original."""
                 step_start = time.time()
                 tokenizer = AutoTokenizer.from_pretrained(
                     model_id,
-                    trust_remote_code=True,
                     token=hf_token
                 )
                 print(f"[OK] Tokenizer loaded ({time.time() - step_start:.2f}s)")
@@ -799,8 +798,7 @@ For each option, briefly explain what makes it different from the original."""
                     step_start = time.time()
 
                     model_kwargs = {
-                        "torch_dtype": dtype,
-                        "trust_remote_code": True,
+                        "dtype": dtype,
                         "attn_implementation": "eager",  # Use eager attention to avoid flash attention recursion
                         "token": hf_token,  # For gated model access (e.g., Gemma)
                     }
@@ -842,9 +840,8 @@ For each option, briefly explain what makes it different from the original."""
                         # Reload without device_map, then move to CUDA
                         model = AutoModelForCausalLM.from_pretrained(
                             model_id,
-                            torch_dtype=dtype,
+                            dtype=dtype,
                             low_cpu_mem_usage=True,
-                            trust_remote_code=True,
                             attn_implementation="eager",
                             token=hf_token,
                         )
@@ -901,10 +898,9 @@ For each option, briefly explain what makes it different from the original."""
                         try:
                             model = AutoModelForCausalLM.from_pretrained(
                                 model_id,
-                                torch_dtype=dtype,
+                                dtype=dtype,
                                 device_map="auto",
                                 offload_folder="offload",
-                                trust_remote_code=True,
                                 attn_implementation="eager",
                                 token=hf_token,
                             )
@@ -920,9 +916,8 @@ For each option, briefly explain what makes it different from the original."""
                             torch.cuda.empty_cache()
                             model = AutoModelForCausalLM.from_pretrained(
                                 model_id,
-                                torch_dtype=torch.float32,
+                                dtype=torch.float32,
                                 low_cpu_mem_usage=True,
-                                trust_remote_code=True,
                                 attn_implementation="eager",
                                 token=hf_token
                             )
@@ -938,9 +933,8 @@ For each option, briefly explain what makes it different from the original."""
 
                             model = AutoModelForCausalLM.from_pretrained(
                                 model_id,
-                                torch_dtype=torch.float32,
+                                dtype=torch.float32,
                                 low_cpu_mem_usage=True,
-                                trust_remote_code=True,
                                 attn_implementation="eager",
                                 token=hf_token
                             )
@@ -1263,9 +1257,25 @@ For each option, briefly explain what makes it different from the original."""
             if pad_token_id is None:
                 pad_token_id = self._local_tokenizer.eos_token_id
 
-            # Check if this is a Gemma model (known CUDA assertion issues)
+            # Check if this is a model with known CUDA assertion issues
             model_id_lower = (self.local_model_id or "").lower()
-            is_gemma = "gemma" in model_id_lower
+            is_cuda_fragile = any(k in model_id_lower for k in ("gemma", "qwen"))
+
+            # If CUDA previously failed, proactively move everything to CPU now
+            # (before generation, not after crash)
+            if _cuda_failed and self._device == "cuda":
+                print("  ** CUDA previously poisoned — moving model and tensors to CPU before generation **")
+                try:
+                    self._local_model = self._local_model.to("cpu")
+                    inputs = inputs.to("cpu")
+                    attention_mask = attention_mask.to("cpu")
+                    self._device = "cpu"
+                    _model_cache.set_model(self._model_id, self._local_model, self._local_tokenizer, "cpu")
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    print("  [OK] Moved to CPU")
+                except Exception as move_err:
+                    print(f"  [WARN] Could not move to CPU: {move_err}")
 
             try:
                 # Build generation kwargs
@@ -1278,10 +1288,10 @@ For each option, briefly explain what makes it different from the original."""
                     "num_beams": 1,  # Disable beam search to reduce complexity
                 }
 
-                if is_gemma and self._device == "cuda":
-                    # Gemma on CUDA: use greedy decoding to avoid CUDA assertion errors
-                    # The assertion errors occur during sampling with certain token IDs
-                    print("  (Gemma on CUDA: using greedy decoding to avoid assertion errors)")
+                if is_cuda_fragile:
+                    # Known fragile models (Gemma, Qwen): use greedy decoding to avoid
+                    # CUDA assertion errors and invalid generation flag warnings
+                    print(f"  (Fragile model detected: using greedy decoding)")
                     gen_kwargs["do_sample"] = False
                 else:
                     # Other models: use sampling with temperature

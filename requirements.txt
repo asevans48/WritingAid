@@ -11,7 +11,7 @@ langgraph>=0.0.20
 
 # Hugging Face Integration
 huggingface_hub>=0.21.0  # For model downloads and HF Inference API
-transformers>=4.47.0  # For loading and running local models (4.47+ required for Gemma 3)
+transformers>=4.47.0,<5.0.0  # For loading and running local models (4.47+ required for Gemma 3)
 safetensors>=0.4.0  # For efficient model weight loading
 sentencepiece>=0.2.0  # Tokenizer for Gemma, Llama, and other models (required on Windows)
 protobuf>=4.25.0  # Required for some model tokenizers
