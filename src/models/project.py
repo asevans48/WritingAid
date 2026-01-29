@@ -702,6 +702,7 @@ class WriterProject(BaseModel):
             'generated_images': [],
             'agent_contacts': [],
             'dictionary': {},
+            'prose_profile': {},
         }
 
         for section, default in section_defaults.items():

@@ -113,6 +113,9 @@ class ChapterEditor(QWidget):
     word_count_changed = pyqtSignal(int)
     annotations_changed = pyqtSignal()  # Signal when annotations are added/edited/deleted
     _prose_analysis_ready = pyqtSignal(str)  # Signal to deliver prose analysis result to main thread
+    _character_analysis_ready = pyqtSignal(str)
+    _world_analysis_ready = pyqtSignal(str)
+    _plot_analysis_ready = pyqtSignal(str)
 
     def __init__(self, chapter: Chapter, project=None):
         """Initialize chapter editor."""
@@ -121,6 +124,9 @@ class ChapterEditor(QWidget):
         self.project = project
         self._llm_client = None
         self._prose_analysis_ready.connect(self._on_prose_analysis_complete)
+        self._character_analysis_ready.connect(self._on_character_analysis_complete)
+        self._world_analysis_ready.connect(self._on_world_analysis_complete)
+        self._plot_analysis_ready.connect(self._on_plot_analysis_complete)
         self._init_ui()
         self._init_ai()
         self._load_chapter()
@@ -393,6 +399,27 @@ class ChapterEditor(QWidget):
         prose_analysis_button.setStyleSheet(compact_btn_style)
         prose_analysis_button.clicked.connect(self._analyze_prose)
         bottom_toolbar.addWidget(prose_analysis_button)
+
+        # Character Analysis button (AI)
+        char_analysis_button = QPushButton("Chars")
+        char_analysis_button.setToolTip("Check character consistency against character profiles")
+        char_analysis_button.setStyleSheet(compact_btn_style)
+        char_analysis_button.clicked.connect(self._analyze_characters)
+        bottom_toolbar.addWidget(char_analysis_button)
+
+        # World Analysis button (AI)
+        world_analysis_button = QPushButton("World")
+        world_analysis_button.setToolTip("Check worldbuilding consistency in this chapter")
+        world_analysis_button.setStyleSheet(compact_btn_style)
+        world_analysis_button.clicked.connect(self._analyze_world)
+        bottom_toolbar.addWidget(world_analysis_button)
+
+        # Plot Analysis button (AI)
+        plot_analysis_button = QPushButton("Plot")
+        plot_analysis_button.setToolTip("Check plot adherence and pacing against story plan")
+        plot_analysis_button.setStyleSheet(compact_btn_style)
+        plot_analysis_button.clicked.connect(self._analyze_plot)
+        bottom_toolbar.addWidget(plot_analysis_button)
 
         # Save draft button
         save_revision_button = QPushButton("Save Draft")
@@ -1364,7 +1391,7 @@ class ChapterEditor(QWidget):
 ## Alignment with Project Targets
 Compare this chapter's actual prose against the author's stated targets above. For each target dimension (tone, style, voice, genre), rate the alignment as Strong Match, Partial Match, or Divergent. Explain specifically where the prose aligns and where it drifts. If there are gaps, suggest concrete adjustments the author could make to close them. Be honest — if the prose already nails a target, say so; if it misses, explain exactly how."""
 
-        prompt = f"""Analyze the following prose excerpt and provide a detailed assessment. For every claim you make, explain your reasoning and cite short phrases from the text as evidence. Do not simply label — justify each observation.
+        prompt = f"""Analyze the following prose excerpt and provide a detailed assessment of THIS chapter's prose only. For every claim you make, explain your reasoning and cite short phrases from the text as evidence. Do not simply label — justify each observation. Focus exclusively on what is written in this chapter — do not reference characters, events, or content from other chapters or the broader project.
 {profile_context}
 PROSE {sample_note}:
 ---
@@ -1450,6 +1477,494 @@ List 2-3 aspects the writer should be mindful of (not necessarily weaknesses, bu
         """Handle prose analysis result on the main thread."""
         if hasattr(self, '_prose_analysis_dialog') and self._prose_analysis_dialog:
             self._prose_analysis_dialog.set_result(result)
+
+    # ------------------------------------------------------------------
+    # Character Analysis
+    # ------------------------------------------------------------------
+
+    def _get_chapter_sample(self):
+        """Get chapter text, sampling if very long. Returns (sample, note) or None."""
+        text = self.editor.toPlainText()
+        if not text.strip():
+            QMessageBox.warning(self, "Empty Chapter", "Please write some content first.")
+            return None
+        word_count = len(text.split())
+        if word_count > 3000:
+            words = text.split()
+            sample = ' '.join(words[:1500]) + "\n\n[...]\n\n" + ' '.join(words[-500:])
+            note = f"(Analyzed sample: first 1500 + last 500 of {word_count} words)"
+        else:
+            sample = text
+            note = f"({word_count} words)"
+        return sample, note
+
+    def _build_character_context(self):
+        """Build character reference data from the project."""
+        project = self.project if hasattr(self, 'project') and self.project else None
+        if not project or not project.characters:
+            return ""
+
+        parts = []
+        for ch in project.characters:
+            desc = [f"**{ch.name}** ({ch.character_type})"]
+            if ch.personality:
+                desc.append(f"  Personality: {ch.personality[:200]}")
+            if ch.backstory:
+                desc.append(f"  Backstory: {ch.backstory[:200]}")
+            if ch.physical_description:
+                desc.append(f"  Appearance: {ch.physical_description[:150]}")
+            if ch.social_network:
+                rels = ", ".join(f"{k}: {v}" for k, v in list(ch.social_network.items())[:5])
+                desc.append(f"  Relationships: {rels}")
+            if ch.notes:
+                desc.append(f"  Notes: {ch.notes[:150]}")
+            parts.append("\n".join(desc))
+
+        return "\n\n".join(parts)
+
+    def _analyze_characters(self):
+        """Analyze character consistency against character profiles."""
+        result = self._get_chapter_sample()
+        if result is None:
+            return
+        sample, sample_note = result
+
+        char_context = self._build_character_context()
+        if not char_context:
+            QMessageBox.warning(
+                self, "No Characters",
+                "No characters defined in the project. Add characters first.")
+            return
+
+        # Include chapter planning characters if set
+        planning_chars = ""
+        if self.chapter.planning and self.chapter.planning.characters_featured:
+            planning_chars = f"\n\nCHARACTERS EXPECTED IN THIS CHAPTER:\n- " + "\n- ".join(
+                self.chapter.planning.characters_featured)
+
+        # Prose profile for voice context
+        prose_context = ""
+        project = self.project if hasattr(self, 'project') and self.project else None
+        if project and hasattr(project, 'prose_profile') and project.prose_profile.voice:
+            prose_context = f"\n\nPROJECT VOICE: {project.prose_profile.voice}"
+
+        prompt = f"""Analyze the following chapter for CHARACTER CONSISTENCY against the established character profiles below.
+
+CRITICAL SCOPE RULE: ONLY analyze characters who actually appear, speak, or are mentioned BY NAME in the chapter text below. The character profiles are reference material — do NOT discuss characters who are absent from this chapter. Every observation MUST cite specific text from the chapter as evidence.
+
+CHARACTER PROFILES (reference only — use these to check consistency for characters who appear):
+{char_context}
+{planning_chars}{prose_context}
+
+CHAPTER TEXT {sample_note}:
+---
+{sample}
+---
+
+Provide your analysis in these sections:
+
+## Characters Present
+List ONLY the characters who appear, speak, or are mentioned by name in this chapter. For each, note whether they have a defined profile above or are new/unnamed. Do NOT list characters from the profiles who are absent.
+
+## Personality Consistency
+For each character PRESENT IN THIS CHAPTER who has a profile, check whether their behavior, speech patterns, and actions are consistent with their defined personality. Cite dialogue or actions that align or conflict. Flag anything out of character.
+
+## Relationship Consistency
+Check whether character interactions IN THIS CHAPTER match the defined relationships (allies, enemies, family, etc.). Only assess relationships between characters who actually interact here.
+
+## Backstory & Knowledge Consistency
+Flag any moments in this chapter where a character demonstrates knowledge, skills, or references history that contradicts their backstory or established abilities.
+
+## Physical Description Consistency
+Note any physical descriptions IN THIS CHAPTER and check they match the character profiles. Flag contradictions (e.g., eye color, build, distinguishing features). Skip this section if no physical descriptions appear.
+
+## Voice Distinctiveness
+Assess whether characters who speak in this chapter have distinct voices in dialogue. Do they sound different from each other? Are speech patterns consistent with their personality and background?
+
+## Advice
+Provide 2-3 specific, actionable suggestions for improving character consistency or deepening characterization in THIS chapter. Focus only on what's written here."""
+
+        self._character_analysis_dialog = ProseAnalysisDialog(
+            chapter_title=f"Character Analysis - {self.chapter.title}", parent=self)
+        self._character_analysis_dialog.show()
+        self._character_analysis_dialog.set_loading()
+
+        import threading
+
+        def run_analysis():
+            try:
+                handler = self._get_ai_handler()
+                if handler:
+                    result = handler(prompt, "Auto")
+                else:
+                    result = self._fallback_local_analysis(prompt)
+                self._character_analysis_ready.emit(result)
+            except Exception as e:
+                self._character_analysis_ready.emit(f"Analysis failed: {str(e)}")
+
+        thread = threading.Thread(target=run_analysis, daemon=True)
+        thread.start()
+
+    def _on_character_analysis_complete(self, result: str):
+        """Handle character analysis result."""
+        if hasattr(self, '_character_analysis_dialog') and self._character_analysis_dialog:
+            self._character_analysis_dialog.set_result(result)
+
+    # ------------------------------------------------------------------
+    # World Analysis
+    # ------------------------------------------------------------------
+
+    def _build_world_context(self):
+        """Build worldbuilding reference data from the project."""
+        project = self.project if hasattr(self, 'project') and self.project else None
+        if not project:
+            return ""
+
+        wb = project.worldbuilding
+        parts = []
+
+        # Places
+        if wb.places:
+            place_descs = []
+            for p in wb.places[:10]:
+                desc = f"- **{p.name}** ({p.place_type.value if hasattr(p.place_type, 'value') else p.place_type}): {p.description[:150]}"
+                if p.climate:
+                    desc += f" | Climate: {p.climate}"
+                if p.atmosphere:
+                    desc += f" | Atmosphere: {p.atmosphere[:80]}"
+                place_descs.append(desc)
+            parts.append("PLACES:\n" + "\n".join(place_descs))
+
+        # Factions
+        if wb.factions:
+            faction_descs = []
+            for f in wb.factions[:8]:
+                desc = f"- **{f.name}** ({f.faction_type.value if hasattr(f.faction_type, 'value') else f.faction_type}): {f.description[:150]}"
+                if f.leader:
+                    desc += f" | Leader: {f.leader}"
+                faction_descs.append(desc)
+            parts.append("FACTIONS:\n" + "\n".join(faction_descs))
+
+        # Technologies
+        if wb.technologies:
+            tech_descs = [f"- **{t.name}**: {t.description[:100]}" for t in wb.technologies[:8]]
+            parts.append("TECHNOLOGIES:\n" + "\n".join(tech_descs))
+
+        # Cultures
+        if wb.cultures:
+            culture_descs = [f"- **{c.name}**: {c.description[:150]}" for c in wb.cultures[:6]]
+            parts.append("CULTURES:\n" + "\n".join(culture_descs))
+
+        # Historical Events
+        if wb.historical_events:
+            event_descs = [f"- **{e.name}** ({e.date}): {e.description[:100]}" for e in wb.historical_events[:8]]
+            parts.append("HISTORICAL EVENTS:\n" + "\n".join(event_descs))
+
+        # Planets
+        if wb.star_systems or getattr(wb, 'planets_elements', None):
+            planet_parts = []
+            for ss in wb.star_systems[:4]:
+                planet_parts.append(f"- **{ss.name}** ({ss.system_type}): {ss.description[:100]}")
+                for planet in ss.planets[:3]:
+                    planet_parts.append(f"  - **{planet.name}** ({planet.planet_type.value if hasattr(planet.planet_type, 'value') else planet.planet_type}): {planet.description[:80]}")
+            if planet_parts:
+                parts.append("STAR SYSTEMS & PLANETS:\n" + "\n".join(planet_parts))
+
+        # Flora & Fauna
+        if wb.flora:
+            flora_descs = [f"- **{fl.name}**: {fl.description[:80]}" for fl in wb.flora[:6]]
+            parts.append("FLORA:\n" + "\n".join(flora_descs))
+        if wb.fauna:
+            fauna_descs = [f"- **{fa.name}**: {fa.description[:80]}" for fa in wb.fauna[:6]]
+            parts.append("FAUNA:\n" + "\n".join(fauna_descs))
+
+        # Myths
+        if wb.myths:
+            myth_descs = [f"- **{m.name}** ({m.myth_type}): {m.description[:100]}" for m in wb.myths[:6]]
+            parts.append("MYTHS & LEGENDS:\n" + "\n".join(myth_descs))
+
+        # Legacy text fields as fallback
+        for field_name in ['mythology', 'climate', 'history', 'politics', 'military', 'economy']:
+            val = getattr(wb, field_name, '')
+            if val and val.strip():
+                parts.append(f"{field_name.upper()}:\n{val[:300]}")
+
+        return "\n\n".join(parts)
+
+    def _analyze_world(self):
+        """Analyze worldbuilding consistency in this chapter."""
+        result = self._get_chapter_sample()
+        if result is None:
+            return
+        sample, sample_note = result
+
+        world_context = self._build_world_context()
+        if not world_context:
+            QMessageBox.warning(
+                self, "No Worldbuilding",
+                "No worldbuilding data defined in the project. Add places, factions, or other elements first.")
+            return
+
+        # Include chapter planning locations if set
+        planning_locs = ""
+        if self.chapter.planning and self.chapter.planning.locations:
+            planning_locs = f"\n\nLOCATIONS EXPECTED IN THIS CHAPTER:\n- " + "\n- ".join(
+                self.chapter.planning.locations)
+
+        prompt = f"""Analyze the following chapter for WORLDBUILDING CONSISTENCY against the established world elements below.
+
+CRITICAL SCOPE RULE: ONLY analyze world elements that are actually referenced, described, or relevant to what happens in this chapter. The worldbuilding data is reference material — do NOT discuss places, factions, technologies, or elements that never appear in this chapter. Every observation MUST cite specific text from the chapter as evidence.
+
+ESTABLISHED WORLDBUILDING (reference only — use these to check consistency for elements that appear):
+{world_context}
+{planning_locs}
+
+CHAPTER TEXT {sample_note}:
+---
+{sample}
+---
+
+Provide your analysis in these sections:
+
+## World Elements Present
+List ONLY the places, factions, technologies, cultures, creatures, and world-specific elements that are actually mentioned or described in this chapter. Note whether each has a defined profile in the worldbuilding data. Do NOT list worldbuilding elements that are absent from this chapter.
+
+## Geographic & Setting Consistency
+For locations that appear IN THIS CHAPTER, check that descriptions match the established profiles — climate, atmosphere, features, size, population. Flag any contradictions. Skip if no established locations appear.
+
+## Faction & Political Consistency
+For factions referenced IN THIS CHAPTER, check that behaviors, alliances, enemies, and power dynamics match the established worldbuilding. Skip if no factions appear.
+
+## Technology & Magic Consistency
+For technologies or magical systems used IN THIS CHAPTER, verify consistency with established rules and tech level. Flag anachronisms. Skip if none appear.
+
+## Cultural Consistency
+For cultural elements referenced IN THIS CHAPTER, check alignment with established cultures. Skip if none appear.
+
+## Historical Accuracy
+For historical references made IN THIS CHAPTER, check against established events and dates. Skip if none appear.
+
+## Undeveloped World Elements
+Note any NEW world elements introduced in this chapter that don't have profiles in the worldbuilding data. Suggest which ones should be formally added.
+
+## Advice
+Provide 2-3 specific, actionable suggestions for improving worldbuilding in THIS chapter. Focus on what's actually written — consider immersion, sensory details, and showing the world through character interaction rather than exposition."""
+
+        self._world_analysis_dialog = ProseAnalysisDialog(
+            chapter_title=f"World Analysis - {self.chapter.title}", parent=self)
+        self._world_analysis_dialog.show()
+        self._world_analysis_dialog.set_loading()
+
+        import threading
+
+        def run_analysis():
+            try:
+                handler = self._get_ai_handler()
+                if handler:
+                    result = handler(prompt, "Auto")
+                else:
+                    result = self._fallback_local_analysis(prompt)
+                self._world_analysis_ready.emit(result)
+            except Exception as e:
+                self._world_analysis_ready.emit(f"Analysis failed: {str(e)}")
+
+        thread = threading.Thread(target=run_analysis, daemon=True)
+        thread.start()
+
+    def _on_world_analysis_complete(self, result: str):
+        """Handle world analysis result."""
+        if hasattr(self, '_world_analysis_dialog') and self._world_analysis_dialog:
+            self._world_analysis_dialog.set_result(result)
+
+    # ------------------------------------------------------------------
+    # Plot Analysis
+    # ------------------------------------------------------------------
+
+    def _build_plot_context(self):
+        """Build plot reference data from the project."""
+        project = self.project if hasattr(self, 'project') and self.project else None
+        if not project:
+            return ""
+
+        sp = project.story_planning
+        parts = []
+
+        # Main plot
+        if sp.main_plot:
+            parts.append(f"MAIN PLOT:\n{sp.main_plot}")
+
+        # Themes
+        if sp.themes:
+            parts.append("THEMES:\n- " + "\n- ".join(sp.themes))
+
+        # Freytag pyramid events
+        fp = sp.freytag_pyramid
+        if fp.events:
+            event_parts = []
+            for evt in fp.events:
+                event_parts.append(
+                    f"- [{evt.stage.upper()}] **{evt.title}**: {evt.description[:120]}"
+                    + (f" (Outcome: {evt.outcome[:80]})" if evt.outcome else "")
+                )
+            parts.append("PLOT EVENTS (Freytag Pyramid):\n" + "\n".join(event_parts))
+        else:
+            # Legacy text fields
+            for stage in ['exposition', 'rising_action', 'climax', 'falling_action', 'resolution']:
+                val = getattr(fp, stage, '')
+                if val and val.strip():
+                    parts.append(f"{stage.upper().replace('_', ' ')}:\n{val[:200]}")
+
+        # Subplots
+        if sp.subplots:
+            subplot_parts = []
+            for sub in sp.subplots:
+                subplot_parts.append(
+                    f"- **{sub.title}** ({sub.status}): {sub.description[:120]}"
+                    + (f" | Connection: {sub.connection_to_main[:80]}" if sub.connection_to_main else "")
+                )
+            parts.append("SUBPLOTS:\n" + "\n".join(subplot_parts))
+
+        # Story promises
+        if sp.promises:
+            promise_parts = [f"- [{p.promise_type}] **{p.title}**: {p.description[:100]}" for p in sp.promises]
+            parts.append("STORY PROMISES:\n" + "\n".join(promise_parts))
+
+        return "\n\n".join(parts)
+
+    def _build_chapter_plan_context(self):
+        """Build the chapter-specific planning context."""
+        cp = self.chapter.planning
+        if not cp:
+            return ""
+
+        parts = []
+        if cp.description:
+            parts.append(f"CHAPTER DESCRIPTION: {cp.description}")
+        if cp.events:
+            event_parts = [
+                f"- [{e.stage}] {e.text}: {e.description[:100]}" + (" ✓" if e.completed else "")
+                for e in cp.events
+            ]
+            parts.append("PLANNED EVENTS:\n" + "\n".join(event_parts))
+        if cp.scene_list:
+            parts.append("PLANNED SCENES:\n- " + "\n- ".join(cp.scene_list))
+        if cp.themes:
+            parts.append("CHAPTER THEMES:\n- " + "\n- ".join(cp.themes))
+        if cp.pov_character:
+            parts.append(f"POV CHARACTER: {cp.pov_character}")
+        if cp.timeline_position:
+            parts.append(f"TIMELINE POSITION: {cp.timeline_position}")
+        if cp.tone:
+            parts.append(f"CHAPTER TONE: {cp.tone}")
+        if cp.notes:
+            parts.append(f"NOTES: {cp.notes[:300]}")
+
+        return "\n".join(parts)
+
+    def _analyze_plot(self):
+        """Analyze plot adherence and pacing against story plan."""
+        result = self._get_chapter_sample()
+        if result is None:
+            return
+        sample, sample_note = result
+
+        plot_context = self._build_plot_context()
+        chapter_plan = self._build_chapter_plan_context()
+
+        if not plot_context and not chapter_plan:
+            QMessageBox.warning(
+                self, "No Plot Data",
+                "No story planning or chapter plan defined. Add a main plot, events, or chapter plan first.")
+            return
+
+        # Prose profile for pacing context
+        prose_context = ""
+        project = self.project if hasattr(self, 'project') and self.project else None
+        if project and hasattr(project, 'prose_profile'):
+            pp = project.prose_profile
+            ctx_parts = []
+            if pp.genre:
+                ctx_parts.append(f"Genre: {pp.genre}")
+            if pp.tone:
+                ctx_parts.append(f"Target Tone: {pp.tone}")
+            if ctx_parts:
+                prose_context = "\n\nPROSE PROFILE:\n" + "\n".join(ctx_parts)
+
+        # Get chapter number for arc position context
+        chapter_position = ""
+        if self.chapter.number:
+            total = 0
+            if project and project.manuscript and project.manuscript.chapters:
+                total = len(project.manuscript.chapters)
+            chapter_position = f"\n\nCHAPTER POSITION: Chapter {self.chapter.number}" + (f" of {total}" if total else "")
+
+        prompt = f"""Analyze the following chapter for PLOT ADHERENCE AND PACING against the story plan below.
+
+CRITICAL SCOPE RULE: ONLY analyze what actually happens in this chapter. The story plan is reference material for checking alignment — do NOT summarize or discuss plot events, subplots, or promises that are not touched by this chapter. Every observation MUST cite specific text from the chapter as evidence.
+
+STORY PLAN (reference only — use to check alignment):
+{plot_context}
+
+CHAPTER PLAN:
+{chapter_plan if chapter_plan else "(No specific chapter plan set)"}
+{prose_context}{chapter_position}
+
+CHAPTER TEXT {sample_note}:
+---
+{sample}
+---
+
+Provide your analysis in these sections:
+
+## Plot Events in This Chapter
+List which planned plot events or chapter events actually occur in this chapter. For each, note if it's fully executed, partially addressed, or just hinted at. Cite the relevant text. Only list events that are actually present.
+
+## Plot Advancement
+Assess how this chapter advances the main plot based on what's written. Does it move the story forward meaningfully, or does it stall? What story questions does it raise or answer? Cite specific moments.
+
+## Subplot Progress
+Identify which subplots (if any) are advanced in this chapter. Only discuss subplots that are actually touched here. Are connections to the main plot maintained?
+
+## Pacing Assessment
+Evaluate the pacing of this chapter as written. Is it well-balanced between action, dialogue, reflection, and description? Flag specific sections that drag or feel rushed, citing the text.
+
+## Story Promise Fulfillment
+Check whether this chapter works toward fulfilling any story promises that are relevant to its content. Only discuss promises that are actually touched here.
+
+## Theme Integration
+Assess how themes are expressed in this chapter through action and character. Only discuss themes that are actually present in the text.
+
+## Structural Position
+Evaluate whether this chapter's content is appropriate for its position in the narrative arc. Is the tension level right for where we are in the story?
+
+## Advice
+Provide 3-4 specific, actionable suggestions for improving THIS chapter's plot effectiveness. Focus on what's written — consider missing beats, pacing adjustments, tension opportunities, foreshadowing, and scene ordering. Do not suggest adding content from other parts of the story plan that don't belong in this chapter."""
+
+        self._plot_analysis_dialog = ProseAnalysisDialog(
+            chapter_title=f"Plot Analysis - {self.chapter.title}", parent=self)
+        self._plot_analysis_dialog.show()
+        self._plot_analysis_dialog.set_loading()
+
+        import threading
+
+        def run_analysis():
+            try:
+                handler = self._get_ai_handler()
+                if handler:
+                    result = handler(prompt, "Auto")
+                else:
+                    result = self._fallback_local_analysis(prompt)
+                self._plot_analysis_ready.emit(result)
+            except Exception as e:
+                self._plot_analysis_ready.emit(f"Analysis failed: {str(e)}")
+
+        thread = threading.Thread(target=run_analysis, daemon=True)
+        thread.start()
+
+    def _on_plot_analysis_complete(self, result: str):
+        """Handle plot analysis result."""
+        if hasattr(self, '_plot_analysis_dialog') and self._plot_analysis_dialog:
+            self._plot_analysis_dialog.set_result(result)
 
     def _lookup_selected_text(self, text: str):
         """Look up context for selected text."""
