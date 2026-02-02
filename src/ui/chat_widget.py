@@ -621,8 +621,10 @@ class ChatWidget(QWidget):
             bubble_style = "background-color: #6366f1; color: white; border-radius: 12px 12px 4px 12px; padding: 8px 12px; margin: 4px 0 4px 40px; display: inline-block;"
             formatted = f'<div style="text-align: right;"><span style="{bubble_style}">{message}</span></div>'
         else:
+            # Convert markdown to HTML for AI responses
+            html_message = self._markdown_to_html(message)
             bubble_style = "background-color: white; color: #1a1a1a; border: 1px solid #e5e7eb; border-radius: 12px 12px 12px 4px; padding: 8px 12px; margin: 4px 40px 4px 0; display: inline-block;"
-            formatted = f'<div style="text-align: left;"><span style="{bubble_style}"><strong style="color: #6366f1;">AI:</strong> {message}</span></div>'
+            formatted = f'<div style="text-align: left;"><span style="{bubble_style}"><strong style="color: #6366f1;">AI:</strong> {html_message}</span></div>'
 
             # Check if training is enabled to show rating widget
             settings = self._ai_config.get_settings()
@@ -633,6 +635,122 @@ class ChatWidget(QWidget):
                 self.rating_widget.setVisible(True)
 
         self.chat_history.append(formatted)
+
+    def _markdown_to_html(self, text: str) -> str:
+        """Convert markdown in AI responses to HTML for display."""
+        import re
+
+        lines = text.split('\n')
+        html_lines = []
+        in_list = False
+        in_code_block = False
+
+        for line in lines:
+            stripped = line.strip()
+
+            # Code blocks (```)
+            if stripped.startswith('```'):
+                if in_code_block:
+                    html_lines.append('</pre>')
+                    in_code_block = False
+                else:
+                    if in_list:
+                        html_lines.append('</ul>')
+                        in_list = False
+                    html_lines.append(
+                        '<pre style="background-color: #f3f4f6; padding: 8px; '
+                        'border-radius: 4px; font-family: monospace; font-size: 12px; '
+                        'white-space: pre-wrap; margin: 4px 0;">')
+                    in_code_block = True
+                continue
+
+            if in_code_block:
+                # Escape HTML inside code blocks
+                escaped = stripped.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                html_lines.append(escaped)
+                continue
+
+            # Headers
+            if stripped.startswith('### '):
+                if in_list:
+                    html_lines.append('</ul>')
+                    in_list = False
+                html_lines.append(
+                    f'<div style="color: #4f46e5; font-weight: bold; font-size: 12px; '
+                    f'margin-top: 10px; margin-bottom: 2px;">{stripped[4:]}</div>')
+                continue
+            if stripped.startswith('## '):
+                if in_list:
+                    html_lines.append('</ul>')
+                    in_list = False
+                html_lines.append(
+                    f'<div style="color: #4f46e5; font-weight: bold; font-size: 13px; '
+                    f'margin-top: 12px; margin-bottom: 2px;">{stripped[3:]}</div>')
+                continue
+            if stripped.startswith('# '):
+                if in_list:
+                    html_lines.append('</ul>')
+                    in_list = False
+                html_lines.append(
+                    f'<div style="color: #312e81; font-weight: bold; font-size: 14px; '
+                    f'margin-top: 14px; margin-bottom: 4px;">{stripped[2:]}</div>')
+                continue
+
+            # List items (- or *)
+            if stripped.startswith('- ') or stripped.startswith('* '):
+                if not in_list:
+                    html_lines.append('<ul style="margin: 4px 0 4px 16px; padding: 0;">')
+                    in_list = True
+                item_text = stripped[2:]
+                item_text = self._inline_markdown(item_text)
+                html_lines.append(f'<li style="margin: 2px 0;">{item_text}</li>')
+                continue
+
+            # Numbered list items
+            if re.match(r'^\d+\.\s', stripped):
+                if not in_list:
+                    html_lines.append('<ul style="margin: 4px 0 4px 16px; padding: 0;">')
+                    in_list = True
+                item_text = re.sub(r'^\d+\.\s', '', stripped)
+                item_text = self._inline_markdown(item_text)
+                html_lines.append(f'<li style="margin: 2px 0;">{item_text}</li>')
+                continue
+
+            # Close list if we hit a non-list line
+            if in_list:
+                html_lines.append('</ul>')
+                in_list = False
+
+            # Empty lines become breaks
+            if not stripped:
+                html_lines.append('<br>')
+                continue
+
+            # Regular paragraph with inline formatting
+            p = self._inline_markdown(stripped)
+            html_lines.append(f'<div style="margin: 3px 0; line-height: 1.5;">{p}</div>')
+
+        if in_list:
+            html_lines.append('</ul>')
+        if in_code_block:
+            html_lines.append('</pre>')
+
+        return '\n'.join(html_lines)
+
+    def _inline_markdown(self, text: str) -> str:
+        """Convert inline markdown (bold, italic, code) to HTML."""
+        import re
+        # Bold
+        text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
+        # Italic
+        text = re.sub(r'\*(.+?)\*', r'<em>\1</em>', text)
+        # Inline code
+        text = re.sub(
+            r'`([^`]+)`',
+            r'<code style="background-color: #f3f4f6; padding: 1px 4px; border-radius: 3px; font-family: monospace; font-size: 12px;">\1</code>',
+            text
+        )
+        return text
 
     def set_characters(self, characters: list):
         """Populate character POV dropdown from project characters.

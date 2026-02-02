@@ -2942,12 +2942,17 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
         Content is stored as plain text with Markdown formatting.
         Planning data is saved separately and NOT exported with manuscript.
         """
-        self.chapter.title = self.title_edit.toPlainText()
-        # Save plain text content (contains Markdown formatting)
-        self.chapter.content = self.editor.toPlainText()
+        # Check if Qt widgets are still valid (not deleted)
+        try:
+            self.chapter.title = self.title_edit.toPlainText()
+            # Save plain text content (contains Markdown formatting)
+            self.chapter.content = self.editor.toPlainText()
 
-        # Save planning data (separate from content, not exported)
-        planning_data = self.planner_widget.get_planning_data()
+            # Save planning data (separate from content, not exported)
+            planning_data = self.planner_widget.get_planning_data()
+        except RuntimeError:
+            # Widget has been deleted, skip saving
+            return
 
         # Update the planning object
         self.chapter.planning.outline = planning_data.get('outline', '')
@@ -3371,11 +3376,18 @@ class ManuscriptEditor(QWidget):
                 c for c in self.manuscript.chapters if c.id != chapter_id
             ]
 
+            # Block signals to prevent selection change from triggering save on deleted widgets
+            self.chapter_list.blockSignals(True)
+
             row = self.chapter_list.row(current_item)
             self.chapter_list.takeItem(row)
 
             self._renumber_chapters()
             self._clear_editor()
+
+            # Re-enable signals
+            self.chapter_list.blockSignals(False)
+
             self.content_changed.emit()
 
     def _move_chapter_up(self):

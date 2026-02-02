@@ -618,16 +618,22 @@ class ChapterPlannerWidget(QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
+        # === Upper portion: scrollable planning content ===
+        upper_widget = QWidget()
+        upper_layout = QVBoxLayout(upper_widget)
+        upper_layout.setContentsMargins(0, 0, 0, 0)
+        upper_layout.setSpacing(4)
+
         # Header
         header = QLabel("Chapter Planning")
         header.setStyleSheet("font-size: 14px; font-weight: 600; color: #1a1a1a; padding: 4px;")
-        layout.addWidget(header)
+        upper_layout.addWidget(header)
 
         # Info label
         info_label = QLabel("Plan your chapter here. Planning data is NOT exported with your manuscript.")
         info_label.setStyleSheet("color: #666; font-size: 11px; font-style: italic; padding: 2px;")
         info_label.setWordWrap(True)
-        layout.addWidget(info_label)
+        upper_layout.addWidget(info_label)
 
         # Main tab widget for different planning sections
         self.tab_widget = QTabWidget()
@@ -892,7 +898,15 @@ class ChapterPlannerWidget(QWidget):
 
         self.tab_widget.addTab(notes_tab, "Notes")
 
-        layout.addWidget(self.tab_widget)
+        upper_layout.addWidget(self.tab_widget)
+
+        # Wrap upper portion in a scroll area so it scrolls when AI panel is expanded
+        upper_scroll = QScrollArea()
+        upper_scroll.setWidget(upper_widget)
+        upper_scroll.setWidgetResizable(True)
+        upper_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        upper_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        layout.addWidget(upper_scroll, 1)  # stretch factor 1 — takes remaining space
 
         # === COLLAPSIBLE AI ASSISTANT PANEL ===
         self.ai_panel = QFrame()
@@ -954,7 +968,7 @@ class ChapterPlannerWidget(QWidget):
         self.chat_history.setStyleSheet("background-color: #f8f9fa;")
         self.chat_history.setPlaceholderText("AI responses...")
         self.chat_history.setMinimumHeight(100)
-        self.chat_history.setMaximumHeight(150)
+        self.chat_history.setMaximumHeight(250)
         ai_content_layout.addWidget(self.chat_history)
 
         # Chat input - compact
@@ -1378,27 +1392,154 @@ class ChapterPlannerWidget(QWidget):
         """Append a message to the chat history."""
         print(f"[ChapterPlanner] _append_to_chat called: role={role}, message_len={len(message)}")
 
-        # HTML escape the message to prevent rendering issues with special characters
-        import html
-        escaped_message = html.escape(message)
-
         cursor = self.chat_history.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
 
-        if role == "user":
-            cursor.insertHtml(f'<p style="color: #0066cc;"><b>You:</b> {escaped_message}</p>')
-        elif role == "assistant":
-            cursor.insertHtml(f'<p style="color: #006600;"><b>AI:</b> {escaped_message}</p>')
-        elif role == "system":
-            cursor.insertHtml(f'<p style="color: #666666;"><i>{escaped_message}</i></p>')
-        elif role == "error":
-            cursor.insertHtml(f'<p style="color: #cc0000;"><b>Error:</b> {escaped_message}</p>')
+        if role == "assistant":
+            # Convert markdown to HTML for AI responses
+            html_content = self._markdown_to_html(message)
+            cursor.insertHtml(
+                f'<div style="margin: 6px 0;">'
+                f'<b style="color: #006600;">AI:</b>'
+                f'<div style="color: #1a1a1a; margin-top: 4px;">{html_content}</div>'
+                f'</div>'
+            )
+        else:
+            import html
+            escaped_message = html.escape(message)
+            if role == "user":
+                cursor.insertHtml(f'<p style="color: #0066cc;"><b>You:</b> {escaped_message}</p>')
+            elif role == "system":
+                cursor.insertHtml(f'<p style="color: #666666;"><i>{escaped_message}</i></p>')
+            elif role == "error":
+                cursor.insertHtml(f'<p style="color: #cc0000;"><b>Error:</b> {escaped_message}</p>')
 
         cursor.insertHtml("<br>")
         self.chat_history.setTextCursor(cursor)
         self.chat_history.ensureCursorVisible()
 
         print(f"[ChapterPlanner] _append_to_chat completed")
+
+    def _markdown_to_html(self, text: str) -> str:
+        """Convert markdown in AI responses to formatted HTML."""
+        import re
+        import html as html_mod
+
+        lines = text.split('\n')
+        html_lines = []
+        in_list = False
+        in_code_block = False
+
+        for line in lines:
+            stripped = line.strip()
+
+            # Code blocks
+            if stripped.startswith('```'):
+                if in_code_block:
+                    html_lines.append('</pre>')
+                    in_code_block = False
+                else:
+                    if in_list:
+                        html_lines.append('</ul>')
+                        in_list = False
+                    html_lines.append(
+                        '<pre style="background-color: #eef2f7; padding: 6px; '
+                        'border-radius: 4px; font-family: monospace; font-size: 11px; '
+                        'white-space: pre-wrap; margin: 4px 0;">')
+                    in_code_block = True
+                continue
+
+            if in_code_block:
+                escaped = html_mod.escape(stripped)
+                html_lines.append(escaped)
+                continue
+
+            # Headers
+            if stripped.startswith('### '):
+                if in_list:
+                    html_lines.append('</ul>')
+                    in_list = False
+                title = html_mod.escape(stripped[4:])
+                html_lines.append(
+                    f'<div style="color: #4f46e5; font-weight: bold; font-size: 11px; '
+                    f'margin-top: 8px; margin-bottom: 2px;">{title}</div>')
+                continue
+            if stripped.startswith('## '):
+                if in_list:
+                    html_lines.append('</ul>')
+                    in_list = False
+                title = html_mod.escape(stripped[3:])
+                html_lines.append(
+                    f'<div style="color: #4f46e5; font-weight: bold; font-size: 12px; '
+                    f'margin-top: 10px; margin-bottom: 2px;">{title}</div>')
+                continue
+            if stripped.startswith('# '):
+                if in_list:
+                    html_lines.append('</ul>')
+                    in_list = False
+                title = html_mod.escape(stripped[2:])
+                html_lines.append(
+                    f'<div style="color: #312e81; font-weight: bold; font-size: 13px; '
+                    f'margin-top: 12px; margin-bottom: 4px;">{title}</div>')
+                continue
+
+            # List items (- or *)
+            if stripped.startswith('- ') or stripped.startswith('* '):
+                if not in_list:
+                    html_lines.append('<ul style="margin: 4px 0 4px 16px; padding: 0;">')
+                    in_list = True
+                item_text = self._inline_markdown(stripped[2:])
+                html_lines.append(f'<li style="margin: 2px 0;">{item_text}</li>')
+                continue
+
+            # Numbered list items
+            if re.match(r'^\d+\.\s', stripped):
+                if not in_list:
+                    html_lines.append('<ul style="margin: 4px 0 4px 16px; padding: 0;">')
+                    in_list = True
+                item_text = re.sub(r'^\d+\.\s', '', stripped)
+                item_text = self._inline_markdown(item_text)
+                html_lines.append(f'<li style="margin: 2px 0;">{item_text}</li>')
+                continue
+
+            # Close list on non-list line
+            if in_list:
+                html_lines.append('</ul>')
+                in_list = False
+
+            # Empty lines
+            if not stripped:
+                html_lines.append('<br>')
+                continue
+
+            # Regular paragraph
+            p = self._inline_markdown(stripped)
+            html_lines.append(f'<div style="margin: 3px 0; line-height: 1.4;">{p}</div>')
+
+        if in_list:
+            html_lines.append('</ul>')
+        if in_code_block:
+            html_lines.append('</pre>')
+
+        return '\n'.join(html_lines)
+
+    def _inline_markdown(self, text: str) -> str:
+        """Convert inline markdown (bold, italic, code) to HTML."""
+        import re
+        import html as html_mod
+        # Escape HTML first, then apply markdown
+        text = html_mod.escape(text)
+        # Bold
+        text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
+        # Italic
+        text = re.sub(r'\*(.+?)\*', r'<em>\1</em>', text)
+        # Inline code
+        text = re.sub(
+            r'`([^`]+)`',
+            r'<code style="background-color: #eef2f7; padding: 1px 3px; border-radius: 3px; font-family: monospace; font-size: 11px;">\1</code>',
+            text
+        )
+        return text
 
     def _set_processing(self, is_processing: bool):
         """Set processing state."""
