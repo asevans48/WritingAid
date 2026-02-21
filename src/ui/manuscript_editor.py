@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QProgressBar, QRadioButton, QButtonGroup, QTabWidget,
     QApplication
 )
-from PyQt6.QtCore import pyqtSignal, Qt, QSize
+from PyQt6.QtCore import pyqtSignal, Qt, QSize, QTimer
 from PyQt6.QtGui import QFont, QTextCursor, QAction, QTextCharFormat, QColor, QPainter, QTextDocument
 from typing import List, Optional
 import uuid
@@ -261,30 +261,28 @@ class ChapterEditor(QWidget):
 
         toolbar.addSeparator()
 
-        # Text-to-Speech actions - compact with emoji styling
-        emoji_btn_style = "font-size: 14px; padding: 2px;"
+        # Text-to-Speech actions
+        tts_btn_style = "font-size: 12px; padding: 2px 6px;"
 
-        self.tts_speak_btn = QPushButton("🔊")
-        self.tts_speak_btn.setToolTip("Read chapter aloud (or selection if text is selected)")
-        self.tts_speak_btn.setMinimumWidth(28)
-        self.tts_speak_btn.setMaximumWidth(32)
-        self.tts_speak_btn.setStyleSheet(emoji_btn_style)
+        self.tts_speak_btn = QPushButton("🗣 Read Aloud")
+        self.tts_speak_btn.setToolTip("Read chapter aloud using text-to-speech\n(reads selection if text is selected)")
+        self.tts_speak_btn.setMinimumWidth(90)
+        self.tts_speak_btn.setStyleSheet(tts_btn_style)
         self.tts_speak_btn.clicked.connect(self._tts_speak_chapter)
         toolbar.addWidget(self.tts_speak_btn)
 
-        self.tts_stop_btn = QPushButton("⏹")
+        self.tts_stop_btn = QPushButton("⏹ Stop")
         self.tts_stop_btn.setToolTip("Stop reading")
-        self.tts_stop_btn.setMinimumWidth(28)
-        self.tts_stop_btn.setMaximumWidth(32)
-        self.tts_stop_btn.setStyleSheet(emoji_btn_style)
+        self.tts_stop_btn.setMinimumWidth(60)
+        self.tts_stop_btn.setEnabled(False)
+        self.tts_stop_btn.setStyleSheet(tts_btn_style)
         self.tts_stop_btn.clicked.connect(self._tts_stop)
         toolbar.addWidget(self.tts_stop_btn)
 
-        self.tts_generate_btn = QPushButton("🎙")
-        self.tts_generate_btn.setToolTip("Generate TTS document for this chapter")
-        self.tts_generate_btn.setMinimumWidth(28)
-        self.tts_generate_btn.setMaximumWidth(32)
-        self.tts_generate_btn.setStyleSheet(emoji_btn_style)
+        self.tts_generate_btn = QPushButton("🎙 Export Audio")
+        self.tts_generate_btn.setToolTip("Generate a TTS audio file for this chapter")
+        self.tts_generate_btn.setMinimumWidth(90)
+        self.tts_generate_btn.setStyleSheet(tts_btn_style)
         self.tts_generate_btn.clicked.connect(self._tts_generate_document)
         toolbar.addWidget(self.tts_generate_btn)
 
@@ -2840,8 +2838,9 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
             )
             return
 
-        # Stop any ongoing playback first
-        self.editor.stop_speaking()
+        # Only stop if something is currently playing (avoids spurious tts_stopped signal)
+        if self.editor.is_tts_speaking():
+            self.editor.stop_speaking()
 
         # Check if there's selected text
         cursor = self.editor.textCursor()
@@ -2856,10 +2855,25 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
 
         self.editor.speak_text(text)
 
+        # Update buttons synchronously — don't wait for async tts_started signal
+        self.tts_speak_btn.setText("🗣 Playing…")
+        self.tts_speak_btn.setEnabled(False)
+        self.tts_stop_btn.setEnabled(True)
+
+        # Polling fallback to re-enable Read when speech ends naturally
+        if not hasattr(self, '_tts_poll_timer'):
+            self._tts_poll_timer = QTimer(self)
+            self._tts_poll_timer.timeout.connect(self._poll_tts_state)
+        self._tts_poll_timer.start(400)
+
     def _tts_stop(self):
         """Stop TTS playback."""
         if self.editor.is_tts_available():
             self.editor.stop_speaking()
+        # Update buttons synchronously — don't wait for async tts_stopped signal
+        if hasattr(self, '_tts_poll_timer'):
+            self._tts_poll_timer.stop()
+        self._reset_tts_buttons()
 
     def _tts_generate_document(self):
         """Generate a TTS document for this chapter."""
@@ -2913,25 +2927,42 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
 
     def _on_tts_progress(self, message: str):
         """Handle TTS progress update - show status on Read button."""
-        self.tts_speak_btn.setText(f"🔊 {message}")
-        self.tts_speak_btn.setEnabled(False)
+        # Only update label if TTS is still actively speaking; don't re-disable
+        # the button if a late progress event arrives after TTS has already stopped.
+        if self.editor.is_tts_speaking():
+            self.tts_speak_btn.setText(f"🗣 {message}")
+            self.tts_speak_btn.setEnabled(False)
 
     def _on_tts_started(self):
-        """Handle TTS playback started."""
-        self.tts_speak_btn.setText("🔊 Playing...")
+        """Handle TTS playback started (async signal — buttons already set synchronously)."""
+        # Ensure correct state in case TTS was started from a path other than _tts_speak_chapter
+        self.tts_speak_btn.setText("🗣 Playing…")
         self.tts_speak_btn.setEnabled(False)
         self.tts_stop_btn.setEnabled(True)
+
+    def _poll_tts_state(self):
+        """Periodically check if TTS has finished and re-enable Read button."""
+        if not self.editor.is_tts_speaking():
+            self._tts_poll_timer.stop()
+            self._reset_tts_buttons()
+
+    def _reset_tts_buttons(self):
+        """Restore Read button and disable Stop button after TTS ends."""
+        self.tts_speak_btn.setText("🗣 Read Aloud")
+        self.tts_speak_btn.setEnabled(True)
+        self.tts_stop_btn.setEnabled(False)
 
     def _on_tts_stopped(self):
         """Handle TTS playback stopped."""
-        self.tts_speak_btn.setText("🔊 Read")
-        self.tts_speak_btn.setEnabled(True)
-        self.tts_stop_btn.setEnabled(True)
+        if hasattr(self, '_tts_poll_timer'):
+            self._tts_poll_timer.stop()
+        self._reset_tts_buttons()
 
     def _on_tts_error_display(self, error: str):
         """Handle TTS error - display to user."""
-        self.tts_speak_btn.setText("🔊 Read")
-        self.tts_speak_btn.setEnabled(True)
+        if hasattr(self, '_tts_poll_timer'):
+            self._tts_poll_timer.stop()
+        self._reset_tts_buttons()
         QMessageBox.warning(self, "TTS Error", f"Text-to-Speech error:\n\n{error}")
 
     # ==================== End TTS Methods ====================

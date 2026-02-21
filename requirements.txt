@@ -72,6 +72,22 @@ spacy>=3.7.0  # Advanced NLP: POS tagging, dependency parsing, NER
 Pillow>=10.2.0
 requests>=2.31.0
 
+# Apple Silicon (MLX) - Local LLM Inference
+# mlx and mlx-lm are macOS/Apple Silicon only and cannot be installed on other platforms.
+# Install separately on Mac with:
+#   pip install mlx mlx-lm
+# Or install from this file on Mac only:
+#   pip install -r requirements.txt  (will skip if not on Apple Silicon)
+#
+# mlx>=0.22.0; sys_platform == "darwin"  # MLX core framework (Apple Silicon only)
+# mlx-lm>=0.19.0; sys_platform == "darwin"  # MLX language model inference
+#
+# Recommended install command on Mac:
+#   pip install mlx mlx-lm
+#
+# To run a 27B model with 4-bit quantization (requires 36GB+ RAM):
+#   python -c "from mlx_lm import load; m,t = load('mlx-community/gemma-2-27b-it-4bit')"
+
 # Image Generation (Optional)
 # For Apple Silicon (M1/M2/M3/M4/M5):
 #   pip install mflux  # MLX-based FLUX model for image generation

@@ -40,6 +40,7 @@ class TTSService:
         self._is_speaking = False
         self._stop_requested = False
         self._speech_thread: Optional[threading.Thread] = None
+        self._macos_say_proc = None  # subprocess.Popen for macOS 'say' command
 
         # Playback settings
         self._rate = 150  # Words per minute (pyttsx3) - normal speaking pace
@@ -373,8 +374,19 @@ class TTSService:
         self._speech_thread.start()
 
     def _speak_pyttsx3(self, text: str):
-        """Speak using pyttsx3 (runs in thread)."""
+        """Speak using pyttsx3 (runs in thread).
+
+        On macOS, pyttsx3's runAndWait() has a known issue where it returns
+        before the OS audio system finishes playing the queued speech. We use
+        the macOS built-in 'say' command via subprocess instead, which blocks
+        reliably until audio is done.
+        """
         try:
+            import platform
+            if platform.system() == "Darwin":
+                self._speak_macos_say(text)
+                return
+
             self._init_pyttsx3()
             if not self._pyttsx3_engine:
                 raise RuntimeError("pyttsx3 not initialized")
@@ -393,6 +405,61 @@ class TTSService:
             self._is_speaking = False
             if self._on_end:
                 self._on_end()
+
+    def _speak_macos_say(self, text: str):
+        """Speak using macOS built-in 'say' command (blocks until audio is done).
+
+        This bypasses pyttsx3's unreliable runAndWait() on macOS, where the
+        method may return before the OS finishes playing queued audio.
+        """
+        import subprocess
+
+        cmd = ['say']
+
+        # Extract voice name from pyttsx3-style voice ID if set.
+        # pyttsx3 IDs on macOS look like:
+        #   "com.apple.speech.synthesis.voice.samantha.premium"
+        # The 'say' command accepts the voice name portion (e.g. "Samantha").
+        if self._voice_id:
+            skip = {'premium', 'compact', 'enhanced', 'com', 'apple',
+                    'speech', 'synthesis', 'voice', ''}
+            for part in reversed(self._voice_id.split('.')):
+                if part.lower() not in skip:
+                    cmd.extend(['-v', part.capitalize()])
+                    break
+
+        # Pass speech rate (words per minute — same unit as pyttsx3)
+        if self._rate:
+            cmd.extend(['--rate', str(int(self._rate))])
+
+        # Launch 'say', feeding text via stdin to handle any length
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self._macos_say_proc = proc
+
+        try:
+            proc.stdin.write(text.encode('utf-8', errors='replace'))
+            proc.stdin.close()
+
+            # Wait for completion, honouring stop requests
+            while True:
+                try:
+                    proc.wait(timeout=0.1)
+                    break  # Process finished naturally
+                except subprocess.TimeoutExpired:
+                    if self._stop_requested:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=2.0)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                        break
+        finally:
+            self._macos_say_proc = None
 
     def _speak_edge(self, text: str):
         """Speak using edge-tts (runs in thread)."""
@@ -596,6 +663,15 @@ class TTSService:
     def stop(self):
         """Stop speaking."""
         self._stop_requested = True
+
+        # Kill macOS 'say' subprocess if it is active
+        macos_proc = self._macos_say_proc
+        if macos_proc is not None:
+            self._macos_say_proc = None
+            try:
+                macos_proc.terminate()
+            except Exception:
+                pass
 
         if self._current_engine == TTSEngine.SYSTEM and self._pyttsx3_engine:
             try:

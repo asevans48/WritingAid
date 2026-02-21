@@ -146,23 +146,43 @@ class AgentSuite:
         )
 
     def _init_local_llm(self):
-        """Initialize local LLM for cost savings."""
+        """Initialize local LLM for cost savings.
+
+        On Apple Silicon, uses MLX (mlx-lm) for efficient inference with
+        native 4-bit quantization support. On other platforms uses the
+        Hugging Face transformers pipeline (CUDA quantization via BitsAndBytes).
+        """
         try:
-            # Configure for 4-bit quantization for memory efficiency
+            local_settings = self.ai_config.get_local_model_settings()
+            quantization = local_settings.get("quantization", "none")
+            # Treat "none" as no quantization
+            if quantization == "none":
+                quantization = None
+
+            trust = local_settings.get("trust_remote_code", True)
+
             hf_config = HuggingFaceConfig(
                 model_id=self.config.local_model_id,
                 use_local=True,
                 device="auto",
-                quantization="4bit",
-                trust_remote_code=True
+                quantization=quantization,
+                trust_remote_code=trust
             )
 
+            # On Apple Silicon use MLX for inference; elsewhere use transformers
+            if can_use_mlx():
+                provider = LLMProvider.MLX_LOCAL
+            else:
+                provider = LLMProvider.HUGGINGFACE_LOCAL
+
             self.local_llm = LLMClient(
-                provider=LLMProvider.HUGGINGFACE_LOCAL,
+                provider=provider,
                 hf_config=hf_config
             )
 
-            print(f"Local model loaded: {self.config.local_model_id}")
+            backend = "MLX" if can_use_mlx() else "HuggingFace"
+            print(f"Local model loaded ({backend}): {self.config.local_model_id}"
+                  f" [{quantization or 'full precision'}]")
         except Exception as e:
             print(f"Failed to load local model: {e}")
             print("Falling back to cloud-only mode.")

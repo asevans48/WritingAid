@@ -204,11 +204,20 @@ MLX_MODELS: List[LocalModelInfo] = [
         requires_trust_remote_code=False
     ),
     LocalModelInfo(
-        model_id="mlx-community/gemma-3-27b-it-4bit",
-        display_name="Gemma 3 (27B) - MLX",
+        model_id="mlx-community/gemma-2-27b-it-4bit",
+        display_name="Gemma 2 (27B) - MLX [4-bit]",
         size_gb=14.0,
-        description="Google's top-tier model for Apple Silicon",
-        ram_required="32GB+",
+        description="Google's Gemma 2 27B quantized to 4-bit for Apple Silicon — replaces MPS loading",
+        ram_required="36GB+",
+        best_for="High-quality creative writing, long context",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="mlx-community/gemma-3-27b-it-4bit",
+        display_name="Gemma 3 (27B) - MLX [4-bit]",
+        size_gb=14.0,
+        description="Google's top-tier Gemma 3 model for Apple Silicon",
+        ram_required="36GB+",
         best_for="Maximum quality creative writing",
         requires_trust_remote_code=False
     ),
@@ -1676,7 +1685,11 @@ class SettingsDialog(QDialog):
         quant_container = QVBoxLayout()
 
         self.quantization_combo = QComboBox()
-        self.quantization_combo.addItems(["None (full precision)", "8-bit (recommended for CUDA)", "4-bit (low memory, CUDA only)"])
+        self.quantization_combo.addItems([
+            "None (full precision)",
+            "8-bit (CUDA only)",
+            "4-bit (MLX on Mac / CUDA on Windows-Linux)",
+        ])
         current_quant = self.settings.get("local_model_quantization", "none")
         if current_quant == "4bit":
             self.quantization_combo.setCurrentIndex(2)
@@ -1687,13 +1700,28 @@ class SettingsDialog(QDialog):
 
         self.quantization_combo.setToolTip(
             "Quantization reduces model size and memory usage.\n"
-            "⚠️ Only works with NVIDIA GPUs (CUDA).\n"
-            "Apple Silicon (MPS) and CPU will use full precision."
+            "4-bit: Supported natively by MLX on Apple Silicon AND by BitsAndBytes on CUDA.\n"
+            "  - Mac: applies mlx.nn.quantize() (skipped for pre-quantized mlx-community models).\n"
+            "  - Windows/Linux: requires NVIDIA GPU with BitsAndBytes.\n"
+            "8-bit: CUDA only (BitsAndBytes). Not supported on Mac.\n"
+            "Note: mlx-community models (e.g. *-4bit) are already quantized at download time;\n"
+            "      selecting '4-bit' here is only needed for unquantized HuggingFace models."
         )
         quant_container.addWidget(self.quantization_combo)
 
-        self.quantization_warning = QLabel("⚠️ Quantization only works with NVIDIA GPUs (CUDA)")
-        self.quantization_warning.setStyleSheet("color: #f59e0b; font-size: 10px;")
+        # Show platform-appropriate hint
+        if can_use_mlx():
+            quant_hint_text = (
+                "Mac (MLX): 4-bit is supported. Pre-quantized mlx-community models "
+                "are already quantized and ignore this setting."
+            )
+            quant_hint_style = "color: #22c55e; font-size: 10px;"
+        else:
+            quant_hint_text = "4-bit and 8-bit quantization require an NVIDIA GPU (CUDA)."
+            quant_hint_style = "color: #f59e0b; font-size: 10px;"
+
+        self.quantization_warning = QLabel(quant_hint_text)
+        self.quantization_warning.setStyleSheet(quant_hint_style)
         self.quantization_warning.setWordWrap(True)
         quant_container.addWidget(self.quantization_warning)
 

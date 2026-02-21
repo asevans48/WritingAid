@@ -1,8 +1,20 @@
 """AI configuration management with persistent storage."""
 
 import json
+import platform
 from pathlib import Path
 from typing import Dict, Any
+
+
+def _default_quantization() -> str:
+    """Return platform-aware default quantization.
+
+    MLX on Apple Silicon supports 4-bit natively; on other platforms
+    quantization requires a CUDA GPU (BitsAndBytes), so default to 'none'.
+    """
+    if platform.system() == "Darwin" and platform.machine() == "arm64":
+        return "4bit"
+    return "none"
 
 
 class AIConfig:
@@ -48,7 +60,7 @@ class AIConfig:
         # Local SLM Settings
         "enable_local_models": False,  # Enable local/small language models support
         "local_model_id": "",  # Hugging Face model ID (e.g., "microsoft/Phi-4-mini-instruct")
-        "local_model_quantization": "none",  # "none", "4bit", "8bit"
+        "local_model_quantization": _default_quantization(),  # "none", "4bit", "8bit" — 4bit on Mac (MLX)
         "local_model_device": "auto",  # "auto", "cuda", "cpu", "mps"
         "local_model_trust_remote_code": False,  # Whether to trust remote code for model loading
         "prefer_local_model": False,  # Use local model instead of cloud by default

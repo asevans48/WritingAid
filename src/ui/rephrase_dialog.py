@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTextEdit, QListWidget, QListWidgetItem, QGroupBox,
     QRadioButton, QButtonGroup, QProgressBar, QMessageBox,
-    QCheckBox, QFrame, QSplitter, QWidget, QScrollArea
+    QCheckBox, QLineEdit, QFrame, QSplitter, QWidget, QScrollArea
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
@@ -20,13 +20,14 @@ class RephraseWorker(QThread):
     error = pyqtSignal(str)
 
     def __init__(self, agent: RephrasingAgent, text: str, styles: List[RephraseStyle],
-                 tone: RephraseTone, context: str):
+                 tones: List[RephraseTone], context: str, custom_tone: str = ""):
         super().__init__()
         self.agent = agent
         self.text = text
         self.styles = styles
-        self.tone = tone
+        self.tones = tones
         self.context = context
+        self.custom_tone = custom_tone
 
     def run(self):
         """Run rephrasing in background."""
@@ -37,7 +38,9 @@ class RephraseWorker(QThread):
             print(f"{'='*70}")
             print(f"Text length: {len(self.text)} chars")
             print(f"Styles: {[s.value for s in self.styles]}")
-            print(f"Tone: {self.tone.value}")
+            print(f"Tones: {[t.value for t in self.tones]}")
+            if self.custom_tone:
+                print(f"Custom tone: {self.custom_tone}")
             print(f"Using local model: {self.agent.use_local_model}")
             if self.agent.use_local_model:
                 print(f"Model ID: {self.agent.local_model_id or '(not set)'}")
@@ -46,7 +49,8 @@ class RephraseWorker(QThread):
             result = self.agent.rephrase(
                 text=self.text,
                 styles=self.styles,
-                tone=self.tone,
+                tones=self.tones,
+                custom_tone=self.custom_tone,
                 context=self.context
             )
 
@@ -166,32 +170,62 @@ class RephraseDialog(QDialog):
 
         style_tone_layout.addWidget(style_group)
 
-        # Tone selection (emotional quality) - compact labels
-        tone_group = QGroupBox("Tone")
+        # Tone selection (emotional quality) — checkboxes allow mixing emotions
+        tone_group = QGroupBox("Tone (mix any)")
         tone_inner = QVBoxLayout(tone_group)
         tone_inner.setContentsMargins(8, 8, 8, 8)
         tone_inner.setSpacing(2)
 
-        self.tone_button_group = QButtonGroup(self)
-        self.tone_radios = {}
+        hint = QLabel("Select one or more emotions to blend")
+        hint.setStyleSheet("color: #6b7280; font-size: 10px; font-style: italic;")
+        tone_inner.addWidget(hint)
+
+        self.tone_checkboxes: dict = {}
 
         tone_info = [
-            (RephraseTone.NEUTRAL, "Neutral"),
-            (RephraseTone.DARK, "Dark"),
-            (RephraseTone.DRAMATIC, "Dramatic"),
-            (RephraseTone.HOPEFUL, "Hopeful"),
+            (RephraseTone.NEUTRAL,     "Neutral"),
+            (RephraseTone.DARK,        "Dark"),
+            (RephraseTone.DRAMATIC,    "Dramatic"),
+            (RephraseTone.HOPEFUL,     "Hopeful"),
+            (RephraseTone.HAPPY,       "Happy"),
+            (RephraseTone.PROUD,       "Proud"),
             (RephraseTone.MELANCHOLIC, "Melancholic"),
-            (RephraseTone.TENSE, "Tense"),
-            (RephraseTone.WHIMSICAL, "Whimsical"),
+            (RephraseTone.SORROWFUL,   "Sorrowful"),
+            (RephraseTone.NOSTALGIC,   "Nostalgic"),
+            (RephraseTone.TENSE,       "Tense"),
+            (RephraseTone.WHIMSICAL,   "Whimsical"),
+            (RephraseTone.GROSS,       "Gross / Visceral"),
         ]
 
-        for i, (tone, label) in enumerate(tone_info):
-            radio = QRadioButton(label)
-            if i == 0:  # Neutral selected by default
-                radio.setChecked(True)
-            self.tone_button_group.addButton(radio, i)
-            self.tone_radios[tone] = radio
-            tone_inner.addWidget(radio)
+        for tone_val, label in tone_info:
+            cb = QCheckBox(label)
+            # Default: Neutral checked
+            cb.setChecked(tone_val == RephraseTone.NEUTRAL)
+            # Neutral unchecks all others and vice-versa
+            cb.toggled.connect(lambda checked, t=tone_val: self._on_tone_toggled(t, checked))
+            self.tone_checkboxes[tone_val] = cb
+            tone_inner.addWidget(cb)
+
+        # Custom tone — free-text field
+        custom_row = QHBoxLayout()
+        custom_row.setSpacing(4)
+
+        self.custom_tone_cb = QCheckBox("Custom:")
+        self.custom_tone_cb.setToolTip(
+            "Describe your own tone in plain language.\n"
+            "Examples: \"bittersweet\", \"cold and clinical\", \"breathlessly romantic\""
+        )
+        self.custom_tone_cb.toggled.connect(self._on_custom_tone_toggled)
+        custom_row.addWidget(self.custom_tone_cb)
+
+        self.custom_tone_edit = QLineEdit()
+        self.custom_tone_edit.setPlaceholderText("e.g. bittersweet, cold and clinical…")
+        self.custom_tone_edit.setEnabled(False)
+        self.custom_tone_edit.setToolTip(
+            "Type any tone description — the AI will apply it directly to the text."
+        )
+        custom_row.addWidget(self.custom_tone_edit)
+        tone_inner.addLayout(custom_row)
 
         style_tone_layout.addWidget(tone_group)
         layout.addLayout(style_tone_layout)
@@ -408,17 +442,64 @@ class RephraseDialog(QDialog):
                 styles.append(style)
         return styles
 
-    def _get_selected_tone(self) -> RephraseTone:
-        """Get the selected tone."""
-        for tone, radio in self.tone_radios.items():
-            if radio.isChecked():
-                return tone
-        return RephraseTone.NEUTRAL
+    def _on_tone_toggled(self, tone: RephraseTone, checked: bool):
+        """Handle tone checkbox toggled — enforce Neutral mutual-exclusion."""
+        if checked and tone == RephraseTone.NEUTRAL:
+            # Neutral selected: uncheck all emotional tones and custom
+            for t, cb in self.tone_checkboxes.items():
+                if t != RephraseTone.NEUTRAL:
+                    cb.blockSignals(True)
+                    cb.setChecked(False)
+                    cb.blockSignals(False)
+            self.custom_tone_cb.blockSignals(True)
+            self.custom_tone_cb.setChecked(False)
+            self.custom_tone_cb.blockSignals(False)
+            self.custom_tone_edit.setEnabled(False)
+        elif checked and tone != RephraseTone.NEUTRAL:
+            # An emotion selected: uncheck Neutral
+            neutral_cb = self.tone_checkboxes.get(RephraseTone.NEUTRAL)
+            if neutral_cb and neutral_cb.isChecked():
+                neutral_cb.blockSignals(True)
+                neutral_cb.setChecked(False)
+                neutral_cb.blockSignals(False)
+
+    def _on_custom_tone_toggled(self, checked: bool):
+        """Handle the Custom tone checkbox — enable/disable the text field."""
+        self.custom_tone_edit.setEnabled(checked)
+        if checked:
+            # Uncheck Neutral when custom is activated
+            neutral_cb = self.tone_checkboxes.get(RephraseTone.NEUTRAL)
+            if neutral_cb and neutral_cb.isChecked():
+                neutral_cb.blockSignals(True)
+                neutral_cb.setChecked(False)
+                neutral_cb.blockSignals(False)
+            self.custom_tone_edit.setFocus()
+        else:
+            # If nothing else is checked, fall back to Neutral
+            any_preset = any(cb.isChecked() for cb in self.tone_checkboxes.values())
+            if not any_preset:
+                neutral_cb = self.tone_checkboxes.get(RephraseTone.NEUTRAL)
+                if neutral_cb:
+                    neutral_cb.blockSignals(True)
+                    neutral_cb.setChecked(True)
+                    neutral_cb.blockSignals(False)
+
+    def _get_selected_tones(self) -> List[RephraseTone]:
+        """Get the list of selected preset tones. Falls back to NEUTRAL if none chosen."""
+        tones = [t for t, cb in self.tone_checkboxes.items() if cb.isChecked()]
+        return tones if tones else [RephraseTone.NEUTRAL]
+
+    def _get_custom_tone(self) -> str:
+        """Return the custom tone text if the custom checkbox is checked."""
+        if self.custom_tone_cb.isChecked():
+            return self.custom_tone_edit.text().strip()
+        return ""
 
     def _generate_options(self):
         """Generate rephrasing options."""
         styles = self._get_selected_styles()
-        tone = self._get_selected_tone()
+        tones = self._get_selected_tones()
+        custom_tone = self._get_custom_tone()
 
         if not styles:
             QMessageBox.warning(
@@ -426,6 +507,17 @@ class RephraseDialog(QDialog):
                 "No Styles Selected",
                 "Please select at least one rephrasing style."
             )
+            return
+
+        # Guard: if custom tone box is checked but empty, warn the user
+        if self.custom_tone_cb.isChecked() and not custom_tone:
+            QMessageBox.warning(
+                self,
+                "Custom Tone Empty",
+                "You checked \"Custom\" but left the tone field blank.\n"
+                "Please describe your custom tone or uncheck the box."
+            )
+            self.custom_tone_edit.setFocus()
             return
 
         # Configure agent - only set local model if not using python libraries
@@ -445,7 +537,9 @@ class RephraseDialog(QDialog):
             print(f"☁️  Mode: Cloud LLM")
         print(f"📝 Text: {len(self.original_text)} chars")
         print(f"🎨 Styles: {[s.value for s in styles]}")
-        print(f"🎭 Tone: {tone.value}")
+        print(f"🎭 Tones: {[t.value for t in tones]}")
+        if custom_tone:
+            print(f"✏️  Custom tone: {custom_tone}")
         print(f"{'#'*70}\n")
 
         # Show progress
@@ -464,8 +558,9 @@ class RephraseDialog(QDialog):
             self.agent,
             self.original_text,
             styles,
-            tone,
-            context
+            tones,
+            context,
+            custom_tone=custom_tone,
         )
         self.worker.finished.connect(self._on_generation_complete)
         self.worker.error.connect(self._on_generation_error)

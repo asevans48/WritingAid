@@ -229,24 +229,53 @@ class LLMClient:
             )
 
     def _init_mlx_local(self) -> None:
-        """Initialize local MLX model for Apple Silicon."""
+        """Initialize local MLX model for Apple Silicon.
+
+        Supports on-the-fly 4-bit or 8-bit quantization for non-pre-quantized
+        models (e.g. google/gemma-2-27b-it). Pre-quantized mlx-community models
+        (e.g. mlx-community/gemma-2-27b-it-4bit) are loaded directly without
+        re-quantization.
+        """
         if not self.hf_config:
             raise ValueError("HuggingFaceConfig is required for MLX models")
 
         try:
             from mlx_lm import load
 
-            print(f"Loading MLX model: {self.hf_config.model_id}")
+            model_id = self.hf_config.model_id
+            quantization = self.hf_config.quantization  # "4bit", "8bit", or None
+
+            print(f"Loading MLX model: {model_id}")
 
             # Load MLX model and tokenizer
-            self._mlx_model, self._mlx_tokenizer = load(self.hf_config.model_id)
+            self._mlx_model, self._mlx_tokenizer = load(model_id)
 
-            print(f"MLX model initialized successfully: {self.hf_config.model_id}")
+            # Apply on-the-fly quantization if requested and model isn't already quantized.
+            # Pre-quantized mlx-community models (model_id contains "4bit"/"8bit") are
+            # already quantized at download time, so we skip re-quantization for them.
+            already_quantized = "4bit" in model_id or "8bit" in model_id
+            if quantization and not already_quantized:
+                try:
+                    import mlx.nn as nn
+                    import mlx.core as mx
+
+                    bits = 4 if quantization == "4bit" else 8
+                    group_size = 64
+
+                    print(f"Applying MLX {bits}-bit quantization (group_size={group_size})...")
+                    nn.quantize(self._mlx_model, group_size=group_size, bits=bits)
+                    mx.eval(self._mlx_model.parameters())
+                    print(f"MLX {bits}-bit quantization applied successfully.")
+
+                except Exception as q_err:
+                    print(f"Warning: MLX quantization failed ({q_err}). Running in full precision.")
+
+            print(f"MLX model initialized successfully: {model_id}")
 
         except ImportError as e:
             raise ImportError(
                 f"mlx-lm is required for MLX models on Apple Silicon. "
-                f"Install with: pip install mlx-lm. Error: {e}"
+                f"Install with: pip install mlx mlx-lm. Error: {e}"
             )
 
     def _get_default_model(self) -> str:

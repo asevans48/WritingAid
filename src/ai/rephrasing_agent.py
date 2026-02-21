@@ -291,15 +291,19 @@ class RephraseTone(Enum):
     DARK = "dark"
     DRAMATIC = "dramatic"
     HOPEFUL = "hopeful"
+    HAPPY = "happy"
+    PROUD = "proud"
     MELANCHOLIC = "melancholic"
+    SORROWFUL = "sorrowful"
+    NOSTALGIC = "nostalgic"
     TENSE = "tense"
     WHIMSICAL = "whimsical"
+    GROSS = "gross"
     # Extended tones
     MYSTERIOUS = "mysterious"
     ROMANTIC = "romantic"
     HUMOROUS = "humorous"
     OMINOUS = "ominous"
-    NOSTALGIC = "nostalgic"
     URGENT = "urgent"
 
 
@@ -342,6 +346,7 @@ Your job is to provide several alternative phrasings while preserving the origin
 Guidelines:
 - Maintain the original intent and key information
 - Apply the requested style (structural approach) and tone (emotional quality)
+- When multiple tones are requested, weave them together naturally — do not switch between them, blend them
 - Keep the same tense unless specifically asked to change it
 - Preserve any character names, proper nouns, or specific terminology
 - Make the text flow naturally
@@ -371,15 +376,19 @@ For each option, briefly explain what makes it different from the original."""
         RephraseTone.DARK: "dark and ominous",
         RephraseTone.DRAMATIC: "dramatic and impactful",
         RephraseTone.HOPEFUL: "hopeful and optimistic",
+        RephraseTone.HAPPY: "warm and joyful",
+        RephraseTone.PROUD: "proud and triumphant",
         RephraseTone.MELANCHOLIC: "melancholic and wistful",
+        RephraseTone.SORROWFUL: "sorrowful and grief-stricken",
+        RephraseTone.NOSTALGIC: "nostalgic and reminiscent",
         RephraseTone.TENSE: "tense and suspenseful",
         RephraseTone.WHIMSICAL: "whimsical and playful",
+        RephraseTone.GROSS: "visceral and uncomfortably vivid",
         # Extended tones
         RephraseTone.MYSTERIOUS: "mysterious and enigmatic",
         RephraseTone.ROMANTIC: "romantic and intimate",
         RephraseTone.HUMOROUS: "humorous and witty",
         RephraseTone.OMINOUS: "foreboding and ominous",
-        RephraseTone.NOSTALGIC: "nostalgic and reminiscent",
         RephraseTone.URGENT: "urgent and pressing",
     }
 
@@ -1503,15 +1512,32 @@ For each option, briefly explain what makes it different from the original."""
 
         return response.strip() if response else original
 
-    def _build_style_tone_instruction(self, style: RephraseStyle, tone: RephraseTone) -> str:
-        """Build a combined instruction for style and tone."""
+    def _build_style_tone_instruction(
+        self,
+        style: RephraseStyle,
+        tone: RephraseTone = None,
+        tones: Optional[List[RephraseTone]] = None
+    ) -> str:
+        """Build a combined instruction for style and one or more tones."""
         style_desc = self.STYLE_PROMPTS.get(style, "")
-        tone_desc = self.TONE_PROMPTS.get(tone, "")
 
-        if tone_desc and style_desc:
-            return f"{style_desc} with a {tone_desc} tone"
-        elif tone_desc:
-            return f"with a {tone_desc} tone"
+        # Resolve tone list
+        if tones is None:
+            tones = [tone] if tone is not None else []
+        active = [t for t in tones if t and t != RephraseTone.NEUTRAL]
+        tone_descs = [self.TONE_PROMPTS[t] for t in active if self.TONE_PROMPTS.get(t)]
+
+        if len(tone_descs) == 1:
+            tone_label = tone_descs[0]
+        elif len(tone_descs) > 1:
+            tone_label = " + ".join(tone_descs)
+        else:
+            tone_label = ""
+
+        if tone_label and style_desc:
+            return f"{style_desc} with a {tone_label} tone"
+        elif tone_label:
+            return f"with a {tone_label} tone"
         elif style_desc:
             return style_desc
         return "rephrased"
@@ -2655,7 +2681,9 @@ For each option, briefly explain what makes it different from the original."""
         self,
         text: str,
         styles: Optional[List[RephraseStyle]] = None,
-        tone: RephraseTone = RephraseTone.NEUTRAL,
+        tone: RephraseTone = None,           # kept for back-compat (single tone)
+        tones: Optional[List[RephraseTone]] = None,  # preferred: list of tones to blend
+        custom_tone: str = "",               # free-text tone from the user
         context: str = "",
         num_options: int = 4
     ) -> RephraseResult:
@@ -2664,13 +2692,23 @@ For each option, briefly explain what makes it different from the original."""
         Args:
             text: Text to rephrase
             styles: Optional list of specific styles to generate
-            tone: Tone to apply to all variations (default: neutral)
+            tone: Single tone (legacy — use ``tones`` for multi-emotion blending)
+            tones: List of tones to blend (e.g. [HAPPY, NOSTALGIC]); takes priority over ``tone``
+            custom_tone: Free-text tone description typed by the user (e.g. "bittersweet")
             context: Optional context about the text (character, scene, etc.)
             num_options: Number of options to generate if no styles specified
 
         Returns:
             RephraseResult with multiple options
         """
+        # Normalise: tones list takes priority; fall back to legacy single tone arg
+        if tones is None:
+            tones = [tone] if tone is not None else [RephraseTone.NEUTRAL]
+        if not tones:
+            tones = [RephraseTone.NEUTRAL]
+        # Keep a single `tone` reference for legacy code paths that still use it
+        tone = tones[0]
+        custom_tone = custom_tone.strip()
 
         # Prominent model logging at the start
         print(f"\n{'#'*70}")
@@ -2705,7 +2743,9 @@ For each option, briefly explain what makes it different from the original."""
 
         print(f"📝 Text: {len(text)} chars")
         print(f"🎨 Styles: {len(styles) if styles else 'default'}")
-        print(f"🎭 Tone: {tone.value}")
+        print(f"🎭 Tones: {[t.value for t in tones]}")
+        if custom_tone:
+            print(f"✏️  Custom tone: {custom_tone}")
         print(f"{'#'*70}\n")
 
         if not styles:
@@ -2720,16 +2760,28 @@ For each option, briefly explain what makes it different from the original."""
         # Build prompt
         context_str = f"\nContext: {context}\n" if context else ""
 
-        # Build instructions combining style and tone
+        # Build instructions combining style and tone(s)
         style_instructions = "\n".join([
-            f"{i+1}. {self._build_style_tone_instruction(style, tone)} ({style.value})"
+            f"{i+1}. {self._build_style_tone_instruction(style, tones=tones)} ({style.value})"
             for i, style in enumerate(styles)
         ])
 
-        # Add tone description to prompt if not neutral
+        # Build tone instruction — supports blending preset tones + user's custom tone
+        active_tones = [t for t in tones if t != RephraseTone.NEUTRAL]
+        tone_descs = [self.TONE_PROMPTS[t] for t in active_tones if self.TONE_PROMPTS.get(t)]
+        if custom_tone:
+            tone_descs.append(custom_tone)
+
         tone_note = ""
-        if tone != RephraseTone.NEUTRAL:
-            tone_note = f"\nApply a {self.TONE_PROMPTS[tone]} tone to all variations.\n"
+        if len(tone_descs) == 1:
+            tone_note = f"\nApply a {tone_descs[0]} tone to all variations.\n"
+        elif len(tone_descs) > 1:
+            blended = ", ".join(tone_descs[:-1]) + f", and {tone_descs[-1]}"
+            tone_note = (
+                f"\nBlend these emotional tones across all variations: {blended}. "
+                f"Each variation should feel like a natural mix of these emotions "
+                f"rather than switching abruptly between them.\n"
+            )
 
         # Build format example based on number of styles
         format_examples = []
