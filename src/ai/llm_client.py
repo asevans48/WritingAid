@@ -296,7 +296,8 @@ class LLMClient:
         system_prompt: Optional[str] = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
-        task_type: str = "general"
+        task_type: str = "general",
+        conversation_history: Optional[List[Dict[str, str]]] = None
     ) -> str:
         """Generate text using the configured LLM provider.
 
@@ -306,6 +307,7 @@ class LLMClient:
             max_tokens: Maximum tokens in response
             temperature: Creativity/randomness (0-1)
             task_type: Type of task for conversation logging
+            conversation_history: Prior turns as [{"role": "user"|"assistant", "content": str}, ...]
 
         Returns:
             Generated text response
@@ -316,19 +318,21 @@ class LLMClient:
                 self._current_messages.append({"role": "system", "content": system_prompt})
             self._current_messages.append({"role": "user", "content": prompt})
 
+        history = conversation_history or []
+
         try:
             if self.provider == LLMProvider.CLAUDE:
-                response = self._generate_claude(prompt, system_prompt, max_tokens, temperature)
+                response = self._generate_claude(prompt, system_prompt, max_tokens, temperature, history)
             elif self.provider == LLMProvider.CHATGPT:
-                response = self._generate_chatgpt(prompt, system_prompt, max_tokens, temperature)
+                response = self._generate_chatgpt(prompt, system_prompt, max_tokens, temperature, history)
             elif self.provider == LLMProvider.GEMINI:
-                response = self._generate_gemini(prompt, system_prompt, max_tokens, temperature)
+                response = self._generate_gemini(prompt, system_prompt, max_tokens, temperature, history)
             elif self.provider == LLMProvider.HUGGINGFACE:
-                response = self._generate_huggingface_api(prompt, system_prompt, max_tokens, temperature)
+                response = self._generate_huggingface_api(prompt, system_prompt, max_tokens, temperature, history)
             elif self.provider == LLMProvider.HUGGINGFACE_LOCAL:
-                response = self._generate_huggingface_local(prompt, system_prompt, max_tokens, temperature)
+                response = self._generate_huggingface_local(prompt, system_prompt, max_tokens, temperature, history)
             elif self.provider == LLMProvider.MLX_LOCAL:
-                response = self._generate_mlx_local(prompt, system_prompt, max_tokens, temperature)
+                response = self._generate_mlx_local(prompt, system_prompt, max_tokens, temperature, history)
             else:
                 response = f"Error: Unknown provider {self.provider}"
 
@@ -345,12 +349,22 @@ class LLMClient:
         prompt: str,
         system_prompt: Optional[str],
         max_tokens: int,
-        temperature: float
+        temperature: float,
+        history: List[Dict[str, str]] = None
     ) -> str:
         """Generate text using Hugging Face Inference API."""
-        full_prompt = prompt
+        history_text = ""
+        if history:
+            parts = []
+            for msg in history:
+                role_tag = "<|user|>" if msg["role"] == "user" else "<|assistant|>"
+                parts.append(f"{role_tag}\n{msg['content']}")
+            history_text = "\n".join(parts) + "\n"
+
         if system_prompt:
-            full_prompt = f"<|system|>\n{system_prompt}\n<|user|>\n{prompt}\n<|assistant|>\n"
+            full_prompt = f"<|system|>\n{system_prompt}\n{history_text}<|user|>\n{prompt}\n<|assistant|>\n"
+        else:
+            full_prompt = f"{history_text}<|user|>\n{prompt}\n<|assistant|>\n"
 
         response = self.client.text_generation(
             full_prompt,
@@ -366,17 +380,23 @@ class LLMClient:
         prompt: str,
         system_prompt: Optional[str],
         max_tokens: int,
-        temperature: float
+        temperature: float,
+        history: List[Dict[str, str]] = None
     ) -> str:
         """Generate text using local Hugging Face model."""
         if not self._hf_pipeline:
             raise RuntimeError("Local model pipeline not initialized")
 
-        # Build prompt based on model type
-        full_prompt = prompt
+        # Build ChatML format with history
+        parts = []
         if system_prompt:
-            # Use ChatML format for most instruction models
-            full_prompt = f"<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
+            parts.append(f"<|im_start|>system\n{system_prompt}<|im_end|>")
+        for msg in (history or []):
+            role = msg["role"]
+            parts.append(f"<|im_start|>{role}\n{msg['content']}<|im_end|>")
+        parts.append(f"<|im_start|>user\n{prompt}<|im_end|>")
+        parts.append("<|im_start|>assistant\n")
+        full_prompt = "\n".join(parts)
 
         outputs = self._hf_pipeline(
             full_prompt,
@@ -394,7 +414,8 @@ class LLMClient:
         prompt: str,
         system_prompt: Optional[str],
         max_tokens: int,
-        temperature: float
+        temperature: float,
+        history: List[Dict[str, str]] = None
     ) -> str:
         """Generate text using local MLX model on Apple Silicon."""
         if not self._mlx_model or not self._mlx_tokenizer:
@@ -407,6 +428,8 @@ class LLMClient:
             messages = []
             if system_prompt:
                 messages.append({"role": "system", "content": system_prompt})
+            if history:
+                messages.extend(history)
             messages.append({"role": "user", "content": prompt})
 
             full_prompt = self._mlx_tokenizer.apply_chat_template(
@@ -416,10 +439,17 @@ class LLMClient:
             )
         else:
             # Fallback to simple format
+            history_text = ""
+            if history:
+                lines = []
+                for msg in history:
+                    role = "User" if msg["role"] == "user" else "Assistant"
+                    lines.append(f"{role}: {msg['content']}")
+                history_text = "\n".join(lines) + "\n\n"
             if system_prompt:
-                full_prompt = f"{system_prompt}\n\nUser: {prompt}\n\nAssistant:"
+                full_prompt = f"{system_prompt}\n\n{history_text}User: {prompt}\n\nAssistant:"
             else:
-                full_prompt = f"User: {prompt}\n\nAssistant:"
+                full_prompt = f"{history_text}User: {prompt}\n\nAssistant:"
 
         # Generate response with sampler for temperature control
         from mlx_lm.sample_utils import make_sampler
@@ -490,10 +520,12 @@ class LLMClient:
         prompt: str,
         system_prompt: Optional[str],
         max_tokens: int,
-        temperature: float
+        temperature: float,
+        history: List[Dict[str, str]] = None
     ) -> str:
         """Generate text using Claude."""
-        messages = [{"role": "user", "content": prompt}]
+        messages = list(history) if history else []
+        messages.append({"role": "user", "content": prompt})
 
         kwargs = {
             "model": self.model,
@@ -513,12 +545,15 @@ class LLMClient:
         prompt: str,
         system_prompt: Optional[str],
         max_tokens: int,
-        temperature: float
+        temperature: float,
+        history: List[Dict[str, str]] = None
     ) -> str:
         """Generate text using ChatGPT."""
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
+        if history:
+            messages.extend(history)
         messages.append({"role": "user", "content": prompt})
 
         response = self.client.chat.completions.create(
@@ -534,14 +569,24 @@ class LLMClient:
         prompt: str,
         system_prompt: Optional[str],
         max_tokens: int,
-        temperature: float
+        temperature: float,
+        history: List[Dict[str, str]] = None
     ) -> str:
         """Generate text using Gemini."""
         from google.genai import types
 
-        full_prompt = prompt
+        # Prepend conversation history as formatted text
+        history_text = ""
+        if history:
+            lines = []
+            for msg in history:
+                role = "User" if msg["role"] == "user" else "Assistant"
+                lines.append(f"{role}: {msg['content']}")
+            history_text = "\n".join(lines) + "\n\n"
+
+        full_prompt = history_text + prompt
         if system_prompt:
-            full_prompt = f"{system_prompt}\n\n{prompt}"
+            full_prompt = f"{system_prompt}\n\n{full_prompt}"
 
         config = types.GenerateContentConfig(
             temperature=temperature,

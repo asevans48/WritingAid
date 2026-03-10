@@ -48,6 +48,9 @@ class AIConfig:
         "enable_image_generation": True,
         "enable_auto_save": True,
 
+        # Craft Learning
+        "show_craft_tips": True,  # Show educational craft explanations in critique results
+
         # Context Settings
         "context_window": 10,
         "enable_project_context": True,

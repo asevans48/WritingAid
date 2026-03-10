@@ -3079,6 +3079,15 @@ class SettingsDialog(QDialog):
         self.enable_rephrasing.setChecked(self.settings.get("enable_rephrasing", True))
         features_layout.addWidget(self.enable_rephrasing)
 
+        self.show_craft_tips = QCheckBox("Show craft tips in critique results")
+        self.show_craft_tips.setChecked(self.settings.get("show_craft_tips", True))
+        self.show_craft_tips.setToolTip(
+            "When enabled, critique suggestions include educational explanations "
+            "of writing craft principles with before/after examples. "
+            "Helpful for learning; turn off for a cleaner critique view."
+        )
+        features_layout.addWidget(self.show_craft_tips)
+
         self.ai_features_group.setLayout(features_layout)
         layout.addWidget(self.ai_features_group)
 
@@ -3927,6 +3936,7 @@ class SettingsDialog(QDialog):
             "enable_image_generation": self.enable_image_generation.isChecked(),
             "enable_auto_save": self.enable_auto_save.isChecked(),
             "enable_rephrasing": self.enable_rephrasing.isChecked(),
+            "show_craft_tips": self.show_craft_tips.isChecked(),
             "enable_spell_check": self.enable_spell_check.isChecked(),
             "enable_grammar_check_editor": self.enable_grammar_check_editor.isChecked(),
             "enable_overuse_check": self.enable_overuse_check.isChecked(),

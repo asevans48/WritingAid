@@ -89,6 +89,7 @@ class ChatWidget(QWidget):
     message_sent = pyqtSignal(str, str, str)  # message, mode, insert_mode
     collapsed_changed = pyqtSignal(bool)  # Emits True when collapsed
     mode_changed = pyqtSignal(str)  # Emits mode name when changed
+    clear_requested = pyqtSignal()  # Emits when user clicks Clear
 
     def __init__(self):
         """Initialize chat widget."""
@@ -181,6 +182,27 @@ class ChatWidget(QWidget):
         self.toggle_btn.clicked.connect(self._toggle_collapse)
         header_layout.addWidget(self.toggle_btn)
         header_layout.addStretch()
+
+        # Clear conversation button
+        self.clear_btn = QPushButton("Clear")
+        self.clear_btn.setToolTip("Clear conversation history")
+        self.clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clear_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: rgba(255, 255, 255, 0.7);
+                border: 1px solid rgba(255, 255, 255, 0.3);
+                border-radius: 4px;
+                font-size: 11px;
+                padding: 2px 8px;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.15);
+                color: white;
+            }
+        """)
+        self.clear_btn.clicked.connect(self._clear_conversation)
+        header_layout.addWidget(self.clear_btn)
 
         layout.addWidget(self.header_frame)
 
@@ -459,6 +481,10 @@ class ChatWidget(QWidget):
         content_layout.addWidget(self.rating_widget)
 
         # Send button with modern styling
+        # Send and mic button row
+        button_row = QHBoxLayout()
+        button_row.setSpacing(6)
+
         send_button = QPushButton("Send")
         send_button.setStyleSheet("""
             QPushButton {
@@ -478,7 +504,23 @@ class ChatWidget(QWidget):
             }
         """)
         send_button.clicked.connect(self._send_message)
-        content_layout.addWidget(send_button)
+        button_row.addWidget(send_button)
+
+        self.mic_button = QPushButton("🎤")
+        self.mic_button.setToolTip("Voice input (Ctrl+Shift+V)")
+        self.mic_button.setFixedSize(38, 38)
+        self.mic_button.setStyleSheet("""
+            QPushButton {
+                background-color: #f3f4f6;
+                border: 1px solid #e5e7eb;
+                border-radius: 8px;
+                font-size: 16px;
+            }
+            QPushButton:hover { background-color: #e5e7eb; }
+        """)
+        button_row.addWidget(self.mic_button)
+
+        content_layout.addLayout(button_row)
 
         layout.addWidget(self.content_widget)
 
@@ -960,3 +1002,10 @@ class ChatWidget(QWidget):
         """Clear the current conversation tracking (start fresh)."""
         self._current_conversation = []
         self.rating_widget.setVisible(False)
+
+    def _clear_conversation(self):
+        """Handle Clear button click — wipe display and notify MainWindow."""
+        self.chat_history.clear()
+        self._current_conversation = []
+        self.rating_widget.setVisible(False)
+        self.clear_requested.emit()

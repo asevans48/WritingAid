@@ -981,30 +981,110 @@ Would you like me to explain more about speaker configuration or dialogue detect
         Returns:
             ChapterAnalysis object
         """
-        manuscript_context = ""
-        if self.project:
-            # Get relevant context from project
-            sp = self.project.story_planning
-            if sp.main_plot:
-                manuscript_context = f"Main Plot: {sp.main_plot[:300]}"
+        context_parts = []
+        chapter_synopsis = ""
 
-            # Add chapter planning context if available
+        if self.project:
+            sp = self.project.story_planning
+
+            # Story arc context
+            if sp.main_plot:
+                context_parts.append(f"Main Plot: {sp.main_plot[:400]}")
+            if sp.themes:
+                context_parts.append(f"Themes: {', '.join(sp.themes[:6])}")
+            if sp.freytag_pyramid:
+                fp = sp.freytag_pyramid
+                stages = []
+                if fp.exposition:
+                    stages.append(f"Exposition: {fp.exposition[:150]}")
+                if fp.rising_action:
+                    stages.append(f"Rising Action: {fp.rising_action[:150]}")
+                if fp.climax:
+                    stages.append(f"Climax: {fp.climax[:150]}")
+                if stages:
+                    context_parts.append("Story Arc:\n" + "\n".join(stages))
+            if sp.subplots:
+                names = [s.title for s in sp.subplots[:5]]
+                context_parts.append(f"Subplots: {', '.join(names)}")
+            if hasattr(sp, 'promises') and sp.promises:
+                promise_lines = [
+                    f"- {p.title}: {p.description[:100]}" for p in sp.promises[:5]
+                ]
+                context_parts.append("Story Promises:\n" + "\n".join(promise_lines))
+
+            # Characters
+            if self.project.characters:
+                char_lines = []
+                for c in self.project.characters[:12]:
+                    line = f"- {c.name} ({c.character_type})"
+                    if c.personality:
+                        line += f": {c.personality[:120]}"
+                    char_lines.append(line)
+                context_parts.append("Characters:\n" + "\n".join(char_lines))
+
+            # Chapter planning context
             if chapter and hasattr(chapter, 'planning'):
                 planning = chapter.planning
-                if planning.outline:
-                    manuscript_context += f"\n\nChapter Plan: {planning.outline[:300]}"
+                chapter_ctx = []
                 if planning.description:
-                    manuscript_context += f"\n\nChapter Description: {planning.description[:200]}"
+                    chapter_synopsis = planning.description
+                    chapter_ctx.append(f"Chapter Goal: {planning.description[:300]}")
+                elif planning.outline:
+                    chapter_synopsis = planning.outline[:400]
+                    chapter_ctx.append(f"Outline: {planning.outline[:300]}")
+                if planning.pov_character:
+                    chapter_ctx.append(f"POV Character: {planning.pov_character}")
+                if planning.characters_featured:
+                    chapter_ctx.append(f"Featured: {', '.join(planning.characters_featured)}")
+                if getattr(planning, 'tone', ''):
+                    chapter_ctx.append(f"Tone: {planning.tone}")
+                if getattr(planning, 'voice', ''):
+                    chapter_ctx.append(f"Voice: {planning.voice}")
                 if planning.todos:
                     incomplete = [t for t in planning.todos if not t.completed]
                     if incomplete:
-                        manuscript_context += f"\n\nRemaining Tasks: " + ", ".join(t.text for t in incomplete[:5])
+                        chapter_ctx.append(
+                            "Remaining tasks: " + ", ".join(t.text for t in incomplete[:5])
+                        )
+                if chapter_ctx:
+                    context_parts.append("Chapter Plan:\n" + "\n".join(chapter_ctx))
+
+            # Heuristic synopsis if planning had none
+            if not chapter_synopsis and chapter_text:
+                paras = [p.strip() for p in chapter_text.split('\n\n') if p.strip()]
+                if paras:
+                    chapter_synopsis = paras[0][:300]
+                    if len(paras) > 1:
+                        chapter_synopsis += f" …{paras[-1][:200]}"
+
+            # Chapter position in manuscript
+            if self.project.manuscript and self.project.manuscript.chapters:
+                all_chs = self.project.manuscript.chapters
+                total = len(all_chs)
+                if chapter:
+                    for i, ch in enumerate(all_chs):
+                        if ch.id == chapter.id:
+                            context_parts.append(
+                                f"Chapter {i + 1} of {total} in the manuscript"
+                            )
+                            if i > 0:
+                                context_parts.append(
+                                    f"Previous chapter: \"{all_chs[i - 1].title}\""
+                                )
+                            if i < total - 1:
+                                context_parts.append(
+                                    f"Next chapter: \"{all_chs[i + 1].title}\""
+                                )
+                            break
+
+        manuscript_context = "\n\n".join(context_parts)
 
         analysis = self.chapter_agent.analyze_chapter(
             chapter_text=chapter_text,
             chapter_title=chapter_title,
             manuscript_context=manuscript_context,
-            detailed=detailed
+            detailed=detailed,
+            chapter_synopsis=chapter_synopsis
         )
 
         self.session_cost += analysis.estimated_cost

@@ -10,7 +10,7 @@ from PyQt6.QtCore import pyqtSignal, Qt, QTimer, QPoint, QEvent
 from PyQt6.QtGui import (
     QAction, QTextCursor, QTextCharFormat, QColor, QFont,
     QTextBlockFormat, QSyntaxHighlighter, QTextDocument,
-    QTextBlockUserData
+    QTextBlockUserData, QMouseEvent
 )
 from typing import Optional, Callable, List, Set, Dict, Tuple
 from dataclasses import dataclass
@@ -2288,6 +2288,43 @@ class EnhancedTextEditor(QTextEdit):
         else:
             QToolTip.hideText()
         return False
+
+    def mousePressEvent(self, event: QMouseEvent):
+        """Handle mouse press - Shift+click extends existing selection."""
+        if (event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+                and event.button() == Qt.MouseButton.LeftButton
+                and self.textCursor().hasSelection()):
+            # Shift+click with existing selection: extend selection to click point
+            click_pos = self.cursorForPosition(event.pos()).position()
+            cursor = self.textCursor()
+            anchor = cursor.anchor()
+            cursor.setPosition(anchor)
+            cursor.setPosition(click_pos, QTextCursor.MoveMode.KeepAnchor)
+            self.setTextCursor(cursor)
+        else:
+            super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent):
+        """Handle double-click for range selection.
+
+        Double-click: select from cursor position to end of chapter.
+        Shift+double-click: select from beginning of chapter to cursor position.
+        """
+        modifiers = event.modifiers()
+        click_pos = self.cursorForPosition(event.pos()).position()
+
+        if modifiers & Qt.KeyboardModifier.ShiftModifier:
+            # Shift+double-click: select from start to click position
+            cursor = self.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.Start)
+            cursor.setPosition(click_pos, QTextCursor.MoveMode.KeepAnchor)
+            self.setTextCursor(cursor)
+        else:
+            # Plain double-click: select from click position to end
+            cursor = self.textCursor()
+            cursor.setPosition(click_pos)
+            cursor.movePosition(QTextCursor.MoveOperation.End, QTextCursor.MoveMode.KeepAnchor)
+            self.setTextCursor(cursor)
 
     def viewportEvent(self, event: QEvent) -> bool:
         """Handle viewport events including tooltip display for writing errors.

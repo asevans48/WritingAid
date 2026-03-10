@@ -39,6 +39,7 @@ from src.ui.styles import get_modern_style, get_icon
 from src.config import get_ai_config
 from src.ai.enhanced_rag import EnhancedRAGSystem
 from src.ai.semantic_search import SearchMethod
+from src.services.stt_service import get_stt_service
 
 
 class ChatWorker(QThread):
@@ -349,18 +350,30 @@ REMEMBER: After creating an element, confirm briefly and STOP. Don't analyze, cr
 Be encouraging, creative, and constructive. Reference specific details from their project when relevant.
 Keep responses focused and actionable.""",
 
-        "chapter_focus": """You are a focused chapter editor and writing coach. You are helping the author work on their CURRENT CHAPTER.
+        "chapter_focus": """You are a writing assistant with the full text of the CURRENT CHAPTER available to you.
 
-Your role is to:
-- Answer specific questions about this chapter's content, pacing, and structure
-- Help identify issues with character voice, dialogue, or scene transitions
-- Suggest improvements to specific paragraphs or sections
-- Check consistency with established characters, plot points, and world details
-- Help with word choice, sentence rhythm, and prose flow
-- Identify areas that need more development or could be tightened
+YOUR ONE JOB: Answer exactly what the author asked. Nothing else.
 
-Focus your responses specifically on the current chapter. When referencing the broader story, explain how it connects to this chapter.
-Be specific and cite passages when giving feedback. Maintain the author's voice and style.""",
+Do NOT volunteer a critique, a summary, or a list of issues unless the author specifically asked for one.
+Do NOT open with a preamble, restatement of the question, or description of what you are about to do.
+Start your response with the answer itself.
+
+QUESTION TYPES AND HOW TO HANDLE THEM:
+
+• Direct question about the chapter ("what happens when…", "does X occur", "which character…", "why does…"):
+  Answer it directly from the chapter text. Quote the relevant passage if helpful.
+
+• Request for a summary or synopsis:
+  Give a concise summary of what happens, who is involved, what changes, and what it sets up.
+
+• Section-specific question ("look at paragraph N", "the scene where…", "the dialogue between…", "the beginning/end"):
+  If a SECTION FOCUS block appears in the context, start there. Analyse only that passage.
+
+• Improvement or critique request (only when the author uses words like "critique", "give me feedback", "what needs work", "improve this", "what's wrong with"):
+  Work through the chapter section by section. For each section: quote the passage, name the issue, explain why it matters, suggest a concrete fix. Cover the full chapter.
+
+• Anything else:
+  Answer it directly.""",
 
         "writer": """You are a skilled creative writer working as a ghostwriter/collaborator. Your job is to WRITE prose based on the author's outline, world, and characters.
 
@@ -509,7 +522,29 @@ When asked to continue:
 
         # Current chapter context
         if self.context.get('current_chapter_title'):
-            parts.append(f"\nCURRENT CHAPTER: {self.context['current_chapter_title']}")
+            chapter_header = f"CURRENT CHAPTER: {self.context['current_chapter_title']}"
+            if self.context.get('chapter_number') and self.context.get('total_chapters'):
+                chapter_header += f" (Chapter {self.context['chapter_number']} of {self.context['total_chapters']})"
+            parts.append(f"\n{chapter_header}")
+
+            if self.context.get('prev_chapter_title') or self.context.get('next_chapter_title'):
+                nav = []
+                if self.context.get('prev_chapter_title'):
+                    nav.append(f"Previous: \"{self.context['prev_chapter_title']}\"")
+                if self.context.get('next_chapter_title'):
+                    nav.append(f"Next: \"{self.context['next_chapter_title']}\"")
+                parts.append("  " + " | ".join(nav))
+
+            # Chapter synopsis (from planning data or heuristic)
+            if self.context.get('chapter_synopsis'):
+                parts.append(f"\n=== CHAPTER SYNOPSIS ===\n{self.context['chapter_synopsis']}")
+
+            # Highlighted section when the user referenced a specific part
+            if self.context.get('section_reference'):
+                sr = self.context['section_reference']
+                parts.append(
+                    f"\n=== SECTION FOCUS: {sr['description']} ===\n{sr['text']}"
+                )
 
             # Chapter planning/outline (critical for writer mode)
             if self.context.get('chapter_planning'):
@@ -600,11 +635,23 @@ When asked to continue:
             # Current chapter content
             if self.context.get('current_chapter_content'):
                 content = self.context['current_chapter_content']
-                if len(content) > 2000:
-                    parts.append(f"\n=== CURRENT CHAPTER CONTENT ===\n{content[:1000]}...")
-                    parts.append(f"...(content continues)...\n...{content[-500:]}")
-                else:
+                # For chapter_focus mode, include as much of the chapter as possible.
+                # If a section was already highlighted above, still show the full chapter
+                # so the AI can reference surrounding context.
+                MAX_CHAPTER_CHARS = 15000  # ~3 000 words — covers most chapters
+                if len(content) <= MAX_CHAPTER_CHARS:
                     parts.append(f"\n=== CURRENT CHAPTER CONTENT ===\n{content}")
+                else:
+                    # Very long chapter: show beginning and end; the SECTION FOCUS block
+                    # above already contains the highlighted portion.
+                    half = MAX_CHAPTER_CHARS // 2
+                    parts.append(
+                        f"\n=== CURRENT CHAPTER CONTENT (abridged — chapter is very long) ==="
+                        f"\n{content[:half]}"
+                        f"\n\n…[middle of chapter omitted for length]…\n\n"
+                        f"{content[-half:]}"
+                    )
+
 
         # All chapters summary (for cross-chapter questions)
         if self.context.get('all_chapters'):
@@ -685,12 +732,13 @@ When asked to continue:
             if self.mode == "writer" and self.context.get('current_chapter_content'):
                 system_prompt += "\n\nIMPORTANT: Write prose that seamlessly continues or fits with the existing chapter content above."
 
-            # Generate response
+            # Generate response (with conversation history for multi-turn context)
             response = llm.generate_text(
                 prompt=self.message,
                 system_prompt=system_prompt,
                 max_tokens=settings.get("max_tokens", 2000),
-                temperature=settings.get("temperature", 0.7)
+                temperature=settings.get("temperature", 0.7),
+                conversation_history=self.context.get('conversation_history') or []
             )
 
             self.finished.emit(response, system_prompt)
@@ -720,6 +768,12 @@ class MainWindow(QMainWindow):
         self._chat_worker: Optional[ChatWorker] = None
         self._pending_mode: str = ""
         self._pending_insert_mode: str = ""
+        self._pending_chat_message: str = ""
+
+        # Conversation history for multi-turn chat (user+assistant pairs)
+        # Max 12 turns kept; older turns are dropped (compaction).
+        self._chat_history: list = []
+        self._MAX_CHAT_TURNS = 12
 
         # RAG system for semantic context retrieval
         self._rag_system: Optional[EnhancedRAGSystem] = None
@@ -779,6 +833,7 @@ class MainWindow(QMainWindow):
 
         # Connect grader widget signals
         self.grader_widget.go_to_line_requested.connect(self._go_to_critique_line)
+        self.grader_widget.ask_about_suggestion.connect(self._ask_about_critique_suggestion)
 
         # Connect attributions tab jump signal
         self.attributions_tab.jump_to_annotation.connect(self._jump_to_annotation)
@@ -873,6 +928,11 @@ class MainWindow(QMainWindow):
         toggle_chat_action.setShortcut(QKeySequence("Ctrl+B"))
         toggle_chat_action.triggered.connect(self._toggle_chat)
         view_menu.addAction(toggle_chat_action)
+
+        stt_action = QAction("&Voice Input", self)
+        stt_action.setShortcut(QKeySequence("Ctrl+Shift+V"))
+        stt_action.triggered.connect(self._toggle_voice_input)
+        view_menu.addAction(stt_action)
 
         view_menu.addSeparator()
 
@@ -1090,6 +1150,11 @@ class MainWindow(QMainWindow):
 
         # Connect chat to AI assistance
         self.chat_widget.message_sent.connect(self._handle_chat_message)
+        self.chat_widget.clear_requested.connect(self._clear_chat_history)
+        self.chat_widget.mode_changed.connect(lambda _: self._clear_chat_history())
+
+        # Connect mic button to voice input
+        self.chat_widget.mic_button.clicked.connect(self._toggle_voice_input)
 
         # Connect manuscript editor selection changes to chat widget
         self._setup_editor_selection_tracking()
@@ -1413,6 +1478,100 @@ class MainWindow(QMainWindow):
         else:
             self.chat_widget.show()
 
+    def _toggle_voice_input(self):
+        """Toggle speech-to-text input."""
+        stt = get_stt_service()
+        if stt.is_listening():
+            stt.stop()
+            return
+
+        if not stt.is_available():
+            QMessageBox.warning(
+                self, "Voice Input",
+                "Speech recognition not available.\nInstall with: pip install SpeechRecognition pyaudio"
+            )
+            return
+
+        from PyQt6.QtCore import QTimer
+
+        def on_result(text: str):
+            QTimer.singleShot(0, lambda: self._handle_voice_result(text))
+
+        def on_error(msg: str):
+            QTimer.singleShot(0, lambda: self._on_voice_error(msg))
+
+        def on_listening(active: bool):
+            QTimer.singleShot(0, lambda: self._update_mic_state(active))
+
+        stt.on_result = on_result
+        stt.on_error = on_error
+        stt.on_listening = on_listening
+        stt.start()
+
+    def _handle_voice_result(self, text: str):
+        """Route transcribed speech to editor or chat."""
+        stripped = text.strip()
+        lower = stripped.lower()
+
+        # "write ..." → insert into text editor
+        if lower.startswith("write "):
+            content = stripped[6:].strip()
+            if content and hasattr(self, 'manuscript_editor') and self.manuscript_editor.current_chapter_editor:
+                editor = self.manuscript_editor.current_chapter_editor.editor
+                cursor = editor.textCursor()
+                cursor.insertText(content)
+                editor.setTextCursor(cursor)
+                self.statusBar().showMessage("Voice: text inserted", 3000)
+            else:
+                self.statusBar().showMessage("Voice: no active chapter to write to", 3000)
+        else:
+            # Send to chat
+            if not self.chat_widget.isVisible():
+                self.chat_widget.show()
+            self.chat_widget.input_field.setText(stripped)
+            self.chat_widget._send_message()
+
+    def _on_voice_error(self, msg: str):
+        """Show voice input error."""
+        self.statusBar().showMessage(f"Voice: {msg}", 4000)
+
+    def _update_mic_state(self, active: bool):
+        """Update mic button appearance based on listening state."""
+        if hasattr(self.chat_widget, 'mic_button'):
+            if active:
+                self.chat_widget.mic_button.setStyleSheet("""
+                    QPushButton {
+                        background-color: #ef4444;
+                        border: none;
+                        border-radius: 8px;
+                        font-size: 16px;
+                    }
+                    QPushButton:hover { background-color: #dc2626; }
+                """)
+                self.chat_widget.mic_button.setToolTip("Listening... click to cancel")
+            else:
+                self.chat_widget.mic_button.setStyleSheet("""
+                    QPushButton {
+                        background-color: #f3f4f6;
+                        border: 1px solid #e5e7eb;
+                        border-radius: 8px;
+                        font-size: 16px;
+                    }
+                    QPushButton:hover { background-color: #e5e7eb; }
+                """)
+                self.chat_widget.mic_button.setToolTip("Voice input (Ctrl+Shift+V)")
+
+    def _clear_chat_history(self):
+        """Clear the conversation history (triggered by Clear button)."""
+        self._chat_history = []
+
+    def _compact_chat_history(self):
+        """Keep at most _MAX_CHAT_TURNS turns; drop oldest pairs when over limit."""
+        # Each turn = one user message + one assistant message = 2 items
+        max_messages = self._MAX_CHAT_TURNS * 2
+        if len(self._chat_history) > max_messages:
+            self._chat_history = self._chat_history[-max_messages:]
+
     def _handle_chat_message(self, message: str, mode: str = "general", insert_mode: str = ""):
         """Handle chat message from user.
 
@@ -1463,6 +1622,13 @@ class MainWindow(QMainWindow):
         # Store insert mode for writer responses
         self._pending_insert_mode = insert_mode if mode == "writer" else ""
         self._pending_mode = mode
+        self._pending_chat_message = message
+
+        # Pass conversation history only for general/chapter_focus modes (not writer)
+        if mode != "writer":
+            context['conversation_history'] = list(self._chat_history)
+        else:
+            context['conversation_history'] = []
 
         # Set chapter context for training data metadata (style/voice/tone)
         # This captures the author's intended style for this specific work
@@ -1502,6 +1668,127 @@ class MainWindow(QMainWindow):
         self._chat_worker.finished.connect(self._on_chat_response)
         self._chat_worker.error.connect(self._on_chat_error)
         self._chat_worker.start()
+
+    # ── Chapter-focus context helpers ──────────────────────────────────────
+
+    def _get_chapter_synopsis(self, chapter, chapter_text: str) -> str:
+        """Return a short synopsis for a chapter.
+
+        Priority:
+        1. chapter.planning.description (author wrote it)
+        2. chapter.planning.outline (first 400 chars)
+        3. Heuristic extraction: opening paragraph + a key-event sentence + closing paragraph
+        """
+        if hasattr(chapter, 'planning') and chapter.planning:
+            if chapter.planning.description:
+                return chapter.planning.description[:500]
+            if chapter.planning.outline:
+                return chapter.planning.outline[:400]
+
+        if not chapter_text:
+            return ""
+
+        paragraphs = [p.strip() for p in chapter_text.split('\n\n') if p.strip()]
+        if not paragraphs:
+            return ""
+
+        parts = [paragraphs[0][:250]]
+
+        # Look for a key-event paragraph in the first half
+        event_keywords = [
+            'realized', 'discovered', 'revealed', 'decided', 'fled', 'attacked',
+            'escaped', 'died', 'arrived', 'confronted', 'finally', 'suddenly',
+            'but then', 'at last', 'turned out', 'betrayed', 'whispered', 'shouted'
+        ]
+        mid = max(1, len(paragraphs) // 2)
+        for para in paragraphs[1:mid]:
+            if any(kw in para.lower() for kw in event_keywords):
+                parts.append(para[:200])
+                break
+
+        if len(paragraphs) > 1:
+            parts.append(f"…{paragraphs[-1][:200]}")
+
+        return ' '.join(parts)[:600]
+
+    def _detect_section_reference(self, chapter_text: str, message: str) -> dict:
+        """Detect whether the user is asking about a specific section and extract it.
+
+        Returns a dict with 'text' and 'description' keys, or an empty dict when
+        no specific section can be identified.
+        """
+        import re
+        if not chapter_text:
+            return {}
+
+        message_lower = message.lower()
+        paragraphs = [p.strip() for p in chapter_text.split('\n\n') if p.strip()]
+        if not paragraphs:
+            return {}
+
+        # Paragraph-number reference: "paragraph 3", "para 5"
+        para_match = re.search(r'\bparagraph[s]?\s*(\d+)\b|\bpara\s*(\d+)\b', message_lower)
+        if para_match:
+            para_num = int(next(g for g in para_match.groups() if g is not None))
+            if 0 < para_num <= len(paragraphs):
+                idx = para_num - 1
+                start = max(0, idx - 1)
+                end = min(len(paragraphs), idx + 2)
+                return {
+                    'text': '\n\n'.join(paragraphs[start:end]),
+                    'description': f'Paragraph {para_num} with surrounding context'
+                }
+
+        # Position keywords: beginning / middle / end / climax …
+        position_map = {
+            'beginning': (0, 0.25), 'opening': (0, 0.25), 'start': (0, 0.25),
+            'middle': (0.3, 0.70),
+            'climax': (0.6, 0.88),
+            'ending': (0.75, 1.0), 'end': (0.75, 1.0), 'conclusion': (0.75, 1.0),
+        }
+        total = len(paragraphs)
+        for keyword, (s_pct, e_pct) in position_map.items():
+            if re.search(rf'\b{keyword}\b', message_lower):
+                s_idx = int(total * s_pct)
+                e_idx = min(total, int(total * e_pct) + 1)
+                return {
+                    'text': '\n\n'.join(paragraphs[s_idx:e_idx])[:3000],
+                    'description': f'The {keyword} of the chapter'
+                }
+
+        # Scene / content keyword patterns
+        scene_patterns = [
+            r'scene where (.{5,60})',
+            r'part where (.{5,60})',
+            r'part about (.{5,60})',
+            r'dialogue (?:where|when|between|with) (.{5,50})',
+            r'moment when (.{5,50})',
+            r'when (.{5,50}) (?:happens?|occurs?|says?|asks?|tells?|reveals?)',
+        ]
+        for pattern in scene_patterns:
+            m = re.search(pattern, message_lower)
+            if m:
+                keyword = m.group(m.lastindex).strip()
+                # Search the chapter for the most significant word in the keyword
+                for word in keyword.split()[:5]:
+                    if len(word) > 4:
+                        pos = chapter_text.lower().find(word)
+                        if pos >= 0:
+                            # Find the paragraph that contains this position
+                            char_pos = 0
+                            for i, para in enumerate(paragraphs):
+                                if char_pos <= pos < char_pos + len(para) + 2:
+                                    start = max(0, i - 1)
+                                    end = min(len(paragraphs), i + 2)
+                                    return {
+                                        'text': '\n\n'.join(paragraphs[start:end])[:3000],
+                                        'description': f'The section containing "{keyword}"'
+                                    }
+                                char_pos += len(para) + 2
+
+        return {}
+
+    # ── End chapter-focus context helpers ─────────────────────────────────
 
     def _build_chat_context(self, mode: str = "general", user_message: str = "") -> dict:
         """Build comprehensive context dict for AI chat, similar to chapter planner.
@@ -1660,13 +1947,48 @@ class MainWindow(QMainWindow):
                             'pacing': getattr(planning, 'pacing', '')
                         }
 
-        # All chapters list (for cross-chapter questions)
+                    # Chapter synopsis — planning data first, then heuristic from text
+                    synopsis = self._get_chapter_synopsis(chapter, content or "")
+                    if synopsis:
+                        context['chapter_synopsis'] = synopsis
+
+                    # Detect if the user is asking about a specific section
+                    if user_message and content:
+                        section_ref = self._detect_section_reference(content, user_message)
+                        if section_ref:
+                            context['section_reference'] = section_ref
+
+                    # Detect explicit critique/improvement requests
+                    if user_message:
+                        improvement_kws = [
+                            'critique', "what's wrong", 'give me feedback', 'needs work',
+                            'what needs work', 'improve this', 'what are the issues',
+                            'what are the problems', 'give feedback'
+                        ]
+                        if any(kw in user_message.lower() for kw in improvement_kws):
+                            context['is_improvement_question'] = True
+
+        # All chapters list (for cross-chapter questions) + chapter position metadata
         if hasattr(project, 'manuscript') and project.manuscript and project.manuscript.chapters:
+            all_chapters = project.manuscript.chapters
             chapter_list = []
-            for i, ch in enumerate(project.manuscript.chapters[:20]):  # Limit to 20
+            for i, ch in enumerate(all_chapters[:20]):  # Limit to 20
                 word_count = len(ch.content.split()) if ch.content else 0
                 chapter_list.append(f"{i+1}. {ch.title} ({word_count} words)")
             context['all_chapters'] = "\n".join(chapter_list)
+            context['total_chapters'] = len(all_chapters)
+
+            # Chapter position for chapter_focus mode (find which chapter is open)
+            if is_chapter_focused and hasattr(self, 'manuscript_editor') and self.manuscript_editor.current_chapter_editor:
+                open_chapter = self.manuscript_editor.current_chapter_editor.chapter
+                for i, ch in enumerate(all_chapters):
+                    if ch.id == open_chapter.id:
+                        context['chapter_number'] = i + 1
+                        if i > 0:
+                            context['prev_chapter_title'] = all_chapters[i - 1].title
+                        if i < len(all_chapters) - 1:
+                            context['next_chapter_title'] = all_chapters[i + 1].title
+                        break
 
             # For writer mode, include previous chapter ending for continuity
             if mode == "writer" and hasattr(self, 'manuscript_editor'):
@@ -1703,6 +2025,14 @@ class MainWindow(QMainWindow):
                 system_prompt=system_prompt,
                 original_response=response  # Preserve tool calls for training data
             )
+
+            # Append this turn to conversation history, then compact if needed
+            pending_msg = getattr(self, '_pending_chat_message', '')
+            if pending_msg and getattr(self, '_pending_mode', '') != 'writer':
+                self._chat_history.append({"role": "user", "content": pending_msg})
+                self._chat_history.append({"role": "assistant", "content": display_response})
+                self._compact_chat_history()
+            self._pending_chat_message = ""
 
             # If elements were created, show confirmation and refresh UI
             if created_elements:
@@ -2868,6 +3198,33 @@ class MainWindow(QMainWindow):
 
         # Show a brief status message
         self.statusBar().showMessage(status_msg, 3000)
+
+    def _ask_about_critique_suggestion(self, suggestion_type: str, original_text: str,
+                                        suggestion: str, explanation: str):
+        """Handle 'Ask About This' from critique — send to Chapter Focus chat."""
+        # Make chat visible if hidden/collapsed
+        if not self.chat_widget.isVisible():
+            self.chat_widget.show()
+        if self.chat_widget._collapsed:
+            self.chat_widget._toggle_collapse()
+
+        # Switch to Chapter Focus mode
+        self.chat_widget.set_mode("chapter_focus")
+
+        # Build a question that asks for deeper understanding + practice
+        type_display = suggestion_type.replace('_', ' ').title()
+        question = (
+            f"The critique flagged this text for a \"{type_display}\" issue:\n\n"
+            f"\"{original_text}\"\n\n"
+            f"The suggestion was: {suggestion}\n\n"
+            f"Can you explain why this is a problem in more depth, show me how "
+            f"to fix this specific passage, and give me a short exercise to "
+            f"practice this skill?"
+        )
+
+        # Inject into input and send
+        self.chat_widget.input_field.setText(question)
+        self.chat_widget._send_message()
 
     def _toggle_multi_window_mode(self, checked: bool):
         """Toggle multi-window mode on/off."""

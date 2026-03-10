@@ -408,7 +408,8 @@ Priority: [high/medium/low]
         manuscript_context: str = "",
         detailed: bool = True,
         critique_context: Optional[CritiqueContext] = None,
-        focus_areas: Optional[List[SuggestionType]] = None
+        focus_areas: Optional[List[SuggestionType]] = None,
+        chapter_synopsis: str = ""
     ) -> ChapterAnalysis:
         """Analyze entire chapter.
 
@@ -452,32 +453,35 @@ Priority: [high/medium/low]
         else:
             system_prompt = self.ANALYSIS_PROMPT
 
+        synopsis_line = f"Chapter Synopsis: {chapter_synopsis}\n" if chapter_synopsis else ""
         prompt = f"""
 Chapter: {chapter_title}
 Word Count: {word_count}
-Manuscript Context: {manuscript_context[:300]}
+{synopsis_line}Manuscript Context:
+{manuscript_context[:600]}
 {focus_text}
 
-Chapter Text (first 2000 words):
-{' '.join(chapter_text.split()[:2000])}
+Chapter Text (first 3000 words):
+{' '.join(chapter_text.split()[:3000])}
 
-Provide comprehensive editing feedback:
+Provide comprehensive editing feedback organised by SECTION (scenes or logical paragraph groups).
+Work through the chapter systematically — do not stop after 2-3 points.
 
-1. OVERALL ASSESSMENT (2-3 sentences)
+1. OVERALL ASSESSMENT (2-3 sentences on the chapter as a whole)
 
-2. STRENGTHS (3-5 bullet points)
-List what works well.
+2. SECTION-BY-SECTION BREAKDOWN
+For each identifiable scene or section:
+- Label it (e.g. "Opening scene", "Scene 2 — the confrontation", "Closing beat")
+- Strengths of this section
+- Specific issues with a brief quoted passage and a concrete suggestion
 
-3. AREAS FOR IMPROVEMENT (3-5 bullet points)
-List what needs work.
+3. PACING NOTES
+Brief comments on overall chapter pacing and scene transitions.
 
-4. PACING NOTES
-Brief comments on chapter pacing.
+4. CHARACTER CONSISTENCY
+Any concerns about character voices, motivations, or behaviour across the chapter.
 
-5. CHARACTER CONSISTENCY
-Any concerns about character voices or behavior.
-
-6. TOP LINE-ITEM SUGGESTIONS (5-7 specific edits)
+5. TOP LINE-ITEM SUGGESTIONS (5-7 specific edits)
 For each suggestion, provide:
 - Paragraph # (estimate)
 - Quote: "[relevant text]"
@@ -513,7 +517,9 @@ Keep feedback constructive and actionable.
         text: str,
         critique_context: Optional[CritiqueContext] = None,
         max_lines: int = 150,
-        progress_callback: Optional[callable] = None
+        progress_callback: Optional[callable] = None,
+        manuscript_context: str = "",
+        chapter_synopsis: str = ""
     ) -> List[LineItemSuggestion]:
         """Perform two-stage line-by-line analysis of text.
 
@@ -553,7 +559,15 @@ Keep feedback constructive and actionable.
             additional_instructions=critique_context.additional_instructions if critique_context else "None"
         )
 
-        id_request = f"""Scan these numbered lines and identify which ones have publishability issues.
+        context_preamble = ""
+        if chapter_synopsis:
+            context_preamble += f"Chapter Synopsis: {chapter_synopsis}\n"
+        if manuscript_context:
+            context_preamble += f"Manuscript Context: {manuscript_context[:400]}\n"
+        if context_preamble:
+            context_preamble = context_preamble.strip() + "\n\n"
+
+        id_request = f"""{context_preamble}Scan these numbered lines and identify which ones have publishability issues.
 Output ONLY line numbers with issue types (format: number|issue_type).
 
 TEXT TO SCAN:

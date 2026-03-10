@@ -113,3 +113,7 @@ keyring>=25.0.0  # Cross-platform credential storage (Windows Credential Manager
 # Text-to-Speech
 pyttsx3>=2.90  # Offline TTS using system voices (Windows SAPI5, macOS NSSpeech, Linux espeak)
 edge-tts>=6.1.0  # High-quality Microsoft Edge neural voices (requires internet)
+
+# Speech-to-Text
+SpeechRecognition>=3.10.0  # Microphone speech recognition (Google, Sphinx, etc.)
+PyAudio>=0.2.14  # Microphone access for speech recognition

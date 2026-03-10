@@ -17,6 +17,7 @@ from src.ai.chapter_analysis_agent import (
     SuggestionType, LineItemSuggestion
 )
 from src.config.ai_config import get_ai_config
+from src.ai.craft_explanations import CRAFT_EXPLANATIONS
 from src.ui.enhanced_text_editor import ProWritingAnalyzer, WritingStats
 
 if TYPE_CHECKING:
@@ -307,7 +308,9 @@ class CritiqueWorker(QThread):
         critique_context: Optional[CritiqueContext],
         focus_areas: Optional[List[SuggestionType]],
         detailed: bool = True,
-        line_by_line: bool = False
+        line_by_line: bool = False,
+        manuscript_context: str = "",
+        chapter_synopsis: str = ""
     ):
         super().__init__()
         self.text = text
@@ -316,6 +319,8 @@ class CritiqueWorker(QThread):
         self.focus_areas = focus_areas
         self.detailed = detailed
         self.line_by_line = line_by_line
+        self.manuscript_context = manuscript_context
+        self.chapter_synopsis = chapter_synopsis
 
     def run(self):
         """Run critique analysis."""
@@ -385,7 +390,9 @@ class CritiqueWorker(QThread):
                 line_suggestions = agent.analyze_lines(
                     text=self.text,
                     critique_context=self.critique_context,
-                    progress_callback=progress_update
+                    progress_callback=progress_update,
+                    manuscript_context=self.manuscript_context,
+                    chapter_synopsis=self.chapter_synopsis
                 )
                 self.progress.emit("Complete!")
                 # Return as dict to distinguish from ChapterAnalysis
@@ -402,7 +409,9 @@ class CritiqueWorker(QThread):
                     chapter_title=self.title,
                     detailed=self.detailed,
                     critique_context=self.critique_context,
-                    focus_areas=self.focus_areas
+                    focus_areas=self.focus_areas,
+                    manuscript_context=self.manuscript_context,
+                    chapter_synopsis=self.chapter_synopsis
                 )
                 self.progress.emit("Complete!")
                 self.finished.emit(analysis)
@@ -416,6 +425,7 @@ class GraderWidget(QWidget):
 
     content_changed = pyqtSignal()
     go_to_line_requested = pyqtSignal(int)  # Emits line number to navigate to
+    ask_about_suggestion = pyqtSignal(str, str, str, str)  # type, original_text, suggestion, explanation
 
     def __init__(self):
         """Initialize grader widget."""
@@ -824,6 +834,69 @@ class GraderWidget(QWidget):
         # Load saved context for this chapter
         self._load_chapter_context()
 
+    def _build_manuscript_context(self) -> tuple:
+        """Build manuscript_context string and chapter_synopsis from the current project.
+
+        Returns:
+            (manuscript_context, chapter_synopsis) — both strings, may be empty.
+        """
+        if not self.project:
+            return "", ""
+
+        context_parts = []
+        chapter_synopsis = ""
+
+        sp = self.project.story_planning
+        if sp.main_plot:
+            context_parts.append(f"Main Plot: {sp.main_plot[:400]}")
+        if sp.themes:
+            context_parts.append(f"Themes: {', '.join(sp.themes[:6])}")
+        if sp.subplots:
+            context_parts.append(f"Subplots: {', '.join(s.title for s in sp.subplots[:5])}")
+        if hasattr(sp, 'promises') and sp.promises:
+            lines = [f"- {p.title}: {p.description[:100]}" for p in sp.promises[:5]]
+            context_parts.append("Story Promises:\n" + "\n".join(lines))
+
+        if self.project.characters:
+            char_lines = []
+            for c in self.project.characters[:12]:
+                line = f"- {c.name} ({c.character_type})"
+                if c.personality:
+                    line += f": {c.personality[:100]}"
+                char_lines.append(line)
+            context_parts.append("Characters:\n" + "\n".join(char_lines))
+
+        if self.project.manuscript and self.project.manuscript.chapters:
+            total = len(self.project.manuscript.chapters)
+            for i, ch in enumerate(self.project.manuscript.chapters):
+                if ch.title == self._current_chapter_title:
+                    context_parts.append(f"Chapter {i + 1} of {total} in the manuscript")
+                    if i > 0:
+                        context_parts.append(
+                            f"Previous chapter: \"{self.project.manuscript.chapters[i - 1].title}\""
+                        )
+                    if i < total - 1:
+                        context_parts.append(
+                            f"Next chapter: \"{self.project.manuscript.chapters[i + 1].title}\""
+                        )
+                    # Chapter synopsis from planning
+                    if hasattr(ch, 'planning') and ch.planning:
+                        if ch.planning.description:
+                            chapter_synopsis = ch.planning.description[:400]
+                        elif ch.planning.outline:
+                            chapter_synopsis = ch.planning.outline[:400]
+                    break
+
+        # Heuristic synopsis if no planning data
+        if not chapter_synopsis and self._current_chapter_text:
+            paras = [p.strip() for p in self._current_chapter_text.split('\n\n') if p.strip()]
+            if paras:
+                chapter_synopsis = paras[0][:300]
+                if len(paras) > 1:
+                    chapter_synopsis += f" …{paras[-1][:200]}"
+
+        return "\n\n".join(context_parts), chapter_synopsis
+
     def set_content_provider(self, provider: callable):
         """Set a callback to get fresh chapter content.
 
@@ -900,13 +973,18 @@ class GraderWidget(QWidget):
         self.status_label.setVisible(True)
         self.critique_btn.setEnabled(False)
 
+        # Build manuscript context from project data
+        ms_context, ch_synopsis = self._build_manuscript_context()
+
         # Start worker
         self._worker = CritiqueWorker(
             text=text,
             title=title,
             critique_context=critique_context,
             focus_areas=focus_areas if focus_areas else None,
-            detailed=self.detailed_check.isChecked()
+            detailed=self.detailed_check.isChecked(),
+            manuscript_context=ms_context,
+            chapter_synopsis=ch_synopsis
         )
         self._worker.finished.connect(self._on_critique_finished)
         self._worker.error.connect(self._on_critique_error)
@@ -954,6 +1032,9 @@ class GraderWidget(QWidget):
         self.critique_btn.setEnabled(False)
         self.line_by_line_btn.setEnabled(False)
 
+        # Build manuscript context from project data
+        ms_context, ch_synopsis = self._build_manuscript_context()
+
         # Start worker in line-by-line mode
         self._worker = CritiqueWorker(
             text=text,
@@ -961,7 +1042,9 @@ class GraderWidget(QWidget):
             critique_context=critique_context,
             focus_areas=None,  # Line-by-line doesn't use focus areas
             detailed=True,
-            line_by_line=True  # Enable line-by-line mode
+            line_by_line=True,  # Enable line-by-line mode
+            manuscript_context=ms_context,
+            chapter_synopsis=ch_synopsis
         )
         self._worker.finished.connect(self._on_critique_finished)
         self._worker.error.connect(self._on_critique_error)
@@ -987,8 +1070,6 @@ class GraderWidget(QWidget):
         if isinstance(result, dict) and result.get("type") == "line_by_line":
             # Line-by-line results - convert to ChapterAnalysis for storage
             suggestions = result.get("suggestions", [])
-            html = self._format_line_by_line_html(suggestions)
-            self.results_display.setHtml(html)
 
             # Store as ChapterAnalysis for save/export compatibility
             self._last_analysis = ChapterAnalysis(
@@ -1000,10 +1081,19 @@ class GraderWidget(QWidget):
                 character_consistency_notes="",
                 estimated_cost=0.0
             )
+
+            html = self._format_line_by_line_html(suggestions)
+            progress_html = self._get_progress_comparison(self._last_analysis)
+            if progress_html:
+                html += progress_html
+            self.results_display.setHtml(html)
         else:
             # Standard ChapterAnalysis
             self._last_analysis = result
             html = self._format_analysis_html(result)
+            progress_html = self._get_progress_comparison(result)
+            if progress_html:
+                html += progress_html
             self.results_display.setHtml(html)
 
         # Enable save/export buttons
@@ -1058,9 +1148,10 @@ class GraderWidget(QWidget):
 
         # Line-Item Suggestions
         if analysis.line_item_suggestions:
+            show_tips = get_ai_config().get_settings().get("show_craft_tips", True)
             html += "<h2>Line-Item Suggestions</h2>"
             html += "<p style='color: #6b7280; font-size: 12px;'>Click location badges to navigate to the text.</p>"
-            for suggestion in analysis.line_item_suggestions:
+            for idx, suggestion in enumerate(analysis.line_item_suggestions):
                 priority_class = f"priority-{suggestion.priority}"
                 example_html = ""
                 if suggestion.example_fix:
@@ -1075,6 +1166,8 @@ class GraderWidget(QWidget):
                 else:
                     location_link = ""
 
+                learning_links = self._learning_links_html(suggestion, idx, show_tips)
+
                 html += f"""
                 <div class='suggestion {priority_class}'>
                     {location_link}
@@ -1084,6 +1177,7 @@ class GraderWidget(QWidget):
                     <strong>Suggestion:</strong> {suggestion.suggestion}<br>
                     {example_html}
                     <em>Why:</em> {suggestion.explanation}
+                    {learning_links}
                 </div>
                 """
 
@@ -1140,10 +1234,11 @@ class GraderWidget(QWidget):
             """
             return html
 
+        show_tips = get_ai_config().get_settings().get("show_craft_tips", True)
         html += f"<h2>Line-by-Line Analysis</h2>"
         html += f"<p style='color: #6b7280; font-size: 13px; margin-bottom: 15px;'>{len(suggestions)} line(s) flagged for potential revision. Click line numbers to navigate.</p>"
 
-        for suggestion in suggestions:
+        for idx, suggestion in enumerate(suggestions):
             priority_class = f"priority-{suggestion.priority}"
             line_num = suggestion.line_number if suggestion.line_number else 0
 
@@ -1165,6 +1260,8 @@ class GraderWidget(QWidget):
                 </div>
                 """
 
+            learning_links = self._learning_links_html(suggestion, idx, show_tips)
+
             html += f"""
             <div class='line-item {priority_class}'>
                 <span class='line-number'>{line_num_display}</span>
@@ -1182,9 +1279,85 @@ class GraderWidget(QWidget):
                     <span class='suggestion-label'>Consider:</span> {suggestion.suggestion}
                 </div>
                 {example_html}
+                {learning_links}
             </div>
             """
 
+        return html
+
+    def _learning_links_html(self, suggestion: 'LineItemSuggestion', idx: int, show_craft_tips: bool) -> str:
+        """Return HTML for 'Learn about' and 'Ask about this' links."""
+        parts = []
+        if show_craft_tips and suggestion.suggestion_type in CRAFT_EXPLANATIONS:
+            type_val = suggestion.suggestion_type.value
+            type_display = type_val.replace('_', ' ').title()
+            parts.append(
+                f"<a href='crafttip:{type_val}' style='font-size: 11px; color: #2563eb; "
+                f"text-decoration: none;'>Learn about {type_display}</a>"
+            )
+        parts.append(
+            f"<a href='askabout:{idx}' style='font-size: 11px; color: #6366f1; "
+            f"text-decoration: none;'>Ask about this</a>"
+        )
+        return (
+            "<div style='margin-top: 6px; padding-top: 4px; "
+            "border-top: 1px solid #e5e7eb;'>"
+            + " &nbsp;&middot;&nbsp; ".join(parts)
+            + "</div>"
+        )
+
+    def _get_progress_comparison(self, current_analysis: 'ChapterAnalysis') -> str:
+        """Compare current critique type counts with the most recent saved critique.
+
+        Returns HTML string with comparison, or empty string if no previous data.
+        """
+        if not self._project_path or not self._current_chapter_title:
+            return ""
+
+        try:
+            latest = self._metadata_store.get_critique(
+                self._project_path, self._current_chapter_title
+            )
+            if not latest or "data" not in latest:
+                return ""
+
+            prev_counts = latest["data"].get("suggestion_type_counts", {})
+            if not prev_counts:
+                return ""
+        except Exception:
+            return ""
+
+        # Count current suggestion types
+        current_counts: Dict[str, int] = {}
+        for s in current_analysis.line_item_suggestions:
+            key = s.suggestion_type.value
+            current_counts[key] = current_counts.get(key, 0) + 1
+
+        # Build comparison
+        improvements = []
+        regressions = []
+        for type_key in sorted(set(list(prev_counts.keys()) + list(current_counts.keys()))):
+            prev = prev_counts.get(type_key, 0)
+            curr = current_counts.get(type_key, 0)
+            display = type_key.replace('_', ' ').title()
+            if curr < prev:
+                improvements.append(f"{prev - curr} fewer {display} issues")
+            elif curr > prev:
+                regressions.append(f"{curr - prev} new {display} issues")
+
+        if not improvements and not regressions:
+            return ""
+
+        html = (
+            "<div style='background-color: #f0fdf4; border: 1px solid #bbf7d0; "
+            "border-radius: 6px; padding: 10px; margin: 10px 0;'>"
+            "<strong style='color: #166534;'>Progress vs. Last Critique:</strong><br>"
+        )
+        for imp in improvements:
+            html += f"<span style='color: #059669;'>&#9650; {imp}</span><br>"
+        for reg in regressions:
+            html += f"<span style='color: #dc2626;'>&#9660; {reg}</span><br>"
+        html += "</div>"
         return html
 
     def _save_critique_results(self):
@@ -1297,6 +1470,12 @@ class GraderWidget(QWidget):
 
     def _serialize_analysis(self, analysis: ChapterAnalysis) -> Dict[str, Any]:
         """Serialize a ChapterAnalysis to a dictionary for storage."""
+        # Count suggestion types for progress tracking
+        type_counts: Dict[str, int] = {}
+        for s in analysis.line_item_suggestions:
+            key = s.suggestion_type.value
+            type_counts[key] = type_counts.get(key, 0) + 1
+
         return {
             "overall_assessment": analysis.overall_assessment,
             "strengths": analysis.strengths,
@@ -1304,6 +1483,7 @@ class GraderWidget(QWidget):
             "pacing_notes": analysis.pacing_notes,
             "character_consistency_notes": analysis.character_consistency_notes,
             "estimated_cost": analysis.estimated_cost,
+            "suggestion_type_counts": type_counts,
             "line_item_suggestions": [
                 {
                     "line_number": s.line_number,
@@ -1786,6 +1966,37 @@ class GraderWidget(QWidget):
                 # The receiver will handle this specially
                 self.go_to_line_requested.emit(-para_num)
             except ValueError:
+                pass
+
+        # Handle crafttip:TYPE links — show educational dialog
+        elif url_str.startswith("crafttip:"):
+            type_val = url_str.split(":", 1)[1]
+            try:
+                tip = CRAFT_EXPLANATIONS.get(SuggestionType(type_val))
+            except ValueError:
+                tip = None
+            if tip:
+                title = type_val.replace('_', ' ').title()
+                msg = (
+                    f"{tip['principle']}\n\n"
+                    f"Before:\n\"{tip['before']}\"\n\n"
+                    f"After:\n\"{tip['after']}\""
+                )
+                QMessageBox.information(self, f"Craft Tip: {title}", msg)
+
+        # Handle askabout:IDX links — send to Chapter Focus chat
+        elif url_str.startswith("askabout:"):
+            try:
+                idx = int(url_str.split(":")[1])
+                if self._last_analysis and idx < len(self._last_analysis.line_item_suggestions):
+                    s = self._last_analysis.line_item_suggestions[idx]
+                    self.ask_about_suggestion.emit(
+                        s.suggestion_type.value,
+                        s.original_text,
+                        s.suggestion,
+                        s.explanation
+                    )
+            except (ValueError, IndexError):
                 pass
 
     def load_data(self, data):

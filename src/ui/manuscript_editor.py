@@ -6,10 +6,10 @@ from PyQt6.QtWidgets import (
     QMessageBox, QInputDialog, QGroupBox, QSplitter, QFileDialog,
     QDialog, QMenu, QCheckBox, QLineEdit, QScrollArea, QFrame,
     QProgressBar, QRadioButton, QButtonGroup, QTabWidget,
-    QApplication
+    QApplication, QToolButton
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QSize, QTimer
-from PyQt6.QtGui import QFont, QTextCursor, QAction, QTextCharFormat, QColor, QPainter, QTextDocument
+from PyQt6.QtGui import QFont, QTextCursor, QAction, QTextCharFormat, QColor, QPainter, QTextDocument, QPixmap, QPen, QIcon
 from typing import List, Optional
 import uuid
 from pathlib import Path
@@ -3065,6 +3065,22 @@ class ManuscriptEditor(QWidget):
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(16, 8, 16, 8)
 
+        # Sidebar toggle button (thin arrow icon)
+        self.sidebar_toggle_btn = QToolButton()
+        self.sidebar_toggle_btn.setToolTip("Hide chapter sidebar")
+        self.sidebar_toggle_btn.setFixedSize(16, 16)
+        self.sidebar_toggle_btn.setIcon(self._make_arrow_icon("left"))
+        self.sidebar_toggle_btn.setIconSize(QSize(10, 10))
+        self.sidebar_toggle_btn.setStyleSheet("""
+            QToolButton {
+                border: none; border-radius: 3px;
+                background: transparent;
+            }
+            QToolButton:hover { background: #e5e7eb; }
+        """)
+        self.sidebar_toggle_btn.clicked.connect(self._toggle_sidebar)
+        header_layout.addWidget(self.sidebar_toggle_btn)
+
         # Total word count (moved to left, more prominent)
         self.total_word_count_label = QLabel("Total: 0 words")
         self.total_word_count_label.setStyleSheet("font-size: 13px; font-weight: 500; color: #6b7280;")
@@ -3125,6 +3141,7 @@ class ManuscriptEditor(QWidget):
         left_layout.addWidget(hint_label)
 
         left_panel.setMaximumWidth(250)
+        self.left_panel = left_panel
         splitter.addWidget(left_panel)
 
         # Right panel - chapter editor
@@ -3144,6 +3161,31 @@ class ManuscriptEditor(QWidget):
         splitter.setStretchFactor(1, 1)
 
         layout.addWidget(splitter, stretch=1)
+
+    def _make_arrow_icon(self, direction: str) -> QIcon:
+        """Create a thin arrow icon pointing left or right."""
+        pixmap = QPixmap(10, 10)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor("#9ca3af"))
+        pen.setWidthF(1.2)
+        painter.setPen(pen)
+        if direction == "left":
+            painter.drawLine(7, 1, 3, 5)
+            painter.drawLine(3, 5, 7, 9)
+        else:
+            painter.drawLine(3, 1, 7, 5)
+            painter.drawLine(7, 5, 3, 9)
+        painter.end()
+        return QIcon(pixmap)
+
+    def _toggle_sidebar(self):
+        """Toggle the chapter sidebar visibility."""
+        visible = not self.left_panel.isVisible()
+        self.left_panel.setVisible(visible)
+        self.sidebar_toggle_btn.setIcon(self._make_arrow_icon("left" if visible else "right"))
+        self.sidebar_toggle_btn.setToolTip("Hide chapter sidebar" if visible else "Show chapter sidebar")
 
     def _show_chapter_context_menu(self, position):
         """Show context menu for chapter list."""
