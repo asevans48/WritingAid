@@ -13,6 +13,7 @@ import uuid
 import math
 
 from src.models.worldbuilding_objects import Economy, Good, TradeRoute, EconomyType, Faction
+from src.ui.styles import SYSTEM_FONT
 from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
 
 
@@ -153,7 +154,7 @@ class TradeRouteGraph(QWidget):
             painter.drawEllipse(int(x - 20), int(y - 20), 40, 40)
 
             # Economy name below
-            font = QFont("Helvetica Neue", 9, QFont.Weight.Bold)
+            font = QFont(SYSTEM_FONT, 9, QFont.Weight.Bold)
             painter.setFont(font)
             painter.setPen(QColor("#1a1a1a"))
 
@@ -163,7 +164,7 @@ class TradeRouteGraph(QWidget):
             painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, name)
 
             # Faction name (smaller, below economy name)
-            font_small = QFont("Helvetica Neue", 8)
+            font_small = QFont(SYSTEM_FONT, 8)
             painter.setFont(font_small)
             painter.setPen(QColor("#6b7280"))
             faction_name = self._get_faction_name(economy.faction_id)

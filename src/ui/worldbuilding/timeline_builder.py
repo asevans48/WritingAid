@@ -13,6 +13,7 @@ import uuid
 import re
 
 from src.models.worldbuilding_objects import HistoricalEvent
+from src.ui.styles import SYSTEM_FONT
 from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
 
 
@@ -133,7 +134,7 @@ class TimelineVisualization(QWidget):
         painter.drawEllipse(int(x - 8), int(line_y - 8), 16, 16)
 
         # Event name
-        font = QFont("Helvetica Neue", 9)
+        font = QFont(SYSTEM_FONT, 9)
         painter.setFont(font)
         painter.setPen(QColor("#1a1a1a"))
 
@@ -144,7 +145,7 @@ class TimelineVisualization(QWidget):
         painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, evt.name)
 
         # Date
-        font_small = QFont("Helvetica Neue", 8)
+        font_small = QFont(SYSTEM_FONT, 8)
         painter.setFont(font_small)
         painter.setPen(QColor("#6b7280"))
         date_y = text_y + 25 if index % 2 == 0 else text_y - 15

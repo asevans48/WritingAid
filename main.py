@@ -104,6 +104,7 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt, QtMsgType, qInstallMessageHandler
 from PyQt6.QtGui import QFont, QIcon
 from src.ui.main_window import MainWindow
+from src.ui.styles import SYSTEM_FONT
 
 
 def qt_message_handler(mode, context, message):
@@ -146,7 +147,7 @@ def main():
         app.setWindowIcon(QIcon(str(icon_path)))
 
     # Set default application font with valid point size
-    default_font = QFont("Helvetica Neue", 10)
+    default_font = QFont(SYSTEM_FONT, 10)
     if default_font.pointSize() <= 0:
         default_font.setPointSize(10)
     app.setFont(default_font)

@@ -7,6 +7,7 @@ from PyQt6.QtCore import Qt, QPointF, pyqtSignal
 from PyQt6.QtGui import QPainter, QPen, QColor, QFont, QBrush, QMouseEvent
 
 from src.models.project import PlotEvent
+from src.ui.styles import SYSTEM_FONT
 
 
 class FreytagPyramidVisual(QWidget):
@@ -122,7 +123,7 @@ class FreytagPyramidVisual(QWidget):
                         int(resolution_x), int(resolution_y))
 
         # Draw stage labels
-        font = QFont("Helvetica Neue", 10, QFont.Weight.Bold)
+        font = QFont(SYSTEM_FONT, 10, QFont.Weight.Bold)
         painter.setFont(font)
         painter.setPen(QColor("#374151"))
 
@@ -249,7 +250,7 @@ class FreytagPyramidVisual(QWidget):
         self._event_positions[event.id] = (x, y, size)
 
         # Draw event title next to marker
-        font = QFont("Helvetica Neue", 8)
+        font = QFont(SYSTEM_FONT, 8)
         painter.setFont(font)
         painter.setPen(QColor("#1a1a1a"))
 
@@ -300,7 +301,7 @@ class FreytagPyramidVisual(QWidget):
             painter.drawLine(int(x), int(margin_top - 20), int(x), int(margin_top + height + 20))
 
         # Draw act labels at top
-        font = QFont("Helvetica Neue", 11, QFont.Weight.Bold)
+        font = QFont(SYSTEM_FONT, 11, QFont.Weight.Bold)
         painter.setFont(font)
         painter.setPen(QColor("#1f2937"))
 

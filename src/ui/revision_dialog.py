@@ -11,6 +11,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 
 from src.models.project import Chapter, ChapterRevision
+from src.ui.styles import SYSTEM_FONT
 
 
 def _age_label(timestamp) -> str:
@@ -187,7 +188,7 @@ class RevisionDialog(QDialog):
 
         self.left_pane = QTextEdit()
         self.left_pane.setReadOnly(True)
-        self.left_pane.setFont(QFont("Helvetica Neue", 10))
+        self.left_pane.setFont(QFont(SYSTEM_FONT, 10))
         self.left_pane.setStyleSheet("""
             QTextEdit {
                 border: 1px solid #d1d5db;
@@ -209,7 +210,7 @@ class RevisionDialog(QDialog):
 
         self.right_pane = QTextEdit()
         self.right_pane.setReadOnly(True)
-        self.right_pane.setFont(QFont("Helvetica Neue", 10))
+        self.right_pane.setFont(QFont(SYSTEM_FONT, 10))
         self.right_pane.setStyleSheet("""
             QTextEdit {
                 border: 1px solid #d1d5db;

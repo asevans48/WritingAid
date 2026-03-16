@@ -12,6 +12,8 @@ from typing import Optional, Callable, List
 import threading
 import uuid
 
+from src.ui.styles import SYSTEM_FONT
+
 
 class TodoItemWidget(QWidget):
     """Widget for a single todo item."""
@@ -545,15 +547,25 @@ class ChapterArcWidget(QWidget):
             # Calculate x position
             x = start_x + arc_width * pos
 
-            # Calculate y position on the arc
+            # Calculate y position on the arc by evaluating the actual Bezier curves
             if pos <= 0.5:
-                # Rising portion
+                # Rising portion: quadratic Bezier from (start_x, base_y)
+                # control (start_x + arc_width*0.25, base_y - (base_y-peak_y)*0.3)
+                # to (climax_x, peak_y)
                 t = pos / 0.5
-                y = base_y - (base_y - peak_y) * (t * t)  # Quadratic ease-in
+                p0y = base_y
+                p1y = base_y - (base_y - peak_y) * 0.3
+                p2y = peak_y
+                y = (1 - t) * (1 - t) * p0y + 2 * (1 - t) * t * p1y + t * t * p2y
             else:
-                # Falling portion
+                # Falling portion: quadratic Bezier from (climax_x, peak_y)
+                # control (start_x + arc_width*0.75, base_y - (base_y-peak_y)*0.3)
+                # to (end_x, base_y)
                 t = (pos - 0.5) / 0.5
-                y = peak_y + (base_y - peak_y) * (t * t)  # Quadratic ease-out
+                p0y = peak_y
+                p1y = base_y - (base_y - peak_y) * 0.3
+                p2y = base_y
+                y = (1 - t) * (1 - t) * p0y + 2 * (1 - t) * t * p1y + t * t * p2y
 
             # Draw marker
             color = stage_colors.get(stage, QColor("#6366f1"))
@@ -724,7 +736,7 @@ class ChapterPlannerWidget(QWidget):
         self.description_editor.setPlaceholderText(
             "Brief summary of what happens in this chapter..."
         )
-        self.description_editor.setFont(QFont("Helvetica Neue", 10))
+        self.description_editor.setFont(QFont(SYSTEM_FONT, 10))
         self.description_editor.setMaximumHeight(100)  # Reduced for small screens
         self.description_editor.textChanged.connect(self._on_plan_changed)
         description_layout.addWidget(self.description_editor)
@@ -892,7 +904,7 @@ class ChapterPlannerWidget(QWidget):
         self.notes_editor.setPlaceholderText(
             "Research, ideas, reminders..."
         )
-        self.notes_editor.setFont(QFont("Helvetica Neue", 10))
+        self.notes_editor.setFont(QFont(SYSTEM_FONT, 10))
         self.notes_editor.textChanged.connect(self._on_plan_changed)
         notes_layout.addWidget(self.notes_editor)
 
@@ -964,7 +976,7 @@ class ChapterPlannerWidget(QWidget):
         # Chat history
         self.chat_history = QTextEdit()
         self.chat_history.setReadOnly(True)
-        self.chat_history.setFont(QFont("Helvetica Neue", 9))
+        self.chat_history.setFont(QFont(SYSTEM_FONT, 9))
         self.chat_history.setStyleSheet("background-color: #f8f9fa;")
         self.chat_history.setPlaceholderText("AI responses...")
         self.chat_history.setMinimumHeight(100)
@@ -977,7 +989,7 @@ class ChapterPlannerWidget(QWidget):
         self.chat_input = QTextEdit()
         self.chat_input.setPlaceholderText("Ask about your plan...")
         self.chat_input.setMaximumHeight(50)
-        self.chat_input.setFont(QFont("Helvetica Neue", 10))
+        self.chat_input.setFont(QFont(SYSTEM_FONT, 10))
         input_layout.addWidget(self.chat_input)
 
         self.send_btn = QPushButton("Send")

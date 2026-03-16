@@ -1,4 +1,8 @@
 """Modern stylesheet for Writer Platform."""
+import sys
+
+# Platform-native UI font: avoids Qt font-alias warnings on both macOS and Windows
+SYSTEM_FONT = "Helvetica Neue" if sys.platform == "darwin" else "Segoe UI"
 
 # Color palette - inspired by creative writing tools
 COLORS = {
@@ -34,7 +38,7 @@ COLORS = {
 MODERN_STYLE = f"""
 /* Global styles - explicit font-size prevents Qt warning about point size <= 0 */
 QWidget {{
-    font-family: 'Helvetica Neue', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-family: '{SYSTEM_FONT}';
     font-size: 13px;
     color: {COLORS['text_dark']};
 }}

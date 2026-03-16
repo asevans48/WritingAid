@@ -13,6 +13,7 @@ import uuid
 import math
 
 from src.models.worldbuilding_objects import Faction, FactionType
+from src.ui.styles import SYSTEM_FONT
 from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
 
 
@@ -112,7 +113,7 @@ class FactionRelationshipGraph(QWidget):
             painter.drawEllipse(int(x - 20), int(y - 20), 40, 40)
 
             # Faction name below
-            font = QFont("Helvetica Neue", 9, QFont.Weight.Bold)
+            font = QFont(SYSTEM_FONT, 9, QFont.Weight.Bold)
             painter.setFont(font)
             painter.setPen(QColor("#1a1a1a"))
 
