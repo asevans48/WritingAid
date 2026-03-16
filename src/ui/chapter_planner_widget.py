@@ -724,7 +724,7 @@ class ChapterPlannerWidget(QWidget):
         self.description_editor.setPlaceholderText(
             "Brief summary of what happens in this chapter..."
         )
-        self.description_editor.setFont(QFont("Segoe UI", 10))
+        self.description_editor.setFont(QFont("Helvetica Neue", 10))
         self.description_editor.setMaximumHeight(100)  # Reduced for small screens
         self.description_editor.textChanged.connect(self._on_plan_changed)
         description_layout.addWidget(self.description_editor)
@@ -892,7 +892,7 @@ class ChapterPlannerWidget(QWidget):
         self.notes_editor.setPlaceholderText(
             "Research, ideas, reminders..."
         )
-        self.notes_editor.setFont(QFont("Segoe UI", 10))
+        self.notes_editor.setFont(QFont("Helvetica Neue", 10))
         self.notes_editor.textChanged.connect(self._on_plan_changed)
         notes_layout.addWidget(self.notes_editor)
 
@@ -964,7 +964,7 @@ class ChapterPlannerWidget(QWidget):
         # Chat history
         self.chat_history = QTextEdit()
         self.chat_history.setReadOnly(True)
-        self.chat_history.setFont(QFont("Segoe UI", 9))
+        self.chat_history.setFont(QFont("Helvetica Neue", 9))
         self.chat_history.setStyleSheet("background-color: #f8f9fa;")
         self.chat_history.setPlaceholderText("AI responses...")
         self.chat_history.setMinimumHeight(100)
@@ -977,7 +977,7 @@ class ChapterPlannerWidget(QWidget):
         self.chat_input = QTextEdit()
         self.chat_input.setPlaceholderText("Ask about your plan...")
         self.chat_input.setMaximumHeight(50)
-        self.chat_input.setFont(QFont("Segoe UI", 10))
+        self.chat_input.setFont(QFont("Helvetica Neue", 10))
         input_layout.addWidget(self.chat_input)
 
         self.send_btn = QPushButton("Send")

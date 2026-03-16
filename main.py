@@ -146,7 +146,7 @@ def main():
         app.setWindowIcon(QIcon(str(icon_path)))
 
     # Set default application font with valid point size
-    default_font = QFont("Segoe UI", 10)
+    default_font = QFont("Helvetica Neue", 10)
     if default_font.pointSize() <= 0:
         default_font.setPointSize(10)
     app.setFont(default_font)

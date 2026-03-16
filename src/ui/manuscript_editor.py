@@ -3808,7 +3808,7 @@ class ProseAnalysisDialog(QDialog):
         # Results area - scrollable and copyable
         self._results = QTextEdit()
         self._results.setReadOnly(True)
-        self._results.setFont(QFont("Segoe UI", 11))
+        self._results.setFont(QFont("Helvetica Neue", 11))
         self._results.setStyleSheet("""
             QTextEdit {
                 border: 1px solid #d1d5db;
@@ -3933,7 +3933,7 @@ class ProseAnalysisDialog(QDialog):
         if in_list:
             html_lines.append('</ul>')
 
-        return '<div style="font-family: Segoe UI, sans-serif; font-size: 13px;">' + '\n'.join(html_lines) + '</div>'
+        return '<div style="font-family: Helvetica Neue, sans-serif; font-size: 13px;">' + '\n'.join(html_lines) + '</div>'
 
     def _copy_results(self):
         """Copy the plain text results to clipboard."""

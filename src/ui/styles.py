@@ -34,7 +34,7 @@ COLORS = {
 MODERN_STYLE = f"""
 /* Global styles - explicit font-size prevents Qt warning about point size <= 0 */
 QWidget {{
-    font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-family: 'Helvetica Neue', -apple-system, BlinkMacSystemFont, sans-serif;
     font-size: 13px;
     color: {COLORS['text_dark']};
 }}

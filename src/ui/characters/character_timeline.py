@@ -69,7 +69,7 @@ class CharacterTimelineVisualization(QWidget):
                 painter.drawEllipse(int(x - 8), int(line_y - 8), 16, 16)
 
                 # Event name
-                font = QFont("Segoe UI", 9)
+                font = QFont("Helvetica Neue", 9)
                 painter.setFont(font)
                 painter.setPen(QColor("#1a1a1a"))
 
@@ -81,7 +81,7 @@ class CharacterTimelineVisualization(QWidget):
 
                 # Age
                 if evt.age is not None:
-                    font_small = QFont("Segoe UI", 8)
+                    font_small = QFont("Helvetica Neue", 8)
                     painter.setFont(font_small)
                     painter.setPen(QColor("#6b7280"))
                     age_y = text_y + 25 if i % 2 == 0 else text_y - 15

@@ -112,7 +112,7 @@ class FactionRelationshipGraph(QWidget):
             painter.drawEllipse(int(x - 20), int(y - 20), 40, 40)
 
             # Faction name below
-            font = QFont("Segoe UI", 9, QFont.Weight.Bold)
+            font = QFont("Helvetica Neue", 9, QFont.Weight.Bold)
             painter.setFont(font)
             painter.setPen(QColor("#1a1a1a"))
 
