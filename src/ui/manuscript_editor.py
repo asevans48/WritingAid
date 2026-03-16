@@ -457,43 +457,88 @@ class ChapterEditor(QWidget):
         self.toggle_planner_btn.clicked.connect(self._toggle_planner)
         bottom_toolbar.addWidget(self.toggle_planner_btn)
 
+        # Toggle feedback button
+        self.toggle_feedback_btn = QPushButton("Feedback")
+        self.toggle_feedback_btn.setCheckable(True)
+        self.toggle_feedback_btn.setToolTip("Show/hide feedback panel")
+        self.toggle_feedback_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #d97706;
+                color: white;
+                font-weight: bold;
+                padding: 3px 8px;
+                border-radius: 3px;
+                font-size: 11px;
+            }
+            QPushButton:checked {
+                background-color: #b45309;
+            }
+            QPushButton:hover {
+                background-color: #b45309;
+            }
+        """)
+        self.toggle_feedback_btn.clicked.connect(self._toggle_feedback)
+        bottom_toolbar.addWidget(self.toggle_feedback_btn)
+
         editor_layout.addLayout(bottom_toolbar)
 
         # Add editor widget to splitter
         self.main_splitter.addWidget(editor_widget)
 
-        # Right side - Chapter Planner (initially hidden)
+        # Right side - tabbed panel for Planner and Feedback (initially hidden)
+        self.right_panel = QTabWidget()
+        self.right_panel.setVisible(False)
+        self.right_panel.setMinimumWidth(300)
+        self.right_panel.setStyleSheet("QTabWidget::pane { border: none; } QTabBar::tab { font-size: 11px; padding: 4px 10px; }")
+
         self.planner_widget = ChapterPlannerWidget()
         self.planner_widget.plan_changed.connect(self._on_plan_changed)
-        self.planner_widget.setVisible(False)
-        self.planner_widget.setMinimumWidth(300)
-
-        # Set up planner callbacks
         self.planner_widget.set_context_provider(self._get_planner_context)
         self.planner_widget.set_chapter_content_provider(lambda: self.editor.toPlainText())
+        self.right_panel.addTab(self.planner_widget, "Planner")
 
-        self.main_splitter.addWidget(self.planner_widget)
+        from src.ui.feedback_widget import FeedbackWidget
+        self.feedback_widget = FeedbackWidget()
+        self.feedback_widget.feedback_changed.connect(self._on_plan_changed)
+        self.feedback_widget.set_chapter_content_provider(lambda: self.editor.toPlainText())
+        self.right_panel.addTab(self.feedback_widget, "Feedback")
 
-        # Set initial splitter sizes (100% editor when planner hidden)
+        self.main_splitter.addWidget(self.right_panel)
+
+        # Set initial splitter sizes (100% editor when panel hidden)
         self.main_splitter.setSizes([1000, 0])
 
         layout.addWidget(self.main_splitter)
 
+    def _show_right_panel(self, tab_index: int):
+        """Show the right panel and switch to the given tab."""
+        self.right_panel.setVisible(True)
+        self.right_panel.setCurrentIndex(tab_index)
+        self.main_splitter.setSizes([600, 400])
+        # Sync toggle buttons
+        self.toggle_planner_btn.setChecked(True)
+        self.toggle_feedback_btn.setChecked(True)
+
+    def _hide_right_panel(self):
+        """Hide the right panel."""
+        self.right_panel.setVisible(False)
+        self.main_splitter.setSizes([1000, 0])
+        self.toggle_planner_btn.setChecked(False)
+        self.toggle_feedback_btn.setChecked(False)
+
     def _toggle_planner(self):
         """Toggle the chapter planner visibility."""
-        is_visible = self.planner_widget.isVisible()
-        self.planner_widget.setVisible(not is_visible)
-
-        if not is_visible:
-            # Show planner - set sizes to 60/40
-            self.main_splitter.setSizes([600, 400])
-            self.toggle_planner_btn.setText("📋 Hide Planner")
-            self.toggle_planner_btn.setChecked(True)
+        if self.right_panel.isVisible() and self.right_panel.currentIndex() == 0:
+            self._hide_right_panel()
         else:
-            # Hide planner
-            self.main_splitter.setSizes([1000, 0])
-            self.toggle_planner_btn.setText("📋 Plan Chapter")
-            self.toggle_planner_btn.setChecked(False)
+            self._show_right_panel(0)
+
+    def _toggle_feedback(self):
+        """Toggle the feedback panel visibility."""
+        if self.right_panel.isVisible() and self.right_panel.currentIndex() == 1:
+            self._hide_right_panel()
+        else:
+            self._show_right_panel(1)
 
     def _on_plan_changed(self):
         """Handle plan content changes."""
@@ -577,8 +622,9 @@ class ChapterEditor(QWidget):
 
     def _init_ai(self):
         """Initialize AI client for the planner."""
-        # Always set up the AI handler for the planner (works with both cloud and local models)
+        # Always set up the AI handler for the planner and feedback widget
         self.planner_widget.set_ai_handler(self._handle_planner_ai_request)
+        self.feedback_widget.set_ai_handler(self._handle_planner_ai_request)
 
         # Initialize project summarizer with AI handler
         from src.ai.project_summarizer import get_project_summarizer
@@ -916,13 +962,20 @@ class ChapterEditor(QWidget):
                 }
                 for todo in self.chapter.planning.todos
             ],
-            'notes': self.chapter.planning.notes,
+            'notes': [s.model_dump() for s in self.chapter.planning.notes] if isinstance(self.chapter.planning.notes, list) else self.chapter.planning.notes,
             'characters_featured': self.chapter.planning.characters_featured,
             'locations': self.chapter.planning.locations,
             'pov_character': self.chapter.planning.pov_character,
             'timeline_position': self.chapter.planning.timeline_position,
         }
         self.planner_widget.set_planning_data(planning_data)
+
+        # Load feedback data
+        feedback_entries = []
+        if hasattr(self.chapter.planning, 'feedback') and self.chapter.planning.feedback:
+            feedback_entries = [e.model_dump() for e in self.chapter.planning.feedback.entries]
+        self.feedback_widget.set_feedback_data(feedback_entries)
+
         self._update_word_count()
         self._update_margin_annotations()
         self._highlight_annotated_lines()
@@ -2989,7 +3042,13 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
         # Update the planning object
         self.chapter.planning.outline = planning_data.get('outline', '')
         self.chapter.planning.description = planning_data.get('description', '')
-        self.chapter.planning.notes = planning_data.get('notes', '')
+        # Convert notes dicts back to NoteSubject objects
+        notes_raw = planning_data.get('notes', [])
+        if isinstance(notes_raw, list):
+            from src.models.project import NoteSubject
+            self.chapter.planning.notes = [NoteSubject(**s) if isinstance(s, dict) else s for s in notes_raw]
+        else:
+            self.chapter.planning.notes = notes_raw
         self.chapter.planning.pov_character = planning_data.get('pov_character', '')
         self.chapter.planning.timeline_position = planning_data.get('timeline_position', '')
         self.chapter.planning.characters_featured = planning_data.get('characters_featured', [])
@@ -3024,6 +3083,16 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
 
         # Also update legacy plan field for backward compatibility
         self.chapter.plan = planning_data.get('outline', '')
+
+        # Save feedback data
+        try:
+            from src.models.project import ChapterFeedback, FeedbackEntry
+            feedback_data = self.feedback_widget.get_feedback_data()
+            self.chapter.planning.feedback = ChapterFeedback(
+                entries=[FeedbackEntry(**e) if isinstance(e, dict) else e for e in feedback_data]
+            )
+        except RuntimeError:
+            pass  # Widget deleted
 
         self._update_word_count()
 

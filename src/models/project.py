@@ -1,7 +1,7 @@
 """Project model - Root level encapsulating all writer work."""
 
-from typing import List, Dict, Optional
-from pydantic import BaseModel, Field, field_validator
+from typing import List, Dict, Optional, Union
+from pydantic import BaseModel, Field, field_validator, model_validator
 from datetime import datetime
 from pathlib import Path
 import json
@@ -184,13 +184,62 @@ class StoryEvent(BaseModel):
     order: int = 0  # Order in the event list
 
 
+class NoteEntry(BaseModel):
+    """A single note within a subject."""
+    id: str = Field(default_factory=lambda: __import__('uuid').uuid4().hex[:8])
+    title: str = ""
+    content: str = ""
+    collapsed: bool = False
+
+class NoteSubject(BaseModel):
+    """A subject/category grouping notes together."""
+    id: str = Field(default_factory=lambda: __import__('uuid').uuid4().hex[:8])
+    name: str = "General"
+    entries: List[NoteEntry] = Field(default_factory=list)
+
+
+class FeedbackEntry(BaseModel):
+    """A single piece of feedback from a source."""
+    id: str = Field(default_factory=lambda: __import__('uuid').uuid4().hex[:8])
+    title: str = ""
+    content: str = ""
+    source: str = ""  # e.g. "Beta reader", "Editor", "Workshop", "Self"
+    collapsed: bool = False
+
+class ChapterFeedback(BaseModel):
+    """All feedback for a chapter."""
+    entries: List[FeedbackEntry] = Field(default_factory=list)
+
+
 class ChapterPlanning(BaseModel):
     """Planning data for a chapter - separate from content."""
     outline: str = ""  # Legacy: text-based outline (auto-generated from events)
     events: List[StoryEvent] = Field(default_factory=list)  # Story events on the arc
     description: str = ""  # Brief description/summary of what happens
     todos: List[ChapterTodo] = Field(default_factory=list)  # Writing tasks for this chapter
-    notes: str = ""  # Additional notes (research, ideas, reminders)
+    notes: Union[List[NoteSubject], str] = Field(default_factory=list)  # Organized notes by subject
+    feedback: ChapterFeedback = Field(default_factory=ChapterFeedback)  # Reader/editor feedback
+
+    @model_validator(mode='before')
+    @classmethod
+    def migrate_notes(cls, data):
+        """Migrate legacy string notes to the new subject-based format."""
+        if isinstance(data, dict):
+            notes = data.get('notes')
+            if isinstance(notes, str) and notes.strip():
+                # Migrate old plain-text notes into a "General" subject
+                data['notes'] = [{
+                    'id': __import__('uuid').uuid4().hex[:8],
+                    'name': 'General',
+                    'entries': [{
+                        'id': __import__('uuid').uuid4().hex[:8],
+                        'title': 'Note',
+                        'content': notes
+                    }]
+                }]
+            elif isinstance(notes, str):
+                data['notes'] = []
+        return data
     scene_list: List[str] = Field(default_factory=list)  # List of scenes in order
     characters_featured: List[str] = Field(default_factory=list)  # Character names/IDs
     locations: List[str] = Field(default_factory=list)  # Locations used
@@ -202,6 +251,27 @@ class ChapterPlanning(BaseModel):
     voice: str = ""  # Narrative voice style (e.g., "sardonic", "lyrical", "matter-of-fact")
     style: str = ""  # Prose style notes (e.g., "short punchy sentences", "flowery descriptions")
     pacing: str = ""  # Pacing notes (e.g., "slow build", "rapid-fire action", "contemplative")
+
+    @property
+    def notes_as_text(self) -> str:
+        """Flatten organized notes into a readable string for export/AI context."""
+        if isinstance(self.notes, str):
+            return self.notes
+        parts = []
+        for subject in self.notes:
+            entry_parts = []
+            for entry in subject.entries:
+                if entry.content.strip():
+                    if entry.title.strip():
+                        entry_parts.append(f"- {entry.title}: {entry.content.strip()}")
+                    else:
+                        entry_parts.append(entry.content.strip())
+            if entry_parts:
+                if len(self.notes) > 1:
+                    parts.append(f"[{subject.name}]\n" + "\n".join(entry_parts))
+                else:
+                    parts.append("\n".join(entry_parts))
+        return "\n\n".join(parts)
 
 
 class Chapter(BaseModel):

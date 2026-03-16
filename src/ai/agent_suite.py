@@ -573,8 +573,9 @@ If suggesting todos, format them as a bulleted list that the author can add to t
             ])
             context_parts.append(f"\n**Writing Tasks:**\n{todos_text}")
 
-        if planning.notes:
-            context_parts.append(f"\n**Notes:**\n{planning.notes}")
+        notes_text = planning.notes_as_text
+        if notes_text:
+            context_parts.append(f"\n**Notes:**\n{notes_text}")
 
         if planning.scene_list:
             context_parts.append(f"\n**Scenes:**\n" + "\n".join(f"- {s}" for s in planning.scene_list))

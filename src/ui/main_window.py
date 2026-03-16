@@ -1939,7 +1939,7 @@ class MainWindow(QMainWindow):
                             'locations': planning.locations,
                             'themes': planning.themes,
                             'timeline_position': planning.timeline_position,
-                            'notes': planning.notes,
+                            'notes': planning.notes_as_text,
                             # Writing style metadata
                             'tone': getattr(planning, 'tone', ''),
                             'voice': getattr(planning, 'voice', ''),

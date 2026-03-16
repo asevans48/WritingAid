@@ -326,7 +326,7 @@ class ManuscriptExporter:
                         p.paragraph_format.left_indent = Inches(0.25)
 
                 # Chapter notes (check planning.notes first, then legacy notes)
-                notes = chapter.planning.notes or chapter.notes
+                notes = chapter.planning.notes_as_text or chapter.notes
                 if include_notes and notes and notes.strip():
                     doc.add_paragraph()
                     notes_label = doc.add_paragraph()

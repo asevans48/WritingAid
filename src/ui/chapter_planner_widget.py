@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QScrollArea, QFrame, QTabWidget, QLineEdit, QCheckBox,
     QSlider, QSizePolicy
 )
-from PyQt6.QtCore import pyqtSignal, Qt, QPointF, QMimeData
+from PyQt6.QtCore import pyqtSignal, Qt, QPointF, QMimeData, QTimer
 from PyQt6.QtGui import QFont, QTextCursor, QPainter, QPen, QBrush, QColor, QPainterPath, QDrag, QPixmap
 from typing import Optional, Callable, List
 import threading
@@ -891,22 +891,75 @@ class ChapterPlannerWidget(QWidget):
 
         self.tab_widget.addTab(todo_tab, "Todo List")
 
-        # === TAB 4: Notes ===
+        # === TAB 4: Notes (organized by subject, collapsible) ===
         notes_tab = QWidget()
         notes_layout = QVBoxLayout(notes_tab)
         notes_layout.setSpacing(4)
+        notes_layout.setContentsMargins(2, 4, 2, 2)
 
-        notes_label = QLabel("Notes & ideas:")
-        notes_label.setStyleSheet("font-weight: 500; font-size: 11px;")
-        notes_layout.addWidget(notes_label)
+        # Top toolbar: subject selector + add/remove buttons
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(4)
 
-        self.notes_editor = QTextEdit()
-        self.notes_editor.setPlaceholderText(
-            "Research, ideas, reminders..."
-        )
-        self.notes_editor.setFont(QFont(SYSTEM_FONT, 10))
-        self.notes_editor.textChanged.connect(self._on_plan_changed)
-        notes_layout.addWidget(self.notes_editor)
+        toolbar.addWidget(QLabel("Subject:"))
+        self.subject_combo = QComboBox()
+        self.subject_combo.setMinimumWidth(90)
+        self.subject_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.subject_combo.setStyleSheet("font-size: 11px;")
+        self.subject_combo.currentIndexChanged.connect(self._on_subject_selected)
+        toolbar.addWidget(self.subject_combo)
+
+        self.add_subject_btn = QPushButton("+")
+        self.add_subject_btn.setFixedSize(24, 24)
+        self.add_subject_btn.setToolTip("Add subject")
+        self.add_subject_btn.setStyleSheet("font-weight: bold; font-size: 14px; padding: 0;")
+        self.add_subject_btn.clicked.connect(self._add_note_subject)
+        toolbar.addWidget(self.add_subject_btn)
+
+        self.rename_subject_btn = QPushButton("Aa")
+        self.rename_subject_btn.setFixedSize(24, 24)
+        self.rename_subject_btn.setToolTip("Rename subject")
+        self.rename_subject_btn.setStyleSheet("font-size: 10px; padding: 0;")
+        self.rename_subject_btn.clicked.connect(self._rename_note_subject)
+        toolbar.addWidget(self.rename_subject_btn)
+
+        self.remove_subject_btn = QPushButton("\u2212")
+        self.remove_subject_btn.setFixedSize(24, 24)
+        self.remove_subject_btn.setToolTip("Remove subject")
+        self.remove_subject_btn.setStyleSheet("font-weight: bold; font-size: 14px; padding: 0;")
+        self.remove_subject_btn.clicked.connect(self._remove_note_subject)
+        toolbar.addWidget(self.remove_subject_btn)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.VLine)
+        sep.setFixedHeight(20)
+        sep.setStyleSheet("color: #d1d5db;")
+        toolbar.addWidget(sep)
+
+        self.add_note_btn = QPushButton("+ Note")
+        self.add_note_btn.setFixedHeight(24)
+        self.add_note_btn.setStyleSheet("font-size: 11px; padding: 2px 8px;")
+        self.add_note_btn.clicked.connect(self._add_note_entry)
+        toolbar.addWidget(self.add_note_btn)
+
+        notes_layout.addLayout(toolbar)
+
+        # Scrollable area for collapsible note entries
+        self.notes_scroll = QScrollArea()
+        self.notes_scroll.setWidgetResizable(True)
+        self.notes_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.notes_container = QWidget()
+        self.notes_entries_layout = QVBoxLayout(self.notes_container)
+        self.notes_entries_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.notes_entries_layout.setSpacing(3)
+        self.notes_entries_layout.setContentsMargins(0, 0, 0, 0)
+        self.notes_scroll.setWidget(self.notes_container)
+        notes_layout.addWidget(self.notes_scroll)
+
+        # Internal state for notes
+        self._notes_data: list = []  # List of subject dicts
+        self._current_subject_index: int = -1
+        self._note_entry_widgets: list = []  # List of {'frame', 'editor', 'title_edit', 'body_widget'}
 
         self.tab_widget.addTab(notes_tab, "Notes")
 
@@ -1034,6 +1087,260 @@ class ChapterPlannerWidget(QWidget):
         """Handle any planning content change."""
         self._update_arc_widget()
         self.plan_changed.emit()
+
+    # --- Notes subject/entry management ---
+
+    def _add_note_subject(self):
+        """Add a new subject with a default name, editable in the combo box."""
+        self._save_current_entries()
+        count = len(self._notes_data) + 1
+        name = f"Subject {count}"
+        subject = {
+            'id': uuid.uuid4().hex[:8],
+            'name': name,
+            'entries': []
+        }
+        self._notes_data.append(subject)
+        self.subject_combo.blockSignals(True)
+        self.subject_combo.addItem(name)
+        self.subject_combo.setCurrentIndex(len(self._notes_data) - 1)
+        self.subject_combo.blockSignals(False)
+        self._current_subject_index = len(self._notes_data) - 1
+        self._refresh_note_entries()
+        # Let user immediately rename by making combo editable and selecting text
+        self.subject_combo.setEditable(True)
+        self.subject_combo.lineEdit().editingFinished.connect(self._finish_subject_edit)
+        QTimer.singleShot(0, lambda: (self.subject_combo.lineEdit().selectAll(), self.subject_combo.lineEdit().setFocus()))
+        self._on_plan_changed()
+
+    def _remove_note_subject(self):
+        """Remove the selected subject and its notes."""
+        row = self.subject_combo.currentIndex()
+        if row < 0 or row >= len(self._notes_data):
+            return
+        name = self._notes_data[row]['name']
+        reply = QMessageBox.question(
+            self, "Remove Subject",
+            f"Remove \"{name}\" and all its notes?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._notes_data.pop(row)
+            self.subject_combo.blockSignals(True)
+            self.subject_combo.removeItem(row)
+            self.subject_combo.blockSignals(False)
+            if self._notes_data:
+                new_row = min(row, len(self._notes_data) - 1)
+                self._current_subject_index = new_row
+                self.subject_combo.setCurrentIndex(new_row)
+            else:
+                self._current_subject_index = -1
+            self._refresh_note_entries()
+            self._on_plan_changed()
+
+    def _rename_note_subject(self):
+        """Rename the selected subject inline via the combo box."""
+        row = self.subject_combo.currentIndex()
+        if row < 0 or row >= len(self._notes_data):
+            return
+        self.subject_combo.setEditable(True)
+        self.subject_combo.lineEdit().editingFinished.connect(self._finish_subject_edit)
+        QTimer.singleShot(0, lambda: (self.subject_combo.lineEdit().selectAll(), self.subject_combo.lineEdit().setFocus()))
+
+    def _finish_subject_edit(self):
+        """Commit the inline subject name edit."""
+        if not self.subject_combo.isEditable():
+            return
+        line_edit = self.subject_combo.lineEdit()
+        new_name = line_edit.text().strip()
+        row = self.subject_combo.currentIndex()
+        # Disconnect to avoid repeat calls
+        try:
+            line_edit.editingFinished.disconnect(self._finish_subject_edit)
+        except TypeError:
+            pass
+        self.subject_combo.setEditable(False)
+        if new_name and 0 <= row < len(self._notes_data):
+            self._notes_data[row]['name'] = new_name
+            self.subject_combo.setItemText(row, new_name)
+            self._on_plan_changed()
+
+    def _on_subject_selected(self, row: int):
+        """Handle subject selection change."""
+        self._save_current_entries()
+        self._current_subject_index = row
+        self._refresh_note_entries()
+
+    def _add_note_entry(self):
+        """Add a new note entry to the current subject."""
+        if self._current_subject_index < 0:
+            # Auto-create a General subject if none exists
+            subject = {
+                'id': uuid.uuid4().hex[:8],
+                'name': 'General',
+                'entries': []
+            }
+            self._notes_data.append(subject)
+            self.subject_combo.blockSignals(True)
+            self.subject_combo.addItem('General')
+            self.subject_combo.setCurrentIndex(0)
+            self.subject_combo.blockSignals(False)
+            self._current_subject_index = 0
+
+        entry = {'id': uuid.uuid4().hex[:8], 'title': '', 'content': '', 'collapsed': False}
+        self._notes_data[self._current_subject_index]['entries'].append(entry)
+        self._add_note_entry_widget(entry, len(self._note_entry_widgets), focus_title=True)
+        self._on_plan_changed()
+
+    def _remove_note_entry(self, index: int):
+        """Remove a note entry by index."""
+        if self._current_subject_index < 0:
+            return
+        subject = self._notes_data[self._current_subject_index]
+        if 0 <= index < len(subject['entries']):
+            subject['entries'].pop(index)
+            self._refresh_note_entries()
+            self._on_plan_changed()
+
+    def _toggle_note_collapsed(self, index: int):
+        """Toggle collapse state of a note entry."""
+        if self._current_subject_index < 0:
+            return
+        subject = self._notes_data[self._current_subject_index]
+        if 0 <= index < len(subject['entries']):
+            subject['entries'][index]['collapsed'] = not subject['entries'][index].get('collapsed', False)
+            # Update the widget visibility
+            if index < len(self._note_entry_widgets):
+                w = self._note_entry_widgets[index]
+                collapsed = subject['entries'][index]['collapsed']
+                w['body_widget'].setVisible(not collapsed)
+                w['toggle_btn'].setText("\u25b6" if collapsed else "\u25bc")
+
+    def _save_current_entries(self):
+        """Save text and title from entry widgets back into the data model."""
+        if self._current_subject_index < 0 or self._current_subject_index >= len(self._notes_data):
+            return
+        subject = self._notes_data[self._current_subject_index]
+        for i, widget_info in enumerate(self._note_entry_widgets):
+            if i < len(subject['entries']):
+                subject['entries'][i]['content'] = widget_info['editor'].toPlainText()
+                subject['entries'][i]['title'] = widget_info['title_edit'].text()
+
+    def _refresh_note_entries(self):
+        """Rebuild the note entry widgets for the current subject."""
+        for widget_info in self._note_entry_widgets:
+            widget_info['frame'].deleteLater()
+        self._note_entry_widgets.clear()
+
+        if self._current_subject_index < 0 or self._current_subject_index >= len(self._notes_data):
+            return
+
+        subject = self._notes_data[self._current_subject_index]
+        for i, entry in enumerate(subject['entries']):
+            self._add_note_entry_widget(entry, i)
+
+    def _add_note_entry_widget(self, entry: dict, index: int, focus_title: bool = False):
+        """Create a collapsible, titled note entry widget."""
+        collapsed = entry.get('collapsed', False)
+        title = entry.get('title', '') or ''
+
+        # Prevent macOS from stealing window focus when new widgets appear
+        wa_no_activate = Qt.WidgetAttribute.WA_ShowWithoutActivating
+
+        frame = QFrame()
+        frame.setAttribute(wa_no_activate)
+        frame.setStyleSheet("""
+            QFrame#noteCard {
+                border: 1px solid #d1d5db;
+                border-radius: 4px;
+                background: #fefefe;
+            }
+        """)
+        frame.setObjectName("noteCard")
+        frame_layout = QVBoxLayout(frame)
+        frame_layout.setContentsMargins(0, 0, 0, 0)
+        frame_layout.setSpacing(0)
+
+        # Header bar: toggle + inline title edit + delete
+        header = QWidget()
+        header.setAttribute(wa_no_activate)
+        header.setStyleSheet("background: #f3f4f6; border-top-left-radius: 4px; border-top-right-radius: 4px;")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(6, 3, 4, 3)
+        header_layout.setSpacing(4)
+
+        toggle_btn = QPushButton("\u25b6" if collapsed else "\u25bc")
+        toggle_btn.setFixedSize(18, 18)
+        toggle_btn.setStyleSheet("border: none; font-size: 9px; color: #6b7280; padding: 0;")
+        toggle_btn.setToolTip("Collapse/expand")
+        toggle_btn.setAttribute(wa_no_activate)
+        toggle_btn.clicked.connect(lambda _, idx=index: self._toggle_note_collapsed(idx))
+        header_layout.addWidget(toggle_btn)
+
+        title_edit = QLineEdit(title)
+        title_edit.setAttribute(wa_no_activate)
+        title_edit.setPlaceholderText("Note title...")
+        title_edit.setStyleSheet(
+            "font-weight: 600; font-size: 11px; color: #374151; background: transparent;"
+            "border: none; padding: 0px 2px;"
+        )
+        title_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        header_layout.addWidget(title_edit)
+
+        del_btn = QPushButton("\u00d7")
+        del_btn.setFixedSize(20, 18)
+        del_btn.setToolTip("Remove note")
+        del_btn.setAttribute(wa_no_activate)
+        del_btn.setStyleSheet("border: none; font-size: 13px; font-weight: bold; color: #9ca3af; padding: 0;")
+        del_btn.clicked.connect(lambda _, idx=index: self._remove_note_entry(idx))
+        header_layout.addWidget(del_btn)
+
+        frame_layout.addWidget(header)
+
+        # Body: text editor (hidden when collapsed)
+        body_widget = QWidget()
+        body_widget.setAttribute(wa_no_activate)
+        body_layout = QVBoxLayout(body_widget)
+        body_layout.setContentsMargins(6, 4, 6, 6)
+        body_layout.setSpacing(0)
+
+        editor = QTextEdit()
+        editor.setAttribute(wa_no_activate)
+        editor.setPlainText(entry.get('content', ''))
+        editor.setPlaceholderText("Write your note here...")
+        editor.setFont(QFont(SYSTEM_FONT, 10))
+        editor.setMinimumHeight(50)
+        editor.setMaximumHeight(140)
+        editor.setStyleSheet("border: none; background: transparent;")
+        body_layout.addWidget(editor)
+
+        body_widget.setVisible(not collapsed)
+        frame_layout.addWidget(body_widget)
+
+        # Add to layout, then connect change signals (avoids spurious signals during construction)
+        self.notes_entries_layout.addWidget(frame)
+        title_edit.textChanged.connect(self._on_plan_changed)
+        editor.textChanged.connect(self._on_plan_changed)
+
+        self._note_entry_widgets.append({
+            'frame': frame,
+            'editor': editor,
+            'title_edit': title_edit,
+            'toggle_btn': toggle_btn,
+            'body_widget': body_widget,
+        })
+
+        if focus_title:
+            def _restore_focus():
+                title_edit.setFocus()
+                title_edit.selectAll()
+            QTimer.singleShot(0, _restore_focus)
+
+    def _get_notes_data(self) -> list:
+        """Return the current notes data, saving any in-progress edits."""
+        self._save_current_entries()
+        import copy
+        return copy.deepcopy(self._notes_data)
 
     def _toggle_ai_panel(self):
         """Toggle the AI Assistant panel expand/collapse."""
@@ -1230,8 +1537,42 @@ class ChapterPlannerWidget(QWidget):
         locs = planning_data.get('locations', [])
         self.locations_edit.setText(', '.join(locs) if locs else '')
 
-        # Notes
-        self.notes_editor.setPlainText(planning_data.get('notes', ''))
+        # Notes (organized by subject)
+        notes_raw = planning_data.get('notes', [])
+        if isinstance(notes_raw, str):
+            # Legacy string format - migrate to subject-based
+            if notes_raw.strip():
+                self._notes_data = [{
+                    'id': uuid.uuid4().hex[:8],
+                    'name': 'General',
+                    'entries': [{'id': uuid.uuid4().hex[:8], 'title': 'Note', 'content': notes_raw, 'collapsed': False}]
+                }]
+            else:
+                self._notes_data = []
+        elif isinstance(notes_raw, list):
+            # Ensure entries have title field (backwards compat with previous format)
+            for subject in notes_raw:
+                for entry in subject.get('entries', []):
+                    if 'title' not in entry:
+                        entry['title'] = 'Untitled'
+                    if 'collapsed' not in entry:
+                        entry['collapsed'] = False
+            self._notes_data = notes_raw
+        else:
+            self._notes_data = []
+
+        self.subject_combo.blockSignals(True)
+        self.subject_combo.clear()
+        for subject in self._notes_data:
+            self.subject_combo.addItem(subject.get('name', 'Untitled'))
+        self.subject_combo.blockSignals(False)
+        if self._notes_data:
+            self._current_subject_index = 0
+            self.subject_combo.setCurrentIndex(0)
+            self._refresh_note_entries()
+        else:
+            self._current_subject_index = -1
+            self._refresh_note_entries()
 
         # Writing style metadata
         self.tone_edit.setText(planning_data.get('tone', ''))
@@ -1322,7 +1663,7 @@ class ChapterPlannerWidget(QWidget):
             'events': events,
             'description': self.description_editor.toPlainText(),
             'todos': todos,
-            'notes': self.notes_editor.toPlainText(),
+            'notes': self._get_notes_data(),
             'characters_featured': chars,
             'locations': locs,
             'pov_character': self.pov_edit.text(),

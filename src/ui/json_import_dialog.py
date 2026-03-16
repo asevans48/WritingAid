@@ -1308,10 +1308,29 @@ class JSONImportDialog(QDialog):
 
             # Notes
             if 'notes' in plan_data:
-                if merge and planning.notes:
-                    planning.notes += "\n\n--- Imported ---\n\n" + plan_data['notes']
-                else:
-                    planning.notes = plan_data['notes']
+                imported_notes = plan_data['notes']
+                if isinstance(imported_notes, str) and imported_notes.strip():
+                    # Legacy string format - wrap into a subject
+                    from src.models.project import NoteSubject, NoteEntry
+                    import uuid as _uuid
+                    new_subject = NoteSubject(
+                        id=_uuid.uuid4().hex[:8],
+                        name='Imported',
+                        entries=[NoteEntry(id=_uuid.uuid4().hex[:8], content=imported_notes)]
+                    )
+                    if merge and isinstance(planning.notes, list):
+                        planning.notes.append(new_subject)
+                    else:
+                        planning.notes = [new_subject]
+                elif isinstance(imported_notes, list):
+                    if merge and isinstance(planning.notes, list):
+                        planning.notes.extend(
+                            __import__('src.models.project', fromlist=['NoteSubject']).NoteSubject(**s)
+                            if isinstance(s, dict) else s for s in imported_notes
+                        )
+                    else:
+                        from src.models.project import NoteSubject as NS
+                        planning.notes = [NS(**s) if isinstance(s, dict) else s for s in imported_notes]
 
             # Todos
             if 'todos' in plan_data and isinstance(plan_data['todos'], list):
