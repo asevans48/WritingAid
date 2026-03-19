@@ -963,6 +963,46 @@ class ChapterPlannerWidget(QWidget):
 
         self.tab_widget.addTab(notes_tab, "Notes")
 
+        # === TAB 5: Subplots ===
+        subplots_tab = QWidget()
+        subplots_layout = QVBoxLayout(subplots_tab)
+        subplots_layout.setSpacing(4)
+        subplots_layout.setContentsMargins(2, 4, 2, 2)
+
+        subplots_header = QHBoxLayout()
+        subplots_header.setSpacing(4)
+        subplots_label = QLabel("Subplot Notes:")
+        subplots_label.setStyleSheet("font-weight: 500; font-size: 11px;")
+        subplots_label.setToolTip("Track how subplots progress in this chapter")
+        subplots_header.addWidget(subplots_label)
+        subplots_header.addStretch()
+
+        add_subplot_btn = QPushButton("+ Subplot")
+        add_subplot_btn.setFixedHeight(24)
+        add_subplot_btn.setStyleSheet("font-size: 11px; padding: 2px 8px;")
+        add_subplot_btn.clicked.connect(self._add_subplot_note)
+        subplots_header.addWidget(add_subplot_btn)
+
+        subplots_layout.addLayout(subplots_header)
+
+        # Scrollable area for subplot entries
+        self.subplots_scroll = QScrollArea()
+        self.subplots_scroll.setWidgetResizable(True)
+        self.subplots_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.subplots_container = QWidget()
+        self.subplots_entries_layout = QVBoxLayout(self.subplots_container)
+        self.subplots_entries_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.subplots_entries_layout.setSpacing(3)
+        self.subplots_entries_layout.setContentsMargins(0, 0, 0, 0)
+        self.subplots_scroll.setWidget(self.subplots_container)
+        subplots_layout.addWidget(self.subplots_scroll)
+
+        # Internal state for subplots
+        self._subplot_data: list = []  # List of subplot note dicts
+        self._subplot_entry_widgets: list = []
+
+        self.tab_widget.addTab(subplots_tab, "Subplots")
+
         upper_layout.addWidget(self.tab_widget)
 
         # Wrap upper portion in a scroll area so it scrolls when AI panel is expanded
@@ -1342,6 +1382,169 @@ class ChapterPlannerWidget(QWidget):
         import copy
         return copy.deepcopy(self._notes_data)
 
+    # --- Subplot note management ---
+
+    def _add_subplot_note(self):
+        """Add a new subplot note entry."""
+        self._save_subplot_entries()
+        entry = {
+            'id': uuid.uuid4().hex[:8],
+            'title': '',
+            'content': '',
+            'subplot_id': '',
+            'status': 'active',
+            'collapsed': False
+        }
+        self._subplot_data.append(entry)
+        self._add_subplot_entry_widget(entry, len(self._subplot_data) - 1, focus_title=True)
+        self._on_plan_changed()
+
+    def _remove_subplot_note(self, index: int):
+        """Remove a subplot note entry."""
+        self._save_subplot_entries()
+        if 0 <= index < len(self._subplot_data):
+            self._subplot_data.pop(index)
+            self._refresh_subplot_entries()
+            self._on_plan_changed()
+
+    def _toggle_subplot_collapsed(self, index: int):
+        """Toggle collapse state of a subplot entry."""
+        self._save_subplot_entries()
+        if 0 <= index < len(self._subplot_data):
+            self._subplot_data[index]['collapsed'] = not self._subplot_data[index].get('collapsed', False)
+            if index < len(self._subplot_entry_widgets):
+                w = self._subplot_entry_widgets[index]
+                collapsed = self._subplot_data[index]['collapsed']
+                w['body_widget'].setVisible(not collapsed)
+                w['toggle_btn'].setText("\u25b6" if collapsed else "\u25bc")
+
+    def _save_subplot_entries(self):
+        """Persist widget edits to data model."""
+        for i, w in enumerate(self._subplot_entry_widgets):
+            if i < len(self._subplot_data):
+                self._subplot_data[i]['title'] = w['title_edit'].text()
+                self._subplot_data[i]['content'] = w['editor'].toPlainText()
+                self._subplot_data[i]['status'] = w['status_combo'].currentText()
+
+    def _refresh_subplot_entries(self):
+        """Rebuild subplot entry widgets from data."""
+        for w in self._subplot_entry_widgets:
+            w['frame'].deleteLater()
+        self._subplot_entry_widgets.clear()
+        for i, entry in enumerate(self._subplot_data):
+            self._add_subplot_entry_widget(entry, i)
+
+    def _add_subplot_entry_widget(self, entry: dict, index: int, focus_title: bool = False):
+        """Create a collapsible subplot entry widget."""
+        collapsed = entry.get('collapsed', False)
+        title = entry.get('title', '')
+        status = entry.get('status', 'active')
+
+        wa_no_activate = Qt.WidgetAttribute.WA_ShowWithoutActivating
+
+        frame = QFrame()
+        frame.setAttribute(wa_no_activate)
+        frame.setStyleSheet("""
+            QFrame#subplotCard {
+                border: 1px solid #c4b5fd;
+                border-radius: 4px;
+                background: #faf5ff;
+            }
+        """)
+        frame.setObjectName("subplotCard")
+        frame_layout = QVBoxLayout(frame)
+        frame_layout.setContentsMargins(0, 0, 0, 0)
+        frame_layout.setSpacing(0)
+
+        # Header bar
+        header = QWidget()
+        header.setAttribute(wa_no_activate)
+        header.setStyleSheet("background: #ede9fe; border-top-left-radius: 4px; border-top-right-radius: 4px;")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(6, 3, 4, 3)
+        header_layout.setSpacing(4)
+
+        toggle_btn = QPushButton("\u25b6" if collapsed else "\u25bc")
+        toggle_btn.setFixedSize(18, 18)
+        toggle_btn.setAttribute(wa_no_activate)
+        toggle_btn.setStyleSheet("border: none; font-size: 9px; color: #6d28d9; padding: 0;")
+        toggle_btn.setToolTip("Collapse/expand")
+        toggle_btn.clicked.connect(lambda _, idx=index: self._toggle_subplot_collapsed(idx))
+        header_layout.addWidget(toggle_btn)
+
+        title_edit = QLineEdit(title)
+        title_edit.setAttribute(wa_no_activate)
+        title_edit.setPlaceholderText("Subplot name...")
+        title_edit.setStyleSheet(
+            "font-weight: 600; font-size: 11px; color: #5b21b6; background: transparent;"
+            "border: none; padding: 0px 2px;"
+        )
+        title_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        header_layout.addWidget(title_edit)
+
+        # Status indicator
+        status_combo = QComboBox()
+        status_combo.setAttribute(wa_no_activate)
+        status_combo.addItems(["active", "resolved", "dormant"])
+        status_combo.setCurrentText(status)
+        status_combo.setFixedWidth(70)
+        status_combo.setStyleSheet("font-size: 9px; padding: 0px 2px; border: 1px solid #c4b5fd; border-radius: 2px;")
+        header_layout.addWidget(status_combo)
+
+        del_btn = QPushButton("\u00d7")
+        del_btn.setFixedSize(20, 18)
+        del_btn.setToolTip("Remove subplot note")
+        del_btn.setAttribute(wa_no_activate)
+        del_btn.setStyleSheet("border: none; font-size: 13px; font-weight: bold; color: #8b5cf6; padding: 0;")
+        del_btn.clicked.connect(lambda _, idx=index: self._remove_subplot_note(idx))
+        header_layout.addWidget(del_btn)
+
+        frame_layout.addWidget(header)
+
+        # Body
+        body_widget = QWidget()
+        body_widget.setAttribute(wa_no_activate)
+        body_layout = QVBoxLayout(body_widget)
+        body_layout.setContentsMargins(6, 4, 6, 6)
+        body_layout.setSpacing(0)
+
+        editor = QTextEdit()
+        editor.setAttribute(wa_no_activate)
+        editor.setPlainText(entry.get('content', ''))
+        editor.setPlaceholderText("How does this subplot progress in this chapter?")
+        editor.setFont(QFont(SYSTEM_FONT, 10))
+        editor.setMinimumHeight(50)
+        editor.setMaximumHeight(140)
+        editor.setStyleSheet("border: none; background: transparent;")
+        body_layout.addWidget(editor)
+
+        body_widget.setVisible(not collapsed)
+        frame_layout.addWidget(body_widget)
+
+        # Add to layout, then connect signals
+        self.subplots_entries_layout.addWidget(frame)
+        title_edit.textChanged.connect(self._on_plan_changed)
+        editor.textChanged.connect(self._on_plan_changed)
+        status_combo.currentTextChanged.connect(self._on_plan_changed)
+
+        self._subplot_entry_widgets.append({
+            'frame': frame,
+            'editor': editor,
+            'title_edit': title_edit,
+            'status_combo': status_combo,
+            'toggle_btn': toggle_btn,
+            'body_widget': body_widget,
+        })
+
+        if focus_title:
+            QTimer.singleShot(0, lambda: (title_edit.setFocus(), title_edit.selectAll()))
+
+    def _get_subplot_data(self) -> list:
+        """Return the current subplot data, saving any in-progress edits."""
+        self._save_subplot_entries()
+        import copy
+        return copy.deepcopy(self._subplot_data)
+
     def _toggle_ai_panel(self):
         """Toggle the AI Assistant panel expand/collapse."""
         self._ai_expanded = not self._ai_expanded
@@ -1580,6 +1783,24 @@ class ChapterPlannerWidget(QWidget):
         self.style_edit.setText(planning_data.get('style', ''))
         self.pacing_edit.setText(planning_data.get('pacing', ''))
 
+        # Subplot notes
+        subplot_raw = planning_data.get('subplot_notes', [])
+        if isinstance(subplot_raw, list):
+            # Ensure entries have required fields (backwards compat)
+            for entry in subplot_raw:
+                if 'title' not in entry:
+                    entry['title'] = ''
+                if 'collapsed' not in entry:
+                    entry['collapsed'] = False
+                if 'status' not in entry:
+                    entry['status'] = 'active'
+                if 'subplot_id' not in entry:
+                    entry['subplot_id'] = ''
+            self._subplot_data = subplot_raw
+        else:
+            self._subplot_data = []
+        self._refresh_subplot_entries()
+
         # Todos - clear existing and add new
         for widget in self._todo_widgets[:]:
             widget.deleteLater()
@@ -1664,6 +1885,7 @@ class ChapterPlannerWidget(QWidget):
             'description': self.description_editor.toPlainText(),
             'todos': todos,
             'notes': self._get_notes_data(),
+            'subplot_notes': self._get_subplot_data(),
             'characters_featured': chars,
             'locations': locs,
             'pov_character': self.pov_edit.text(),

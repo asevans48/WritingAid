@@ -963,6 +963,7 @@ class ChapterEditor(QWidget):
                 for todo in self.chapter.planning.todos
             ],
             'notes': [s.model_dump() for s in self.chapter.planning.notes] if isinstance(self.chapter.planning.notes, list) else self.chapter.planning.notes,
+            'subplot_notes': [sn.model_dump() for sn in self.chapter.planning.subplot_notes] if hasattr(self.chapter.planning, 'subplot_notes') else [],
             'characters_featured': self.chapter.planning.characters_featured,
             'locations': self.chapter.planning.locations,
             'pov_character': self.chapter.planning.pov_character,
@@ -3053,6 +3054,13 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
         self.chapter.planning.timeline_position = planning_data.get('timeline_position', '')
         self.chapter.planning.characters_featured = planning_data.get('characters_featured', [])
         self.chapter.planning.locations = planning_data.get('locations', [])
+
+        # Convert subplot note dicts back to SubplotNote objects
+        subplot_data = planning_data.get('subplot_notes', [])
+        from src.models.project import SubplotNote
+        self.chapter.planning.subplot_notes = [
+            SubplotNote(**sn) if isinstance(sn, dict) else sn for sn in subplot_data
+        ]
 
         # Convert event dicts back to StoryEvent objects
         events_data = planning_data.get('events', [])

@@ -444,6 +444,9 @@ Current Todos:
 
 Notes:
 {chapter_data.get('notes', '(No notes yet)')}
+
+Subplot Notes:
+{chapter_data.get('subplot_notes', '(No subplot notes yet)')}
 """
 
         system_prompt = """You are a writing planning assistant helping an author develop their chapter plans.
@@ -453,10 +456,13 @@ You help with:
 - Identifying what needs to happen for story consistency
 - Breaking down complex chapters into manageable todos
 - Ensuring character arcs progress appropriately
+- Tracking subplot progression across chapters
+- Considering how magic systems and worldbuilding elements affect the chapter
 - Checking for plot consistency
 
 IMPORTANT: Do NOT write the actual chapter content. Only provide planning assistance, suggestions,
-and structural guidance. The author writes the prose themselves.
+and structural guidance. The author writes the prose themselves. Remember this is the writer's art -
+your suggestions should be useful but not forceful. Respect the author's creative vision.
 
 Keep responses focused and actionable. Suggest specific tasks the author can add to their todo list.
 """
@@ -576,6 +582,10 @@ If suggesting todos, format them as a bulleted list that the author can add to t
         notes_text = planning.notes_as_text
         if notes_text:
             context_parts.append(f"\n**Notes:**\n{notes_text}")
+
+        subplots_text = planning.subplots_as_text if hasattr(planning, 'subplots_as_text') else ""
+        if subplots_text:
+            context_parts.append(f"\n**Subplot Notes:**\n{subplots_text}")
 
         if planning.scene_list:
             context_parts.append(f"\n**Scenes:**\n" + "\n".join(f"- {s}" for s in planning.scene_list))
@@ -932,6 +942,16 @@ Would you like me to explain more about speaker configuration or dialogue detect
         if hasattr(wb, 'technologies') and wb.technologies:
             tech_names = [t.name for t in wb.technologies[:10]]
             context_parts.append(f"Technologies: {', '.join(tech_names)}")
+
+        # Add magic systems summary
+        if hasattr(wb, 'magic_systems') and wb.magic_systems:
+            magic_summaries = []
+            for ms in wb.magic_systems[:5]:
+                summary = ms.name
+                if ms.magic_type:
+                    summary += f" ({ms.magic_type.value})"
+                magic_summaries.append(summary)
+            context_parts.append(f"Magic Systems: {', '.join(magic_summaries)}")
 
         # Add places summary
         if hasattr(wb, 'places') and wb.places:

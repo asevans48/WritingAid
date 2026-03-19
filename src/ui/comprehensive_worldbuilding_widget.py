@@ -20,6 +20,7 @@ from src.ui.worldbuilding.enhanced_star_system_builder import EnhancedStarSystem
 from src.ui.worldbuilding.culture_builder import CultureBuilderWidget
 from src.ui.worldbuilding.place_builder import PlaceBuilderWidget
 from src.ui.worldbuilding.map_builder_widgets import MapBuilderWidget
+from src.ui.worldbuilding.magic_system_builder import MagicSystemBuilderWidget
 
 
 class ComprehensiveWorldBuildingWidget(QWidget):
@@ -104,6 +105,11 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         self.technology_widget.content_changed.connect(self.content_changed.emit)
         self.tabs.addTab(self.technology_widget, "🔬 Technology")
 
+        # Magic Systems - Power systems and supernatural rules
+        self.magic_system_widget = MagicSystemBuilderWidget()
+        self.magic_system_widget.content_changed.connect(self.content_changed.emit)
+        self.tabs.addTab(self.magic_system_widget, "✨ Magic")
+
         # Climate Presets - Reusable climate templates
         self.climate_preset_widget = ClimatePresetBuilderWidget()
         self.climate_preset_widget.content_changed.connect(self.content_changed.emit)
@@ -144,6 +150,7 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         self.factions_widget.content_changed.connect(self._update_economy_factions)
         self.factions_widget.content_changed.connect(self._update_places_factions)
         self.factions_widget.content_changed.connect(self._update_maps_factions)
+        self.factions_widget.content_changed.connect(self._update_magic_system_factions)
 
         # Connect flora/fauna/climate changes to update star systems
         self.flora_widget.content_changed.connect(self._update_star_system_flora)
@@ -263,6 +270,21 @@ class ComprehensiveWorldBuildingWidget(QWidget):
             planets.extend(system.planets)
         self.maps_widget.set_available_planets(planets)
 
+    def _update_magic_system_factions(self):
+        """Update available factions in magic system widget."""
+        factions = self.factions_widget.get_factions()
+        faction_ids = {f.id for f in factions}
+
+        # Clean up references to deleted factions
+        for ms in self.magic_system_widget.get_magic_systems():
+            ms.associated_factions = [
+                fid for fid in ms.associated_factions if fid in faction_ids
+            ]
+
+        self.magic_system_widget.set_available_factions(factions)
+        if hasattr(self.magic_system_widget, '_update_list'):
+            self.magic_system_widget._update_list()
+
     def _get_all_planet_names(self) -> list:
         """Get all planet names from star systems."""
         planet_names = []
@@ -284,6 +306,7 @@ class ComprehensiveWorldBuildingWidget(QWidget):
             self._update_places_factions()
             self._update_culture_factions()
             self._update_maps_factions()
+            self._update_magic_system_factions()
 
         # Load climate presets
         if hasattr(worldbuilding, 'climate_presets'):
@@ -297,6 +320,10 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         # Load technology
         if hasattr(worldbuilding, 'technologies'):
             self.technology_widget.load_technologies(worldbuilding.technologies)
+
+        # Load magic systems
+        if hasattr(worldbuilding, 'magic_systems'):
+            self.magic_system_widget.load_magic_systems(worldbuilding.magic_systems)
 
         # Load flora
         if hasattr(worldbuilding, 'flora'):
@@ -361,6 +388,7 @@ class ComprehensiveWorldBuildingWidget(QWidget):
             factions=self.factions_widget.get_factions(),
             myths=self.mythology_widget.get_myths(),
             technologies=self.technology_widget.get_technologies(),
+            magic_systems=self.magic_system_widget.get_magic_systems(),
             climate_presets=self.climate_preset_widget.get_presets(),
             flora=self.flora_widget.get_flora(),
             fauna=self.fauna_widget.get_fauna(),

@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 import json
 
-from src.models.worldbuilding_objects import Faction, Myth, ClimatePreset, Flora, Fauna, Technology, Star, StarSystem, Place, Culture, Army, Economy, HistoricalEvent, PowerHierarchy, PoliticalSystem, WorldMap
+from src.models.worldbuilding_objects import Faction, Myth, ClimatePreset, Flora, Fauna, Technology, Star, StarSystem, Place, Culture, Army, Economy, HistoricalEvent, PowerHierarchy, PoliticalSystem, WorldMap, MagicSystem
 
 
 class WorldBuilding(BaseModel):
@@ -50,6 +50,7 @@ class WorldBuilding(BaseModel):
     historical_events: List[HistoricalEvent] = Field(default_factory=list)  # Timeline events
     hierarchies: List[PowerHierarchy] = Field(default_factory=list)  # Power hierarchies
     political_systems: List[PoliticalSystem] = Field(default_factory=list)  # Political systems
+    magic_systems: List['MagicSystem'] = Field(default_factory=list)  # Magic systems
 
     @field_validator('maps', mode='before')
     @classmethod
@@ -198,6 +199,16 @@ class NoteSubject(BaseModel):
     entries: List[NoteEntry] = Field(default_factory=list)
 
 
+class SubplotNote(BaseModel):
+    """A subplot note tracking how a subplot manifests in a specific chapter."""
+    id: str = Field(default_factory=lambda: __import__('uuid').uuid4().hex[:8])
+    title: str = ""
+    content: str = ""  # How this subplot progresses in this chapter
+    subplot_id: str = ""  # Optional reference to story-level Subplot ID
+    status: str = "active"  # active, resolved, dormant
+    collapsed: bool = False
+
+
 class FeedbackEntry(BaseModel):
     """A single piece of feedback from a source."""
     id: str = Field(default_factory=lambda: __import__('uuid').uuid4().hex[:8])
@@ -218,6 +229,7 @@ class ChapterPlanning(BaseModel):
     description: str = ""  # Brief description/summary of what happens
     todos: List[ChapterTodo] = Field(default_factory=list)  # Writing tasks for this chapter
     notes: Union[List[NoteSubject], str] = Field(default_factory=list)  # Organized notes by subject
+    subplot_notes: List[SubplotNote] = Field(default_factory=list)  # Subplot tracking for this chapter
     feedback: ChapterFeedback = Field(default_factory=ChapterFeedback)  # Reader/editor feedback
 
     @model_validator(mode='before')
@@ -272,6 +284,17 @@ class ChapterPlanning(BaseModel):
                 else:
                     parts.append("\n".join(entry_parts))
         return "\n\n".join(parts)
+
+    @property
+    def subplots_as_text(self) -> str:
+        """Flatten subplot notes into a readable string for AI context."""
+        parts = []
+        for sn in self.subplot_notes:
+            if sn.content.strip():
+                status = f" [{sn.status}]" if sn.status != "active" else ""
+                title = sn.title or "Untitled subplot"
+                parts.append(f"- {title}{status}: {sn.content.strip()}")
+        return "\n".join(parts)
 
 
 class Chapter(BaseModel):

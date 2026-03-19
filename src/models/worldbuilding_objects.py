@@ -717,6 +717,56 @@ class Myth(BaseModel):
     full_text: str = ""
 
 
+# ===== MAGIC SYSTEMS =====
+class MagicType(str, Enum):
+    """Types of magic systems."""
+    HARD = "hard"  # Rule-based, consistent (e.g., Sanderson's Allomancy)
+    SOFT = "soft"  # Mysterious, undefined limits (e.g., Tolkien's magic)
+    HYBRID = "hybrid"  # Mix of hard and soft elements
+    DIVINE = "divine"  # Power from gods/deities
+    ELEMENTAL = "elemental"  # Based on natural elements
+    PSYCHIC = "psychic"  # Mental/psionic abilities
+    RUNIC = "runic"  # Symbol/inscription-based
+    BLOOD = "blood"  # Life-force or sacrifice-based
+    RITUAL = "ritual"  # Ceremony-based
+    INNATE = "innate"  # Born with ability
+    LEARNED = "learned"  # Studied/practiced
+    TECHNOLOGICAL = "technological"  # Magitech or tech-like magic
+    OTHER = "other"
+
+
+class MagicSystem(BaseModel):
+    """A magic system in the world."""
+    id: str
+    name: str
+    magic_type: MagicType = MagicType.HARD
+    description: str = ""
+
+    # Rules & mechanics
+    source: str = ""  # Where the power comes from
+    rules: str = ""  # Core rules / laws of the system
+    limitations: str = ""  # What it cannot do, costs, restrictions
+    costs: str = ""  # What practitioners pay (energy, lifespan, sanity, etc.)
+
+    # Practitioners
+    who_can_use: str = ""  # Who has access (anyone, bloodlines, trained, etc.)
+    training: str = ""  # How practitioners learn
+    associated_factions: List[str] = Field(default_factory=list)  # Faction IDs
+
+    # Classification
+    power_levels: str = ""  # Tiers/ranks of ability
+    branches: List[str] = Field(default_factory=list)  # Sub-disciplines or schools
+
+    # World impact
+    cultural_perception: str = ""  # How society views magic (feared, revered, mundane)
+    historical_impact: str = ""  # How magic has shaped history
+    relationship_to_technology: str = ""  # Does it complement or replace tech?
+
+    # Story relevance
+    story_relevance: str = ""  # Why this matters to the plot
+    notes: str = ""
+
+
 # ===== FLORA =====
 class FloraType(str, Enum):
     """Types of plant life."""
@@ -1089,6 +1139,9 @@ class CompleteWorldBuilding(BaseModel):
 
     # Technology
     technologies: List[Technology] = Field(default_factory=list)
+
+    # Magic Systems
+    magic_systems: List[MagicSystem] = Field(default_factory=list)
 
     # Climate
     climate_presets: List[ClimatePreset] = Field(default_factory=list)
