@@ -5,7 +5,8 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTextEdit, QListWidget, QListWidgetItem, QGroupBox,
     QRadioButton, QButtonGroup, QProgressBar, QMessageBox,
-    QCheckBox, QLineEdit, QFrame, QSplitter, QWidget, QScrollArea
+    QCheckBox, QLineEdit, QFrame, QSplitter, QWidget, QScrollArea,
+    QComboBox
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
@@ -20,14 +21,21 @@ class RephraseWorker(QThread):
     error = pyqtSignal(str)
 
     def __init__(self, agent: RephrasingAgent, text: str, styles: List[RephraseStyle],
-                 tones: List[RephraseTone], context: str, custom_tone: str = ""):
+                 tones: List[RephraseTone], custom_tone: str = "",
+                 pov: str = "", character_context: str = "",
+                 scene_description: str = "", surrounding_before: str = "",
+                 surrounding_after: str = ""):
         super().__init__()
         self.agent = agent
         self.text = text
         self.styles = styles
         self.tones = tones
-        self.context = context
         self.custom_tone = custom_tone
+        self.pov = pov
+        self.character_context = character_context
+        self.scene_description = scene_description
+        self.surrounding_before = surrounding_before
+        self.surrounding_after = surrounding_after
 
     def run(self):
         """Run rephrasing in background."""
@@ -51,7 +59,11 @@ class RephraseWorker(QThread):
                 styles=self.styles,
                 tones=self.tones,
                 custom_tone=self.custom_tone,
-                context=self.context
+                pov=self.pov,
+                character_context=self.character_context,
+                scene_description=self.scene_description,
+                surrounding_before=self.surrounding_before,
+                surrounding_after=self.surrounding_after,
             )
 
             print(f"\n{'='*70}")
@@ -73,17 +85,21 @@ class RephraseWorker(QThread):
 class RephraseDialog(QDialog):
     """Dialog for rephrasing selected text with AI."""
 
-    def __init__(self, text: str, project=None, parent=None):
+    def __init__(self, text: str, project=None, parent=None,
+                 surrounding_context: tuple = None):
         """Initialize rephrase dialog.
 
         Args:
             text: Text to rephrase
             project: Project for context
             parent: Parent widget
+            surrounding_context: Tuple of (text_before, text_after) from the document
         """
         super().__init__(parent)
         self.original_text = text
         self.project = project
+        self.surrounding_before = surrounding_context[0] if surrounding_context else ""
+        self.surrounding_after = surrounding_context[1] if surrounding_context else ""
         self.selected_text: Optional[str] = None
         self.result: Optional[RephraseResult] = None
         self.worker: Optional[RephraseWorker] = None
@@ -140,6 +156,44 @@ class RephraseDialog(QDialog):
         self.original_display.setStyleSheet("background-color: #f3f4f6;")
         original_layout.addWidget(self.original_display)
         layout.addWidget(original_group)
+
+        # Surrounding context (read-only, collapsible)
+        if self.surrounding_before or self.surrounding_after:
+            self.context_toggle = QPushButton("Show surrounding context")
+            self.context_toggle.setStyleSheet(
+                "font-size: 10px; color: #6366f1; border: none; text-align: left; padding: 0;"
+            )
+            self.context_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.context_toggle.clicked.connect(self._toggle_surrounding_context)
+            layout.addWidget(self.context_toggle)
+
+            self.context_display = QTextEdit()
+            preview = ""
+            if self.surrounding_before:
+                preview += f"...{self.surrounding_before[-200:]}\n"
+            preview += f">>> {self.original_text} <<<\n"
+            if self.surrounding_after:
+                preview += f"{self.surrounding_after[:200]}..."
+            self.context_display.setPlainText(preview)
+            self.context_display.setReadOnly(True)
+            self.context_display.setMaximumHeight(80)
+            self.context_display.setStyleSheet(
+                "background-color: #f9fafb; color: #6b7280; font-size: 10px;"
+            )
+            self.context_display.setVisible(False)
+            layout.addWidget(self.context_display)
+
+        # Scene description (optional, user-provided)
+        self.scene_desc_edit = QLineEdit()
+        self.scene_desc_edit.setPlaceholderText(
+            "Describe what's happening in the scene (optional)..."
+        )
+        self.scene_desc_edit.setToolTip(
+            "Brief description of the scene — e.g. 'tense standoff in the throne room' "
+            "or 'quiet morning after the battle'. Helps the AI understand context."
+        )
+        self.scene_desc_edit.setStyleSheet("font-size: 10px; padding: 4px;")
+        layout.addWidget(self.scene_desc_edit)
 
         # Style and Tone selection in horizontal layout
         style_tone_layout = QHBoxLayout()
@@ -226,6 +280,43 @@ class RephraseDialog(QDialog):
         )
         custom_row.addWidget(self.custom_tone_edit)
         tone_inner.addLayout(custom_row)
+
+        # Point of View selection
+        pov_group = QGroupBox("Point of View")
+        pov_inner = QVBoxLayout(pov_group)
+        pov_inner.setContentsMargins(8, 8, 8, 8)
+        pov_inner.setSpacing(4)
+
+        self.pov_combo = QComboBox()
+        self.pov_combo.addItems([
+            "Keep original",
+            "First person (I/me)",
+            "Second person (you)",
+            "Third person limited (he/she/they)",
+            "Third person omniscient",
+            "Third person objective",
+        ])
+        self.pov_combo.setCurrentIndex(0)
+        self.pov_combo.setToolTip("Choose a narrative point of view for the rephrased text")
+        pov_inner.addWidget(self.pov_combo)
+
+        # POV character(s) - whose perspective are we in?
+        char_label = QLabel("POV Character(s):")
+        char_label.setStyleSheet("font-size: 10px; color: #6b7280; margin-top: 4px;")
+        char_label.setToolTip(
+            "Select one or more characters whose perspective the text is written from.\n"
+            "Their personality, voice, and traits will inform the rephrasing."
+        )
+        pov_inner.addWidget(char_label)
+
+        self.char_list = QListWidget()
+        self.char_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
+        self.char_list.setMaximumHeight(90)
+        self.char_list.setStyleSheet("font-size: 10px;")
+        self._populate_character_list()
+        pov_inner.addWidget(self.char_list)
+
+        style_tone_layout.addWidget(pov_group)
 
         style_tone_layout.addWidget(tone_group)
         layout.addLayout(style_tone_layout)
@@ -495,6 +586,61 @@ class RephraseDialog(QDialog):
             return self.custom_tone_edit.text().strip()
         return ""
 
+    def _get_selected_pov(self) -> str:
+        """Return the selected POV string, or empty if 'Keep original'."""
+        idx = self.pov_combo.currentIndex()
+        if idx <= 0:
+            return ""
+        return self.pov_combo.currentText()
+
+    def _toggle_surrounding_context(self):
+        """Toggle visibility of surrounding context display."""
+        visible = not self.context_display.isVisible()
+        self.context_display.setVisible(visible)
+        self.context_toggle.setText(
+            "Hide surrounding context" if visible else "Show surrounding context"
+        )
+
+    def _populate_character_list(self):
+        """Populate the character list from the project."""
+        self.char_list.clear()
+        if not self.project or not hasattr(self.project, 'characters'):
+            return
+        for char in self.project.characters:
+            item = QListWidgetItem(f"{char.name} ({char.character_type})")
+            item.setData(Qt.ItemDataRole.UserRole, char.id)
+            self.char_list.addItem(item)
+
+    def _get_selected_characters_context(self) -> str:
+        """Build a context string from selected POV characters' details."""
+        if not self.project or not hasattr(self.project, 'characters'):
+            return ""
+        selected_ids = []
+        for item in self.char_list.selectedItems():
+            char_id = item.data(Qt.ItemDataRole.UserRole)
+            if char_id:
+                selected_ids.append(char_id)
+        if not selected_ids:
+            return ""
+
+        chars_by_id = {c.id: c for c in self.project.characters}
+        parts = []
+        for cid in selected_ids:
+            c = chars_by_id.get(cid)
+            if not c:
+                continue
+            desc = [f"Name: {c.name}", f"Role: {c.character_type}"]
+            if c.personality:
+                desc.append(f"Personality: {c.personality}")
+            if c.backstory:
+                # Truncate long backstories
+                backstory = c.backstory[:300] + ("..." if len(c.backstory) > 300 else "")
+                desc.append(f"Backstory: {backstory}")
+            if c.notes:
+                desc.append(f"Notes: {c.notes[:200]}")
+            parts.append("\n".join(desc))
+        return "\n---\n".join(parts)
+
     def _generate_options(self):
         """Generate rephrasing options."""
         styles = self._get_selected_styles()
@@ -537,9 +683,20 @@ class RephraseDialog(QDialog):
             print(f"☁️  Mode: Cloud LLM")
         print(f"📝 Text: {len(self.original_text)} chars")
         print(f"🎨 Styles: {[s.value for s in styles]}")
+        pov = self._get_selected_pov()
+        character_context = self._get_selected_characters_context()
+        scene_description = self.scene_desc_edit.text().strip()
         print(f"🎭 Tones: {[t.value for t in tones]}")
         if custom_tone:
             print(f"✏️  Custom tone: {custom_tone}")
+        if pov:
+            print(f"👁️  POV: {pov}")
+        if character_context:
+            print(f"👤 POV Characters: {[item.text() for item in self.char_list.selectedItems()]}")
+        if scene_description:
+            print(f"🎬 Scene: {scene_description}")
+        if self.surrounding_before or self.surrounding_after:
+            print(f"📄 Surrounding context: {len(self.surrounding_before)} chars before, {len(self.surrounding_after)} chars after")
         print(f"{'#'*70}\n")
 
         # Show progress
@@ -547,20 +704,18 @@ class RephraseDialog(QDialog):
         self.generate_btn.setEnabled(False)
         self.results_group.setVisible(False)
 
-        # Get context if available
-        context = ""
-        if self.project:
-            # Could add chapter context, character names, etc.
-            pass
-
         # Run in background
         self.worker = RephraseWorker(
             self.agent,
             self.original_text,
             styles,
             tones,
-            context,
             custom_tone=custom_tone,
+            pov=pov,
+            character_context=character_context,
+            scene_description=scene_description,
+            surrounding_before=self.surrounding_before,
+            surrounding_after=self.surrounding_after,
         )
         self.worker.finished.connect(self._on_generation_complete)
         self.worker.error.connect(self._on_generation_error)

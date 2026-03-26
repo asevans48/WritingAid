@@ -2685,7 +2685,12 @@ For each option, briefly explain what makes it different from the original."""
         tones: Optional[List[RephraseTone]] = None,  # preferred: list of tones to blend
         custom_tone: str = "",               # free-text tone from the user
         context: str = "",
-        num_options: int = 4
+        num_options: int = 4,
+        pov: str = "",                       # narrative point of view
+        character_context: str = "",         # POV character details
+        scene_description: str = "",         # what's happening in the scene
+        surrounding_before: str = "",        # text before the selection
+        surrounding_after: str = "",         # text after the selection
     ) -> RephraseResult:
         """Generate multiple rephrasing options for text.
 
@@ -2697,6 +2702,11 @@ For each option, briefly explain what makes it different from the original."""
             custom_tone: Free-text tone description typed by the user (e.g. "bittersweet")
             context: Optional context about the text (character, scene, etc.)
             num_options: Number of options to generate if no styles specified
+            pov: Narrative point of view (e.g. "First person (I/me)")
+            character_context: Detailed POV character info (personality, backstory, etc.)
+            scene_description: User's description of the scene context
+            surrounding_before: Text immediately before the selection in the document
+            surrounding_after: Text immediately after the selection in the document
 
         Returns:
             RephraseResult with multiple options
@@ -2783,6 +2793,50 @@ For each option, briefly explain what makes it different from the original."""
                 f"rather than switching abruptly between them.\n"
             )
 
+        # Point of view instruction
+        pov = pov.strip() if pov else ""
+        pov_note = ""
+        if pov:
+            pov_note = (
+                f"\nRewrite all variations in {pov}. "
+                f"Adjust pronouns, verb forms, and perspective accordingly.\n"
+            )
+
+        # Character POV context — let the model understand whose eyes we see through
+        character_context = character_context.strip() if character_context else ""
+        char_note = ""
+        if character_context:
+            char_note = (
+                f"\nThe text is experienced through the following character(s). "
+                f"Write as if the reader is seeing, feeling, and thinking from their perspective. "
+                f"Let their personality, voice, and worldview color the language — "
+                f"but subtly, as the writer's art, not a caricature.\n\n"
+                f"CHARACTER DETAILS:\n{character_context}\n"
+            )
+
+        # Scene and surrounding text context — helps the model understand what's happening
+        scene_note = ""
+        scene_description = scene_description.strip() if scene_description else ""
+        surrounding_before = surrounding_before.strip() if surrounding_before else ""
+        surrounding_after = surrounding_after.strip() if surrounding_after else ""
+
+        if scene_description or surrounding_before or surrounding_after:
+            scene_parts = []
+            if scene_description:
+                scene_parts.append(f"Scene: {scene_description}")
+            if surrounding_before or surrounding_after:
+                scene_parts.append("Surrounding text from the document (for context only — do NOT rephrase this):")
+                if surrounding_before:
+                    scene_parts.append(f"[BEFORE]: ...{surrounding_before[-300:]}")
+                if surrounding_after:
+                    scene_parts.append(f"[AFTER]: {surrounding_after[:300]}...")
+            scene_note = (
+                "\n" + "\n".join(scene_parts) + "\n"
+                "\nIMPORTANT: Only rephrase the original text above. "
+                "The surrounding text is provided purely for context — "
+                "use it to match flow, tone, and continuity, but do not include it in your output.\n"
+            )
+
         # Build format example based on number of styles
         format_examples = []
         for i, style in enumerate(styles[:2]):  # Show at most 2 examples
@@ -2797,7 +2851,7 @@ EXPLANATION: [brief explanation]""")
         prompt = f"""Please rephrase the following text in {len(styles)} different ways:
 
 Original text: "{text}"
-{context_str}{tone_note}
+{context_str}{tone_note}{pov_note}{char_note}{scene_note}
 Generate these variations:
 {style_instructions}
 

@@ -1145,7 +1145,7 @@ class ChapterEditor(QWidget):
         cursor.insertText(replacement)
 
     def _rephrase_selection(self):
-        """Open rephrase dialog for selected text."""
+        """Open rephrase dialog for selected text with surrounding context."""
         cursor = self.editor.textCursor()
         selected_text = cursor.selectedText()
 
@@ -1157,9 +1157,18 @@ class ChapterEditor(QWidget):
             )
             return
 
+        # Extract surrounding text for context (up to ~500 chars before and after)
+        doc_text = self.editor.toPlainText()
+        sel_start = cursor.selectionStart()
+        sel_end = cursor.selectionEnd()
+        ctx_before = doc_text[max(0, sel_start - 500):sel_start]
+        ctx_after = doc_text[sel_end:sel_end + 500]
+        surrounding_context = (ctx_before, ctx_after)
+
         # Open rephrase dialog
         from src.ui.rephrase_dialog import RephraseDialog
-        dialog = RephraseDialog(selected_text, self.project, self)
+        dialog = RephraseDialog(selected_text, self.project, self,
+                                surrounding_context=surrounding_context)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             replacement = dialog.get_selected_text()
             if replacement:

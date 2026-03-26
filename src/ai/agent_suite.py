@@ -277,6 +277,8 @@ class AgentSuite:
             return self._handle_chapter_analysis(message)
         elif any(word in message_lower for word in ["plan chapter", "chapter plan", "outline chapter", "chapter outline", "plan this chapter"]):
             return self._handle_chapter_planning(message)
+        elif any(word in message_lower for word in ["rephrase", "rewrite", "write this as", "write from", "pov of", "point of view"]):
+            return self._handle_rephrase_request(message)
         elif any(word in message_lower for word in ["suggest", "recommend", "ideas for", "help with"]):
             return self._handle_recommendations(message)
         elif any(word in message_lower for word in ["read aloud", "speak text", "text to speech", "tts", "read this", "generate tts", "convert to speech", "audio", "narrate"]):
@@ -467,10 +469,15 @@ your suggestions should be useful but not forceful. Respect the author's creativ
 Keep responses focused and actionable. Suggest specific tasks the author can add to their todo list.
 """
 
+        # Include character details for POV / voice awareness
+        character_context = self.get_character_context()
+
         prompt = f"""
 {story_context}
 
 {world_context}
+
+{f"Characters:{chr(10)}{character_context}" if character_context else ""}
 
 {chapter_context}
 
@@ -670,6 +677,104 @@ Provide helpful suggestions or ask clarifying questions.
             temperature=0.7
         )
 
+        return response
+
+    def get_character_context(self, character_names: List[str] = None) -> str:
+        """Build detailed context string for specified characters (or all if none specified).
+
+        Args:
+            character_names: Optional list of character names to include.
+                If None, returns brief context for all characters.
+
+        Returns:
+            Formatted string with character details.
+        """
+        if not self.project or not self.project.characters:
+            return ""
+
+        chars = self.project.characters
+        if character_names:
+            names_lower = [n.lower() for n in character_names]
+            chars = [c for c in chars if c.name.lower() in names_lower]
+
+        if not chars:
+            return ""
+
+        parts = []
+        for c in chars:
+            desc = [f"Name: {c.name}", f"Role: {c.character_type}"]
+            if c.personality:
+                desc.append(f"Personality: {c.personality}")
+            if c.backstory:
+                backstory = c.backstory[:300] + ("..." if len(c.backstory) > 300 else "")
+                desc.append(f"Backstory: {backstory}")
+            if c.notes:
+                desc.append(f"Notes: {c.notes[:200]}")
+            parts.append("\n".join(desc))
+        return "\n---\n".join(parts)
+
+    def _handle_rephrase_request(self, message: str, scene_description: str = "",
+                                 surrounding_before: str = "",
+                                 surrounding_after: str = "") -> str:
+        """Handle rephrase/rewrite requests via chat, with character POV and scene awareness.
+
+        Args:
+            message: User's rephrase request
+            scene_description: Optional description of what's happening in the scene
+            surrounding_before: Text before the selection for continuity context
+            surrounding_after: Text after the selection for continuity context
+        """
+        if not self.project:
+            return "Please open a project first."
+
+        # Try to detect character names mentioned in the message
+        char_names_mentioned = []
+        if self.project.characters:
+            for c in self.project.characters:
+                if c.name.lower() in message.lower():
+                    char_names_mentioned.append(c.name)
+
+        character_context = self.get_character_context(char_names_mentioned) if char_names_mentioned else ""
+
+        world_context = self._get_world_context(message)
+
+        system_prompt = """You are a skilled writing assistant helping an author rephrase and rewrite passages.
+
+Guidelines:
+- Maintain the original intent and key information
+- Respect the author's voice — this is their art, offer alternatives not dictation
+- When a character's POV is specified, let their personality and worldview color the language subtly
+- If character details are provided, use them to inform word choice, perception, and emotional filtering
+- If surrounding text is provided, use it for continuity — match flow and tone — but do NOT include it in your output
+- If a scene description is given, let it inform the mood and sensory details of the rephrasing
+- Preserve character names, proper nouns, and terminology
+- Keep the same tense unless asked to change it"""
+
+        prompt_parts = [f"User request: {message}"]
+        if character_context:
+            prompt_parts.append(f"\nPOV CHARACTER DETAILS:\n{character_context}")
+        if scene_description:
+            prompt_parts.append(f"\nSCENE: {scene_description}")
+        if surrounding_before or surrounding_after:
+            prompt_parts.append("\nSURROUNDING TEXT (for context only — do NOT rephrase):")
+            if surrounding_before:
+                prompt_parts.append(f"[BEFORE]: ...{surrounding_before[-300:]}")
+            if surrounding_after:
+                prompt_parts.append(f"[AFTER]: {surrounding_after[:300]}...")
+        if world_context:
+            prompt_parts.append(f"\nWorld Context:\n{world_context[:800]}")
+
+        prompt = "\n".join(prompt_parts)
+
+        llm = self.primary_llm
+        response = llm.generate_text(
+            prompt,
+            system_prompt,
+            max_tokens=600,
+            temperature=0.7
+        )
+
+        self.session_cost += 0.003
         return response
 
     def _handle_general_chat(self, message: str) -> str:
