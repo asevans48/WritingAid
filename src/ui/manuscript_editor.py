@@ -107,6 +107,69 @@ class AnnotationMarginArea(QWidget):
             block_number += 1
 
 
+class _ChapterRangeDialog(QDialog):
+    """Dialog to select a range of chapters for TTS reading."""
+
+    def __init__(self, chapters: List[Chapter], current_chapter: Chapter, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Read Chapters Aloud")
+        self.setMinimumWidth(350)
+
+        layout = QVBoxLayout(self)
+
+        layout.addWidget(QLabel("Select a range of chapters to read aloud:"))
+
+        # From chapter
+        from_layout = QHBoxLayout()
+        from_layout.addWidget(QLabel("From:"))
+        self.from_combo = QComboBox()
+        for ch in chapters:
+            self.from_combo.addItem(f"{ch.number}. {ch.title}", ch.number)
+        from_layout.addWidget(self.from_combo)
+        layout.addLayout(from_layout)
+
+        # To chapter
+        to_layout = QHBoxLayout()
+        to_layout.addWidget(QLabel("To:"))
+        self.to_combo = QComboBox()
+        for ch in chapters:
+            self.to_combo.addItem(f"{ch.number}. {ch.title}", ch.number)
+        to_layout.addWidget(self.to_combo)
+        layout.addLayout(to_layout)
+
+        # Default: from current chapter to next chapter (or end)
+        current_idx = next(
+            (i for i, ch in enumerate(chapters) if ch.id == current_chapter.id), 0
+        )
+        self.from_combo.setCurrentIndex(current_idx)
+        self.to_combo.setCurrentIndex(min(current_idx + 1, len(chapters) - 1))
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+        read_btn = QPushButton("Read")
+        read_btn.setDefault(True)
+        read_btn.clicked.connect(self.accept)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addStretch()
+        btn_layout.addWidget(read_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+
+        self._chapters = chapters
+
+    def get_range(self):
+        """Return (from_index, to_index) into the chapters list."""
+        from_num = self.from_combo.currentData()
+        to_num = self.to_combo.currentData()
+        # Ensure from <= to
+        if from_num > to_num:
+            from_num, to_num = to_num, from_num
+        from_idx = next(i for i, ch in enumerate(self._chapters) if ch.number == from_num)
+        to_idx = next(i for i, ch in enumerate(self._chapters) if ch.number == to_num)
+        return from_idx, to_idx
+
+
 class ChapterEditor(QWidget):
     """Editor for a single chapter with formatting and AI hints."""
 
@@ -118,11 +181,12 @@ class ChapterEditor(QWidget):
     _world_analysis_ready = pyqtSignal(str)
     _plot_analysis_ready = pyqtSignal(str)
 
-    def __init__(self, chapter: Chapter, project=None):
+    def __init__(self, chapter: Chapter, project=None, manuscript: Optional[Manuscript] = None):
         """Initialize chapter editor."""
         super().__init__()
         self.chapter = chapter
         self.project = project
+        self.manuscript = manuscript
         self._llm_client = None
         self._prose_analysis_ready.connect(self._on_prose_analysis_complete)
         self._character_analysis_ready.connect(self._on_character_analysis_complete)
@@ -279,6 +343,13 @@ class ChapterEditor(QWidget):
         self.tts_stop_btn.setStyleSheet(tts_btn_style)
         self.tts_stop_btn.clicked.connect(self._tts_stop)
         toolbar.addWidget(self.tts_stop_btn)
+
+        self.tts_read_range_btn = QPushButton("🗣 Read Chapters…")
+        self.tts_read_range_btn.setToolTip("Read from one chapter to another using text-to-speech")
+        self.tts_read_range_btn.setMinimumWidth(110)
+        self.tts_read_range_btn.setStyleSheet(tts_btn_style)
+        self.tts_read_range_btn.clicked.connect(self._tts_speak_chapter_range)
+        toolbar.addWidget(self.tts_read_range_btn)
 
         self.tts_generate_btn = QPushButton("🎙 Export Audio")
         self.tts_generate_btn.setToolTip("Generate a TTS audio file for this chapter")
@@ -2930,6 +3001,60 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
             self._tts_poll_timer.timeout.connect(self._poll_tts_state)
         self._tts_poll_timer.start(400)
 
+    def _tts_speak_chapter_range(self):
+        """Show dialog to select a chapter range and read aloud."""
+        if not self.editor.is_tts_available():
+            QMessageBox.warning(
+                self, "TTS Not Available",
+                "Text-to-Speech is not available.\n\nInstall with: pip install pyttsx3 edge-tts"
+            )
+            return
+
+        if not self.manuscript or not self.manuscript.chapters:
+            QMessageBox.information(self, "No Chapters", "No chapters available to read.")
+            return
+
+        dialog = _ChapterRangeDialog(self.manuscript.chapters, self.chapter, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        from_idx, to_idx = dialog.get_range()
+        chapters = self.manuscript.chapters[from_idx:to_idx + 1]
+
+        # Build combined text, loading content from file if needed
+        parts = []
+        project_dir = Path(self.project.project_dir) if self.project and hasattr(self.project, 'project_dir') else None
+        for ch in chapters:
+            text = ch.content
+            if not text and project_dir:
+                ch.load_content_from_file(project_dir)
+                text = ch.content
+            if text and text.strip():
+                parts.append(f"Chapter {ch.number}. {ch.title}.\n\n{text}")
+
+        if not parts:
+            QMessageBox.information(self, "No Text", "The selected chapters have no text to read.")
+            return
+
+        combined = "\n\n".join(parts)
+
+        # Stop any ongoing playback first
+        if self.editor.is_tts_speaking():
+            self.editor.stop_speaking()
+
+        self.editor.speak_text(combined)
+
+        # Update buttons
+        self.tts_speak_btn.setText("🗣 Playing…")
+        self.tts_speak_btn.setEnabled(False)
+        self.tts_read_range_btn.setEnabled(False)
+        self.tts_stop_btn.setEnabled(True)
+
+        if not hasattr(self, '_tts_poll_timer'):
+            self._tts_poll_timer = QTimer(self)
+            self._tts_poll_timer.timeout.connect(self._poll_tts_state)
+        self._tts_poll_timer.start(400)
+
     def _tts_stop(self):
         """Stop TTS playback."""
         if self.editor.is_tts_available():
@@ -3014,6 +3139,7 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
         """Restore Read button and disable Stop button after TTS ends."""
         self.tts_speak_btn.setText("🗣 Read Aloud")
         self.tts_speak_btn.setEnabled(True)
+        self.tts_read_range_btn.setEnabled(True)
         self.tts_stop_btn.setEnabled(False)
 
     def _on_tts_stopped(self):
@@ -3655,7 +3781,7 @@ class ManuscriptEditor(QWidget):
 
             self._clear_editor()
             self._current_chapter_id = chapter_id
-            self.current_chapter_editor = ChapterEditor(chapter, self.project)
+            self.current_chapter_editor = ChapterEditor(chapter, self.project, manuscript=self.manuscript)
             self.current_chapter_editor.content_changed.connect(self._on_content_changed)
             self.current_chapter_editor.content_changed.connect(self.content_changed.emit)
             self.current_chapter_editor.annotations_changed.connect(self.annotations_changed.emit)
