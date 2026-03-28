@@ -757,6 +757,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         self.current_project: Optional[WriterProject] = None
+        self._loading_project = False  # Guard against auto-save during load
         self.ai_config = get_ai_config()
         self.settings = self.ai_config.get_settings()
 
@@ -1289,7 +1290,7 @@ class MainWindow(QMainWindow):
 
         Silently saves without showing status messages to avoid interrupting workflow.
         """
-        if not self.current_project:
+        if not self.current_project or self._loading_project:
             return
 
         if self.current_project.project_path:
@@ -1306,6 +1307,10 @@ class MainWindow(QMainWindow):
         """Load current project data into UI widgets."""
         if not self.current_project:
             return
+
+        # Prevent auto-save from triggering during UI population
+        # (loading chapters fires chapter_switched signals)
+        self._loading_project = True
 
         # Set project reference on manuscript editor for RAG
         self.manuscript_editor.set_project(self.current_project)
@@ -1336,6 +1341,7 @@ class MainWindow(QMainWindow):
         # Initialize/refresh RAG system for semantic context retrieval
         self._init_rag_system()
 
+        self._loading_project = False
         self.project_changed.emit()
 
     def _init_rag_system(self):

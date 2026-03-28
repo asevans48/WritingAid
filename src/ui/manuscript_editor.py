@@ -3167,12 +3167,22 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
         try:
             self.chapter.title = self.title_edit.toPlainText()
             # Save plain text content (contains Markdown formatting)
-            self.chapter.content = self.editor.toPlainText()
+            new_content = self.editor.toPlainText()
+            # SAFETY: Never overwrite existing content with empty text unless
+            # the chapter was already empty (user intentionally cleared it, or
+            # it's a brand new chapter). This prevents data loss from widget
+            # lifecycle issues.
+            if new_content and new_content.strip():
+                self.chapter.content = new_content
+            elif not self.chapter.content or not self.chapter.content.strip():
+                # Chapter was already empty, allow saving empty
+                self.chapter.content = new_content
 
             # Save planning data (separate from content, not exported)
             planning_data = self.planner_widget.get_planning_data()
         except RuntimeError:
-            # Widget has been deleted, skip saving
+            # Widget has been deleted, skip saving — content is preserved
+            # in the chapter model from the last successful save
             return
 
         # Update the planning object
@@ -3568,19 +3578,35 @@ class ManuscriptEditor(QWidget):
         )
 
         if ok:
+            # Save current editor before inserting
+            if self.current_chapter_editor:
+                self.current_chapter_editor.save_to_model()
+
             chapter = Chapter(
                 id=str(uuid.uuid4()),
                 number=chapter_num,
                 title=title
             )
             self.manuscript.chapters.insert(current_row, chapter)
-            self._renumber_chapters()
 
-            item = QListWidgetItem(f"{chapter_num}. {title}")
-            item.setData(Qt.ItemDataRole.UserRole, chapter.id)
-            self.chapter_list.insertItem(current_row, item)
+            # Block signals during reorder
+            self.chapter_list.blockSignals(True)
 
-            self.chapter_list.setCurrentItem(item)
+            # Relocate existing chapter folders on disk to match new numbering
+            self._relocate_chapter_folders()
+            self._rebuild_chapter_list()
+
+            # Select the inserted chapter
+            self.chapter_list.setCurrentRow(current_row)
+
+            # Re-enable signals
+            self.chapter_list.blockSignals(False)
+
+            # Manually trigger selection for the new chapter
+            new_item = self.chapter_list.item(current_row)
+            if new_item:
+                self._on_chapter_selected(new_item, None)
+
             self.content_changed.emit()
 
     def _rename_chapter(self):
@@ -3668,7 +3694,10 @@ class ManuscriptEditor(QWidget):
             row = self.chapter_list.row(current_item)
             self.chapter_list.takeItem(row)
 
-            self._renumber_chapters()
+            # Relocate remaining chapter folders on disk to match new numbering
+            # (chapters after the deleted one shift down by one)
+            self._relocate_chapter_folders()
+            self._rebuild_chapter_list()
             self._clear_editor()
 
             # Re-enable signals
@@ -3692,6 +3721,9 @@ class ManuscriptEditor(QWidget):
         # Swap in manuscript
         self.manuscript.chapters[current_row], self.manuscript.chapters[current_row - 1] = \
             self.manuscript.chapters[current_row - 1], self.manuscript.chapters[current_row]
+
+        # Relocate chapter folders on disk to match new numbering
+        self._relocate_chapter_folders()
 
         # Rebuild list items to ensure IDs match manuscript order
         self._rebuild_chapter_list()
@@ -3721,6 +3753,9 @@ class ManuscriptEditor(QWidget):
         self.manuscript.chapters[current_row], self.manuscript.chapters[current_row + 1] = \
             self.manuscript.chapters[current_row + 1], self.manuscript.chapters[current_row]
 
+        # Relocate chapter folders on disk to match new numbering
+        self._relocate_chapter_folders()
+
         # Rebuild list items to ensure IDs match manuscript order
         self._rebuild_chapter_list()
 
@@ -3731,6 +3766,33 @@ class ManuscriptEditor(QWidget):
         self.chapter_list.blockSignals(False)
 
         self.content_changed.emit()
+
+    def _relocate_chapter_folders(self):
+        """Relocate chapter folders on disk to match current manuscript order.
+
+        When chapters are reordered, their folder names (based on chapter number)
+        must be updated on disk. This handles the swap through temp directories
+        to avoid two chapters overwriting each other's folders.
+        """
+        project_dir = None
+        if self.project and hasattr(self.project, 'project_path') and self.project.project_path:
+            project_dir = Path(self.project.project_path).parent
+        elif self.project and hasattr(self.project, 'project_dir'):
+            project_dir = Path(self.project.project_dir)
+
+        if not project_dir:
+            # No project dir — just renumber in memory
+            for i, chapter in enumerate(self.manuscript.chapters, 1):
+                chapter.number = i
+            return
+
+        # Phase 1: relocate all chapters to new numbers (may use temp dirs for swaps)
+        for i, chapter in enumerate(self.manuscript.chapters, 1):
+            chapter.relocate_to_number(i, project_dir)
+
+        # Phase 2: finalize any chapters that were moved through temp dirs
+        for chapter in self.manuscript.chapters:
+            chapter.finalize_relocation(project_dir)
 
     def _rebuild_chapter_list(self):
         """Rebuild the chapter list from manuscript.chapters to ensure sync."""
@@ -3774,10 +3836,24 @@ class ManuscriptEditor(QWidget):
             # Notify memory manager of chapter entry (preloads cache, generates summary)
             self.memory_manager.on_chapter_enter(chapter_id)
 
-            # Try to load content from cache first for faster display
-            cached_content = self.memory_manager.get_chapter_content(chapter_id)
-            if cached_content is not None and not chapter.content:
-                chapter.content = cached_content
+            # If chapter content is empty, try to reload from disk first,
+            # falling back to cache only as a last resort.
+            if not chapter.content or not chapter.content.strip():
+                project_dir = Path(self.project.project_dir) if self.project and hasattr(self.project, 'project_dir') else None
+                if not project_dir and self.project and hasattr(self.project, 'project_path') and self.project.project_path:
+                    project_dir = Path(self.project.project_path).parent
+                if project_dir:
+                    chapter.load_content_from_file(project_dir)
+
+                # Still empty after disk load — try cache as last resort
+                if not chapter.content or not chapter.content.strip():
+                    cached_content = self.memory_manager.get_chapter_content(chapter_id)
+                    if cached_content and cached_content.strip():
+                        chapter.content = cached_content
+
+            # Keep cache in sync with what we're about to display
+            if chapter.content and chapter.content.strip():
+                self.memory_manager.cache.put(chapter_id, chapter.content)
 
             self._clear_editor()
             self._current_chapter_id = chapter_id

@@ -282,9 +282,10 @@ General Rules:
             elif any(word in personality_lower for word in ['mischievous', 'playful', 'clever']):
                 base_prompt_parts.append("slight smirk, intelligent eyes")
 
-        # Add environmental context from role/backstory
-        if character.role:
-            role_lower = character.role.lower()
+        # Add environmental context from backstory/notes
+        role_text = getattr(character, 'role', None) or character.backstory or character.notes
+        if role_text:
+            role_lower = role_text.lower()
             if any(word in role_lower for word in ['blacksmith', 'smith', 'forge']):
                 base_prompt_parts.append("workshop setting, leather apron")
             elif any(word in role_lower for word in ['hacker', 'programmer', 'tech']):
@@ -576,15 +577,16 @@ Keep it under 150 words. Focus on VISUAL storytelling."""
                 logger.warning("MLX Generation - No HuggingFace token found. Model download may fail for gated models.")
                 logger.warning("MLX Generation - Set HF token in genai_config.json or run: huggingface-cli login")
 
-            # Detect FLUX-2 models
-            is_flux2 = "flux2" in model_id.lower()
-            logger.info(f"MLX Generation - Detected FLUX-2: {is_flux2}")
+            # Detect model family
+            model_lower = model_id.lower()
+            is_flux2 = "flux2" in model_lower
+            is_sd35 = "sd3.5" in model_lower or "stable-diffusion-3.5" in model_lower
 
             if is_flux2:
                 # FLUX-2 models (klein-4b, klein-9b)
-                if "klein-9b" in model_id.lower():
+                if "klein-9b" in model_lower:
                     model = "flux2-klein-9b"
-                elif "klein-4b" in model_id.lower():
+                elif "klein-4b" in model_lower:
                     model = "flux2-klein-4b"
                 else:
                     model = "flux2-klein-4b"  # default
@@ -606,11 +608,36 @@ Keep it under 150 words. Focus on VISUAL storytelling."""
 
                 logger.info(f"MLX Generation - FLUX-2 Command: {' '.join(cmd[:4])} ... (prompt truncated)")
                 logger.info(f"MLX Generation - Full command args: model={model}, steps={num_steps}, seed={seed}, size={width}x{height}, guidance=1.0")
+
+            elif is_sd35:
+                # Stable Diffusion 3.5 models via MFLUX
+                if "large" in model_lower:
+                    model = "stabilityai/stable-diffusion-3.5-large"
+                else:
+                    model = "stabilityai/stable-diffusion-3.5-medium"
+
+                logger.info(f"MLX Generation - Using SD 3.5 model: {model}")
+
+                cmd = [
+                    "mflux-generate-sd3",
+                    "--model", model,
+                    "--prompt", prompt,
+                    "--steps", str(num_steps),
+                    "--seed", str(seed),
+                    "--height", str(height),
+                    "--width", str(width),
+                    "--guidance", str(guidance_scale),
+                    "--output", str(save_path)
+                ]
+
+                logger.info(f"MLX Generation - SD3.5 Command: {' '.join(cmd[:4])} ... (prompt truncated)")
+                logger.info(f"MLX Generation - Full command args: model={model}, steps={num_steps}, seed={seed}, size={width}x{height}, guidance={guidance_scale}")
+
             else:
                 # FLUX-1 models (dev, schnell, krea-dev)
-                if "schnell" in model_id.lower():
+                if "schnell" in model_lower:
                     model = "schnell"
-                elif "krea" in model_id.lower():
+                elif "krea" in model_lower:
                     model = "krea-dev"
                 else:
                     model = "dev"
@@ -791,7 +818,7 @@ Keep it under 150 words. Focus on VISUAL storytelling."""
             return None
 
     def _generate_with_dalle(self, prompt: str, save_path: Path) -> Optional[Path]:
-        """Generate image using OpenAI DALL-E 3."""
+        """Generate image using OpenAI image models (GPT Image or DALL-E 3)."""
         try:
             import openai
             from src.config.ai_config import get_ai_config
@@ -806,26 +833,48 @@ Keep it under 150 words. Focus on VISUAL storytelling."""
 
             client = openai.OpenAI(api_key=api_key)
 
-            logger.info("Generating image with DALL-E 3")
+            # Determine which model to use
+            model_id = self.settings.get("image_model_id", "gpt-image-1")
+            is_gpt_image = model_id.startswith("gpt-image")
 
-            # DALL-E 3 sizes: 1024x1024, 1792x1024, 1024x1792
             width = self.settings.get("image_width", 1024)
             height = self.settings.get("image_height", 1024)
 
-            if width == height:
-                size = "1024x1024"
-            elif width > height:
-                size = "1792x1024"
-            else:
-                size = "1024x1792"
+            if is_gpt_image:
+                logger.info(f"Generating image with {model_id}")
 
-            response = client.images.generate(
-                model="dall-e-3",
-                prompt=prompt,
-                size=size,
-                quality="standard",
-                n=1
-            )
+                # GPT Image sizes: 1024x1024, 1536x1024, 1024x1536
+                if width == height:
+                    size = "1024x1024"
+                elif width > height:
+                    size = "1536x1024"
+                else:
+                    size = "1024x1536"
+
+                response = client.images.generate(
+                    model=model_id,
+                    prompt=prompt,
+                    size=size,
+                    n=1
+                )
+            else:
+                logger.info("Generating image with DALL-E 3")
+
+                # DALL-E 3 sizes: 1024x1024, 1792x1024, 1024x1792
+                if width == height:
+                    size = "1024x1024"
+                elif width > height:
+                    size = "1792x1024"
+                else:
+                    size = "1024x1792"
+
+                response = client.images.generate(
+                    model="dall-e-3",
+                    prompt=prompt,
+                    size=size,
+                    quality="standard",
+                    n=1
+                )
 
             # Download image
             import requests
@@ -839,7 +888,7 @@ Keep it under 150 words. Focus on VISUAL storytelling."""
             return save_path
 
         except Exception as e:
-            logger.error(f"DALL-E generation failed: {e}")
+            logger.error(f"OpenAI image generation failed: {e}")
             return None
 
 

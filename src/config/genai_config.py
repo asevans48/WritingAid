@@ -76,6 +76,46 @@ MLX_IMAGE_MODELS: List[ImageGenModelInfo] = [
         platform="apple_silicon"
     ),
     ImageGenModelInfo(
+        model_id="mflux/flux-dev-8bit",
+        display_name="FLUX 1 Dev 8-bit (Higher Quality)",
+        provider=ImageGenProvider.LOCAL_MLX,
+        vram_gb=16.0,
+        ram_gb=24.0,
+        description="8-bit quantized FLUX Dev, better quality than 4-bit",
+        best_for="High-quality portraits and scenes with less quantization loss",
+        platform="apple_silicon"
+    ),
+    ImageGenModelInfo(
+        model_id="mflux/flux-schnell-8bit",
+        display_name="FLUX 1 Schnell 8-bit (Fast + Quality)",
+        provider=ImageGenProvider.LOCAL_MLX,
+        vram_gb=12.0,
+        ram_gb=16.0,
+        description="8-bit quantized FLUX Schnell, fast with better fidelity",
+        best_for="Fast iterations with higher quality than 4-bit",
+        platform="apple_silicon"
+    ),
+    ImageGenModelInfo(
+        model_id="mflux/sd3.5-large",
+        display_name="Stable Diffusion 3.5 Large (8B)",
+        provider=ImageGenProvider.LOCAL_MLX,
+        vram_gb=16.0,
+        ram_gb=24.0,
+        description="SD 3.5 Large via MFLUX - strong prompt understanding and world knowledge",
+        best_for="Detailed scenes with complex prompts, text rendering",
+        platform="apple_silicon"
+    ),
+    ImageGenModelInfo(
+        model_id="mflux/sd3.5-medium",
+        display_name="Stable Diffusion 3.5 Medium (2.6B)",
+        provider=ImageGenProvider.LOCAL_MLX,
+        vram_gb=8.0,
+        ram_gb=12.0,
+        description="SD 3.5 Medium via MFLUX - good balance of quality and speed",
+        best_for="General purpose with strong prompt following, moderate memory",
+        platform="apple_silicon"
+    ),
+    ImageGenModelInfo(
         model_id="argmax/stable-diffusion-xl-base-1.0",
         display_name="Stable Diffusion XL (SDXL)",
         provider=ImageGenProvider.LOCAL_MLX,
@@ -120,6 +160,36 @@ TORCH_IMAGE_MODELS: List[ImageGenModelInfo] = [
         platform="nvidia"
     ),
     ImageGenModelInfo(
+        model_id="stabilityai/stable-diffusion-3.5-large",
+        display_name="Stable Diffusion 3.5 Large (8B)",
+        provider=ImageGenProvider.LOCAL_TORCH,
+        vram_gb=16.0,
+        ram_gb=24.0,
+        description="SD 3.5 Large - strong prompt understanding and text rendering",
+        best_for="Complex prompts, text in images, detailed scenes",
+        platform="nvidia"
+    ),
+    ImageGenModelInfo(
+        model_id="stabilityai/stable-diffusion-3.5-large-turbo",
+        display_name="SD 3.5 Large Turbo (Fast)",
+        provider=ImageGenProvider.LOCAL_TORCH,
+        vram_gb=16.0,
+        ram_gb=24.0,
+        description="SD 3.5 Large Turbo - fewer steps needed for fast generation",
+        best_for="Fast high-quality generation with strong prompts",
+        platform="nvidia"
+    ),
+    ImageGenModelInfo(
+        model_id="stabilityai/stable-diffusion-3.5-medium",
+        display_name="Stable Diffusion 3.5 Medium (2.6B)",
+        provider=ImageGenProvider.LOCAL_TORCH,
+        vram_gb=8.0,
+        ram_gb=12.0,
+        description="SD 3.5 Medium - good quality with moderate VRAM",
+        best_for="General purpose, balanced quality and speed",
+        platform="nvidia"
+    ),
+    ImageGenModelInfo(
         model_id="stabilityai/stable-diffusion-xl-base-1.0",
         display_name="Stable Diffusion XL 1.0",
         provider=ImageGenProvider.LOCAL_TORCH,
@@ -154,13 +224,24 @@ TORCH_IMAGE_MODELS: List[ImageGenModelInfo] = [
 # Cloud API Models
 CLOUD_IMAGE_MODELS: List[ImageGenModelInfo] = [
     ImageGenModelInfo(
-        model_id="dall-e-3",
-        display_name="DALL-E 3 (OpenAI)",
+        model_id="gpt-image-1",
+        display_name="GPT Image 1 (OpenAI)",
         provider=ImageGenProvider.OPENAI_DALLE,
         vram_gb=0.0,
         ram_gb=0.0,
-        description="OpenAI's DALL-E 3, excellent at following prompts",
+        description="OpenAI's GPT Image model - high quality, strong prompt following",
         best_for="High-quality generations without local hardware",
+        requires_api_key=True,
+        platform="any"
+    ),
+    ImageGenModelInfo(
+        model_id="dall-e-3",
+        display_name="DALL-E 3 (OpenAI, Legacy)",
+        provider=ImageGenProvider.OPENAI_DALLE,
+        vram_gb=0.0,
+        ram_gb=0.0,
+        description="OpenAI's DALL-E 3 (deprecated May 2026, use GPT Image instead)",
+        best_for="Legacy support, will be removed",
         requires_api_key=True,
         platform="any"
     ),

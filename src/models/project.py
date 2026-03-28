@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from datetime import datetime
 from pathlib import Path
 import json
+import os
 
 from src.models.worldbuilding_objects import Faction, Myth, ClimatePreset, Flora, Fauna, Technology, Star, StarSystem, Place, Culture, Army, Economy, HistoricalEvent, PowerHierarchy, PoliticalSystem, WorldMap, MagicSystem
 
@@ -329,6 +330,86 @@ class Chapter(BaseModel):
         folder = project_dir / self.folder_path
         folder.mkdir(parents=True, exist_ok=True)
 
+    def relocate_to_number(self, new_number: int, project_dir: Path) -> bool:
+        """Relocate chapter folder on disk when chapter number changes.
+
+        Moves the physical folder and updates all internal path references
+        (folder_path, revision file_paths, legacy file_path) so that the
+        chapter content is not lost after reordering.
+
+        Args:
+            new_number: The new chapter number (1-based)
+            project_dir: Root project directory
+        Returns:
+            True if relocation succeeded or was unnecessary
+        """
+        import shutil
+
+        old_folder = self.folder_path
+        old_number = self.number
+        self.number = new_number
+        new_folder = self._folder_name()
+
+        if old_folder == new_folder:
+            # Number didn't change enough to affect folder name
+            return True
+
+        if not old_folder:
+            # No folder to move (new chapter or legacy flat-file)
+            self.folder_path = new_folder
+            return True
+
+        old_path = project_dir / old_folder
+        new_path = project_dir / new_folder
+
+        # Move the physical folder if it exists on disk
+        if old_path.exists():
+            # If the target already exists (e.g. two chapters swapping),
+            # move to a temporary name first to avoid collisions.
+            if new_path.exists():
+                tmp_path = project_dir / f"chapters/_tmp_relocate_{self.id[:8]}"
+                try:
+                    shutil.move(str(old_path), str(tmp_path))
+                except Exception:
+                    return False
+                # Store the temp path; the caller must finalize after all
+                # chapters have been relocated (see _finalize_relocations)
+                self._pending_relocate_tmp = str(tmp_path)
+            else:
+                new_path.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    shutil.move(str(old_path), str(new_path))
+                except Exception:
+                    return False
+
+        # Update all path references
+        self.folder_path = new_folder
+        for rev in self.revisions:
+            if rev.file_path and old_folder in rev.file_path:
+                rev.file_path = rev.file_path.replace(old_folder, new_folder)
+        if self.file_path and old_folder in self.file_path:
+            self.file_path = self.file_path.replace(old_folder, new_folder)
+
+        return True
+
+    def finalize_relocation(self, project_dir: Path):
+        """Complete a pending folder relocation (used after swap operations).
+
+        When two chapters swap positions, both folders need to move through a
+        temp directory to avoid overwriting each other. Call this after all
+        chapters have been relocated to move temp folders to their final names.
+        """
+        import shutil
+        tmp_path = getattr(self, '_pending_relocate_tmp', None)
+        if tmp_path and Path(tmp_path).exists():
+            final_path = project_dir / self.folder_path
+            final_path.parent.mkdir(parents=True, exist_ok=True)
+            if final_path.exists():
+                # Safety: don't overwrite — this shouldn't happen
+                shutil.rmtree(str(final_path), ignore_errors=True)
+            shutil.move(tmp_path, str(final_path))
+            del self._pending_relocate_tmp
+
     def delete_folder(self, project_dir: Path) -> bool:
         """Delete the entire chapter folder from disk."""
         if not self.folder_path:
@@ -417,14 +498,21 @@ class Chapter(BaseModel):
 
     def save_active_revision_to_file(self, project_dir: Path) -> bool:
         """Save the active revision's content to its file."""
+        # SAFETY: Never overwrite an existing revision file with empty content.
+        # This guards against accidental data loss from save-during-load or
+        # serialization-clearing race conditions.
+        if not self.content or not self.content.strip():
+            return False
+
         self.ensure_folder(project_dir)
         for rev in self.revisions:
             if rev.revision_number == self.active_revision_number:
                 rev.content = self.content
                 rev.html_content = self.html_content
                 rev.word_count = len(self.content.split()) if self.content else 0
-                if not rev.file_path:
-                    rev.file_path = f"{self.folder_path}/revision_{rev.revision_number:03d}.md"
+                # Always derive file_path from current folder_path to stay in
+                # sync after chapter reordering / relocation.
+                rev.file_path = f"{self.folder_path}/revision_{rev.revision_number:03d}.md"
                 full_path = project_dir / rev.file_path
                 full_path.parent.mkdir(parents=True, exist_ok=True)
                 full_path.write_text(self.content, encoding='utf-8')
@@ -435,8 +523,10 @@ class Chapter(BaseModel):
 
     def save_content_to_file(self, project_dir: Path) -> bool:
         """Save chapter content to folder-based revision files."""
-        # Regenerate folder path based on current chapter number
-        self.folder_path = self._folder_name()
+        # Use existing folder_path if already set (preserves relocations),
+        # otherwise generate from current chapter number.
+        if not self.folder_path:
+            self.folder_path = self._folder_name()
         self.ensure_folder(project_dir)
 
         # If no revisions exist yet, create the first one from current content
@@ -599,6 +689,7 @@ class GeneratedImage(BaseModel):
     image_path: str
     prompt: str
     image_type: str  # cover, character, scene
+    display_name: Optional[str] = None  # User-assigned name (overrides default display)
     associated_id: Optional[str] = None  # character ID or chapter ID
     created_at: datetime = Field(default_factory=datetime.now)
 
@@ -691,31 +782,40 @@ class WriterProject(BaseModel):
         # Save chapters to separate files if enabled
         if save_chapters_separately:
             # Save all chapter content/revisions to disk
+            # SAFETY: Only write chapters that actually have content to avoid
+            # overwriting good files with empty content
             for chapter in self.manuscript.chapters:
-                chapter.save_content_to_file(project_dir)
+                if chapter.content and chapter.content.strip():
+                    chapter.save_content_to_file(project_dir)
 
-            # Temporarily clear content fields from JSON to save space
-            saved_state = []
-            for chapter in self.manuscript.chapters:
-                saved_state.append({
-                    'content': chapter.content,
-                    'rev_contents': [(r.content, r.html_content) for r in chapter.revisions]
-                })
-                chapter.content = ""
-                for rev in chapter.revisions:
-                    rev.content = ""  # Stored on disk, not in JSON
-                    rev.html_content = ""
+            # Build JSON without content fields to save space.
+            # Instead of mutating in-memory state (dangerous if interrupted),
+            # serialize to dict first, then strip content from the dict.
+            project_dict = self.model_dump(mode='json')
+            for ch_dict in project_dict.get('manuscript', {}).get('chapters', []):
+                ch_dict['content'] = ""
+                ch_dict['html_content'] = ""
+                for rev_dict in ch_dict.get('revisions', []):
+                    rev_dict['content'] = ""
+                    rev_dict['html_content'] = ""
 
-            # Save project config
-            with open(file_path, 'w', encoding='utf-8') as f:
-                json.dump(self.model_dump(mode='json'), f, indent=2, default=str)
-
-            # Restore in-memory state
-            for chapter, state in zip(self.manuscript.chapters, saved_state):
-                chapter.content = state['content']
-                for rev, (rc, rh) in zip(chapter.revisions, state['rev_contents']):
-                    rev.content = rc
-                    rev.html_content = rh
+            # Write to temp file first, then atomically replace
+            import tempfile
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                dir=str(project_dir), suffix='.json.tmp'
+            )
+            try:
+                with os.fdopen(tmp_fd, 'w', encoding='utf-8') as f:
+                    json.dump(project_dict, f, indent=2, default=str)
+                # Atomic rename (same filesystem)
+                os.replace(tmp_path, file_path)
+            except Exception:
+                # Clean up temp file on failure; in-memory state is untouched
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
         else:
             # Legacy: save everything in one file
             with open(file_path, 'w', encoding='utf-8') as f:

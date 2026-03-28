@@ -3,10 +3,11 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QPushButton, QLabel, QTextEdit, QComboBox, QGroupBox,
-    QMessageBox, QFileDialog, QScrollArea, QProgressDialog
+    QMessageBox, QFileDialog, QScrollArea, QProgressDialog,
+    QInputDialog, QMenu
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QThread
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtGui import QPixmap, QAction
 from typing import List, Optional
 from pathlib import Path
 import uuid
@@ -153,9 +154,31 @@ class ImageGeneratorWidget(QWidget):
         gallery_group = QGroupBox("Generated Images")
         gallery_layout = QHBoxLayout()
 
+        # Image list with context menu
+        list_container = QVBoxLayout()
+
         self.image_list = QListWidget()
         self.image_list.currentItemChanged.connect(self._on_image_selected)
-        gallery_layout.addWidget(self.image_list)
+        self.image_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.image_list.customContextMenuRequested.connect(self._show_image_context_menu)
+        list_container.addWidget(self.image_list)
+
+        # Rename / Delete buttons
+        list_btn_layout = QHBoxLayout()
+        rename_btn = QPushButton("Rename")
+        rename_btn.setToolTip("Rename the selected image")
+        rename_btn.clicked.connect(self._rename_image)
+        list_btn_layout.addWidget(rename_btn)
+
+        delete_btn = QPushButton("Delete")
+        delete_btn.setToolTip("Delete the selected image")
+        delete_btn.clicked.connect(self._delete_image)
+        list_btn_layout.addWidget(delete_btn)
+
+        list_btn_layout.addStretch()
+        list_container.addLayout(list_btn_layout)
+
+        gallery_layout.addLayout(list_container)
 
         # Image preview
         preview_widget = QWidget()
@@ -303,25 +326,118 @@ class ImageGeneratorWidget(QWidget):
             self.prompt_display.setPlainText(image.prompt)
 
     def _save_image(self):
-        """Save selected image to file."""
+        """Save selected image to a new location."""
         current_item = self.image_list.currentItem()
         if not current_item:
             return
 
+        image_id = current_item.data(Qt.ItemDataRole.UserRole)
+        image = next((img for img in self.images if img.id == image_id), None)
+        if not image:
+            return
+
+        source = Path(image.image_path)
+        if not source.exists():
+            QMessageBox.warning(self, "File Not Found", f"Source image not found:\n{source}")
+            return
+
         file_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save Image",
-            "",
+            self, "Save Image", source.name,
             "PNG Files (*.png);;JPEG Files (*.jpg);;All Files (*)"
         )
-
         if file_path:
-            # TODO: Implement image saving
-            QMessageBox.information(
-                self,
-                "Save Image",
-                f"Image will be saved to: {file_path}"
-            )
+            import shutil
+            try:
+                shutil.copy2(str(source), file_path)
+                QMessageBox.information(self, "Saved", f"Image saved to:\n{file_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to save image:\n{e}")
+
+    def _show_image_context_menu(self, position):
+        """Show context menu for image list."""
+        item = self.image_list.itemAt(position)
+        if not item:
+            return
+
+        menu = QMenu(self)
+        rename_action = menu.addAction("Rename")
+        delete_action = menu.addAction("Delete")
+        menu.addSeparator()
+        save_action = menu.addAction("Save As...")
+
+        action = menu.exec(self.image_list.mapToGlobal(position))
+        if action == rename_action:
+            self._rename_image()
+        elif action == delete_action:
+            self._delete_image()
+        elif action == save_action:
+            self._save_image()
+
+    def _rename_image(self):
+        """Rename the selected image."""
+        current_item = self.image_list.currentItem()
+        if not current_item:
+            QMessageBox.information(self, "No Selection", "Select an image to rename.")
+            return
+
+        image_id = current_item.data(Qt.ItemDataRole.UserRole)
+        image = next((img for img in self.images if img.id == image_id), None)
+        if not image:
+            return
+
+        # Use current display name as default
+        current_name = current_item.text()
+        new_name, ok = QInputDialog.getText(
+            self, "Rename Image", "Enter a new name:", text=current_name
+        )
+        if ok and new_name.strip():
+            # Store custom display name on the model
+            image.display_name = new_name.strip()
+            current_item.setText(new_name.strip())
+            self.content_changed.emit()
+
+    def _delete_image(self):
+        """Delete the selected image."""
+        current_item = self.image_list.currentItem()
+        if not current_item:
+            QMessageBox.information(self, "No Selection", "Select an image to delete.")
+            return
+
+        image_id = current_item.data(Qt.ItemDataRole.UserRole)
+        image = next((img for img in self.images if img.id == image_id), None)
+        if not image:
+            return
+
+        reply = QMessageBox.question(
+            self, "Delete Image",
+            f"Delete this image?\n\nThis will remove the file from disk.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Remove from disk
+        file_path = Path(image.image_path)
+        if file_path.exists():
+            try:
+                file_path.unlink()
+            except Exception as e:
+                logger.warning(f"Could not delete image file: {e}")
+
+        # Remove from data
+        self.images = [img for img in self.images if img.id != image_id]
+
+        # Remove from list
+        row = self.image_list.row(current_item)
+        self.image_list.takeItem(row)
+
+        # Clear preview
+        self.preview_label.setText("No image selected")
+        self.preview_label.setPixmap(QPixmap())
+        self.prompt_display.clear()
+
+        self.content_changed.emit()
 
     def _on_type_changed(self, image_type: str):
         """Handle image type change."""
@@ -381,7 +497,8 @@ class ImageGeneratorWidget(QWidget):
         self.image_list.clear()
 
         for image in images:
-            item = QListWidgetItem(f"{image.image_type}: {image.id[:8]}")
+            label = image.display_name or f"{image.image_type}: {image.id[:8]}"
+            item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, image.id)
             self.image_list.addItem(item)
 
