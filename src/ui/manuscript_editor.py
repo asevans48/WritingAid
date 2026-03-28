@@ -1235,7 +1235,9 @@ class ChapterEditor(QWidget):
         # Open rephrase dialog
         from src.ui.rephrase_dialog import RephraseDialog
         dialog = RephraseDialog(selected_text, self.project, self,
-                                surrounding_context=surrounding_context)
+                                surrounding_context=surrounding_context,
+                                chapter_content=doc_text,
+                                chapter=self.chapter)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             replacement = dialog.get_selected_text()
             if replacement:
@@ -1264,7 +1266,9 @@ class ChapterEditor(QWidget):
         dialog = WorldWordDialog(
             selected_text.strip(),
             self.project, self,
-            surrounding_context=(ctx_before, ctx_after)
+            surrounding_context=(ctx_before, ctx_after),
+            chapter_content=doc_text,
+            chapter=self.chapter
         )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             replacement = dialog.get_replacement()
@@ -1397,11 +1401,18 @@ class ChapterEditor(QWidget):
                     no_syn_action = thesaurus_menu.addAction("(no synonyms found)")
                     no_syn_action.setEnabled(False)
 
+                # AI options inside the thesaurus submenu
+                thesaurus_menu.addSeparator()
+                ai_thesaurus_action = thesaurus_menu.addAction("🤖 AI Suggestions (world-aware)...")
+                ai_thesaurus_action.triggered.connect(self._world_word_selection)
+
+            else:
+                # Multi-word selection — show AI thesaurus as top-level option
+                ai_thesaurus_action = menu.addAction("🤖 AI Thesaurus (world-aware)...")
+                ai_thesaurus_action.triggered.connect(self._world_word_selection)
+
             rephrase_action = menu.addAction("✨ Rephrase with AI...")
             rephrase_action.triggered.connect(self._rephrase_selection)
-
-            world_word_action = menu.addAction("🌍 World-Appropriate Word...")
-            world_word_action.triggered.connect(self._world_word_selection)
 
             # Heading style submenu
             heading_menu = menu.addMenu("Heading Style")

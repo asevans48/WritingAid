@@ -86,7 +86,8 @@ class RephraseDialog(QDialog):
     """Dialog for rephrasing selected text with AI."""
 
     def __init__(self, text: str, project=None, parent=None,
-                 surrounding_context: tuple = None):
+                 surrounding_context: tuple = None,
+                 chapter_content: str = "", chapter=None):
         """Initialize rephrase dialog.
 
         Args:
@@ -94,15 +95,20 @@ class RephraseDialog(QDialog):
             project: Project for context
             parent: Parent widget
             surrounding_context: Tuple of (text_before, text_after) from the document
+            chapter_content: Full text of the current chapter (for speaker detection)
+            chapter: Chapter object (for arc context)
         """
         super().__init__(parent)
         self.original_text = text
         self.project = project
         self.surrounding_before = surrounding_context[0] if surrounding_context else ""
         self.surrounding_after = surrounding_context[1] if surrounding_context else ""
+        self.chapter_content = chapter_content
+        self.chapter = chapter
         self.selected_text: Optional[str] = None
         self.result: Optional[RephraseResult] = None
         self.worker: Optional[RephraseWorker] = None
+        self._refinement_history: List[str] = []  # Chat history for refinements
 
         self._init_ui()
         self._init_agent()
@@ -300,12 +306,12 @@ class RephraseDialog(QDialog):
         self.pov_combo.setToolTip("Choose a narrative point of view for the rephrased text")
         pov_inner.addWidget(self.pov_combo)
 
-        # POV character(s) - whose perspective are we in?
-        char_label = QLabel("POV Character(s):")
+        # Voice character — whose vocabulary/voice should the text use?
+        char_label = QLabel("Character voice:")
         char_label.setStyleSheet("font-size: 10px; color: #6b7280; margin-top: 4px;")
         char_label.setToolTip(
-            "Select one or more characters whose perspective the text is written from.\n"
-            "Their personality, voice, and traits will inform the rephrasing."
+            "Select the character whose voice the text should match.\n"
+            "'Auto-detect' reads the surrounding text to identify the speaker."
         )
         pov_inner.addWidget(char_label)
 
@@ -313,8 +319,18 @@ class RephraseDialog(QDialog):
         self.char_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
         self.char_list.setMaximumHeight(90)
         self.char_list.setStyleSheet("font-size: 10px;")
+        # Add auto-detect as first item
+        auto_item = QListWidgetItem("Auto-detect from text")
+        auto_item.setData(Qt.ItemDataRole.UserRole, "__auto__")
+        self.char_list.addItem(auto_item)
         self._populate_character_list()
         pov_inner.addWidget(self.char_list)
+
+        self.detect_status_label = QLabel("")
+        self.detect_status_label.setWordWrap(True)
+        self.detect_status_label.setStyleSheet("font-size: 10px; color: #6b7280; font-style: italic;")
+        self.detect_status_label.setVisible(False)
+        pov_inner.addWidget(self.detect_status_label)
 
         style_tone_layout.addWidget(pov_group)
 
@@ -414,6 +430,37 @@ class RephraseDialog(QDialog):
 
         results_layout.addWidget(splitter)
         layout.addWidget(self.results_group)
+
+        # Refinement chat — allows conversational follow-up
+        self.refine_group = QGroupBox("Refine Results")
+        self.refine_group.setVisible(False)
+        refine_layout = QVBoxLayout(self.refine_group)
+        refine_layout.setContentsMargins(8, 8, 8, 8)
+        refine_layout.setSpacing(4)
+
+        self.refine_history = QTextEdit()
+        self.refine_history.setReadOnly(True)
+        self.refine_history.setMaximumHeight(60)
+        self.refine_history.setStyleSheet("background: #f9fafb; font-size: 10px; color: #4b5563;")
+        self.refine_history.setPlaceholderText("Refinement history will appear here...")
+        refine_layout.addWidget(self.refine_history)
+
+        refine_input_layout = QHBoxLayout()
+        self.refine_edit = QLineEdit()
+        self.refine_edit.setPlaceholderText(
+            "e.g.: make it darker, this character wouldn't say that, more archaic..."
+        )
+        self.refine_edit.setStyleSheet("font-size: 11px; padding: 4px;")
+        self.refine_edit.returnPressed.connect(self._refine_results)
+        refine_input_layout.addWidget(self.refine_edit)
+
+        self.refine_btn = QPushButton("Refine")
+        self.refine_btn.setStyleSheet("font-size: 11px; padding: 4px 12px;")
+        self.refine_btn.clicked.connect(self._refine_results)
+        refine_input_layout.addWidget(self.refine_btn)
+
+        refine_layout.addLayout(refine_input_layout)
+        layout.addWidget(self.refine_group)
 
         # Set scroll widget and add scroll area to main layout
         scroll_area.setWidget(scroll_widget)
@@ -613,13 +660,23 @@ class RephraseDialog(QDialog):
 
     def _get_selected_characters_context(self) -> str:
         """Build a context string from selected POV characters' details."""
-        if not self.project or not hasattr(self.project, 'characters'):
-            return ""
         selected_ids = []
+        use_auto_detect = False
         for item in self.char_list.selectedItems():
             char_id = item.data(Qt.ItemDataRole.UserRole)
-            if char_id:
+            if char_id == "__auto__":
+                use_auto_detect = True
+            elif char_id:
                 selected_ids.append(char_id)
+
+        # If auto-detect is selected, run speaker detection pipeline
+        if use_auto_detect:
+            detected_ctx = self._detect_speaker_for_rephrase()
+            if detected_ctx:
+                return detected_ctx
+
+        if not self.project or not hasattr(self.project, 'characters'):
+            return ""
         if not selected_ids:
             return ""
 
@@ -632,8 +689,22 @@ class RephraseDialog(QDialog):
             desc = [f"Name: {c.name}", f"Role: {c.character_type}"]
             if c.personality:
                 desc.append(f"Personality: {c.personality}")
+            if getattr(c, 'personality_traits', None):
+                desc.append(f"Key traits: {', '.join(c.personality_traits)}")
+            if getattr(c, 'speaking_style', None):
+                desc.append(f"Speaking style: {c.speaking_style}")
+            if getattr(c, 'motivations', None):
+                desc.append(f"Motivations: {c.motivations}")
+            if getattr(c, 'emotional_baseline', None):
+                desc.append(f"Emotional baseline: {c.emotional_baseline}")
+            if getattr(c, 'personality_arc', None):
+                # Include the most recent arc snapshot
+                latest = c.personality_arc[-1]
+                if latest.emotional_state:
+                    desc.append(f"Current emotional state: {latest.emotional_state}")
+                if latest.growth_notes:
+                    desc.append(f"Recent development: {latest.growth_notes[:200]}")
             if c.backstory:
-                # Truncate long backstories
                 backstory = c.backstory[:300] + ("..." if len(c.backstory) > 300 else "")
                 desc.append(f"Backstory: {backstory}")
             if c.notes:
@@ -699,6 +770,35 @@ class RephraseDialog(QDialog):
             print(f"📄 Surrounding context: {len(self.surrounding_before)} chars before, {len(self.surrounding_after)} chars after")
         print(f"{'#'*70}\n")
 
+        # Look up offline thesaurus data to give the AI additional word options
+        thesaurus_hint = ""
+        try:
+            from src.utils.thesaurus import get_synonyms, get_antonyms
+            import re as _re
+            # Extract key words from the selection for lookup
+            words = _re.findall(r'\b[a-zA-Z]{3,}\b', self.original_text)
+            all_syns, all_ants = [], []
+            for w in words[:3]:  # Lookup up to 3 key words
+                syns = get_synonyms(w, max_results=8)
+                ants = get_antonyms(w, max_results=4)
+                if syns:
+                    all_syns.append(f"{w}: {', '.join(syns)}")
+                if ants:
+                    all_ants.append(f"{w}: {', '.join(ants)}")
+            if all_syns:
+                thesaurus_hint = "Thesaurus synonyms: " + " | ".join(all_syns)
+            if all_ants:
+                thesaurus_hint += "\nThesaurus antonyms: " + " | ".join(all_ants)
+        except Exception:
+            pass
+
+        # Append thesaurus data to scene description so it reaches the agent
+        if thesaurus_hint:
+            scene_description = (
+                f"{scene_description}\n{thesaurus_hint}" if scene_description
+                else thesaurus_hint
+            )
+
         # Show progress
         self.progress_bar.setVisible(True)
         self.generate_btn.setEnabled(False)
@@ -736,8 +836,9 @@ class RephraseDialog(QDialog):
             item.setData(Qt.ItemDataRole.UserRole, i)
             self.options_list.addItem(item)
 
-        # Show results
+        # Show results and refinement
         self.results_group.setVisible(True)
+        self.refine_group.setVisible(True)
 
         # Select first option
         if self.options_list.count() > 0:
@@ -772,6 +873,205 @@ class RephraseDialog(QDialog):
         """Use the selected/edited text."""
         self.selected_text = self.preview_edit.toPlainText()
         self.accept()
+
+    def _refine_results(self):
+        """Refine the current results with a follow-up instruction."""
+        instruction = self.refine_edit.text().strip()
+        if not instruction:
+            return
+        if not self.result or not self.result.options:
+            return
+
+        # Get the currently previewed text as the starting point
+        current_text = self.preview_edit.toPlainText().strip()
+        if not current_text:
+            current_text = self.original_text
+
+        # Collect what was previously generated so we can tell the AI to avoid it
+        previous_options = [opt.text[:100] for opt in self.result.options]
+
+        # Log to history
+        self._refinement_history.append(instruction)
+        history_text = "\n".join(
+            f"> {h}" for h in self._refinement_history
+        )
+        self.refine_history.setPlainText(history_text)
+        self.refine_edit.clear()
+
+        # Build refinement context that goes into scene_description
+        # This is the most natural place since the agent includes it in the prompt
+        refinement_block = (
+            "CRITICAL REFINEMENT INSTRUCTIONS — follow these exactly:\n"
+        )
+        for h in self._refinement_history:
+            refinement_block += f"  - {h}\n"
+        refinement_block += (
+            f"\nThe current version is: \"{current_text}\"\n"
+            "Generate COMPLETELY DIFFERENT phrasings that address the feedback above.\n"
+        )
+        if previous_options:
+            rejected = ' | '.join(f'"{p}"' for p in previous_options[:5])
+            refinement_block += f"Do NOT repeat these: {rejected}\n"
+
+        # Store the original scene desc once, then append refinement
+        if not hasattr(self, '_original_scene_desc'):
+            self._original_scene_desc = self.scene_desc_edit.text()
+
+        self.scene_desc_edit.setText(
+            f"{self._original_scene_desc}\n{refinement_block}" if self._original_scene_desc
+            else refinement_block
+        )
+        self._generate_options()
+        # Restore for next user edit
+        self.scene_desc_edit.setText(self._original_scene_desc)
+
+    def _detect_speaker_for_rephrase(self) -> str:
+        """Detect the speaker from chapter context and return character details.
+
+        This is a synchronous call used during generate_options when
+        auto-detect is selected. Returns a character context string.
+        """
+        if not self.chapter_content:
+            return ""
+
+        # Build passage around selection
+        sel_pos = self.chapter_content.find(self.original_text)
+        if sel_pos >= 0:
+            start = max(0, sel_pos - 1500)
+            end = min(len(self.chapter_content), sel_pos + len(self.original_text) + 500)
+            passage = self.chapter_content[start:end]
+        else:
+            passage = self.surrounding_before[-1000:] + self.original_text + self.surrounding_after[:500]
+
+        # Try to detect using the agent's LLM if available
+        try:
+            llm = None
+            if hasattr(self.agent, 'llm_client') and self.agent.llm_client:
+                llm = self.agent.llm_client
+            elif hasattr(self.agent, '_init_cloud_llm'):
+                # Try to get any available LLM
+                from src.config.ai_config import get_ai_config
+                from src.ai.llm_client import LLMClient, LLMProvider, HuggingFaceConfig
+                config = get_ai_config()
+                settings = config.get_settings()
+
+                prefer_local = settings.get("prefer_local_model", False)
+                enable_local = settings.get("enable_local_models", False)
+                local_model_id = settings.get("local_model_id", "")
+
+                if prefer_local and enable_local and local_model_id:
+                    is_mlx = "mlx" in local_model_id.lower()
+                    hf_config = HuggingFaceConfig(
+                        model_id=local_model_id, use_local=True,
+                        device=settings.get("local_model_device", "auto"),
+                        quantization=settings.get("local_model_quantization", "none")
+                            if settings.get("local_model_quantization") != "none" else None,
+                        trust_remote_code=settings.get("local_model_trust_remote_code", False)
+                    )
+                    provider = LLMProvider.MLX_LOCAL if is_mlx else LLMProvider.HUGGINGFACE_LOCAL
+                    llm = LLMClient(provider=provider, hf_config=hf_config)
+                else:
+                    provider_name = settings.get("default_llm", "claude").lower()
+                    api_key = config.get_api_key(provider_name)
+                    if api_key:
+                        provider_enum = {
+                            "claude": LLMProvider.CLAUDE, "chatgpt": LLMProvider.CHATGPT,
+                            "openai": LLMProvider.CHATGPT, "gemini": LLMProvider.GEMINI,
+                        }.get(provider_name, LLMProvider.CLAUDE)
+                        llm = LLMClient(
+                            provider=provider_enum, api_key=api_key,
+                            model=config.get_model(provider_name)
+                        )
+
+            if not llm:
+                return ""
+
+            # Detect speaker
+            system_prompt = (
+                "Read the passage and determine which character is speaking or "
+                "thinking near the bracketed text. Base your answer ONLY on the text. "
+                "The speaker may be a minor character.\n\n"
+                "Respond:\nCHARACTER: <name>\nREASON: <evidence>"
+            )
+            chars_ref = ""
+            if self.project and hasattr(self.project, 'characters'):
+                chars_ref = "\n".join(
+                    f"- {c.name} ({c.character_type})"
+                    for c in self.project.characters
+                )
+
+            prompt = f"PASSAGE:\n...{passage}...\n\n"
+            if chars_ref:
+                prompt += f"Known characters (reference only):\n{chars_ref}\n\n"
+            prompt += "Who is speaking?"
+
+            response = llm.generate_text(
+                prompt=prompt, system_prompt=system_prompt,
+                max_tokens=200, temperature=0.2, task_type="speaker_detect"
+            )
+
+            # Parse name
+            detected_name = ""
+            reason = ""
+            for line in response.strip().split('\n'):
+                line = line.strip()
+                if line.upper().startswith("CHARACTER:"):
+                    detected_name = line[len("CHARACTER:"):].strip()
+                elif line.upper().startswith("REASON:"):
+                    reason = line[len("REASON:"):].strip()
+
+            if not detected_name:
+                return ""
+
+            self.detect_status_label.setText(f"Detected: <b>{detected_name}</b> — {reason}")
+            self.detect_status_label.setVisible(True)
+
+            # Match to known character
+            if self.project and hasattr(self.project, 'characters'):
+                name_lower = detected_name.lower()
+                for c in self.project.characters:
+                    if c.name.lower() == name_lower or name_lower in c.name.lower():
+                        # Build full context from known character
+                        return self._build_character_context_from_obj(c)
+
+            # Unknown character — infer from text
+            infer_prompt = (
+                f"Based on this passage, describe {detected_name}'s personality, "
+                "speaking style, and emotional state in 3-4 lines."
+            )
+            inferred = llm.generate_text(
+                prompt=f"PASSAGE:\n{passage}\n\n{infer_prompt}",
+                system_prompt="You are a literary analyst. Be concise.",
+                max_tokens=200, temperature=0.3, task_type="personality_infer"
+            )
+            return f"Name: {detected_name}\n{inferred.strip()}"
+
+        except Exception as e:
+            print(f"Speaker detection for rephrase failed: {e}")
+            return ""
+
+    def _build_character_context_from_obj(self, c) -> str:
+        """Build character context string from a Character object."""
+        desc = [f"Name: {c.name}", f"Role: {c.character_type}"]
+        if c.personality:
+            desc.append(f"Personality: {c.personality}")
+        if getattr(c, 'personality_traits', None):
+            desc.append(f"Key traits: {', '.join(c.personality_traits)}")
+        if getattr(c, 'speaking_style', None):
+            desc.append(f"Speaking style: {c.speaking_style}")
+        if getattr(c, 'motivations', None):
+            desc.append(f"Motivations: {c.motivations}")
+        if getattr(c, 'emotional_baseline', None):
+            desc.append(f"Emotional baseline: {c.emotional_baseline}")
+        if getattr(c, 'personality_arc', None) and c.personality_arc:
+            latest = c.personality_arc[-1]
+            if latest.emotional_state:
+                desc.append(f"Current emotional state: {latest.emotional_state}")
+            if latest.growth_notes:
+                desc.append(f"Recent development: {latest.growth_notes[:200]}")
+        if c.backstory:
+            desc.append(f"Backstory: {c.backstory[:300]}")
+        return "\n".join(desc)
 
     def get_selected_text(self) -> Optional[str]:
         """Get the selected replacement text."""

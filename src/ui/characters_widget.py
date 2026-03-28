@@ -97,16 +97,18 @@ class CharacterWidget(QWidget):
 
     content_changed = pyqtSignal()
 
-    def __init__(self, character: Character, project_path: Optional[Path] = None):
+    def __init__(self, character: Character, project_path: Optional[Path] = None, project=None):
         """Initialize character widget.
 
         Args:
             character: The character to edit
             project_path: Path to the project directory for saving generated images
+            project: The WriterProject (for accessing chapters in personality arc)
         """
         super().__init__()
         self.character = character
         self._project_path = project_path
+        self._project = project
         self._image_worker: Optional[ImageGenerationWorker] = None
         self._init_ui()
         self._load_character()
@@ -234,12 +236,84 @@ class CharacterWidget(QWidget):
         personality_layout = QVBoxLayout()
 
         self.personality_edit = QTextEdit()
-        self.personality_edit.setPlaceholderText("Describe personality traits, quirks, motivations...")
+        self.personality_edit.setPlaceholderText("General personality description...")
+        self.personality_edit.setMaximumHeight(80)
         self.personality_edit.textChanged.connect(self.content_changed.emit)
         personality_layout.addWidget(self.personality_edit)
 
+        # Structured personality fields
+        form_layout = QFormLayout()
+
+        self.traits_edit = QLineEdit()
+        self.traits_edit.setPlaceholderText("brave, impulsive, loyal, sarcastic...")
+        self.traits_edit.textChanged.connect(self.content_changed.emit)
+        form_layout.addRow("Traits:", self.traits_edit)
+
+        self.motivations_edit = QLineEdit()
+        self.motivations_edit.setPlaceholderText("What drives this character...")
+        self.motivations_edit.textChanged.connect(self.content_changed.emit)
+        form_layout.addRow("Motivations:", self.motivations_edit)
+
+        self.fears_edit = QLineEdit()
+        self.fears_edit.setPlaceholderText("What they fear or avoid...")
+        self.fears_edit.textChanged.connect(self.content_changed.emit)
+        form_layout.addRow("Fears:", self.fears_edit)
+
+        self.speaking_style_edit = QLineEdit()
+        self.speaking_style_edit.setPlaceholderText("Dialect, vocabulary, sentence patterns...")
+        self.speaking_style_edit.textChanged.connect(self.content_changed.emit)
+        form_layout.addRow("Speaking style:", self.speaking_style_edit)
+
+        self.emotional_baseline_edit = QLineEdit()
+        self.emotional_baseline_edit.setPlaceholderText("Default emotional state (e.g. guarded optimism)...")
+        self.emotional_baseline_edit.textChanged.connect(self.content_changed.emit)
+        form_layout.addRow("Baseline mood:", self.emotional_baseline_edit)
+
+        personality_layout.addLayout(form_layout)
+
         personality_group.setLayout(personality_layout)
         layout.addWidget(personality_group)
+
+        # Personality Arc
+        arc_group = QGroupBox("Personality Arc (how the character changes)")
+        arc_layout = QVBoxLayout()
+
+        self.arc_list = QListWidget()
+        self.arc_list.setMaximumHeight(120)
+        self.arc_list.currentRowChanged.connect(self._on_arc_snapshot_selected)
+        arc_layout.addWidget(self.arc_list)
+
+        self.arc_detail = QTextEdit()
+        self.arc_detail.setPlaceholderText(
+            "Select or add a personality snapshot to see details.\n"
+            "Use 'Assess from Writing' to auto-generate, or add/edit manually."
+        )
+        self.arc_detail.setMaximumHeight(120)
+        self.arc_detail.textChanged.connect(self._on_arc_detail_edited)
+        arc_layout.addWidget(self.arc_detail)
+
+        arc_btn_layout = QHBoxLayout()
+
+        self.assess_btn = QPushButton("Assess from Writing")
+        self.assess_btn.setToolTip("Use AI to analyze this character's personality in a selected chapter")
+        self.assess_btn.clicked.connect(self._assess_personality)
+        arc_btn_layout.addWidget(self.assess_btn)
+
+        add_snapshot_btn = QPushButton("+ Add Snapshot")
+        add_snapshot_btn.setToolTip("Manually add a personality snapshot for a chapter")
+        add_snapshot_btn.clicked.connect(self._add_manual_snapshot)
+        arc_btn_layout.addWidget(add_snapshot_btn)
+
+        remove_snapshot_btn = QPushButton("Remove")
+        remove_snapshot_btn.setToolTip("Remove the selected personality snapshot")
+        remove_snapshot_btn.clicked.connect(self._remove_snapshot)
+        arc_btn_layout.addWidget(remove_snapshot_btn)
+
+        arc_btn_layout.addStretch()
+        arc_layout.addLayout(arc_btn_layout)
+
+        arc_group.setLayout(arc_layout)
+        layout.addWidget(arc_group)
 
         # Backstory
         backstory_group = QGroupBox("Backstory")
@@ -282,6 +356,16 @@ class CharacterWidget(QWidget):
         self.personality_edit.setPlainText(self.character.personality)
         self.backstory_edit.setPlainText(self.character.backstory)
         self.notes_edit.setPlainText(self.character.notes)
+
+        # Structured personality fields
+        self.traits_edit.setText(", ".join(self.character.personality_traits))
+        self.motivations_edit.setText(self.character.motivations)
+        self.fears_edit.setText(self.character.fears)
+        self.speaking_style_edit.setText(self.character.speaking_style)
+        self.emotional_baseline_edit.setText(self.character.emotional_baseline)
+
+        # Personality arc
+        self._refresh_arc_list()
 
         if self.character.image_path and Path(self.character.image_path).exists():
             pixmap = QPixmap(self.character.image_path)
@@ -419,6 +503,263 @@ class CharacterWidget(QWidget):
         self.character.backstory = self.backstory_edit.toPlainText()
         self.character.notes = self.notes_edit.toPlainText()
 
+        # Structured personality fields
+        traits_text = self.traits_edit.text().strip()
+        self.character.personality_traits = [
+            t.strip() for t in traits_text.split(',') if t.strip()
+        ] if traits_text else []
+        self.character.motivations = self.motivations_edit.text().strip()
+        self.character.fears = self.fears_edit.text().strip()
+        self.character.speaking_style = self.speaking_style_edit.text().strip()
+        self.character.emotional_baseline = self.emotional_baseline_edit.text().strip()
+        self.character.updated_at = datetime.now()
+
+    # --- Personality Arc Methods ---
+
+    def _refresh_arc_list(self):
+        """Refresh the personality arc list widget."""
+        self.arc_list.clear()
+        for snap in self.character.personality_arc:
+            label = f"Ch{snap.chapter_number}: {snap.chapter_title}"
+            if snap.emotional_state:
+                label += f" — {snap.emotional_state}"
+            if snap.is_ai_generated:
+                label += " (AI)"
+            item = QListWidgetItem(label)
+            self.arc_list.addItem(item)
+
+    def _on_arc_snapshot_selected(self, row: int):
+        """Show details for the selected arc snapshot."""
+        if row < 0 or row >= len(self.character.personality_arc):
+            self.arc_detail.clear()
+            return
+
+        snap = self.character.personality_arc[row]
+        parts = []
+        if snap.traits_active:
+            parts.append(f"Active traits: {', '.join(snap.traits_active)}")
+        if snap.emotional_state:
+            parts.append(f"Emotional state: {snap.emotional_state}")
+        if snap.behavior_examples:
+            parts.append(f"\nBehavior examples:\n{snap.behavior_examples}")
+        if snap.growth_notes:
+            parts.append(f"\nGrowth notes: {snap.growth_notes}")
+        if snap.ai_assessment:
+            parts.append(f"\nFull assessment:\n{snap.ai_assessment}")
+
+        self.arc_detail.blockSignals(True)
+        self.arc_detail.setPlainText("\n".join(parts))
+        self.arc_detail.blockSignals(False)
+
+    def _on_arc_detail_edited(self):
+        """Save manual edits to the selected arc snapshot's assessment."""
+        row = self.arc_list.currentRow()
+        if row < 0 or row >= len(self.character.personality_arc):
+            return
+        snap = self.character.personality_arc[row]
+        snap.ai_assessment = self.arc_detail.toPlainText()
+        snap.is_ai_generated = False  # Mark as user-edited
+        self.content_changed.emit()
+
+    def _add_manual_snapshot(self):
+        """Add a manual personality snapshot."""
+        from src.models.project import PersonalitySnapshot
+
+        # Let user pick a chapter
+        chapters = self._get_chapters()
+        if not chapters:
+            QMessageBox.information(self, "No Chapters", "No chapters available.")
+            return
+
+        items = [f"{ch.number}. {ch.title}" for ch in chapters]
+        from PyQt6.QtWidgets import QInputDialog
+        choice, ok = QInputDialog.getItem(
+            self, "Select Chapter",
+            "Which chapter does this snapshot describe?",
+            items, 0, False
+        )
+        if not ok:
+            return
+
+        idx = items.index(choice)
+        ch = chapters[idx]
+
+        snap = PersonalitySnapshot(
+            chapter_id=ch.id,
+            chapter_number=ch.number,
+            chapter_title=ch.title,
+        )
+        self.character.personality_arc.append(snap)
+        self.character.personality_arc.sort(key=lambda s: s.chapter_number)
+        self._refresh_arc_list()
+        self.content_changed.emit()
+
+    def _remove_snapshot(self):
+        """Remove the selected personality snapshot."""
+        row = self.arc_list.currentRow()
+        if row < 0 or row >= len(self.character.personality_arc):
+            return
+        self.character.personality_arc.pop(row)
+        self._refresh_arc_list()
+        self.arc_detail.clear()
+        self.content_changed.emit()
+
+    def _assess_personality(self):
+        """Use AI to assess personality from a chapter's text."""
+        chapters = self._get_chapters()
+        if not chapters:
+            QMessageBox.information(self, "No Chapters", "No chapters available.")
+            return
+
+        items = [f"{ch.number}. {ch.title}" for ch in chapters]
+        from PyQt6.QtWidgets import QInputDialog
+        choice, ok = QInputDialog.getItem(
+            self, "Assess from Chapter",
+            f"Analyze {self.character.name}'s personality in which chapter?",
+            items, 0, False
+        )
+        if not ok:
+            return
+
+        idx = items.index(choice)
+        ch = chapters[idx]
+
+        # Load chapter content
+        content = ch.content
+        if not content or not content.strip():
+            QMessageBox.warning(
+                self, "Empty Chapter",
+                "This chapter has no content to analyze."
+            )
+            return
+
+        # Save current edits first
+        self.save_to_model()
+
+        # Initialize LLM
+        try:
+            from src.config.ai_config import get_ai_config
+            from src.ai.llm_client import LLMClient, LLMProvider
+            from src.ai.mlx_utils import can_use_mlx
+
+            config = get_ai_config()
+            if config.is_ai_disabled():
+                QMessageBox.warning(self, "AI Disabled", "AI is disabled in settings.")
+                return
+
+            settings = config.get_settings()
+            provider = settings.get("default_llm", "claude")
+            api_key = config.get_api_key(provider)
+
+            if api_key:
+                provider_enum = {
+                    "claude": LLMProvider.CLAUDE,
+                    "chatgpt": LLMProvider.CHATGPT,
+                    "openai": LLMProvider.CHATGPT,
+                    "gemini": LLMProvider.GEMINI,
+                }.get(provider, LLMProvider.CLAUDE)
+                llm_client = LLMClient(
+                    provider=provider_enum, api_key=api_key,
+                    model=settings.get(f"{provider}_model", None)
+                )
+            elif can_use_mlx():
+                local_model = settings.get(
+                    "local_model_id", "mlx-community/Qwen2.5-7B-Instruct-4bit"
+                )
+                llm_client = LLMClient(provider=LLMProvider.MLX_LOCAL, model=local_model)
+            else:
+                QMessageBox.warning(self, "No AI", "No AI provider configured.")
+                return
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to initialize AI:\n{e}")
+            return
+
+        # Build prior arc context
+        prior = [
+            {
+                'number': s.chapter_number,
+                'title': s.chapter_title,
+                'emotional_state': s.emotional_state,
+                'growth_notes': s.growth_notes,
+            }
+            for s in self.character.personality_arc
+            if s.chapter_number < ch.number
+        ]
+
+        # Run assessment in a thread
+        self.assess_btn.setEnabled(False)
+        self.assess_btn.setText("Analyzing...")
+
+        self._assess_worker = _PersonalityAssessWorker(
+            self.character, content, ch.id, ch.number, ch.title, llm_client, prior
+        )
+        self._assess_worker.finished.connect(self._on_assessment_complete)
+        self._assess_worker.error.connect(self._on_assessment_error)
+        self._assess_worker.start()
+
+    def _on_assessment_complete(self, snapshot):
+        """Handle completed personality assessment."""
+        self.assess_btn.setEnabled(True)
+        self.assess_btn.setText("Assess from Writing")
+
+        # Replace existing snapshot for same chapter, or append
+        self.character.personality_arc = [
+            s for s in self.character.personality_arc
+            if s.chapter_id != snapshot.chapter_id
+        ]
+        self.character.personality_arc.append(snapshot)
+        self.character.personality_arc.sort(key=lambda s: s.chapter_number)
+        self._refresh_arc_list()
+
+        # Select the new snapshot
+        for i, s in enumerate(self.character.personality_arc):
+            if s.chapter_id == snapshot.chapter_id:
+                self.arc_list.setCurrentRow(i)
+                break
+
+        self.content_changed.emit()
+
+    def _on_assessment_error(self, error_msg: str):
+        """Handle assessment error."""
+        self.assess_btn.setEnabled(True)
+        self.assess_btn.setText("Assess from Writing")
+        QMessageBox.warning(self, "Assessment Failed", f"AI assessment failed:\n\n{error_msg}")
+
+    def _get_chapters(self):
+        """Get chapters from the project."""
+        if self._project and hasattr(self._project, 'manuscript'):
+            return self._project.manuscript.chapters
+        return []
+
+
+class _PersonalityAssessWorker(QThread):
+    """Background worker for personality assessment."""
+
+    finished = pyqtSignal(object)
+    error = pyqtSignal(str)
+
+    def __init__(self, character, content, ch_id, ch_num, ch_title, llm_client, prior):
+        super().__init__()
+        self.character = character
+        self.content = content
+        self.ch_id = ch_id
+        self.ch_num = ch_num
+        self.ch_title = ch_title
+        self.llm_client = llm_client
+        self.prior = prior
+
+    def run(self):
+        try:
+            from src.ai.personality_assessor import assess_personality
+            snapshot = assess_personality(
+                self.character, self.content,
+                self.ch_id, self.ch_num, self.ch_title,
+                self.llm_client, self.prior
+            )
+            self.finished.emit(snapshot)
+        except Exception as e:
+            self.error.emit(str(e))
+
 
 class CharactersWidget(QWidget):
     """Widget for managing all characters."""
@@ -430,17 +771,18 @@ class CharactersWidget(QWidget):
         super().__init__()
         self.characters: List[Character] = []
         self.current_character_widget: Optional[CharacterWidget] = None
+        self._project = None
         self._project_path: Optional[Path] = None
         self._init_ui()
 
     def set_project(self, project: 'WriterProject'):
-        """Set the project for accessing project path.
+        """Set the project for accessing project path and chapter data.
 
         Args:
             project: The writer project
         """
+        self._project = project
         if project and hasattr(project, 'project_path') and project.project_path:
-            # project_path points to project.json, get parent directory
             self._project_path = Path(project.project_path).parent
         else:
             self._project_path = None
@@ -548,7 +890,8 @@ class CharactersWidget(QWidget):
         if character:
             self.current_character_widget = CharacterWidget(
                 character,
-                project_path=self._project_path
+                project_path=self._project_path,
+                project=self._project
             )
             self.current_character_widget.content_changed.connect(self.content_changed.emit)
             self.details_scroll.setWidget(self.current_character_widget)

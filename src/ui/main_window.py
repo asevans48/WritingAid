@@ -1873,10 +1873,20 @@ class MainWindow(QMainWindow):
                         char_info = f"- {char.name} ({char.character_type})"
                         if char.personality:
                             char_info += f"\n  Personality: {char.personality[:200]}"
-                        if hasattr(char, 'speaking_style') and char.speaking_style:
+                        if getattr(char, 'personality_traits', None):
+                            char_info += f"\n  Traits: {', '.join(char.personality_traits)}"
+                        if getattr(char, 'speaking_style', None) and char.speaking_style:
                             char_info += f"\n  Speech: {char.speaking_style[:100]}"
-                        if hasattr(char, 'motivations') and char.motivations:
+                        if getattr(char, 'motivations', None) and char.motivations:
                             char_info += f"\n  Motivations: {char.motivations[:100]}"
+                        if getattr(char, 'fears', None) and char.fears:
+                            char_info += f"\n  Fears: {char.fears[:100]}"
+                        if getattr(char, 'emotional_baseline', None) and char.emotional_baseline:
+                            char_info += f"\n  Baseline mood: {char.emotional_baseline}"
+                        if getattr(char, 'personality_arc', None) and char.personality_arc:
+                            latest = char.personality_arc[-1]
+                            if latest.emotional_state:
+                                char_info += f"\n  Current state (Ch{latest.chapter_number}): {latest.emotional_state}"
                     else:
                         char_info = f"- {char.name} ({char.character_type})"
                         if char.personality:

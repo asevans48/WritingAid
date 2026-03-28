@@ -60,17 +60,42 @@ class WorldBuilding(BaseModel):
         return v if v is not None else []
 
 
+class PersonalitySnapshot(BaseModel):
+    """A snapshot of a character's personality state at a point in the story."""
+    chapter_id: str = ""
+    chapter_number: int = 0
+    chapter_title: str = ""
+    traits_active: List[str] = Field(default_factory=list)
+    emotional_state: str = ""
+    behavior_examples: str = ""  # How traits manifest in this chapter
+    growth_notes: str = ""  # What changed and why
+    ai_assessment: str = ""  # AI-generated analysis from chapter text
+    is_ai_generated: bool = False
+    created_at: datetime = Field(default_factory=datetime.now)
+
+
 class Character(BaseModel):
     """Character with full details including image, personality, backstory."""
     id: str
     name: str
     character_type: str  # antagonist, protagonist, major, minor
     image_path: Optional[str] = None
-    personality: str = ""
+    personality: str = ""  # Free-text personality description (legacy + user notes)
     backstory: str = ""
     physical_description: str = ""  # Physical appearance for AI image generation
     social_network: Dict[str, str] = Field(default_factory=dict)  # relationship mapping
     notes: str = ""
+
+    # Structured personality fields
+    personality_traits: List[str] = Field(default_factory=list)  # e.g. ["brave", "impulsive"]
+    motivations: str = ""  # What drives this character
+    fears: str = ""  # What they fear or avoid
+    speaking_style: str = ""  # How they talk: dialect, vocabulary, patterns
+    emotional_baseline: str = ""  # Default emotional state
+
+    # Personality arc — tracks how personality evolves across chapters
+    personality_arc: List[PersonalitySnapshot] = Field(default_factory=list)
+
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 
@@ -1038,6 +1063,15 @@ class WriterProject(BaseModel):
             # Ensure optional fields have correct types
             if not isinstance(char.get('social_network'), dict):
                 char['social_network'] = {}
+
+            # Backwards compatibility: add structured personality fields
+            for field_name, default in [
+                ('personality_traits', []), ('motivations', ''), ('fears', ''),
+                ('speaking_style', ''), ('emotional_baseline', ''),
+                ('personality_arc', []),
+            ]:
+                if field_name not in char:
+                    char[field_name] = default
 
             repaired.append(char)
 
