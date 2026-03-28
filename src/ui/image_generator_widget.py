@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QInputDialog, QMenu
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QThread
-from PyQt6.QtGui import QPixmap, QAction
+from PyQt6.QtGui import QPixmap
 from typing import List, Optional
 from pathlib import Path
 import uuid

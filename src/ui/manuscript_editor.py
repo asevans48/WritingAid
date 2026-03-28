@@ -1141,10 +1141,6 @@ class ChapterEditor(QWidget):
         style = self.heading_combo.itemText(index)
         self.editor.apply_heading(style)
 
-    def _apply_heading_style(self, style: str):
-        """Apply heading style to current paragraph."""
-        self.editor.apply_heading(style)
-
     def _update_check_button_style(self, button: QPushButton, mode: CheckMode):
         """Update button style based on check mode."""
         button.setStyleSheet(self._check_button_styles[mode])
@@ -1244,6 +1240,36 @@ class ChapterEditor(QWidget):
             replacement = dialog.get_selected_text()
             if replacement:
                 cursor.insertText(replacement)
+
+    def _world_word_selection(self):
+        """Open world-appropriate word dialog for selected text."""
+        cursor = self.editor.textCursor()
+        selected_text = cursor.selectedText()
+
+        if not selected_text or not selected_text.strip():
+            QMessageBox.information(
+                self, "No Selection",
+                "Please select a word or phrase to find a world-appropriate replacement."
+            )
+            return
+
+        # Extract surrounding text for context
+        doc_text = self.editor.toPlainText()
+        sel_start = cursor.selectionStart()
+        sel_end = cursor.selectionEnd()
+        ctx_before = doc_text[max(0, sel_start - 300):sel_start]
+        ctx_after = doc_text[sel_end:sel_end + 300]
+
+        from src.ui.world_word_dialog import WorldWordDialog
+        dialog = WorldWordDialog(
+            selected_text.strip(),
+            self.project, self,
+            surrounding_context=(ctx_before, ctx_after)
+        )
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            replacement = dialog.get_replacement()
+            if replacement:
+                self._replace_selection_with(replacement)
 
     def _show_context_menu(self, position):
         """Show custom context menu with annotation option."""
@@ -1373,6 +1399,9 @@ class ChapterEditor(QWidget):
 
             rephrase_action = menu.addAction("✨ Rephrase with AI...")
             rephrase_action.triggered.connect(self._rephrase_selection)
+
+            world_word_action = menu.addAction("🌍 World-Appropriate Word...")
+            world_word_action.triggered.connect(self._world_word_selection)
 
             # Heading style submenu
             heading_menu = menu.addMenu("Heading Style")
@@ -2919,12 +2948,6 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
         self.editor.setTextCursor(cursor)
         self.editor.setFocus()
 
-    def _edit_annotation_by_id(self, annotation_id: str):
-        """Edit annotation by ID."""
-        annotation = next((a for a in self.chapter.annotations if a.id == annotation_id), None)
-        if annotation:
-            self._edit_annotation(annotation)
-
     def _highlight_annotated_lines(self):
         """Highlight lines that have annotations."""
         # Store current cursor position
@@ -3326,6 +3349,28 @@ class ManuscriptEditor(QWidget):
         chapters_label.setStyleSheet("font-size: 13px; font-weight: 600; color: #1a1a1a; padding: 4px;")
         left_layout.addWidget(chapters_label)
 
+        # Navigation buttons to switch between chapters
+        nav_layout = QHBoxLayout()
+        nav_layout.setSpacing(4)
+
+        nav_btn_style = "font-size: 11px; padding: 3px 8px;"
+
+        self.prev_chapter_btn = QPushButton("◀ Prev")
+        self.prev_chapter_btn.setToolTip("Go to previous chapter")
+        self.prev_chapter_btn.setStyleSheet(nav_btn_style)
+        self.prev_chapter_btn.setEnabled(False)
+        self.prev_chapter_btn.clicked.connect(self._go_prev_chapter)
+        nav_layout.addWidget(self.prev_chapter_btn)
+
+        self.next_chapter_btn = QPushButton("Next ▶")
+        self.next_chapter_btn.setToolTip("Go to next chapter")
+        self.next_chapter_btn.setStyleSheet(nav_btn_style)
+        self.next_chapter_btn.setEnabled(False)
+        self.next_chapter_btn.clicked.connect(self._go_next_chapter)
+        nav_layout.addWidget(self.next_chapter_btn)
+
+        left_layout.addLayout(nav_layout)
+
         self.chapter_list = QListWidget()
         self.chapter_list.currentItemChanged.connect(self._on_chapter_selected)
         self.chapter_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -3415,6 +3460,10 @@ class ManuscriptEditor(QWidget):
         item = self.chapter_list.itemAt(position)
         if not item:
             return
+
+        # Select the right-clicked item so all actions (rename, delete, etc.)
+        # operate on the correct chapter — not whatever was previously selected.
+        self.chapter_list.setCurrentItem(item)
 
         menu = QMenu(self)
 
@@ -3521,6 +3570,25 @@ class ManuscriptEditor(QWidget):
             dialog.exec()
             self.content_changed.emit()
 
+    def _go_prev_chapter(self):
+        """Navigate to the previous chapter."""
+        current_row = self.chapter_list.currentRow()
+        if current_row > 0:
+            self.chapter_list.setCurrentRow(current_row - 1)
+
+    def _go_next_chapter(self):
+        """Navigate to the next chapter."""
+        current_row = self.chapter_list.currentRow()
+        if current_row < self.chapter_list.count() - 1:
+            self.chapter_list.setCurrentRow(current_row + 1)
+
+    def _update_nav_buttons(self):
+        """Update prev/next chapter button enabled state."""
+        current_row = self.chapter_list.currentRow()
+        count = self.chapter_list.count()
+        self.prev_chapter_btn.setEnabled(current_row > 0)
+        self.next_chapter_btn.setEnabled(current_row < count - 1)
+
     def _add_chapter(self):
         """Add new chapter at the end."""
         if not self.manuscript:
@@ -3607,7 +3675,9 @@ class ManuscriptEditor(QWidget):
             if new_item:
                 self._on_chapter_selected(new_item, None)
 
+            # Persist new ordering immediately
             self.content_changed.emit()
+            self.chapter_switched.emit()
 
     def _rename_chapter(self):
         """Rename selected chapter."""
@@ -3653,14 +3723,12 @@ class ManuscriptEditor(QWidget):
             return
 
         chapter_id = current_item.data(Qt.ItemDataRole.UserRole)
-        chapter = None
-        for ch in self.manuscript.chapters:
-            if ch.id == chapter_id:
-                chapter = ch
-                break
+        chapter = next((ch for ch in self.manuscript.chapters if ch.id == chapter_id), None)
+        if not chapter:
+            return
 
         # Build warning message
-        rev_count = len(chapter.revisions) if chapter else 0
+        rev_count = len(chapter.revisions)
         folder_info = ""
         if chapter and chapter.folder_path:
             folder_info = (
@@ -3671,18 +3739,26 @@ class ManuscriptEditor(QWidget):
         reply = QMessageBox.warning(
             self,
             "Delete Chapter",
-            f"Are you sure you want to delete '{current_item.text()}'?"
+            f"Are you sure you want to delete Chapter {chapter.number}: '{chapter.title}'?"
             f"{folder_info}\n\nThis action cannot be undone.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
 
         if reply == QMessageBox.StandardButton.Yes:
+            # Save current editor first if it's a *different* chapter
+            deleting_current = (chapter_id == self._current_chapter_id)
+            if not deleting_current and self.current_chapter_editor:
+                self.current_chapter_editor.save_to_model()
+
             # Delete chapter folder from disk
-            if chapter and chapter.folder_path:
+            if chapter.folder_path:
                 project_dir = self._get_project_dir()
                 if project_dir:
                     chapter.delete_folder(project_dir)
+
+            # Remove from cache
+            self.memory_manager.cache.remove(chapter_id)
 
             self.manuscript.chapters = [
                 c for c in self.manuscript.chapters if c.id != chapter_id
@@ -3695,15 +3771,30 @@ class ManuscriptEditor(QWidget):
             self.chapter_list.takeItem(row)
 
             # Relocate remaining chapter folders on disk to match new numbering
-            # (chapters after the deleted one shift down by one)
             self._relocate_chapter_folders()
             self._rebuild_chapter_list()
-            self._clear_editor()
+
+            if deleting_current:
+                # The currently-displayed chapter was deleted — clear editor
+                self._clear_editor()
+                self._current_chapter_id = None
+                self.current_chapter_editor = None
+            else:
+                # A different chapter was deleted — keep the editor showing
+                # the current chapter, but re-select it in the rebuilt list
+                if self._current_chapter_id:
+                    for i in range(self.chapter_list.count()):
+                        item = self.chapter_list.item(i)
+                        if item and item.data(Qt.ItemDataRole.UserRole) == self._current_chapter_id:
+                            self.chapter_list.setCurrentRow(i)
+                            break
 
             # Re-enable signals
             self.chapter_list.blockSignals(False)
 
+            # Persist new ordering immediately
             self.content_changed.emit()
+            self.chapter_switched.emit()
 
     def _move_chapter_up(self):
         """Move selected chapter up."""
@@ -3734,7 +3825,10 @@ class ManuscriptEditor(QWidget):
         # Re-enable signals
         self.chapter_list.blockSignals(False)
 
+        # Persist new ordering immediately so a crash can't desync
+        # project.json (old order) vs disk folders (new order)
         self.content_changed.emit()
+        self.chapter_switched.emit()
 
     def _move_chapter_down(self):
         """Move selected chapter down."""
@@ -3765,7 +3859,9 @@ class ManuscriptEditor(QWidget):
         # Re-enable signals
         self.chapter_list.blockSignals(False)
 
+        # Persist new ordering immediately
         self.content_changed.emit()
+        self.chapter_switched.emit()
 
     def _relocate_chapter_folders(self):
         """Relocate chapter folders on disk to match current manuscript order.
@@ -3802,18 +3898,19 @@ class ManuscriptEditor(QWidget):
             item = QListWidgetItem(f"{i}. {chapter.title}")
             item.setData(Qt.ItemDataRole.UserRole, chapter.id)
             self.chapter_list.addItem(item)
-
-    def _renumber_chapters(self):
-        """Renumber all chapters sequentially."""
-        for i, chapter in enumerate(self.manuscript.chapters, 1):
-            chapter.number = i
-            item = self.chapter_list.item(i - 1)
-            if item:
-                item.setText(f"{i}. {chapter.title}")
+        self._update_nav_buttons()
 
     def _on_chapter_selected(self, current, previous):
         """Handle chapter selection change."""
         if not current:
+            return
+
+        # Update navigation button state
+        self._update_nav_buttons()
+
+        # If the same chapter is already displayed, skip teardown/rebuild
+        new_chapter_id = current.data(Qt.ItemDataRole.UserRole)
+        if new_chapter_id == self._current_chapter_id and self.current_chapter_editor:
             return
 
         # Save previous chapter and notify memory manager
@@ -3911,6 +4008,7 @@ class ManuscriptEditor(QWidget):
                 self.memory_manager.cache.put(chapter.id, chapter.content)
 
         self._update_total_word_count()
+        self._update_nav_buttons()
 
     def get_manuscript(self) -> Manuscript:
         """Get manuscript data."""

@@ -325,8 +325,13 @@ class Chapter(BaseModel):
         return f"chapters/chapter_{self.number:03d}"
 
     def ensure_folder(self, project_dir: Path):
-        """Create the chapter folder if it doesn't exist."""
-        self.folder_path = self._folder_name()
+        """Create the chapter folder if it doesn't exist.
+
+        Uses the existing folder_path if set (preserving relocations),
+        falling back to generating from the current chapter number.
+        """
+        if not self.folder_path:
+            self.folder_path = self._folder_name()
         folder = project_dir / self.folder_path
         folder.mkdir(parents=True, exist_ok=True)
 
@@ -346,7 +351,6 @@ class Chapter(BaseModel):
         import shutil
 
         old_folder = self.folder_path
-        old_number = self.number
         self.number = new_number
         new_folder = self._folder_name()
 
@@ -505,14 +509,19 @@ class Chapter(BaseModel):
             return False
 
         self.ensure_folder(project_dir)
+
+        # Sync ALL revision file_paths to current folder_path.
+        # After chapter reordering, the folder may have changed but only
+        # the active revision's path was being updated — leaving non-active
+        # revisions pointing to stale/old folders.
+        for rev in self.revisions:
+            rev.file_path = f"{self.folder_path}/revision_{rev.revision_number:03d}.md"
+
         for rev in self.revisions:
             if rev.revision_number == self.active_revision_number:
                 rev.content = self.content
                 rev.html_content = self.html_content
                 rev.word_count = len(self.content.split()) if self.content else 0
-                # Always derive file_path from current folder_path to stay in
-                # sync after chapter reordering / relocation.
-                rev.file_path = f"{self.folder_path}/revision_{rev.revision_number:03d}.md"
                 full_path = project_dir / rev.file_path
                 full_path.parent.mkdir(parents=True, exist_ok=True)
                 full_path.write_text(self.content, encoding='utf-8')
@@ -528,6 +537,10 @@ class Chapter(BaseModel):
         if not self.folder_path:
             self.folder_path = self._folder_name()
         self.ensure_folder(project_dir)
+
+        # Sync all revision file_paths to current folder_path
+        for rev in self.revisions:
+            rev.file_path = f"{self.folder_path}/revision_{rev.revision_number:03d}.md"
 
         # If no revisions exist yet, create the first one from current content
         if not self.revisions:
@@ -559,6 +572,26 @@ class Chapter(BaseModel):
                     self.content = full_path.read_text(encoding='utf-8')
                     self.word_count = len(self.content.split()) if self.content else 0
                     return True
+
+                # Revision path may be stale after a crash during chapter move.
+                # Try deriving the expected path from current folder_path.
+                expected_path = project_dir / self.folder_path / f"revision_{active_rev.revision_number:03d}.md"
+                if expected_path.exists():
+                    self.content = expected_path.read_text(encoding='utf-8')
+                    self.word_count = len(self.content.split()) if self.content else 0
+                    # Fix the stale path
+                    active_rev.file_path = f"{self.folder_path}/revision_{active_rev.revision_number:03d}.md"
+                    return True
+
+            # Last resort: scan the folder for any revision file
+            folder = project_dir / self.folder_path
+            if folder.exists():
+                for rev_file in sorted(folder.glob("revision_*.md"), reverse=True):
+                    content = rev_file.read_text(encoding='utf-8')
+                    if content and content.strip():
+                        self.content = content
+                        self.word_count = len(self.content.split())
+                        return True
 
         # Legacy fallback: flat file
         if self.file_path:
@@ -861,14 +894,45 @@ class WriterProject(BaseModel):
                 # Fallback: legacy flat file
                 chapter.load_content_from_file(project_dir)
 
-        # If we migrated, save the updated project metadata
+        # Verify chapter numbering and folder_path consistency.
+        # After a crash during a move operation, chapter.number or folder_path
+        # in the JSON may not match the actual folder layout on disk.
+        for i, chapter in enumerate(project.manuscript.chapters, 1):
+            if chapter.number != i:
+                print(f"  Fixing chapter numbering: '{chapter.title}' was {chapter.number}, now {i}")
+                chapter.number = i
+                needs_save = True
+
+            expected_folder = chapter._folder_name()
+            if chapter.folder_path and chapter.folder_path != expected_folder:
+                # folder_path doesn't match number — check which folder actually
+                # exists on disk and reconcile
+                old_dir = project_dir / chapter.folder_path
+                new_dir = project_dir / expected_folder
+                if old_dir.exists() and not new_dir.exists():
+                    # The folder is at the old path; move it
+                    import shutil
+                    print(f"  Reconciling chapter folder: {chapter.folder_path} → {expected_folder}")
+                    new_dir.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(old_dir), str(new_dir))
+                # Update path references
+                old_folder = chapter.folder_path
+                chapter.folder_path = expected_folder
+                for rev in chapter.revisions:
+                    if rev.file_path and old_folder in rev.file_path:
+                        rev.file_path = rev.file_path.replace(old_folder, expected_folder)
+                if chapter.file_path and old_folder in chapter.file_path:
+                    chapter.file_path = chapter.file_path.replace(old_folder, expected_folder)
+                needs_save = True
+
+        # If we migrated or repaired, save the updated project metadata
         if needs_save:
             try:
-                print("  Saving migrated project metadata...")
+                print("  Saving repaired project metadata...")
                 project.save_project(file_path)
-                print("  Migration complete.")
+                print("  Repair complete.")
             except Exception as e:
-                print(f"  Warning: Could not save migration: {e}")
+                print(f"  Warning: Could not save repair: {e}")
 
         return project
 
