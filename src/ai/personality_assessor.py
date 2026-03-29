@@ -6,7 +6,6 @@ tracks changes across chapters, and provides structured snapshots.
 
 import logging
 from typing import Optional, List
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 

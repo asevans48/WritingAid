@@ -526,32 +526,149 @@ class Chapter(BaseModel):
         return None
 
     def save_active_revision_to_file(self, project_dir: Path) -> bool:
-        """Save the active revision's content to its file."""
-        # SAFETY: Never overwrite an existing revision file with empty content.
-        # This guards against accidental data loss from save-during-load or
-        # serialization-clearing race conditions.
-        if not self.content or not self.content.strip():
-            return False
+        """Save the active revision's content to its file.
 
+        Before writing, copies the existing file to working_backup.md so the
+        user can revert to the previous save.
+        """
         self.ensure_folder(project_dir)
 
         # Sync ALL revision file_paths to current folder_path.
-        # After chapter reordering, the folder may have changed but only
-        # the active revision's path was being updated — leaving non-active
-        # revisions pointing to stale/old folders.
         for rev in self.revisions:
             rev.file_path = f"{self.folder_path}/revision_{rev.revision_number:03d}.md"
 
         for rev in self.revisions:
             if rev.revision_number == self.active_revision_number:
+                full_path = project_dir / rev.file_path
+                full_path.parent.mkdir(parents=True, exist_ok=True)
+
+                # Create working backup from the file currently on disk
+                self._save_working_backup(project_dir, full_path)
+
                 rev.content = self.content
                 rev.html_content = self.html_content
                 rev.word_count = len(self.content.split()) if self.content else 0
-                full_path = project_dir / rev.file_path
-                full_path.parent.mkdir(parents=True, exist_ok=True)
                 full_path.write_text(self.content, encoding='utf-8')
                 return True
         return False
+
+    _MAX_BACKUPS = 3
+
+    def _save_working_backup(self, project_dir: Path, current_file: Path):
+        """Copy the existing revision file to a timestamped backup.
+
+        Keeps the most recent _MAX_BACKUPS copies. Files are named
+        ``backup_YYYYMMDD_HHMMSS.md`` inside the chapter folder.
+        Also migrates the old single ``working_backup.md`` if present.
+        """
+        if not current_file.exists():
+            return
+        try:
+            import shutil
+            backup_dir = project_dir / self.folder_path
+
+            # Migrate legacy single-file backup → timestamped
+            legacy = backup_dir / "working_backup.md"
+            if legacy.exists():
+                legacy_stat = legacy.stat()
+                legacy_dt = datetime.fromtimestamp(legacy_stat.st_mtime)
+                ts = legacy_dt.strftime("%Y%m%d_%H%M%S")
+                legacy.rename(backup_dir / f"backup_{ts}.md")
+
+            # Create new timestamped backup
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_path = backup_dir / f"backup_{ts}.md"
+
+            # Only create if content actually differs from the most recent backup
+            existing_backups = self._list_backups(project_dir)
+            if existing_backups:
+                latest = existing_backups[0][1]  # Most recent path
+                if latest.exists():
+                    latest_text = latest.read_text(encoding='utf-8')
+                    current_text = current_file.read_text(encoding='utf-8')
+                    if latest_text == current_text:
+                        return  # No change since last backup
+
+            shutil.copy2(str(current_file), str(backup_path))
+
+            # Prune old backups beyond the limit
+            all_backups = self._list_backups(project_dir)
+            for _, old_path in all_backups[self._MAX_BACKUPS:]:
+                try:
+                    old_path.unlink()
+                except OSError:
+                    pass
+        except Exception:
+            pass  # Non-fatal — don't block the save
+
+    def _list_backups(self, project_dir: Path) -> list:
+        """List timestamped backups, newest first.
+
+        Returns:
+            List of (datetime, Path) tuples sorted newest-first.
+        """
+        if not self.folder_path:
+            return []
+        backup_dir = project_dir / self.folder_path
+        backups = []
+        for f in backup_dir.glob("backup_*.md"):
+            # Parse timestamp from filename: backup_YYYYMMDD_HHMMSS.md
+            stem = f.stem  # e.g. "backup_20260328_143022"
+            try:
+                ts_str = stem[len("backup_"):]
+                dt = datetime.strptime(ts_str, "%Y%m%d_%H%M%S")
+                backups.append((dt, f))
+            except (ValueError, IndexError):
+                continue
+        backups.sort(key=lambda x: x[0], reverse=True)
+        return backups
+
+    def has_working_backup(self, project_dir: Path) -> bool:
+        """Check whether any working backups exist for this chapter."""
+        return len(self._list_backups(project_dir)) > 0
+
+    def get_backup_timestamps(self, project_dir: Path) -> list:
+        """Get timestamps of available backups, newest first.
+
+        Returns:
+            List of datetime objects.
+        """
+        return [dt for dt, _ in self._list_backups(project_dir)]
+
+    def revert_to_backup(self, project_dir: Path, timestamp: datetime = None) -> bool:
+        """Revert this chapter's content to a backup.
+
+        Args:
+            project_dir: Project root directory.
+            timestamp: Which backup to revert to.  If None, uses the most recent.
+
+        Returns:
+            True if the revert succeeded.
+        """
+        backups = self._list_backups(project_dir)
+        if not backups:
+            return False
+
+        if timestamp is None:
+            target_path = backups[0][1]
+        else:
+            target_path = None
+            for dt, path in backups:
+                if dt == timestamp:
+                    target_path = path
+                    break
+            if not target_path:
+                return False
+
+        try:
+            backup_content = target_path.read_text(encoding='utf-8')
+            self.content = backup_content
+            self.word_count = len(backup_content.split()) if backup_content else 0
+            # Save the reverted content to the active revision file
+            self.save_active_revision_to_file(project_dir)
+            return True
+        except Exception:
+            return False
 
     # --- File I/O (folder-based, with legacy fallback) ---
 
@@ -839,12 +956,15 @@ class WriterProject(BaseModel):
 
         # Save chapters to separate files if enabled
         if save_chapters_separately:
-            # Save all chapter content/revisions to disk
-            # SAFETY: Only write chapters that actually have content to avoid
-            # overwriting good files with empty content
+            # Save all chapter content/revisions to disk.
+            # Every chapter with a folder or revisions gets saved — the
+            # protection against accidental blanking happens in save_to_model,
+            # not here. By the time we reach disk write, content is authoritative.
             for chapter in self.manuscript.chapters:
-                if chapter.content and chapter.content.strip():
-                    chapter.save_content_to_file(project_dir)
+                # Skip only brand-new chapters that have never been initialized
+                if not chapter.folder_path and not chapter.revisions and not chapter.content:
+                    continue
+                chapter.save_content_to_file(project_dir)
 
             # Build JSON without content fields to save space.
             # Instead of mutating in-memory state (dangerous if interrupted),

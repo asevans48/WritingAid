@@ -11,8 +11,8 @@ import re
 from typing import Optional, List
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QTextEdit, QListWidget, QListWidgetItem, QGroupBox,
-    QProgressBar, QMessageBox, QComboBox, QFormLayout,
+    QTextEdit, QListWidget, QListWidgetItem,
+    QProgressBar, QMessageBox, QComboBox,
     QWidget, QScrollArea, QFrame, QLineEdit
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal

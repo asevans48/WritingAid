@@ -1493,11 +1493,13 @@ class GrammarChecker:
                 try:
                     matches = self._tool.check(text)
                     for match in matches:
-                        if match.ruleId not in self._ignored_rules:
+                        rule = getattr(match, 'rule_id', None) or getattr(match, 'ruleId', '')
+                        err_len = getattr(match, 'error_length', None) or getattr(match, 'errorLength', 0)
+                        if rule not in self._ignored_rules:
                             errors.append((
                                 match.offset,
-                                match.offset + match.errorLength,
-                                text[match.offset:match.offset + match.errorLength],
+                                match.offset + err_len,
+                                text[match.offset:match.offset + err_len],
                                 match.message,
                                 match.replacements[:5] if match.replacements else []
                             ))

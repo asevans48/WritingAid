@@ -301,6 +301,16 @@ class ChapterEditor(QWidget):
         self.recheck_btn.clicked.connect(self._recheck_writing)
         toolbar.addWidget(self.recheck_btn)
 
+        # Clean formatting button
+        self.clean_fmt_btn = QPushButton("Clean")
+        self.clean_fmt_btn.setToolTip(
+            "Fix formatting: normalize spacing, fonts, paragraph breaks, "
+            "and remove pasted rich-text inconsistencies"
+        )
+        self.clean_fmt_btn.setStyleSheet("font-size: 11px; padding: 2px 6px;")
+        self.clean_fmt_btn.clicked.connect(self._clean_formatting)
+        toolbar.addWidget(self.clean_fmt_btn)
+
         toolbar.addSeparator()
 
         # AI Rephrase action - compact
@@ -1102,6 +1112,98 @@ class ChapterEditor(QWidget):
         except Exception as e:
             # Silently catch any font-related errors during initialization
             pass
+
+    def _clean_formatting(self):
+        """Normalize chapter formatting — fix spacing, fonts, and paragraph breaks.
+
+        Fixes:
+        - Multiple consecutive blank lines → single blank line
+        - Trailing whitespace on each line
+        - Multiple spaces → single space (except leading indentation)
+        - Inconsistent line endings
+        - Non-breaking spaces and other invisible characters → regular space
+        - Tabs → spaces
+        - Rich-text char format reset to uniform font/size across the document
+        """
+        import re as _re
+
+        text = self.editor.toPlainText()
+        if not text:
+            return
+
+        # Save cursor position (approximate)
+        cursor = self.editor.textCursor()
+        old_pos = cursor.position()
+
+        # --- Text normalization ---
+
+        # Replace non-breaking spaces, zero-width chars, and other oddities
+        text = text.replace('\u00a0', ' ')   # non-breaking space
+        text = text.replace('\u200b', '')    # zero-width space
+        text = text.replace('\u200c', '')    # zero-width non-joiner
+        text = text.replace('\u200d', '')    # zero-width joiner
+        text = text.replace('\ufeff', '')    # BOM
+        text = text.replace('\r\n', '\n')    # Windows line endings
+        text = text.replace('\r', '\n')      # Old Mac line endings
+
+        # Normalize tabs to spaces
+        text = text.replace('\t', '    ')
+
+        # Process line by line
+        lines = text.split('\n')
+        cleaned = []
+        prev_blank = False
+        for line in lines:
+            # Strip trailing whitespace
+            line = line.rstrip()
+
+            # Collapse multiple spaces (preserve leading indentation)
+            stripped = line.lstrip()
+            indent = line[:len(line) - len(stripped)]
+            stripped = _re.sub(r'  +', ' ', stripped)
+            line = indent + stripped
+
+            # Track blank lines — collapse runs of 2+ into exactly 1
+            if not line.strip():
+                if prev_blank:
+                    continue  # Skip extra blank lines
+                prev_blank = True
+            else:
+                prev_blank = False
+
+            cleaned.append(line)
+
+        # Remove trailing blank lines
+        while cleaned and not cleaned[-1].strip():
+            cleaned.pop()
+
+        new_text = '\n'.join(cleaned)
+
+        # --- Rich-text format normalization ---
+        # Reset the entire document to a uniform font/size, preserving
+        # the Markdown content. This removes per-fragment formatting left
+        # by paste operations.
+        if new_text != text:
+            self.editor.setPlainText(new_text)
+        else:
+            # Even if text didn't change, reset char formats
+            self.editor.setPlainText(text)
+
+        # Apply uniform font across the whole document
+        font_family = self.font_combo.currentText()
+        font_size = self.font_size_spin.value()
+        doc_cursor = self.editor.textCursor()
+        doc_cursor.select(QTextCursor.SelectionType.Document)
+        fmt = QTextCharFormat()
+        fmt.setFontFamily(font_family)
+        if font_size > 0:
+            fmt.setFontPointSize(font_size)
+        doc_cursor.setCharFormat(fmt)
+
+        # Restore cursor position
+        restore_cursor = self.editor.textCursor()
+        restore_cursor.setPosition(min(old_pos, len(new_text)))
+        self.editor.setTextCursor(restore_cursor)
 
     def _toggle_bold(self):
         """Toggle bold formatting using Markdown ** markers."""
@@ -3197,27 +3299,30 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
         Content is stored as plain text with Markdown formatting.
         Planning data is saved separately and NOT exported with manuscript.
         """
-        # Check if Qt widgets are still valid (not deleted)
+        # Read content from editor — guard each widget individually so a
+        # deleted planner widget doesn't prevent saving chapter content.
+        try:
+            new_content = self.editor.toPlainText()
+        except RuntimeError:
+            # Editor widget destroyed — nothing to save
+            return
+
         try:
             self.chapter.title = self.title_edit.toPlainText()
-            # Save plain text content (contains Markdown formatting)
-            new_content = self.editor.toPlainText()
-            # SAFETY: Never overwrite existing content with empty text unless
-            # the chapter was already empty (user intentionally cleared it, or
-            # it's a brand new chapter). This prevents data loss from widget
-            # lifecycle issues.
-            if new_content and new_content.strip():
-                self.chapter.content = new_content
-            elif not self.chapter.content or not self.chapter.content.strip():
-                # Chapter was already empty, allow saving empty
-                self.chapter.content = new_content
+        except RuntimeError:
+            pass  # Keep existing title
 
-            # Save planning data (separate from content, not exported)
+        # Always save what the editor contains. The editor is the source of
+        # truth for the currently-displayed chapter. If the user cleared it,
+        # that's intentional.
+        self.chapter.content = new_content
+        self.chapter.word_count = len(new_content.split()) if new_content else 0
+
+        # Save planning data (separate from content)
+        try:
             planning_data = self.planner_widget.get_planning_data()
         except RuntimeError:
-            # Widget has been deleted, skip saving — content is preserved
-            # in the chapter model from the last successful save
-            return
+            return  # Planner gone, but content is already saved above
 
         # Update the planning object
         self.chapter.planning.outline = planning_data.get('outline', '')
@@ -3495,6 +3600,23 @@ class ManuscriptEditor(QWidget):
         revisions_action = menu.addAction("Drafts...")
         revisions_action.triggered.connect(self._view_revisions_from_context)
 
+        # Revert submenu with timestamped backups
+        chapter = self._get_context_chapter()
+        project_dir = self._get_project_dir()
+        if chapter and project_dir:
+            timestamps = chapter.get_backup_timestamps(project_dir)
+            if timestamps:
+                revert_menu = menu.addMenu("Revert to Saved Copy")
+                for ts in timestamps:
+                    label = ts.strftime("%b %d, %Y  %I:%M:%S %p")
+                    action = revert_menu.addAction(label)
+                    action.triggered.connect(
+                        lambda checked, t=ts: self._revert_chapter_to_backup(t)
+                    )
+            else:
+                revert_action = menu.addAction("Revert to Saved Copy")
+                revert_action.setEnabled(False)
+
         menu.addSeparator()
 
         # Delete action
@@ -3523,6 +3645,36 @@ class ManuscriptEditor(QWidget):
             if ch.folder_path or ch.file_path:
                 return None  # We need project_path set
         return None
+
+    def _revert_chapter_to_backup(self, timestamp=None):
+        """Revert the selected chapter to a timestamped backup."""
+        chapter = self._get_context_chapter()
+        if not chapter:
+            return
+
+        project_dir = self._get_project_dir()
+        if not project_dir:
+            return
+
+        label = timestamp.strftime("%b %d, %Y %I:%M:%S %p") if timestamp else "the last save"
+        reply = QMessageBox.warning(
+            self, "Revert to Saved Copy",
+            f"Revert Chapter {chapter.number}: '{chapter.title}' to {label}?\n\n"
+            "Your current edits will be lost.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        if chapter.revert_to_backup(project_dir, timestamp=timestamp):
+            # If this chapter is currently displayed, reload the editor
+            if self._current_chapter_id == chapter.id and self.current_chapter_editor:
+                self.current_chapter_editor.editor.setPlainText(chapter.content)
+
+            self.content_changed.emit()
+        else:
+            QMessageBox.warning(self, "Error", "Failed to revert chapter.")
 
     def _new_revision_from_context(self):
         """Create a new revision for the selected chapter via context menu."""
@@ -3963,7 +4115,15 @@ class ManuscriptEditor(QWidget):
             if chapter.content and chapter.content.strip():
                 self.memory_manager.cache.put(chapter_id, chapter.content)
 
+            # Disconnect and clear old editor BEFORE destroying the widget.
+            # deleteLater() can trigger textChanged signals during destruction,
+            # which would fire _on_content_changed with empty text and corrupt
+            # the cache for the old chapter.
+            old_editor = self.current_chapter_editor
+            self.current_chapter_editor = None
+            self._current_chapter_id = None
             self._clear_editor()
+
             self._current_chapter_id = chapter_id
             self.current_chapter_editor = ChapterEditor(chapter, self.project, manuscript=self.manuscript)
             self.current_chapter_editor.content_changed.connect(self._on_content_changed)
@@ -3980,7 +4140,10 @@ class ManuscriptEditor(QWidget):
     def _on_content_changed(self):
         """Handle content changes - update memory manager cache."""
         if self._current_chapter_id and self.current_chapter_editor:
-            new_content = self.current_chapter_editor.editor.toPlainText()
+            try:
+                new_content = self.current_chapter_editor.editor.toPlainText()
+            except RuntimeError:
+                return  # Widget being destroyed
             self.memory_manager.on_content_changed(self._current_chapter_id, new_content)
 
     def _clear_editor(self):

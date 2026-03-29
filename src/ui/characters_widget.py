@@ -10,7 +10,6 @@ from PyQt6.QtCore import pyqtSignal, Qt, QThread
 from PyQt6.QtGui import QPixmap
 from typing import List, Optional, TYPE_CHECKING
 import uuid
-import shutil
 from pathlib import Path
 from datetime import datetime
 
