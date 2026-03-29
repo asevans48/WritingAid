@@ -84,97 +84,38 @@ class _ThesaurusPipelineWorker(QThread):
 
     def run(self):
         try:
-            # --- Step 1: Determine the speaker ---
+            self.progress.emit("Generating suggestions...")
+
+            # Build character voice context
             if self.manual_character:
                 char_name = self.manual_character.name
                 voice_profile = self._build_voice_from_character(self.manual_character)
                 self.speaker_detected.emit(char_name, "Manually selected", voice_profile)
             elif self.is_narrator:
+                char_name = "Narrator"
                 voice_profile = ""
-                self.speaker_detected.emit("Narrator", "Narrator mode selected", "")
+                self.speaker_detected.emit("Narrator", "Narrator mode", "")
             else:
-                self.progress.emit("Step 1/3: Identifying speaker...")
-                char_name, reason = self._detect_speaker()
-                self.progress.emit(f"Step 2/3: Building voice profile for {char_name}...")
+                # Auto-detect: done in a SINGLE call alongside suggestion generation
+                char_name = None
+                voice_profile = None
 
-                # Try to match to a known character
-                matched = self._match_known_character(char_name)
-                if matched:
-                    voice_profile = self._build_voice_from_character(matched)
-                else:
-                    # Unknown/minor character — infer personality from the text
-                    voice_profile = self._infer_personality(char_name)
-
-                self.speaker_detected.emit(char_name, reason, voice_profile)
-
-            # --- Step 2: Generate suggestions ---
-            step_label = "Step 2/2" if self.manual_character or self.is_narrator else "Step 3/3"
-            self.progress.emit(f"{step_label}: Generating suggestions...")
-            suggestions = self._generate_suggestions(
-                char_name if not self.is_narrator else "Narrator",
-                voice_profile
-            )
+            # Single LLM call that handles detection + suggestions together
+            suggestions = self._generate_suggestions(char_name, voice_profile)
             self.finished.emit(suggestions)
 
         except Exception as e:
-            self.error.emit(str(e))
-
-    def _detect_speaker(self) -> tuple:
-        """Step 1: Identify who is speaking from the passage text."""
-        system_prompt = (
-            "You are a literary analyst. Read the passage and determine which "
-            "character is speaking, thinking, or whose voice the bracketed text "
-            "belongs to.\n\n"
-            "RULES:\n"
-            "- Base your answer ONLY on evidence in the passage\n"
-            "- Look for dialogue tags, action beats, internal monologue cues\n"
-            "- The speaker may be a minor character who appears only in this scene\n"
-            "- Do NOT default to a major character unless the text clearly shows them\n"
-            "- If the text is pure narration, say 'Narrator'\n\n"
-            "Respond EXACTLY:\n"
-            "CHARACTER: <name as it appears in the text>\n"
-            "REASON: <1-2 sentences citing specific evidence from the passage>"
-        )
-
-        prompt_parts = [
-            f"PASSAGE (bracketed text is the word being replaced):\n{self.passage}"
-        ]
-        if self.characters_info:
-            prompt_parts.append(
-                "For reference only (the speaker may NOT be any of these):\n"
-                + self.characters_info
-            )
-        prompt_parts.append(
-            "Who is speaking or whose voice does the bracketed text belong to?"
-        )
-
-        response = self.llm.generate_text(
-            prompt="\n\n".join(prompt_parts),
-            system_prompt=system_prompt,
-            max_tokens=250, temperature=0.2,
-            task_type="speaker_detect"
-        )
-
-        name, reason = "", ""
-        for line in response.strip().split('\n'):
-            line = line.strip()
-            if line.upper().startswith("CHARACTER:"):
-                name = line[len("CHARACTER:"):].strip()
-            elif line.upper().startswith("REASON:"):
-                reason = line[len("REASON:"):].strip()
-        if not name:
-            name = response.strip().split('\n')[0]
-        return name, reason
-
-    def _match_known_character(self, name: str):
-        """Try to match a detected name to a project character."""
-        if not self.known_characters:
-            return None
-        name_lower = name.lower().strip()
-        for c in self.known_characters:
-            if c.name.lower() == name_lower or name_lower in c.name.lower():
-                return c
-        return None
+            error_msg = str(e)
+            # Friendlier message for Metal OOM
+            if "OutOfMemory" in error_msg or "Insufficient Memory" in error_msg:
+                error_msg = (
+                    "Out of GPU memory. The local model may be too large.\n\n"
+                    "Try:\n"
+                    "- Closing other apps to free memory\n"
+                    "- Using a smaller model (e.g. 4B instead of 27B) in Settings\n"
+                    "- Selecting a specific character instead of Auto-detect"
+                )
+            self.error.emit(error_msg)
 
     def _build_voice_from_character(self, character) -> str:
         """Build a voice profile from a known Character object."""
@@ -205,35 +146,33 @@ class _ThesaurusPipelineWorker(QThread):
                     parts.append(f"Emotional state: {latest.emotional_state}")
         return "\n".join(parts)
 
-    def _infer_personality(self, char_name: str) -> str:
-        """Infer personality traits for an unknown character from the passage."""
-        system_prompt = (
-            "You are a literary analyst. Based on the passage below, describe "
-            "the personality, speaking style, and emotional state of the character "
-            f'named "{char_name}". This may be a minor character, so use only what '
-            "the text shows.\n\n"
-            "Respond EXACTLY:\n"
-            "PERSONALITY: <2-3 key personality traits visible in the text>\n"
-            "SPEAKING STYLE: <how they talk: vocabulary level, sentence patterns, dialect>\n"
-            "EMOTIONAL STATE: <their emotional state in this passage>\n"
-            "EDUCATION/CLASS: <inferred social class, education, or background>"
-        )
+    def _generate_suggestions(self, char_name, voice_profile) -> list:
+        """Generate word suggestions in a single LLM call.
 
-        response = self.llm.generate_text(
-            prompt=f"PASSAGE:\n{self.passage}\n\nDescribe {char_name}'s personality.",
-            system_prompt=system_prompt,
-            max_tokens=300, temperature=0.3,
-            task_type="personality_infer"
-        )
-        return response.strip()
-
-    def _generate_suggestions(self, char_name: str, voice_profile: str) -> list:
-        """Final step: generate word suggestions using all gathered context."""
+        If char_name is None (auto-detect mode), the prompt asks the model
+        to identify the speaker AND generate suggestions in one pass — saving
+        GPU memory by avoiding multiple model loads.
+        """
+        auto_detect = char_name is None
         system_prompt = (
             "You are a creative writing assistant specializing in character-voice-aware "
             "and worldbuilding-aware word choice.\n\n"
             "Rules:\n"
-            "- Suggest 5-8 options, numbered\n"
+        )
+
+        if auto_detect:
+            system_prompt += (
+                "- FIRST: Read the passage and identify who is speaking or whose "
+                "perspective the bracketed text belongs to. State the name and "
+                "your evidence in one line: SPEAKER: name — reason\n"
+                "- The speaker may be a MINOR character not in the known characters list\n"
+                "- Do NOT default to a major character unless the passage proves it\n"
+                "- Then infer that character's vocabulary, education, and emotional state "
+                "from how they speak/act in the passage\n"
+            )
+
+        system_prompt += (
+            "- Suggest 5-8 replacement options, numbered\n"
             "- Each suggestion: a single word or short phrase (1-4 words)\n"
             "- Format: NUMBER. SUGGESTION \u2014 BRIEF EXPLANATION\n"
             "- Suggestions MUST fit the character's vocabulary, education level, "
@@ -245,13 +184,13 @@ class _ThesaurusPipelineWorker(QThread):
             "- Range from subtle/grounded to creative/inventive"
         )
 
-        if voice_profile and char_name != "Narrator":
+        if not auto_detect and voice_profile and char_name != "Narrator":
             system_prompt += (
                 f"\n\nCHARACTER VOICE — {char_name}:\n{voice_profile}\n\n"
                 "Word choices must sound like this character. A street urchin "
                 "uses different words than a scholar."
             )
-        elif char_name == "Narrator":
+        elif not auto_detect and char_name == "Narrator":
             system_prompt += (
                 "\n\nThis is narrator text (not dialogue). "
                 "Match the narrative voice and tone of the surrounding prose."
@@ -280,7 +219,18 @@ class _ThesaurusPipelineWorker(QThread):
             prompt_parts.append(reject_block)
 
         prompt_parts.append(f'Replace the word/phrase: "{self.selected_text}"')
-        prompt_parts.append(f"Character: {char_name}")
+        if auto_detect:
+            if self.characters_info:
+                prompt_parts.append(
+                    "Known characters (reference only — speaker may not be any of these):\n"
+                    + self.characters_info
+                )
+            prompt_parts.append(
+                "First identify the speaker from the passage, then suggest replacements "
+                "in that character's voice."
+            )
+        else:
+            prompt_parts.append(f"Character: {char_name}")
 
         # Include surrounding text — use the full passage for emotional context
         if self.passage:
@@ -317,6 +267,25 @@ class _ThesaurusPipelineWorker(QThread):
             max_tokens=1500, temperature=0.8,
             task_type="world_word"
         )
+
+        # If auto-detect, extract the SPEAKER line before parsing suggestions
+        if auto_detect:
+            for line in response.strip().split('\n'):
+                line = line.strip()
+                if line.upper().startswith("SPEAKER:"):
+                    speaker_info = line[len("SPEAKER:"):].strip()
+                    # Split on — or - for name and reason
+                    if '\u2014' in speaker_info:
+                        name, reason = speaker_info.split('\u2014', 1)
+                    elif ' - ' in speaker_info:
+                        name, reason = speaker_info.split(' - ', 1)
+                    else:
+                        name, reason = speaker_info, ""
+                    self.speaker_detected.emit(
+                        name.strip(), reason.strip(), ""
+                    )
+                    break
+
         return _parse_suggestions(response)
 
 
@@ -555,13 +524,17 @@ class WorldWordDialog(QDialog):
     # --- Passage builder ---
 
     def _build_passage(self) -> str:
-        """Build a generous passage around the selection from chapter content."""
+        """Build a passage around the selection from chapter content.
+
+        Uses ~800 chars before and ~300 after — enough for speaker detection
+        and emotional context without blowing up the prompt for large models.
+        """
         if self.chapter_content:
             sel_pos = self.chapter_content.find(self.selected_text)
             if sel_pos >= 0:
-                start = max(0, sel_pos - 1500)
+                start = max(0, sel_pos - 800)
                 end = min(len(self.chapter_content),
-                          sel_pos + len(self.selected_text) + 500)
+                          sel_pos + len(self.selected_text) + 300)
                 before = self.chapter_content[start:sel_pos]
                 after = self.chapter_content[sel_pos + len(self.selected_text):end]
                 return f"{before}[{self.selected_text}]{after}"
@@ -569,10 +542,10 @@ class WorldWordDialog(QDialog):
         # Fallback to surrounding context
         passage = ""
         if self.surrounding_before:
-            passage += self.surrounding_before[-1000:]
+            passage += self.surrounding_before[-600:]
         passage += f" [{self.selected_text}] "
         if self.surrounding_after:
-            passage += self.surrounding_after[:500]
+            passage += self.surrounding_after[:300]
         return passage
 
     def _build_characters_info(self) -> str:
