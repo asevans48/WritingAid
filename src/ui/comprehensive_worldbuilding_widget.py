@@ -572,8 +572,6 @@ class _StrengthenWorker(QThread):
                     name_index[name] = (category, elem, mentions)
 
             # --- Phase 2b: Discover untracked proper nouns in manuscript ---
-            # Find capitalized multi-word phrases that appear 2+ times but
-            # aren't any existing element name
             if all_text:
                 untracked = self._discover_untracked_nouns(all_text, all_names)
                 if untracked:
@@ -581,6 +579,32 @@ class _StrengthenWorker(QThread):
                         f"Potential untracked elements in manuscript: "
                         f"{', '.join(n for n, _ in untracked[:10])}"
                     )
+
+            # --- Phase 2c: Find correlated concepts near existing elements ---
+            # For each element, look at surrounding sentences for related terms
+            # that aren't tracked but describe aspects of the element
+            # (e.g., "cybernetics" → "implants", "targeting eyes", "subdermals")
+            if all_text and name_index:
+                correlations = self._find_correlated_concepts(name_index, all_text)
+                for elem_name, related_terms in correlations.items():
+                    category, elem, _ = name_index[elem_name]
+                    # Add correlated terms to the element's notes
+                    notes = getattr(elem, 'notes', '') or ''
+                    terms_str = ", ".join(related_terms)
+                    addition = f"Related concepts from manuscript: {terms_str}"
+                    if addition not in notes:
+                        try:
+                            if notes:
+                                setattr(elem, 'notes', f"{notes}\n\n{addition}")
+                            else:
+                                setattr(elem, 'notes', addition)
+                            report_lines.append(
+                                f"Correlated {category}: '{elem_name}' "
+                                f"← {terms_str}"
+                            )
+                            enrichments += 1
+                        except (AttributeError, TypeError, ValueError):
+                            pass
 
             # --- Phase 3: Enrich ALL thin fields from manuscript ---
             enrichable_fields = {
@@ -596,28 +620,38 @@ class _StrengthenWorker(QThread):
                 "fauna": ["description", "behavior"],
             }
 
+            from src.ai.field_synthesizer import synthesize_field, get_llm_client
+            llm = get_llm_client()
+
             for name, (category, elem, mentions) in name_index.items():
                 all_sents = []
                 for ch_title, sents in mentions:
                     for s in sents:
                         all_sents.append(f"[{ch_title}] {s}")
-                context = " ... ".join(all_sents[:5])[:800]
+                evidence = " ... ".join(all_sents[:5])[:800]
 
-                # Enrich ALL thin fields (not just the first one)
                 fields_to_check = enrichable_fields.get(category, ["description"])
                 for field in fields_to_check:
-                    current = getattr(elem, field, None)
-                    # Skip fields that don't exist on this model
                     if not hasattr(elem, field):
                         continue
-                    if isinstance(current, str) and len(current) < 30:
-                        enriched = f"From manuscript: {context}"
-                        if current:
-                            enriched = f"{current}\n\n{enriched}"
+                    current = getattr(elem, field, '') or ''
+                    if len(current) > 200:
+                        continue
+
+                    synthesized = synthesize_field(
+                        element_name=name,
+                        element_type=category.rstrip('s'),
+                        field_name=field,
+                        manuscript_evidence=evidence,
+                        existing_content=current,
+                        llm_client=llm
+                    )
+
+                    if synthesized and synthesized != current:
                         try:
-                            setattr(elem, field, enriched)
+                            setattr(elem, field, synthesized)
                             report_lines.append(
-                                f"Enriched {category}: '{name}'.{field} from manuscript "
+                                f"Enriched {category}: '{name}'.{field} "
                                 f"({len(mentions)} chapter mentions)"
                             )
                             enrichments += 1
@@ -659,10 +693,10 @@ class _StrengthenWorker(QThread):
                         name = getattr(elem, 'name', '')
                         current = getattr(elem, field, None)
 
-                        # Skip if field doesn't exist or already has solid content
-                        if current is None and not hasattr(elem, field):
+                        if not hasattr(elem, field) or not name:
                             continue
-                        if not name or (current and len(str(current)) > 50):
+                        # Skip if already has encyclopedia reference
+                        if current and "Reference:" in str(current):
                             continue
 
                         query = f"{category.rstrip('s')} {name}"
@@ -682,19 +716,37 @@ class _StrengthenWorker(QThread):
                             useful_lines.append(line)
 
                         if useful_lines:
-                            reference = " ".join(useful_lines[:3])[:400]
-                            try:
-                                if not current:
-                                    setattr(elem, field, f"Reference: {reference}")
-                                else:
-                                    setattr(elem, field, f"{current}\n\nReference: {reference}")
-                                source_label = "encyclopedia + knowledge base" if kb_enabled else "encyclopedia"
-                                report_lines.append(
-                                    f"Enriched {category}: '{name}'.{field} from {source_label}"
-                                )
-                                enrichments += 1
-                            except (AttributeError, TypeError, ValueError):
-                                pass
+                            enc_ref = " ".join(useful_lines[:3])[:400]
+                            # Get manuscript evidence if any
+                            ms_evidence = ""
+                            if name in name_index:
+                                _, _, ms_mentions = name_index[name]
+                                ms_sents = []
+                                for ct, ss in ms_mentions:
+                                    for s in ss:
+                                        ms_sents.append(f"[{ct}] {s}")
+                                ms_evidence = " ... ".join(ms_sents[:3])[:400]
+
+                            synthesized = synthesize_field(
+                                element_name=name,
+                                element_type=category.rstrip('s'),
+                                field_name=field,
+                                manuscript_evidence=ms_evidence,
+                                encyclopedia_reference=enc_ref,
+                                existing_content=current or '',
+                                llm_client=llm
+                            )
+
+                            if synthesized and synthesized != (current or ''):
+                                try:
+                                    setattr(elem, field, synthesized)
+                                    source_label = "manuscript + encyclopedia" if ms_evidence else "encyclopedia"
+                                    report_lines.append(
+                                        f"Enriched {category}: '{name}'.{field} from {source_label}"
+                                    )
+                                    enrichments += 1
+                                except (AttributeError, TypeError, ValueError):
+                                    pass
 
             except Exception as e:
                 report_lines.append(f"(RAG enrichment skipped: {e})")
@@ -812,3 +864,91 @@ class _StrengthenWorker(QThread):
             untracked.append((phrase_clean, count))
 
         return untracked[:15]
+
+    def _find_correlated_concepts(self, name_index: dict, all_text: str) -> dict:
+        """Find terms that co-occur with existing elements in nearby sentences.
+
+        For each element, looks at the sentences where it's mentioned and
+        extracts notable nouns/phrases that appear in those same sentences
+        or adjacent ones. These are likely related concepts that describe
+        aspects, components, or variants of the element.
+
+        Example: "cybernetics" sentences also mention "implants",
+        "targeting eyes", "subdermals" → those are correlated.
+
+        Returns:
+            Dict of {element_name: [related_term, ...]}
+        """
+        import re
+        from collections import Counter
+
+        # Split entire text into sentences once
+        sentences = re.split(r'(?<=[.!?])\s+', all_text)
+
+        # Build a set of all existing element names (to exclude from correlations)
+        all_elem_names = {n.lower() for n in name_index}
+
+        # Common words to skip
+        stopwords = {
+            "the", "and", "but", "was", "were", "had", "have", "has", "been",
+            "they", "them", "their", "she", "her", "his", "him", "its",
+            "this", "that", "with", "from", "into", "onto", "upon",
+            "could", "would", "should", "will", "just", "then", "than",
+            "very", "much", "more", "most", "also", "only", "even",
+            "said", "like", "back", "over", "down", "some", "what",
+            "when", "where", "which", "while", "about", "after", "before",
+            "through", "between", "being", "other", "there", "here",
+            "know", "knew", "think", "thought", "look", "looked",
+            "made", "make", "came", "come", "went", "gone", "going",
+            "around", "still", "every", "never", "always", "something",
+            "nothing", "anything", "everything", "someone", "anyone",
+        }
+
+        correlations = {}
+
+        for elem_name, (category, elem, mentions) in name_index.items():
+            elem_lower = elem_name.lower()
+            nearby_words = Counter()
+
+            # Collect all sentences mentioning this element + neighbors
+            for i, sent in enumerate(sentences):
+                if elem_lower not in sent.lower():
+                    continue
+
+                # Look at this sentence + 1 before and 1 after
+                window = []
+                if i > 0:
+                    window.append(sentences[i - 1])
+                window.append(sent)
+                if i < len(sentences) - 1:
+                    window.append(sentences[i + 1])
+
+                # Extract notable terms from the window
+                for s in window:
+                    # Find multi-word terms (2-3 words, at least one interesting)
+                    terms = re.findall(r'\b([a-z][\w-]*(?:\s+[a-z][\w-]*){0,2})\b', s.lower())
+                    for term in terms:
+                        term = term.strip()
+                        words = term.split()
+                        # Skip if too short, is the element itself, or all stopwords
+                        if len(term) < 4:
+                            continue
+                        if term == elem_lower or term in all_elem_names:
+                            continue
+                        if all(w in stopwords for w in words):
+                            continue
+                        if len(words) == 1 and words[0] in stopwords:
+                            continue
+                        nearby_words[term] += 1
+
+            # Keep terms that appear 2+ times near this element
+            # (appearing once could be coincidental)
+            related = [
+                term for term, count in nearby_words.most_common(20)
+                if count >= 2 and len(term) > 4
+            ]
+
+            if related:
+                correlations[elem_name] = related[:8]
+
+        return correlations

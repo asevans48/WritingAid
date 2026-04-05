@@ -395,6 +395,57 @@ APPROVAL MODE:
 - If the user asks you to "review", "check for duplicates", or wants to "approve" changes: describe the proposed merges/enrichments in text first, then ONLY create the merge/enrich blocks after the user confirms
 - If the user says "go ahead", "merge them", "do it", "yes": execute with the tags
 
+=== WORKING WITH INDIVIDUAL ELEMENTS ===
+
+You can discuss and modify SPECIFIC characters and worldbuilding elements by name.
+
+WHEN THE USER ASKS ABOUT A SPECIFIC ELEMENT:
+- "Tell me about Marcus" → look up Marcus in the characters context and discuss
+- "What do we know about the Iron Guild?" → find in worldbuilding and discuss
+- "Flesh out Elena's personality" → analyze manuscript mentions and use <enrich_element>
+- "Strengthen the Ashfolk culture" → look at manuscript + encyclopedia and enrich
+
+WHEN ENRICHING A CHARACTER, include ALL relevant fields:
+<enrich_element>
+{
+  "element_type": "character",
+  "name": "Marcus",
+  "updates": {
+    "personality": "Stoic and disciplined, but harbors deep self-doubt...",
+    "physical_description": "Tall, lean build with weathered hands...",
+    "speaking_style": "Clipped, military cadence. Avoids emotional language...",
+    "motivations": "Driven by guilt over his brother's death...",
+    "fears": "Fears becoming like his father...",
+    "backstory": "Grew up in the border garrisons..."
+  }
+}
+</enrich_element>
+
+WHEN ENRICHING A WORLDBUILDING ELEMENT:
+<enrich_element>
+{
+  "element_type": "faction",
+  "name": "Iron Guild",
+  "updates": {
+    "description": "A powerful trade consortium controlling all metalwork...",
+    "notes": "Connected to the cybernetics trade, subdermal implants..."
+  }
+}
+</enrich_element>
+
+WHEN THE USER ASKS TO "STRENGTHEN" AN ELEMENT:
+1. Search through the MANUSCRIPT CONTENT for mentions of the element
+2. Search through the WORLDBUILDING and CHARACTER context for connections
+3. Use REFERENCE/ENCYCLOPEDIA to ground details in reality
+4. Propose the enrichment, then apply it with <enrich_element>
+
+KEY RULES:
+- Use the element's EXACT name from the EXISTING ELEMENTS list
+- Only fill fields that are currently empty or thin — don't overwrite substantial content
+- Base enrichments primarily on what the MANUSCRIPT shows, not invented details
+- For characters, consider: personality, traits, physical description, speaking style, motivations, fears, backstory
+- For worldbuilding, consider: description, notes, and type-specific fields
+
 Be encouraging, creative, and constructive. Reference specific details from their project when relevant.
 Keep responses focused and actionable.""",
 
@@ -547,6 +598,10 @@ When asked to continue:
 
         # === PRIMARY CONTEXT (always included, highest priority) ===
         # These come from the author's own work and are the source of truth.
+
+        # Focused element — full details of a specific element the user asked about
+        if self.context.get('focused_element'):
+            parts.append(f"\n{self.context['focused_element']}")
 
         # Plot/Story planning
         if self.context.get('plot_summary'):
@@ -2176,6 +2231,65 @@ class MainWindow(QMainWindow):
 
         return "\n".join(parts)
 
+    def _find_referenced_element(self, message: str, project) -> str:
+        """Check if the user's message mentions a specific element by name.
+
+        If found, return that element's full details as a formatted string.
+        """
+        msg_lower = message.lower()
+
+        # Check characters
+        for char in project.characters:
+            if char.name and char.name.lower() in msg_lower:
+                parts = [f"FOCUSED ELEMENT — Character: {char.name}"]
+                parts.append(f"Type: {getattr(char, 'character_type', '')}")
+                for field in ['personality', 'backstory', 'physical_description',
+                              'speaking_style', 'motivations', 'fears',
+                              'emotional_baseline', 'notes']:
+                    val = getattr(char, field, '')
+                    if val:
+                        parts.append(f"{field.replace('_', ' ').title()}: {val[:300]}")
+                traits = getattr(char, 'personality_traits', [])
+                if traits:
+                    parts.append(f"Traits: {', '.join(traits)}")
+                arc = getattr(char, 'personality_arc', [])
+                if arc:
+                    latest = arc[-1]
+                    if getattr(latest, 'emotional_state', ''):
+                        parts.append(f"Current state: {latest.emotional_state}")
+                    if getattr(latest, 'growth_notes', ''):
+                        parts.append(f"Growth: {latest.growth_notes[:200]}")
+                return "\n".join(parts)
+
+        # Check worldbuilding elements
+        wb = project.worldbuilding
+        for category, lst in [
+            ("Faction", getattr(wb, 'factions', [])),
+            ("Place", getattr(wb, 'places', [])),
+            ("Culture", getattr(wb, 'cultures', [])),
+            ("Technology", getattr(wb, 'technologies', [])),
+            ("Magic System", getattr(wb, 'magic_systems', [])),
+            ("Myth", getattr(wb, 'myths', [])),
+            ("Flora", getattr(wb, 'flora', [])),
+            ("Fauna", getattr(wb, 'fauna', [])),
+        ]:
+            for elem in (lst or []):
+                name = getattr(elem, 'name', '')
+                if name and name.lower() in msg_lower:
+                    parts = [f"FOCUSED ELEMENT — {category}: {name}"]
+                    for field in dir(elem):
+                        if field.startswith('_') or field in ('id', 'created_at', 'updated_at'):
+                            continue
+                        val = getattr(elem, field, None)
+                        if val and isinstance(val, str) and len(val) > 0:
+                            parts.append(f"{field.replace('_', ' ').title()}: {val[:300]}")
+                        elif val and isinstance(val, list) and val:
+                            if all(isinstance(v, str) for v in val):
+                                parts.append(f"{field.replace('_', ' ').title()}: {', '.join(val[:10])}")
+                    return "\n".join(parts)
+
+        return ""
+
     def _build_chat_context(self, mode: str = "general", user_message: str = "") -> dict:
         """Build comprehensive context dict for AI chat, similar to chapter planner.
 
@@ -2200,6 +2314,13 @@ class MainWindow(QMainWindow):
         existing_names = self._get_existing_element_names()
         if existing_names:
             context['existing_elements'] = existing_names
+
+        # If the user's message references a specific element by name,
+        # inject that element's full details into the context
+        if user_message:
+            focused = self._find_referenced_element(user_message, project)
+            if focused:
+                context['focused_element'] = focused
 
         # Include AI-generated project summary if available
         if hasattr(project, 'ai_summary') and project.ai_summary and not project.ai_summary.is_empty():
@@ -2745,12 +2866,26 @@ class MainWindow(QMainWindow):
         for key, value in updates.items():
             if key in ('id', 'name', 'created_at'):
                 continue
-            if value:
-                try:
-                    setattr(element, key, value)
-                    updated.append(key)
-                except (AttributeError, TypeError):
-                    pass
+            if not value:
+                continue
+
+            # Handle type coercion for list fields (e.g., personality_traits)
+            current = getattr(element, key, None)
+            if isinstance(current, list) and isinstance(value, str):
+                # Convert comma-separated string to list
+                value = [v.strip() for v in value.split(',') if v.strip()]
+            elif isinstance(current, list) and isinstance(value, list):
+                pass  # Already a list
+            elif isinstance(current, str) and isinstance(value, str):
+                # For string fields, only fill if current is thin
+                if current and len(current) > 80:
+                    continue  # Don't overwrite substantial content
+
+            try:
+                setattr(element, key, value)
+                updated.append(key)
+            except (AttributeError, TypeError, ValueError):
+                pass
 
         if updated:
             print(f"Enriched {element_type} '{name}': {', '.join(updated)}")

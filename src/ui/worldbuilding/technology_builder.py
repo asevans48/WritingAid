@@ -16,7 +16,7 @@ from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
 class TechnologyEditor(QDialog):
     """Dialog for editing a technology."""
 
-    def __init__(self, technology: Optional[Technology] = None, available_factions: List[Faction] = None, parent=None):
+    def __init__(self, technology: Optional[Technology] = None, available_factions: List[Faction] = None, parent=None, project=None):
         """Initialize technology editor.
 
         Args:
@@ -43,6 +43,7 @@ class TechnologyEditor(QDialog):
             story_relevance="",
             notes=""
         )
+        self._project = project
         self.available_factions = available_factions or []
         self._init_ui()
         if technology:
@@ -253,6 +254,14 @@ class TechnologyEditor(QDialog):
         )
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
+
+        # Strengthen button
+        from src.ui.worldbuilding.strengthen_element import add_strengthen_button
+        add_strengthen_button(
+            self, self.technology, "technology", 
+            button_box=buttons, reload_callback=getattr(self, '_load_technology', None)
+            )
+
         layout.addWidget(buttons)
 
     def _load_technology(self):

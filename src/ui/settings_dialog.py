@@ -1406,17 +1406,9 @@ class SettingsDialog(QDialog):
         active_group.setLayout(active_layout)
         layout.addWidget(active_group)
 
-        # Storytelling / Chapter Planning Model
-        storytelling_group = QGroupBox("Storytelling Model (Chapter Planning)")
+        # Storytelling / Chapter Planning Model (hidden — uses main model)
+        storytelling_group = QGroupBox()
         storytelling_layout = QFormLayout()
-
-        storytelling_info = QLabel(
-            "Choose a model optimized for creative writing, chapter planning, and story development. "
-            "If not set, the active local model will be used."
-        )
-        storytelling_info.setWordWrap(True)
-        storytelling_info.setStyleSheet("color: #6b7280; font-size: 11px; padding: 4px;")
-        storytelling_layout.addRow("", storytelling_info)
 
         self.storytelling_model_combo = QComboBox()
         self.storytelling_model_combo.setEditable(True)
@@ -1507,6 +1499,7 @@ class SettingsDialog(QDialog):
         storytelling_layout.addRow("", storytelling_note)
 
         storytelling_group.setLayout(storytelling_layout)
+        storytelling_group.setVisible(False)  # Hidden — all tasks use main model
         layout.addWidget(storytelling_group)
 
         # === Reasoning Models Configuration ===
@@ -1573,7 +1566,21 @@ class SettingsDialog(QDialog):
         reasoning_layout.addRow("", reasoning_note)
 
         reasoning_group.setLayout(reasoning_layout)
+        reasoning_group.setVisible(False)  # Hidden — all tasks use main model
         layout.addWidget(reasoning_group)
+
+        # Unified model note
+        unified_note = QLabel(
+            "Your selected local model handles all AI features: chat, rephrase, "
+            "thesaurus, critique, chapter planning, and worldbuilding. "
+            "Pick one good model and it does everything."
+        )
+        unified_note.setWordWrap(True)
+        unified_note.setStyleSheet(
+            "color: #059669; font-size: 11px; padding: 8px; "
+            "background: #ecfdf5; border-radius: 4px; margin: 4px 0;"
+        )
+        layout.addWidget(unified_note)
 
         # Use local instead of API
         preference_group = QGroupBox("Model Preference")
@@ -1663,6 +1670,7 @@ class SettingsDialog(QDialog):
         critique_layout.addRow("", critique_temp_note)
 
         critique_group.setLayout(critique_layout)
+        critique_group.setVisible(False)  # Hidden — all tasks use main model
         layout.addWidget(critique_group)
 
         # Initialize critique visibility

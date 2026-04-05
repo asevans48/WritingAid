@@ -16,7 +16,7 @@ from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
 class MagicSystemEditor(QDialog):
     """Dialog for editing a magic system."""
 
-    def __init__(self, magic_system: Optional[MagicSystem] = None,
+    def __init__(self, magic_system: Optional[MagicSystem] = None, project=None,
                  available_factions: List[Faction] = None, parent=None):
         super().__init__(parent)
         self.magic_system = magic_system or MagicSystem(
@@ -25,6 +25,7 @@ class MagicSystemEditor(QDialog):
             magic_type=MagicType.HARD,
             description="",
         )
+        self._project = project
         self.available_factions = available_factions or []
         self._init_ui()
         if magic_system:
@@ -189,6 +190,14 @@ class MagicSystemEditor(QDialog):
         )
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
+
+        # Strengthen button
+        from src.ui.worldbuilding.strengthen_element import add_strengthen_button
+        add_strengthen_button(
+            self, self.magic_system, "magic_system", 
+            button_box=buttons, reload_callback=getattr(self, '_load_magic_system', None)
+            )
+
         layout.addWidget(buttons)
 
     def _load_magic_system(self):

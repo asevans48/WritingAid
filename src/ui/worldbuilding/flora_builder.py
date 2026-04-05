@@ -15,7 +15,7 @@ from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
 class FloraEditor(QDialog):
     """Dialog for editing flora species."""
 
-    def __init__(self, flora: Optional[Flora] = None, all_flora: List[Flora] = None,
+    def __init__(self, flora: Optional[Flora] = None, all_flora: List[Flora] = None, project=None,
                  all_fauna: List = None, available_planets: List[str] = None, parent=None):
         """Initialize flora editor."""
         super().__init__(parent)
@@ -25,6 +25,7 @@ class FloraEditor(QDialog):
             flora_type=FloraType.TREE,
             description=""
         )
+        self._project = project
         self.all_flora = all_flora or []
         self.all_fauna = all_fauna or []
         self.available_planets = available_planets or []

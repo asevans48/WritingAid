@@ -16,7 +16,7 @@ from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
 class PlaceEditor(QDialog):
     """Dialog for editing a place or landmark."""
 
-    def __init__(self, place: Optional[Place] = None, available_factions: List[Faction] = None,
+    def __init__(self, place: Optional[Place] = None, available_factions: List[Faction] = None, project=None,
                  available_planets: List[str] = None, parent=None):
         """Initialize place editor."""
         super().__init__(parent)
@@ -26,6 +26,7 @@ class PlaceEditor(QDialog):
             place_type=PlaceType.CITY,
             description=""
         )
+        self._project = project
         self.available_factions = available_factions or []
         self.available_planets = available_planets or []
         self._init_ui()

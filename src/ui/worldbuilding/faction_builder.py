@@ -191,7 +191,7 @@ class FactionRelationshipGraphDialog(QDialog):
 class FactionEditor(QDialog):
     """Dialog for editing a faction."""
 
-    def __init__(self, faction: Optional[Faction] = None, available_factions: List[Faction] = None, parent=None):
+    def __init__(self, faction: Optional[Faction] = None, available_factions: List[Faction] = None, parent=None, project=None):
         """Initialize faction editor dialog."""
         super().__init__(parent)
         self.faction = faction or Faction(
@@ -200,6 +200,7 @@ class FactionEditor(QDialog):
             faction_type=FactionType.NATION
         )
         self.available_factions = available_factions or []
+        self._project = project
         self._init_ui()
         if faction:
             self._load_faction()
@@ -248,6 +249,14 @@ class FactionEditor(QDialog):
         )
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
+
+        # Strengthen button (finds project via parent chain at click time)
+        from src.ui.worldbuilding.strengthen_element import add_strengthen_button
+        add_strengthen_button(
+            self, self.faction, "faction",
+            button_box=buttons, reload_callback=self._load_faction
+        )
+
         layout.addWidget(buttons)
 
     def _create_basic_tab(self) -> QWidget:

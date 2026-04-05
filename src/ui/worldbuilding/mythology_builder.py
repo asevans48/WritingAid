@@ -15,7 +15,7 @@ from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
 class MythEditor(QDialog):
     """Dialog for editing a single myth."""
 
-    def __init__(self, myth: Optional[Myth] = None, available_factions: List[Faction] = None, parent=None):
+    def __init__(self, myth: Optional[Myth] = None, available_factions: List[Faction] = None, parent=None, project=None):
         """Initialize myth editor.
 
         Args:
@@ -35,6 +35,7 @@ class MythEditor(QDialog):
             description="",
             full_text=""
         )
+        self._project = project
         self.available_factions = available_factions or []
         self._init_ui()
         if myth:
@@ -163,6 +164,14 @@ class MythEditor(QDialog):
         )
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
+
+        # Strengthen button
+        from src.ui.worldbuilding.strengthen_element import add_strengthen_button
+        add_strengthen_button(
+            self, self.myth, "myth", 
+            button_box=buttons, reload_callback=getattr(self, '_load_myth', None)
+            )
+
         layout.addWidget(buttons)
 
     def _load_myth(self):

@@ -338,10 +338,14 @@ class CharacterWidget(QWidget):
         notes_group.setLayout(notes_layout)
         layout.addWidget(notes_group)
 
-        # AI help button
-        ai_button = QPushButton("Get AI Character Development Help")
-        ai_button.clicked.connect(self._request_ai_help)
-        layout.addWidget(ai_button)
+        # Strengthen individual character button
+        self.strengthen_char_btn = QPushButton("🤖 Strengthen This Character")
+        self.strengthen_char_btn.setToolTip(
+            "AI scans your manuscript for this character's personality,\n"
+            "traits, physical details, speaking style, and backstory"
+        )
+        self.strengthen_char_btn.clicked.connect(self._strengthen_this_character)
+        layout.addWidget(self.strengthen_char_btn)
 
         # Set content widget to scroll area and add to main layout
         scroll_area.setWidget(content_widget)
@@ -392,14 +396,103 @@ class CharacterWidget(QWidget):
             )
             self.content_changed.emit()
 
-    def _request_ai_help(self):
-        """Request AI help for character development."""
-        # TODO: Integrate with AI client
-        QMessageBox.information(
-            self,
-            "AI Help",
-            "AI character development assistance will be integrated soon."
+    def _strengthen_this_character(self):
+        """Strengthen this individual character from manuscript context."""
+        if not self._project:
+            QMessageBox.information(self, "No Project", "Open a project first.")
+            return
+
+        try:
+            self.save_to_model()
+        except RuntimeError:
+            pass
+
+        self.strengthen_char_btn.setEnabled(False)
+        self.strengthen_char_btn.setText("🤖 Scanning...")
+
+        self._char_strengthen_worker = _SingleCharacterWorker(
+            self.character, self._project
         )
+        # Phase 1 (background): gather evidence, traits, associations
+        # Phase 2 (main thread): run LLM synthesis
+        self._char_strengthen_worker.evidence_ready.connect(self._on_evidence_ready)
+        self._char_strengthen_worker.finished.connect(self._on_char_strengthen_done)
+        self._char_strengthen_worker.error.connect(self._on_char_strengthen_error)
+        self._char_strengthen_worker.start()
+
+    def _on_evidence_ready(self, name: str, all_sents: list, existing_fields: dict):
+        """Fill ONLY fields the LLM left empty. Never overwrite LLM output."""
+        self.strengthen_char_btn.setText("🤖 Finishing...")
+
+        report = [f"Found {len(all_sents)} mention(s)"]
+        if hasattr(self._char_strengthen_worker, '_ai_report'):
+            report.extend(self._char_strengthen_worker._ai_report)
+
+        # Report what the AI filled
+        for f in ['personality', 'physical_description', 'speaking_style',
+                  'backstory', 'motivations', 'fears', 'emotional_baseline']:
+            val = getattr(self.character, f, '') or ''
+            if val:
+                report.append(f"  {f}: {val[:60]}...")
+
+        traits = getattr(self.character, 'personality_traits', [])
+        if traits:
+            report.append(f"  traits: {', '.join(traits[:6])}")
+
+        self._on_char_strengthen_done("\n".join(report))
+
+    def _on_char_strengthen_done(self, report: str):
+        """Handle strengthen completion."""
+        self.strengthen_char_btn.setEnabled(True)
+        self.strengthen_char_btn.setText("🤖 Strengthen This Character")
+
+        # Debug: check what's actually on the model before reloading UI
+        print(f"[Strengthen Done] Character model state:")
+        for f in ['personality', 'physical_description', 'speaking_style',
+                  'backstory', 'motivations', 'fears', 'emotional_baseline',
+                  'personality_traits']:
+            val = getattr(self.character, f, '')
+            preview = str(val)[:80] if val else '(empty)'
+            print(f"  {f}: {preview}")
+
+        try:
+            # Block signals to prevent textChanged → save_to_model → overwrite
+            for w in [self.personality_edit, self.physical_desc_edit,
+                      self.backstory_edit, self.notes_edit,
+                      self.traits_edit, self.motivations_edit,
+                      self.fears_edit, self.speaking_style_edit,
+                      self.emotional_baseline_edit]:
+                w.blockSignals(True)
+
+            self.personality_edit.setPlainText(self.character.personality or '')
+            self.physical_desc_edit.setPlainText(self.character.physical_description or '')
+            self.backstory_edit.setPlainText(self.character.backstory or '')
+            self.notes_edit.setPlainText(self.character.notes or '')
+            self.traits_edit.setText(", ".join(self.character.personality_traits or []))
+            self.motivations_edit.setText(self.character.motivations or '')
+            self.fears_edit.setText(self.character.fears or '')
+            self.speaking_style_edit.setText(self.character.speaking_style or '')
+            self.emotional_baseline_edit.setText(self.character.emotional_baseline or '')
+
+            for w in [self.personality_edit, self.physical_desc_edit,
+                      self.backstory_edit, self.notes_edit,
+                      self.traits_edit, self.motivations_edit,
+                      self.fears_edit, self.speaking_style_edit,
+                      self.emotional_baseline_edit]:
+                w.blockSignals(False)
+
+            print(f"[Strengthen Done] UI widgets updated directly")
+        except RuntimeError as e:
+            print(f"[Strengthen Done] Widget update failed: {e}")
+
+        # Emit content changed so the project knows to save
+        self.content_changed.emit()
+        QMessageBox.information(self, f"'{self.character.name}' Strengthened", report)
+
+    def _on_char_strengthen_error(self, msg: str):
+        self.strengthen_char_btn.setEnabled(True)
+        self.strengthen_char_btn.setText("🤖 Strengthen This Character")
+        QMessageBox.warning(self, "Error", msg)
 
     def _generate_image(self):
         """Generate character image using AI."""
@@ -495,23 +588,27 @@ class CharacterWidget(QWidget):
 
     def save_to_model(self):
         """Save widget data to character model."""
-        self.character.name = self.name_edit.text()
-        self.character.character_type = self.type_combo.currentText().lower()
-        self.character.physical_description = self.physical_desc_edit.toPlainText()
-        self.character.personality = self.personality_edit.toPlainText()
-        self.character.backstory = self.backstory_edit.toPlainText()
-        self.character.notes = self.notes_edit.toPlainText()
+        try:
+            self.character.name = self.name_edit.text()
+            self.character.character_type = self.type_combo.currentText().lower()
+            self.character.physical_description = self.physical_desc_edit.toPlainText()
+            self.character.personality = self.personality_edit.toPlainText()
+            self.character.backstory = self.backstory_edit.toPlainText()
+            self.character.notes = self.notes_edit.toPlainText()
 
-        # Structured personality fields
-        traits_text = self.traits_edit.text().strip()
-        self.character.personality_traits = [
-            t.strip() for t in traits_text.split(',') if t.strip()
-        ] if traits_text else []
-        self.character.motivations = self.motivations_edit.text().strip()
-        self.character.fears = self.fears_edit.text().strip()
-        self.character.speaking_style = self.speaking_style_edit.text().strip()
-        self.character.emotional_baseline = self.emotional_baseline_edit.text().strip()
-        self.character.updated_at = datetime.now()
+            # Structured personality fields
+            traits_text = self.traits_edit.text().strip()
+            self.character.personality_traits = [
+                t.strip() for t in traits_text.split(',') if t.strip()
+            ] if traits_text else []
+            self.character.motivations = self.motivations_edit.text().strip()
+            self.character.fears = self.fears_edit.text().strip()
+            self.character.speaking_style = self.speaking_style_edit.text().strip()
+            self.character.emotional_baseline = self.emotional_baseline_edit.text().strip()
+            self.character.updated_at = datetime.now()
+        except RuntimeError:
+            # Widget has been deleted — character model retains last saved state
+            pass
 
     # --- Personality Arc Methods ---
 
@@ -815,6 +912,15 @@ class CharactersWidget(QWidget):
 
         left_layout.addLayout(button_layout)
 
+        self.strengthen_btn = QPushButton("🤖 Strengthen")
+        self.strengthen_btn.setToolTip(
+            "AI scans your manuscript to:\n"
+            "• Enrich existing characters with personality, traits, descriptions\n"
+            "• Discover new characters mentioned in chapters"
+        )
+        self.strengthen_btn.clicked.connect(self._strengthen_characters)
+        left_layout.addWidget(self.strengthen_btn)
+
         left_panel.setMaximumWidth(250)
         layout.addWidget(left_panel)
 
@@ -895,6 +1001,62 @@ class CharactersWidget(QWidget):
             self.current_character_widget.content_changed.connect(self.content_changed.emit)
             self.details_scroll.setWidget(self.current_character_widget)
 
+    def _strengthen_characters(self):
+        """Scan manuscript to enrich existing characters and discover new ones."""
+        if not self._project:
+            QMessageBox.information(self, "No Project", "Open a project first.")
+            return
+
+        if not hasattr(self._project, 'manuscript') or not self._project.manuscript.chapters:
+            QMessageBox.information(self, "No Chapters", "Write some chapters first.")
+            return
+
+        # Save current character before analysis
+        if self.current_character_widget:
+            try:
+                self.current_character_widget.save_to_model()
+            except RuntimeError:
+                pass
+
+        self.strengthen_btn.setEnabled(False)
+        self.strengthen_btn.setText("🤖 Analyzing...")
+
+        self._strengthen_worker = _CharacterStrengthenWorker(
+            self._project, self.characters
+        )
+        self._strengthen_worker.finished.connect(self._on_strengthen_done)
+        self._strengthen_worker.error.connect(self._on_strengthen_error)
+        self._strengthen_worker.start()
+
+    def _on_strengthen_done(self, report: str, new_characters: list):
+        """Handle strengthen completion."""
+        self.strengthen_btn.setEnabled(True)
+        self.strengthen_btn.setText("🤖 Strengthen")
+
+        # Add any new characters
+        for char in new_characters:
+            self.characters.append(char)
+            item = QListWidgetItem(char.name)
+            item.setData(Qt.ItemDataRole.UserRole, char.id)
+            self.character_list.addItem(item)
+
+        # Refresh current character display if it was enriched
+        if self.current_character_widget:
+            try:
+                self.current_character_widget._load_character()
+            except RuntimeError:
+                pass
+
+        if new_characters or "Enriched" in report:
+            self.content_changed.emit()
+
+        QMessageBox.information(self, "Characters Strengthened", report)
+
+    def _on_strengthen_error(self, msg: str):
+        self.strengthen_btn.setEnabled(True)
+        self.strengthen_btn.setText("🤖 Strengthen")
+        QMessageBox.warning(self, "Error", msg)
+
     def load_data(self, characters: List[Character]):
         """Load characters data."""
         self.characters = characters
@@ -907,8 +1069,493 @@ class CharactersWidget(QWidget):
 
     def get_data(self) -> List[Character]:
         """Get characters data."""
-        # Save current character
+        # Save current character (may fail if widget is being destroyed)
         if self.current_character_widget:
-            self.current_character_widget.save_to_model()
+            try:
+                self.current_character_widget.save_to_model()
+            except RuntimeError:
+                pass
 
         return self.characters
+
+
+class _CharacterStrengthenWorker(QThread):
+    """Background worker to enrich characters from manuscript and discover new ones."""
+
+    finished = pyqtSignal(str, list)  # report, new_characters
+    error = pyqtSignal(str)
+
+    def __init__(self, project, existing_characters: list):
+        super().__init__()
+        self.project = project
+        self.existing = existing_characters
+
+    def run(self):
+        try:
+            import re
+            from collections import Counter
+            from src.utils.fuzzy_match import find_similar
+
+            report = []
+            new_characters = []
+
+            # Load all chapter text
+            chapter_texts = self._get_chapter_texts()
+            if not chapter_texts:
+                self.finished.emit("No chapter content found.", [])
+                return
+
+            all_text = "\n\n".join(chapter_texts.values())
+            existing_names = {c.name.lower() for c in self.existing}
+
+            # --- Phase 1: Enrich existing characters from manuscript ---
+            enrichable = [
+                ("personality", ["personality", "character", "temperament",
+                                 "attitude", "demeanor", "manner", "always",
+                                 "never", "tended", "way of", "kind of"]),
+                ("physical_description", ["looked", "appearance", "wore", "hair",
+                                          "eyes", "tall", "short", "scar", "face",
+                                          "built", "thin", "muscular", "skin",
+                                          "dressed", "beard", "cloak", "uniform"]),
+                ("speaking_style", ["said", "spoke", "voice", "accent", "whispered",
+                                    "shouted", "muttered", "drawled", "snapped",
+                                    "tone", "words", "replied", "asked"]),
+                ("backstory", ["remembered", "once", "used to", "before",
+                               "years ago", "childhood", "grew up", "born",
+                               "mother", "father", "family", "past", "history"]),
+                ("motivations", ["wanted", "needed", "determined", "goal",
+                                 "driven", "desperate", "hoped", "dreamed",
+                                 "must", "sworn", "promised", "vowed"]),
+                ("fears", ["feared", "afraid", "terrified", "dreaded",
+                           "nightmare", "panic", "anxious", "haunted"]),
+            ]
+
+            from src.ai.field_synthesizer import synthesize_character_profile
+
+            for char in self.existing:
+                name = char.name
+                if not name:
+                    continue
+
+                # Find all sentences mentioning this character
+                char_sents = []
+                for ch_title, ch_text in chapter_texts.items():
+                    sents = re.split(r'(?<=[.!?])\s+', ch_text)
+                    for s in sents:
+                        if name.lower() in s.lower() and 15 < len(s) < 600:
+                            char_sents.append((ch_title, s.strip()))
+
+                if not char_sents:
+                    continue
+
+                # Gather existing field values
+                existing_fields = {}
+                for field, _ in enrichable:
+                    val = getattr(char, field, '') or ''
+                    if val and len(val) < 200:
+                        existing_fields[field] = val
+
+                # Single LLM call for full profile
+                profile = synthesize_character_profile(
+                    name=name,
+                    manuscript_sentences=char_sents,
+                    existing_fields=existing_fields,
+                )
+
+                enriched_fields = []
+                for field, content in profile.items():
+                    if not hasattr(char, field):
+                        continue
+                    current = getattr(char, field, '') or ''
+                    if len(current) > 200:
+                        continue
+                    if content and content != current:
+                        try:
+                            setattr(char, field, synthesized)
+                            enriched_fields.append(field)
+                        except (AttributeError, TypeError, ValueError):
+                            pass
+
+                if enriched_fields:
+                    report.append(
+                        f"Enriched '{name}': {', '.join(enriched_fields)} "
+                        f"({len(char_sents)} mentions)"
+                    )
+
+                # Extract personality traits (add to existing)
+                existing_traits = set(getattr(char, 'personality_traits', []) or [])
+                trait_keywords = [
+                    "brave", "cowardly", "kind", "cruel", "clever", "stubborn",
+                    "loyal", "treacherous", "gentle", "fierce", "proud", "humble",
+                    "cautious", "reckless", "patient", "impatient", "generous",
+                    "selfish", "honest", "deceptive", "calm", "anxious",
+                    "confident", "insecure", "sarcastic", "earnest", "cold",
+                    "warm", "quiet", "loud", "serious", "playful", "cynical",
+                    "optimistic", "brooding", "compassionate", "ruthless",
+                    "disciplined", "chaotic", "cheerful",
+                ]
+                found_traits = Counter()
+                for _, sent in char_sents:
+                    for trait in trait_keywords:
+                        if trait in sent.lower():
+                            found_traits[trait] += 1
+                new_traits = [t for t, _ in found_traits.most_common(8)
+                              if t not in existing_traits]
+                if new_traits:
+                    try:
+                        char.personality_traits = list(existing_traits) + new_traits[:5]
+                        report.append(f"Traits for '{name}': {', '.join(new_traits[:5])}")
+                    except (AttributeError, TypeError):
+                        pass
+
+            # --- Phase 2: Discover new characters in manuscript ---
+            # Only count names that appear MID-SENTENCE with dialogue/action verbs.
+            # This avoids sentence-start capitalized words (He, She, The, etc.)
+            # Pattern: punctuation or lowercase word, then Name + verb
+            action_pattern = re.compile(
+                r'(?<=[a-z,;:"\'\s])\b([A-Z][a-z]{2,15})\s+'
+                r'(?:said|spoke|whispered|shouted|asked|replied|answered|'
+                r'muttered|nodded|shook|turned|looked|walked|stepped|'
+                r'stood|sat|smiled|frowned|stared|glanced|watched|'
+                r'waited|thought|felt|knew|heard|saw|grinned|paused)\b'
+            )
+            # Dialogue: "..." said Name / "..." Name said
+            dialogue_pattern = re.compile(
+                r'[""]\s*(?:said|asked|replied|whispered|shouted)\s+'
+                r'([A-Z][a-z]{2,15})\b'
+            )
+            # Possessive: Name's (strong character signal)
+            possessive_pattern = re.compile(
+                r"\b([A-Z][a-z]{2,15})(?:'s|'s)\s+\w"
+            )
+
+            name_counts = Counter()
+            for ch_text in chapter_texts.values():
+                for match in action_pattern.finditer(ch_text):
+                    name_counts[match.group(1)] += 1
+                for match in dialogue_pattern.finditer(ch_text):
+                    name_counts[match.group(1)] += 1
+                for match in possessive_pattern.finditer(ch_text):
+                    name_counts[match.group(1)] += 1
+
+            # Comprehensive skip list — ALL common English words that could
+            # be capitalized at sentence start or in other contexts
+            skip_words = {
+                # Pronouns
+                "he", "she", "his", "her", "him", "they", "them", "their",
+                "its", "who", "whom", "whose",
+                # Articles / determiners
+                "the", "this", "that", "these", "those", "each", "every",
+                "some", "any", "all", "both", "few", "many", "much",
+                # Conjunctions / prepositions
+                "and", "but", "for", "nor", "yet", "with", "from", "into",
+                "onto", "upon", "about", "after", "before", "between",
+                "through", "during", "against", "along", "among",
+                # Common verbs
+                "was", "were", "had", "have", "has", "been", "being",
+                "would", "could", "should", "will", "can", "may", "might",
+                "shall", "must", "did", "does", "said", "told", "made",
+                "came", "went", "got", "took", "gave", "let", "put",
+                "ran", "saw", "set", "sat", "stood", "thought", "felt",
+                "knew", "heard", "found", "left", "kept", "began",
+                # Common adverbs / adjectives
+                "not", "just", "very", "also", "even", "still", "only",
+                "then", "now", "here", "there", "when", "where", "what",
+                "how", "why", "more", "most", "less", "well", "long",
+                # Common nouns (non-name)
+                "one", "two", "three", "time", "day", "night", "way",
+                "man", "men", "woman", "women", "hand", "head", "eye",
+                "eyes", "face", "room", "door", "back", "down", "part",
+                "side", "end", "home", "house", "life", "world", "place",
+                "chapter", "page", "section", "act", "scene", "part",
+                # Story structure words
+                "once", "first", "last", "next", "another", "other",
+                "something", "nothing", "everything", "someone", "anyone",
+                "everyone", "no one", "perhaps", "however", "although",
+            }
+
+            discovered = []
+            for name, count in name_counts.most_common(30):
+                if count < 2:
+                    continue
+                if name.lower() in existing_names:
+                    continue
+                if name.lower() in skip_words:
+                    continue
+                if find_similar(name, [c.name for c in self.existing], threshold=0.7):
+                    continue
+                if len(name) < 3:
+                    continue
+                discovered.append((name, count))
+
+            # Create new characters from discoveries with proper profiles
+            from src.ai.field_synthesizer import synthesize_character_profile
+
+            for name, count in discovered[:8]:
+                # Gather ALL context sentences for this name
+                context_sents = []
+                chapters_appeared = set()
+                for ch_title, ch_text in chapter_texts.items():
+                    sents = re.split(r'(?<=[.!?])\s+', ch_text)
+                    for s in sents:
+                        if name in s and 15 < len(s) < 600:
+                            context_sents.append((ch_title, s.strip()))
+                            chapters_appeared.add(ch_title)
+
+                if not context_sents:
+                    continue
+
+                # Determine major vs minor based on manuscript presence
+                if count >= 10 or len(chapters_appeared) >= 3:
+                    char_type = "major"
+                elif count >= 5 or len(chapters_appeared) >= 2:
+                    char_type = "supporting"
+                else:
+                    char_type = "minor"
+
+                # Single LLM call for full profile
+                profile = synthesize_character_profile(
+                    name=name,
+                    manuscript_sentences=context_sents,
+                )
+
+                new_char = Character(
+                    id=str(uuid.uuid4()),
+                    name=name,
+                    character_type=char_type,
+                    personality=profile.get('personality', ''),
+                    physical_description=profile.get('physical_description', ''),
+                    backstory=profile.get('backstory', ''),
+                    speaking_style=profile.get('speaking_style', ''),
+                )
+                new_characters.append(new_char)
+                existing_names.add(name.lower())
+                report.append(
+                    f"Discovered '{name}' ({char_type}, {count} mentions "
+                    f"in {len(chapters_appeared)} chapter(s))"
+                )
+
+            if not report:
+                report.append("No changes needed — characters look solid.")
+
+            self.finished.emit("\n".join(report), new_characters)
+
+        except Exception as e:
+            self.error.emit(str(e))
+
+    def _get_chapter_texts(self) -> dict:
+        if not hasattr(self.project, 'manuscript'):
+            return {}
+        from pathlib import Path
+        project_dir = None
+        if hasattr(self.project, 'project_path') and self.project.project_path:
+            project_dir = Path(self.project.project_path).parent
+        result = {}
+        for ch in self.project.manuscript.chapters:
+            content = getattr(ch, 'content', '')
+            if not content and project_dir:
+                try:
+                    ch.load_content_from_file(project_dir)
+                    content = getattr(ch, 'content', '')
+                except Exception:
+                    pass
+            if content:
+                title = getattr(ch, 'title', f"Ch {getattr(ch, 'number', '?')}")
+                result[title] = content
+        return result
+
+
+class _SingleCharacterWorker(QThread):
+    """Background worker to gather manuscript evidence for a character.
+
+    The heavy text scanning runs in the background, but the LLM call
+    happens on the main thread (via the evidence_ready signal) to avoid
+    Metal GPU thread conflicts.
+    """
+
+    # Emits gathered data for the main thread to run the LLM call
+    evidence_ready = pyqtSignal(str, list, dict)  # name, all_sents, existing_fields
+    finished = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, character, project):
+        super().__init__()
+        self.character = character
+        self.project = project
+
+    def run(self):
+        try:
+            import re
+            from collections import Counter
+
+            name = self.character.name
+            if not name:
+                self.finished.emit("Character has no name.")
+                return
+
+            # Load chapter texts
+            chapter_texts = {}
+            if hasattr(self.project, 'manuscript'):
+                from pathlib import Path
+                project_dir = None
+                if hasattr(self.project, 'project_path') and self.project.project_path:
+                    project_dir = Path(self.project.project_path).parent
+                for ch in self.project.manuscript.chapters:
+                    content = getattr(ch, 'content', '')
+                    if not content and project_dir:
+                        try:
+                            ch.load_content_from_file(project_dir)
+                            content = getattr(ch, 'content', '')
+                        except Exception:
+                            pass
+                    if content:
+                        title = getattr(ch, 'title', f"Ch {getattr(ch, 'number', '?')}")
+                        chapter_texts[title] = content
+
+            if not chapter_texts:
+                self.finished.emit("No chapter content found.")
+                return
+
+            # Find all sentences mentioning this character
+            all_sents = []
+            for ch_title, ch_text in chapter_texts.items():
+                sents = re.split(r'(?<=[.!?])\s+', ch_text)
+                for s in sents:
+                    if name.lower() in s.lower() and 20 < len(s) < 500:
+                        all_sents.append((ch_title, s.strip()))
+
+            if not all_sents:
+                self.finished.emit(
+                    f"'{name}' not found in any chapter text. "
+                    "Write some scenes with this character first."
+                )
+                return
+
+            # Gather existing field values
+            existing_fields = {}
+            for field in ['personality', 'physical_description', 'speaking_style',
+                          'backstory', 'motivations', 'fears', 'emotional_baseline']:
+                val = getattr(self.character, field, '') or ''
+                if val and len(val) < 200:
+                    existing_fields[field] = val
+
+            # Extract traits (no LLM needed)
+            traits = set(getattr(self.character, 'personality_traits', []) or [])
+            trait_keywords = [
+                "brave", "cowardly", "kind", "cruel", "clever",
+                "stubborn", "loyal", "gentle", "fierce", "proud",
+                "humble", "cautious", "reckless", "generous", "selfish",
+                "honest", "calm", "anxious", "confident", "sarcastic",
+                "cold", "warm", "quiet", "serious", "playful",
+                "cynical", "optimistic", "compassionate", "ruthless",
+            ]
+            found_traits = Counter()
+            for _, sent in all_sents:
+                for trait in trait_keywords:
+                    if trait in sent.lower():
+                        found_traits[trait] += 1
+            new_traits = [t for t, _ in found_traits.most_common(6) if t not in traits]
+            if new_traits:
+                try:
+                    self.character.personality_traits = list(traits) + new_traits[:5]
+                except (AttributeError, TypeError):
+                    pass
+
+            # Find associated names (no LLM needed)
+            nearby = Counter()
+            skip = {"the", "and", "but", "was", "were", "had", "have", "they",
+                    "them", "she", "her", "his", "him", "this", "that", "said"}
+            for _, sent in all_sents:
+                for w in re.findall(r'\b([A-Z][a-z]{2,15})\b', sent):
+                    if w.lower() != name.lower() and w.lower() not in skip:
+                        nearby[w] += 1
+            associated = [n for n, c in nearby.most_common(10) if c >= 2]
+            if associated:
+                notes = getattr(self.character, 'notes', '') or ''
+                if "associated" not in notes.lower():
+                    try:
+                        addition = f"Associated with: {', '.join(associated[:8])}"
+                        self.character.notes = f"{notes}\n\n{addition}" if notes else addition
+                    except (AttributeError, TypeError, ValueError):
+                        pass
+
+            # --- LLM synthesis (same pattern as ChatWorker) ---
+            self._ai_report = []
+            try:
+                from src.ai.llm_client import LLMClient, LLMProvider, HuggingFaceConfig
+                from src.config.ai_config import get_ai_config
+
+                ai_config = get_ai_config()
+                settings = ai_config.get_settings()
+                prefer_local = settings.get("prefer_local_model", False)
+                enable_local = settings.get("enable_local_models", False)
+                local_model_id = settings.get("local_model_id", "")
+
+                llm = None
+                if prefer_local and enable_local and local_model_id:
+                    is_mlx = "mlx" in local_model_id.lower()
+                    hf_config = HuggingFaceConfig(
+                        model_id=local_model_id, use_local=True,
+                        device=settings.get("local_model_device", "auto"),
+                        quantization=settings.get("local_model_quantization", "none")
+                            if settings.get("local_model_quantization") != "none" else None,
+                        trust_remote_code=settings.get("local_model_trust_remote_code", False)
+                    )
+                    provider = LLMProvider.MLX_LOCAL if is_mlx else LLMProvider.HUGGINGFACE_LOCAL
+                    llm = LLMClient(provider=provider, hf_config=hf_config)
+                else:
+                    provider_name = settings.get("default_llm", "claude").lower()
+                    api_key = ai_config.get_api_key(provider_name)
+                    if api_key:
+                        provider_enum = {
+                            "claude": LLMProvider.CLAUDE, "chatgpt": LLMProvider.CHATGPT,
+                            "openai": LLMProvider.CHATGPT, "gemini": LLMProvider.GEMINI,
+                        }.get(provider_name, LLMProvider.CLAUDE)
+                        llm = LLMClient(
+                            provider=provider_enum, api_key=api_key,
+                            model=ai_config.get_model(provider_name)
+                        )
+
+                if llm:
+                    from src.ai.field_synthesizer import synthesize_character_profile
+
+                    print(f"[Strengthen] Calling synthesize_character_profile for '{name}' "
+                          f"with {len(all_sents)} sentences, llm={type(llm).__name__}")
+
+                    profile = synthesize_character_profile(
+                        name=name,
+                        manuscript_sentences=all_sents,
+                        existing_fields=existing_fields,
+                        llm_client=llm
+                    )
+
+                    print(f"[Strengthen] Profile result: {list(profile.keys())} "
+                          f"({sum(len(v) for v in profile.values())} total chars)")
+
+                    ai_enriched = []
+                    for field, content in profile.items():
+                        if not hasattr(self.character, field):
+                            continue
+                        current = getattr(self.character, field, '') or ''
+                        if len(current) > 200:
+                            continue
+                        if content and content != current:
+                            try:
+                                setattr(self.character, field, content)
+                                ai_enriched.append(field)
+                            except (AttributeError, TypeError, ValueError):
+                                pass
+                    if ai_enriched:
+                        self._ai_report.append(f"AI enriched: {', '.join(ai_enriched)}")
+            except Exception as e:
+                self._ai_report.append(f"(AI synthesis skipped: {e})")
+
+            # Emit evidence for the main thread to fill remaining fields
+            print(f"[Worker] Emitting evidence_ready: name='{name}', "
+                  f"sents={len(all_sents)}, fields={list(existing_fields.keys())}")
+            print(f"[Worker] Character personality on model: "
+                  f"'{getattr(self.character, 'personality', '')[:80]}'")
+            self.evidence_ready.emit(name, all_sents, existing_fields)
+
+        except Exception as e:
+            self.error.emit(str(e))
