@@ -64,6 +64,8 @@ You help authors with:
 - Identifying plot holes or inconsistencies across chapters
 - CREATING new characters, places, factions, cultures, myths, historical events, technologies, flora, fauna, chapters, climate presets, planets, and star systems when asked
 
+IMPORTANT: Before creating a new element, check the EXISTING ELEMENTS list. If an element with a similar name already exists, use its EXACT name in the creation block so the system can update it instead of creating a duplicate. For example, if "Northern Reaches" exists and the user asks about "The Northern Reaches", use "Northern Reaches" as the name.
+
 === CREATING PROJECT ELEMENTS ===
 
 When the user asks you to CREATE, ADD, or MAKE any worldbuilding element, you have the ability to actually add it to their project.
@@ -348,6 +350,42 @@ Assistant: "I've added John the blacksmith. <create_character>...</create_charac
 
 REMEMBER: After creating an element, confirm briefly and STOP. Don't analyze, critique, or discuss other parts of the project unless specifically asked.
 
+=== MERGING AND STRENGTHENING ELEMENTS ===
+
+You can also MERGE duplicate elements and ENRICH existing ones. Use these tags:
+
+TO MERGE two elements (keeps the target, removes the source):
+<merge_elements>
+{
+  "element_type": "faction|place|culture|character|technology|myth|flora|fauna",
+  "target_name": "Name of the element to KEEP",
+  "source_name": "Name of the element to MERGE INTO target and then REMOVE",
+  "merged_fields": {"description": "Combined description", "notes": "Combined notes"}
+}
+</merge_elements>
+
+TO ENRICH an existing element with new details:
+<enrich_element>
+{
+  "element_type": "faction|place|culture|character|technology|myth|flora|fauna",
+  "name": "Exact name of existing element",
+  "updates": {"description": "Richer description", "notes": "New details from the story"}
+}
+</enrich_element>
+
+WHEN TO MERGE:
+- User asks to "clean up", "merge", "combine", "deduplicate" worldbuilding
+- User asks to "strengthen" or "consolidate" their world
+- You notice two elements that are clearly the same thing with different names
+
+WHEN TO ENRICH:
+- User asks to "flesh out", "expand", "enrich", "add detail to" an element
+- User asks to strengthen worldbuilding based on the story
+
+APPROVAL MODE:
+- If the user asks you to "review", "check for duplicates", or wants to "approve" changes: describe the proposed merges/enrichments in text first, then ONLY create the merge/enrich blocks after the user confirms
+- If the user says "go ahead", "merge them", "do it", "yes": execute with the tags
+
 Be encouraging, creative, and constructive. Reference specific details from their project when relevant.
 Keep responses focused and actionable.""",
 
@@ -490,6 +528,10 @@ When asked to continue:
             parts.append(f"PROJECT: {self.context['project_name']}")
             if self.context.get('project_description'):
                 parts.append(f"Description: {self.context['project_description'][:300]}")
+
+        # Existing element names — helps AI avoid creating duplicates
+        if self.context.get('existing_elements'):
+            parts.append(f"\nEXISTING ELEMENTS (use these exact names — do NOT create duplicates):\n{self.context['existing_elements']}")
 
         # For GENERAL mode: Use RAG-enhanced semantic context if available
         # This provides BOTH creation and discussion capabilities with relevant context
@@ -1336,6 +1378,7 @@ class MainWindow(QMainWindow):
         # Set project reference on manuscript editor for RAG
         self.manuscript_editor.set_project(self.current_project)
 
+        self.worldbuilding_widget.set_project(self.current_project)
         self.worldbuilding_widget.load_data(self.current_project.worldbuilding)
         self.characters_widget.set_project(self.current_project)
         self.characters_widget.load_data(self.current_project.characters)
@@ -1828,6 +1871,39 @@ class MainWindow(QMainWindow):
 
     # ── End chapter-focus context helpers ─────────────────────────────────
 
+    def _get_existing_element_names(self) -> str:
+        """Get a compact list of all existing worldbuilding element names.
+
+        Used so the AI knows what already exists and can reference existing
+        elements instead of creating duplicates.
+        """
+        if not self.current_project:
+            return ""
+
+        parts = []
+        p = self.current_project
+        wb = p.worldbuilding
+
+        chars = [c.name for c in p.characters if c.name]
+        if chars:
+            parts.append(f"Characters: {', '.join(chars)}")
+
+        for label, lst in [
+            ("Factions", getattr(wb, 'factions', [])),
+            ("Places", getattr(wb, 'places', [])),
+            ("Cultures", getattr(wb, 'cultures', [])),
+            ("Technologies", getattr(wb, 'technologies', [])),
+            ("Magic Systems", getattr(wb, 'magic_systems', [])),
+            ("Myths", getattr(wb, 'myths', [])),
+            ("Flora", getattr(wb, 'flora', [])),
+            ("Fauna", getattr(wb, 'fauna', [])),
+        ]:
+            names = [getattr(e, 'name', '') for e in (lst or []) if getattr(e, 'name', '')]
+            if names:
+                parts.append(f"{label}: {', '.join(names)}")
+
+        return "\n".join(parts)
+
     def _build_chat_context(self, mode: str = "general", user_message: str = "") -> dict:
         """Build comprehensive context dict for AI chat, similar to chapter planner.
 
@@ -1846,6 +1922,12 @@ class MainWindow(QMainWindow):
         # Basic project info
         context['project_name'] = project.name
         context['project_description'] = project.description or ""
+
+        # Include existing element names so the AI can reference them
+        # and avoid creating duplicates
+        existing_names = self._get_existing_element_names()
+        if existing_names:
+            context['existing_elements'] = existing_names
 
         # For GENERAL mode, use RAG for semantic context retrieval
         # This allows both element creation AND discussion based on relevant context
@@ -2230,6 +2312,18 @@ class MainWindow(QMainWindow):
                     json_str = re.sub(r",\s*]", "]", json_str)
 
                     data = json.loads(json_str)
+
+                    # Check for similar existing elements before creating
+                    name = data.get('name', '').strip()
+                    if name:
+                        existing = self._find_similar_existing(name, handler)
+                        if existing:
+                            # Update the existing element instead of creating new
+                            result = self._update_existing_element(existing, data)
+                            if result:
+                                created_elements.append(result)
+                                continue
+
                     result = handler(data)
                     if result:
                         created_elements.append(result)
@@ -2239,14 +2333,227 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                     print(f"Failed to create element: {e}")
 
-        # Remove creation blocks from display response
+        # Handle merge blocks
+        merge_pattern = r'<merge_elements>\s*(.*?)\s*</merge_elements>'
+        for match in re.findall(merge_pattern, response, re.DOTALL | re.IGNORECASE):
+            try:
+                json_str = re.sub(r",\s*}", "}", match.strip())
+                json_str = re.sub(r",\s*]", "]", json_str)
+                data = json.loads(json_str)
+                result = self._merge_elements_from_json(data)
+                if result:
+                    created_elements.append(result)
+            except Exception as e:
+                print(f"Failed to merge elements: {e}")
+
+        # Handle enrich blocks
+        enrich_pattern = r'<enrich_element>\s*(.*?)\s*</enrich_element>'
+        for match in re.findall(enrich_pattern, response, re.DOTALL | re.IGNORECASE):
+            try:
+                json_str = re.sub(r",\s*}", "}", match.strip())
+                json_str = re.sub(r",\s*]", "]", json_str)
+                data = json.loads(json_str)
+                result = self._enrich_element_from_json(data)
+                if result:
+                    created_elements.append(result)
+            except Exception as e:
+                print(f"Failed to enrich element: {e}")
+
+        # Remove all action blocks from display response
         for pattern, _ in creation_patterns:
             display_response = re.sub(pattern, '', display_response, flags=re.DOTALL | re.IGNORECASE)
+        display_response = re.sub(merge_pattern, '', display_response, flags=re.DOTALL | re.IGNORECASE)
+        display_response = re.sub(enrich_pattern, '', display_response, flags=re.DOTALL | re.IGNORECASE)
 
         # Clean up extra whitespace
         display_response = re.sub(r'\n{3,}', '\n\n', display_response).strip()
 
         return display_response, created_elements
+
+    def _merge_elements_from_json(self, data: dict) -> tuple:
+        """Merge two elements: keep target, absorb source, remove source.
+
+        data: {element_type, target_name, source_name, merged_fields}
+        """
+        if not self.current_project:
+            return None
+
+        element_type = data.get('element_type', '')
+        target_name = data.get('target_name', '').strip()
+        source_name = data.get('source_name', '').strip()
+        merged_fields = data.get('merged_fields', {})
+
+        if not target_name or not source_name:
+            return None
+
+        elements = self._get_element_list(element_type)
+        if elements is None:
+            return None
+
+        target = next((e for e in elements if getattr(e, 'name', '') == target_name), None)
+        source = next((e for e in elements if getattr(e, 'name', '') == source_name), None)
+
+        if not target or not source:
+            print(f"Merge failed: target='{target_name}' found={target is not None}, "
+                  f"source='{source_name}' found={source is not None}")
+            return None
+
+        # Apply merged_fields to target
+        for key, value in merged_fields.items():
+            if key in ('id', 'name', 'created_at'):
+                continue
+            if value:
+                try:
+                    setattr(target, key, value)
+                except (AttributeError, TypeError):
+                    pass
+
+        # Also fill any empty target fields from source
+        for field in dir(source):
+            if field.startswith('_') or field in ('id', 'name', 'created_at', 'updated_at'):
+                continue
+            src_val = getattr(source, field, None)
+            tgt_val = getattr(target, field, None)
+            if src_val and (tgt_val is None or tgt_val == "" or tgt_val == []):
+                try:
+                    setattr(target, field, src_val)
+                except (AttributeError, TypeError):
+                    pass
+
+        # Remove source
+        if source in elements:
+            elements.remove(source)
+
+        print(f"Merged {element_type}: '{source_name}' → '{target_name}'")
+        return ('merged', f"{source_name} → {target_name}")
+
+    def _enrich_element_from_json(self, data: dict) -> tuple:
+        """Enrich an existing element with new field values.
+
+        data: {element_type, name, updates: {field: value}}
+        """
+        if not self.current_project:
+            return None
+
+        element_type = data.get('element_type', '')
+        name = data.get('name', '').strip()
+        updates = data.get('updates', {})
+
+        if not name or not updates:
+            return None
+
+        elements = self._get_element_list(element_type)
+        if elements is None:
+            return None
+
+        # Find element by exact or fuzzy match
+        from src.utils.fuzzy_match import find_similar_element
+        element = next((e for e in elements if getattr(e, 'name', '') == name), None)
+        if not element:
+            element = find_similar_element(name, elements, threshold=0.7)
+        if not element:
+            print(f"Enrich failed: '{name}' not found in {element_type}")
+            return None
+
+        updated = []
+        for key, value in updates.items():
+            if key in ('id', 'name', 'created_at'):
+                continue
+            if value:
+                try:
+                    setattr(element, key, value)
+                    updated.append(key)
+                except (AttributeError, TypeError):
+                    pass
+
+        if updated:
+            print(f"Enriched {element_type} '{name}': {', '.join(updated)}")
+            return ('enriched', f"{name} ({', '.join(updated)})")
+        return None
+
+    def _get_element_list(self, element_type: str) -> list:
+        """Get the element list for a given type string."""
+        if not self.current_project:
+            return None
+        wb = self.current_project.worldbuilding
+        type_map = {
+            'character': self.current_project.characters,
+            'faction': getattr(wb, 'factions', []),
+            'place': getattr(wb, 'places', []),
+            'culture': getattr(wb, 'cultures', []),
+            'technology': getattr(wb, 'technologies', []),
+            'myth': getattr(wb, 'myths', []),
+            'flora': getattr(wb, 'flora', []),
+            'fauna': getattr(wb, 'fauna', []),
+        }
+        return type_map.get(element_type)
+
+    def _find_similar_existing(self, name: str, handler) -> object:
+        """Find an existing element with a similar name.
+
+        Maps the creation handler to the appropriate element list and
+        searches for fuzzy name matches.
+
+        Returns:
+            The matching element, or None.
+        """
+        from src.utils.fuzzy_match import find_similar_element
+
+        if not self.current_project:
+            return None
+
+        # Map handlers to their element lists
+        handler_to_list = {
+            self._create_character_from_json: self.current_project.characters,
+            self._create_place_from_json: self.current_project.worldbuilding.places,
+            self._create_faction_from_json: self.current_project.worldbuilding.factions,
+            self._create_culture_from_json: self.current_project.worldbuilding.cultures,
+            self._create_myth_from_json: self.current_project.worldbuilding.myths,
+            self._create_technology_from_json: self.current_project.worldbuilding.technologies,
+            self._create_flora_from_json: self.current_project.worldbuilding.flora,
+            self._create_fauna_from_json: self.current_project.worldbuilding.fauna,
+        }
+
+        elements = handler_to_list.get(handler)
+        if elements is None:
+            return None
+
+        return find_similar_element(name, elements, threshold=0.7)
+
+    def _update_existing_element(self, element, data: dict) -> tuple:
+        """Update an existing element with new data from the AI.
+
+        Only fills in fields that are currently empty on the existing
+        element — never overwrites user-authored content.
+
+        Returns:
+            Tuple of (element_type, element_name) or None.
+        """
+        name = getattr(element, 'name', '')
+        element_type = type(element).__name__.lower()
+        updated_fields = []
+
+        for key, value in data.items():
+            if key in ('id', 'name'):
+                continue
+            if not value:
+                continue
+
+            current = getattr(element, key, None)
+            # Only fill empty fields
+            if current is None or current == "" or current == [] or current == 0:
+                try:
+                    setattr(element, key, value)
+                    updated_fields.append(key)
+                except (AttributeError, TypeError):
+                    pass
+
+        if updated_fields:
+            print(f"Updated existing {element_type} '{name}': {', '.join(updated_fields)}")
+            return (f'{element_type}_updated', name)
+        else:
+            print(f"Existing {element_type} '{name}' already has all fields — skipped")
+            return None
 
     def _create_character_from_json(self, data: dict) -> tuple:
         """Create a character from JSON data.

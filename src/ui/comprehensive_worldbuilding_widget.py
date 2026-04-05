@@ -1,9 +1,10 @@
 """Comprehensive worldbuilding widget with specialized components."""
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTabWidget
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QPushButton, QMessageBox, QComboBox, QStackedWidget
 )
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import pyqtSignal, Qt, QThread
 
 from src.ui.worldbuilding.faction_builder import FactionBuilderWidget
 from src.ui.worldbuilding.timeline_builder import TimelineBuilderWidget
@@ -51,102 +52,74 @@ class ComprehensiveWorldBuildingWidget(QWidget):
 
         header_layout.addStretch()
 
+        self.strengthen_btn = QPushButton("🤖 Strengthen World")
+        self.strengthen_btn.setToolTip(
+            "AI analyzes your manuscript and worldbuilding to find:\n"
+            "• Duplicate/similar elements to merge\n"
+            "• Thin entries to enrich from the story text\n"
+            "• Gaps and inconsistencies to fill\n"
+            "Uses the encyclopedia and RAG for reference."
+        )
+        self.strengthen_btn.setStyleSheet(
+            "font-size: 12px; padding: 4px 12px; font-weight: bold;"
+        )
+        self.strengthen_btn.clicked.connect(self._strengthen_worldbuilding)
+        header_layout.addWidget(self.strengthen_btn)
+
         subtitle = QLabel("Build your universe with interconnected systems")
         subtitle.setStyleSheet("font-size: 12px; color: #6b7280;")
         header_layout.addWidget(subtitle)
 
         layout.addWidget(header)
 
-        # Tabs for different worldbuilding components
-        self.tabs = QTabWidget()
-        self.tabs.setDocumentMode(True)
+        # Section selector (dropdown) + stacked widget
+        selector_row = QHBoxLayout()
+        selector_row.setContentsMargins(16, 0, 16, 4)
 
-        # Factions - Central Hub
-        self.factions_widget = FactionBuilderWidget()
-        self.factions_widget.content_changed.connect(self.content_changed.emit)
-        self.tabs.addTab(self.factions_widget, "⚔️ Factions")
+        selector_label = QLabel("Section:")
+        selector_label.setStyleSheet("font-weight: bold; font-size: 12px;")
+        selector_row.addWidget(selector_label)
 
-        # Star Systems - Contains stars, planets, and all astronomical data
-        self.star_systems_widget = EnhancedStarSystemBuilderWidget()
-        self.star_systems_widget.content_changed.connect(self.content_changed.emit)
-        self.tabs.addTab(self.star_systems_widget, "⭐ Systems")
+        self.section_combo = QComboBox()
+        self.section_combo.setStyleSheet("font-size: 12px; padding: 4px 8px; min-width: 200px;")
+        selector_row.addWidget(self.section_combo, stretch=1)
+        selector_row.addStretch()
 
-        # History Timeline
-        self.history_widget = TimelineBuilderWidget()
-        self.history_widget.content_changed.connect(self.content_changed.emit)
-        self.tabs.addTab(self.history_widget, "📅 History")
+        layout.addLayout(selector_row)
 
-        # Military
-        self.military_widget = MilitaryBuilderWidget()
-        self.military_widget.content_changed.connect(self.content_changed.emit)
-        self.tabs.addTab(self.military_widget, "🪖 Military")
+        self.stack = QStackedWidget()
 
-        # Economy
-        self.economy_widget = EconomyBuilderWidget()
-        self.economy_widget.content_changed.connect(self.content_changed.emit)
-        self.tabs.addTab(self.economy_widget, "💰 Economy")
+        # Define all sections: (display_name, widget_attr, widget_class)
+        sections = [
+            ("Factions", "factions_widget", FactionBuilderWidget),
+            ("Star Systems", "star_systems_widget", EnhancedStarSystemBuilderWidget),
+            ("History & Timeline", "history_widget", TimelineBuilderWidget),
+            ("Military", "military_widget", MilitaryBuilderWidget),
+            ("Economy", "economy_widget", EconomyBuilderWidget),
+            ("Power Hierarchies", "hierarchy_widget", HierarchyBuilderWidget),
+            ("Politics", "politics_widget", PoliticsBuilderWidget),
+            ("Mythology", "mythology_widget", MythologyBuilderWidget),
+            ("Technology", "technology_widget", TechnologyBuilderWidget),
+            ("Magic Systems", "magic_system_widget", MagicSystemBuilderWidget),
+            ("Climate Presets", "climate_preset_widget", ClimatePresetBuilderWidget),
+            ("Flora", "flora_widget", FloraBuilderWidget),
+            ("Fauna", "fauna_widget", FaunaBuilderWidget),
+            ("Culture", "culture_widget", CultureBuilderWidget),
+            ("Places & Landmarks", "places_widget", PlaceBuilderWidget),
+            ("Maps", "maps_widget", MapBuilderWidget),
+            ("Encyclopedia", "encyclopedia_widget", EncyclopediaWidget),
+        ]
 
-        # Power Hierarchies
-        self.hierarchy_widget = HierarchyBuilderWidget()
-        self.hierarchy_widget.content_changed.connect(self.content_changed.emit)
-        self.tabs.addTab(self.hierarchy_widget, "👑 Hierarchies")
+        for display_name, attr_name, widget_class in sections:
+            widget = widget_class()
+            widget.content_changed.connect(self.content_changed.emit)
+            setattr(self, attr_name, widget)
+            self.stack.addWidget(widget)
+            self.section_combo.addItem(display_name)
 
-        # Politics
-        self.politics_widget = PoliticsBuilderWidget()
-        self.politics_widget.content_changed.connect(self.content_changed.emit)
-        self.tabs.addTab(self.politics_widget, "🏛️ Politics")
+        self.section_combo.currentIndexChanged.connect(self.stack.setCurrentIndex)
 
-        # Mythology - Enhanced with faction associations
-        self.mythology_widget = MythologyBuilderWidget()
-        self.mythology_widget.content_changed.connect(self.content_changed.emit)
-        self.tabs.addTab(self.mythology_widget, "📖 Mythology")
-
-        # Technology - Track important technologies and which factions have them
-        self.technology_widget = TechnologyBuilderWidget()
-        self.technology_widget.content_changed.connect(self.content_changed.emit)
-        self.tabs.addTab(self.technology_widget, "🔬 Technology")
-
-        # Magic Systems - Power systems and supernatural rules
-        self.magic_system_widget = MagicSystemBuilderWidget()
-        self.magic_system_widget.content_changed.connect(self.content_changed.emit)
-        self.tabs.addTab(self.magic_system_widget, "✨ Magic")
-
-        # Climate Presets - Reusable climate templates
-        self.climate_preset_widget = ClimatePresetBuilderWidget()
-        self.climate_preset_widget.content_changed.connect(self.content_changed.emit)
-        self.tabs.addTab(self.climate_preset_widget, "🌤️ Climate Presets")
-
-        # Flora - Plant species and vegetation
-        self.flora_widget = FloraBuilderWidget()
-        self.flora_widget.content_changed.connect(self.content_changed.emit)
-        self.tabs.addTab(self.flora_widget, "🌿 Flora")
-
-        # Fauna - Animal species and creatures
-        self.fauna_widget = FaunaBuilderWidget()
-        self.fauna_widget.content_changed.connect(self.content_changed.emit)
-        self.tabs.addTab(self.fauna_widget, "🦁 Fauna")
-
-        # Culture - Rituals, language, music, art, traditions
-        self.culture_widget = CultureBuilderWidget()
-        self.culture_widget.content_changed.connect(self.content_changed.emit)
-        self.tabs.addTab(self.culture_widget, "🎭 Culture")
-
-        # Places & Landmarks - Cities, landmarks, and points of interest
-        self.places_widget = PlaceBuilderWidget()
-        self.places_widget.content_changed.connect(self.content_changed.emit)
-        self.tabs.addTab(self.places_widget, "📍 Places")
-
-        # Maps - Interactive maps with places, landmarks, and events
-        self.maps_widget = MapBuilderWidget()
-        self.maps_widget.content_changed.connect(self.content_changed.emit)
-        self.tabs.addTab(self.maps_widget, "🗺️ Maps")
-
-        # Encyclopedia - Reference knowledge base
-        self.encyclopedia_widget = EncyclopediaWidget()
-        self.encyclopedia_widget.content_changed.connect(self.content_changed.emit)
-        self.tabs.addTab(self.encyclopedia_widget, "📚 Encyclopedia")
-
-        layout.addWidget(self.tabs)
+        layout.addWidget(self.stack, stretch=1)
 
         # Connect faction changes to update other widgets
         self.factions_widget.content_changed.connect(self._update_mythology_factions)
@@ -424,3 +397,328 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         )
 
         return worldbuilding
+
+    # --- Strengthen Worldbuilding ---
+
+    def set_project(self, project):
+        """Set the project reference (needed for strengthen feature)."""
+        self._project = project
+
+    def _strengthen_worldbuilding(self):
+        """Run AI analysis to merge duplicates, enrich thin entries, and fill gaps."""
+        project = getattr(self, '_project', None)
+        if not project:
+            QMessageBox.information(
+                self, "No Project",
+                "Open a project first so the AI can analyze your manuscript and worldbuilding."
+            )
+            return
+
+        reply = QMessageBox.question(
+            self, "Strengthen Worldbuilding",
+            "The AI will analyze your manuscript and worldbuilding to:\n\n"
+            "• Merge duplicate/similar elements\n"
+            "• Enrich thin entries using details from your chapters\n"
+            "• Fill gaps using the encyclopedia and RAG\n\n"
+            "This may take a minute. Proceed?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self.strengthen_btn.setEnabled(False)
+        self.strengthen_btn.setText("🤖 Analyzing...")
+
+        self._strengthen_worker = _StrengthenWorker(project)
+        self._strengthen_worker.finished.connect(self._on_strengthen_complete)
+        self._strengthen_worker.error.connect(self._on_strengthen_error)
+        self._strengthen_worker.start()
+
+    def _on_strengthen_complete(self, report: str, merges: int, enrichments: int):
+        """Handle strengthen completion."""
+        self.strengthen_btn.setEnabled(True)
+        self.strengthen_btn.setText("🤖 Strengthen World")
+
+        if merges > 0 or enrichments > 0:
+            # Reload data to reflect changes
+            if hasattr(self, '_project') and self._project:
+                self.load_data(self._project.worldbuilding)
+            self.content_changed.emit()
+
+        QMessageBox.information(
+            self, "Worldbuilding Strengthened",
+            f"Analysis complete:\n\n"
+            f"• {merges} duplicate(s) merged\n"
+            f"• {enrichments} element(s) enriched\n\n"
+            f"{report}"
+        )
+
+    def _on_strengthen_error(self, error_msg: str):
+        """Handle strengthen error."""
+        self.strengthen_btn.setEnabled(True)
+        self.strengthen_btn.setText("🤖 Strengthen World")
+        QMessageBox.warning(self, "Error", f"Strengthen failed:\n\n{error_msg}")
+
+
+class _StrengthenWorker(QThread):
+    """Background worker that analyzes and strengthens worldbuilding.
+
+    Phase 1: Merge duplicates across all element types (including characters)
+    Phase 2: Index proper nouns from manuscript text and cross-reference
+    Phase 3: Enrich ALL elements with thin fields from manuscript mentions
+    Phase 4: Use RAG (encyclopedia + knowledge store) to fill remaining gaps
+    """
+
+    finished = pyqtSignal(str, int, int)  # report, merges, enrichments
+    error = pyqtSignal(str)
+
+    def __init__(self, project):
+        super().__init__()
+        self.project = project
+
+    def run(self):
+        try:
+            from src.utils.fuzzy_match import find_similar, _normalize
+            import re
+
+            report_lines = []
+            merges = 0
+            enrichments = 0
+
+            wb = self.project.worldbuilding
+
+            # All element lists including characters
+            element_lists = {
+                "characters": self.project.characters,
+                "factions": getattr(wb, 'factions', []) or [],
+                "places": getattr(wb, 'places', []) or [],
+                "cultures": getattr(wb, 'cultures', []) or [],
+                "technologies": getattr(wb, 'technologies', []) or [],
+                "myths": getattr(wb, 'myths', []) or [],
+                "magic_systems": getattr(wb, 'magic_systems', []) or [],
+                "flora": getattr(wb, 'flora', []) or [],
+                "fauna": getattr(wb, 'fauna', []) or [],
+            }
+
+            # --- Phase 1: Find and merge duplicates ---
+            for category, elements in element_lists.items():
+                if not elements or len(elements) < 2:
+                    continue
+
+                seen = {}
+                to_remove = []
+
+                for elem in elements:
+                    name = getattr(elem, 'name', '')
+                    if not name:
+                        continue
+                    norm = _normalize(name)
+
+                    if norm in seen:
+                        original = seen[norm]
+                        merged_fields = self._merge_element(original, elem)
+                        report_lines.append(
+                            f"Merged {category}: '{name}' → '{original.name}'"
+                            + (f" ({', '.join(merged_fields)})" if merged_fields else "")
+                        )
+                        to_remove.append(elem)
+                        merges += 1
+                    else:
+                        match_name = find_similar(
+                            name, [s.name for s in seen.values()], threshold=0.8
+                        )
+                        if match_name:
+                            norm_match = _normalize(match_name)
+                            original = seen.get(norm_match)
+                            if original:
+                                merged_fields = self._merge_element(original, elem)
+                                report_lines.append(
+                                    f"Merged {category}: '{name}' ≈ '{original.name}'"
+                                    + (f" ({', '.join(merged_fields)})" if merged_fields else "")
+                                )
+                                to_remove.append(elem)
+                                merges += 1
+                                continue
+                        seen[norm] = elem
+
+                for elem in to_remove:
+                    if elem in elements:
+                        elements.remove(elem)
+
+            # --- Phase 2: Index proper nouns from manuscript ---
+            chapter_texts = self._get_chapter_texts()
+            all_text = "\n\n".join(chapter_texts.values())
+
+            # Build a name index: element_name -> list of (chapter_title, sentences)
+            name_index = {}
+            all_names = []
+            for category, elements in element_lists.items():
+                for elem in elements:
+                    name = getattr(elem, 'name', '')
+                    if name and len(name) > 2:
+                        all_names.append((name, category, elem))
+
+            for name, category, elem in all_names:
+                mentions = []
+                for ch_title, ch_text in chapter_texts.items():
+                    sents = self._find_sentences(name, ch_text)
+                    if sents:
+                        mentions.append((ch_title, sents))
+                if mentions:
+                    name_index[name] = (category, elem, mentions)
+
+            # --- Phase 3: Enrich from manuscript ---
+            # Fields to check per element type (beyond just description)
+            enrichable_fields = {
+                "characters": ["personality", "backstory", "physical_description",
+                               "speaking_style", "motivations"],
+                "factions": ["description", "notes"],
+                "places": ["description", "atmosphere", "cultural_significance"],
+                "cultures": ["description", "social_structure"],
+                "technologies": ["description", "limitations"],
+                "myths": ["description"],
+                "magic_systems": ["description", "rules", "limitations"],
+                "flora": ["description"],
+                "fauna": ["description", "behavior"],
+            }
+
+            for name, (category, elem, mentions) in name_index.items():
+                # Combine all mentions into context
+                all_sents = []
+                for ch_title, sents in mentions:
+                    for s in sents:
+                        all_sents.append(f"[{ch_title}] {s}")
+                context = " ... ".join(all_sents[:5])[:800]
+
+                # Check which fields are thin
+                fields_to_check = enrichable_fields.get(category, ["description"])
+                for field in fields_to_check:
+                    current = getattr(elem, field, None)
+                    if current is None or (isinstance(current, str) and len(current) < 30):
+                        # Enrich this field with manuscript context
+                        enriched = f"From manuscript: {context}"
+                        if current and isinstance(current, str):
+                            enriched = f"{current}\n\n{enriched}"
+                        try:
+                            setattr(elem, field, enriched)
+                            report_lines.append(
+                                f"Enriched {category}: '{name}'.{field} from manuscript "
+                                f"({len(mentions)} chapter mentions)"
+                            )
+                            enrichments += 1
+                        except (AttributeError, TypeError):
+                            pass
+                        break  # One field per pass to avoid over-enriching
+
+            # --- Phase 4: RAG / encyclopedia / knowledge store ---
+            try:
+                from src.config.ai_config import get_ai_config
+                kb_enabled = get_ai_config().get_settings().get(
+                    "enable_knowledge_base", True
+                )
+            except Exception:
+                kb_enabled = True
+
+            try:
+                from src.ai.enhanced_rag import EnhancedRAGSystem
+                from src.ai.semantic_search import SearchMethod
+
+                rag = EnhancedRAGSystem(project=self.project)
+                rag.rebuild_index()
+
+                for category, elements in element_lists.items():
+                    for elem in elements:
+                        name = getattr(elem, 'name', '')
+                        desc = getattr(elem, 'description', '')
+
+                        # Skip if already has a solid description
+                        if not name or (desc and len(desc) > 50):
+                            continue
+
+                        # Build a richer query using the element type + name
+                        query = f"{category.rstrip('s')} {name}"
+
+                        context = rag.get_context_for_ai(
+                            query, max_tokens=600, method=SearchMethod.HYBRID
+                        )
+                        if not context:
+                            continue
+
+                        # Extract useful content from RAG results
+                        useful_lines = []
+                        for line in context.split('\n'):
+                            line = line.strip()
+                            if not line or line.startswith('RELEVANT') or line == '---':
+                                continue
+                            if line.startswith('[') and ']' in line:
+                                # Source header like [ENCYCLOPEDIA: Feudalism]
+                                continue
+                            useful_lines.append(line)
+
+                        if useful_lines:
+                            reference = " ".join(useful_lines[:3])[:400]
+                            if not desc:
+                                elem.description = f"Reference: {reference}"
+                            else:
+                                elem.description = f"{desc}\n\nReference: {reference}"
+                            source = "encyclopedia + knowledge base" if kb_enabled else "encyclopedia"
+                            report_lines.append(
+                                f"Enriched {category}: '{name}' from {source}"
+                            )
+                            enrichments += 1
+
+            except Exception as e:
+                report_lines.append(f"(RAG enrichment skipped: {e})")
+
+            if not report_lines:
+                report = "No changes needed — worldbuilding looks solid."
+            else:
+                report = "\n".join(report_lines)
+
+            self.finished.emit(report, merges, enrichments)
+
+        except Exception as e:
+            self.error.emit(str(e))
+
+    def _merge_element(self, target, source) -> list:
+        """Merge non-empty fields from source into target (fill gaps only)."""
+        merged = []
+        for field in vars(source):
+            if field.startswith('_') or field in ('id', 'name', 'created_at', 'updated_at'):
+                continue
+            src_val = getattr(source, field, None)
+            tgt_val = getattr(target, field, None)
+
+            if src_val and (tgt_val is None or tgt_val == "" or tgt_val == [] or tgt_val == 0):
+                try:
+                    setattr(target, field, src_val)
+                    merged.append(field)
+                except (AttributeError, TypeError):
+                    pass
+        return merged
+
+    def _get_chapter_texts(self) -> dict:
+        """Get chapter texts indexed by title."""
+        if not hasattr(self.project, 'manuscript'):
+            return {}
+        result = {}
+        for ch in self.project.manuscript.chapters:
+            content = getattr(ch, 'content', '')
+            if content:
+                title = getattr(ch, 'title', f"Chapter {getattr(ch, 'number', '?')}")
+                result[title] = content
+        return result
+
+    def _find_sentences(self, name: str, text: str) -> list:
+        """Find sentences mentioning the name."""
+        import re
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        matches = []
+        name_lower = name.lower()
+        for sentence in sentences:
+            if name_lower in sentence.lower() and 20 < len(sentence.strip()) < 500:
+                matches.append(sentence.strip())
+                if len(matches) >= 3:
+                    break
+        return matches

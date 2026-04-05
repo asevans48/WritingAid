@@ -346,7 +346,8 @@ Your job is to provide several alternative phrasings while preserving the origin
 Guidelines:
 - Maintain the original intent and key information
 - Apply the requested style (structural approach) and tone (emotional quality)
-- When multiple tones are requested, weave them together naturally — do not switch between them, blend them
+- TONE IS CRITICAL: The emotional tone must be felt in every word choice, sentence rhythm, and image. Don't just describe the emotion — make the reader FEEL it through the prose itself. Use word connotation, sentence length, imagery, and rhythm to embody the tone.
+- When multiple tones are requested, weave them together naturally — do not switch between them, blend them into a single emotional texture
 - Keep the same tense unless specifically asked to change it
 - Preserve any character names, proper nouns, or specific terminology
 - Make the text flow naturally
@@ -370,26 +371,89 @@ For each option, briefly explain what makes it different from the original."""
         RephraseStyle.LITERARY: "literary and artistic with vivid imagery",
     }
 
-    # Tone prompts (emotional quality)
+    # Tone prompts — rich guidance so the LLM embodies the emotion in prose
     TONE_PROMPTS = {
-        RephraseTone.NEUTRAL: "",  # No tone modifier
-        RephraseTone.DARK: "dark and ominous",
-        RephraseTone.DRAMATIC: "dramatic and impactful",
-        RephraseTone.HOPEFUL: "hopeful and optimistic",
-        RephraseTone.HAPPY: "warm and joyful",
-        RephraseTone.PROUD: "proud and triumphant",
-        RephraseTone.MELANCHOLIC: "melancholic and wistful",
-        RephraseTone.SORROWFUL: "sorrowful and grief-stricken",
-        RephraseTone.NOSTALGIC: "nostalgic and reminiscent",
-        RephraseTone.TENSE: "tense and suspenseful",
-        RephraseTone.WHIMSICAL: "whimsical and playful",
-        RephraseTone.GROSS: "visceral and uncomfortably vivid",
-        # Extended tones
-        RephraseTone.MYSTERIOUS: "mysterious and enigmatic",
-        RephraseTone.ROMANTIC: "romantic and intimate",
-        RephraseTone.HUMOROUS: "humorous and witty",
-        RephraseTone.OMINOUS: "foreboding and ominous",
-        RephraseTone.URGENT: "urgent and pressing",
+        RephraseTone.NEUTRAL: "",
+        RephraseTone.DARK: (
+            "dark and ominous — use heavy, shadowed imagery; favor words with hard "
+            "consonants and negative connotations; let dread seep through the sentence "
+            "structure; shorter sentences build unease, longer ones suffocate"
+        ),
+        RephraseTone.DRAMATIC: (
+            "dramatic and impactful — heighten every beat; use contrast and reversal; "
+            "build to a punch at the end of sentences; let the weight of the moment land; "
+            "employ rhetorical devices like repetition, parallelism, or antithesis"
+        ),
+        RephraseTone.HOPEFUL: (
+            "hopeful and optimistic — use ascending imagery (light, rising, opening); "
+            "favor warm vowel sounds; let sentences breathe with possibility; "
+            "the prose should feel like dawn breaking or a door opening"
+        ),
+        RephraseTone.HAPPY: (
+            "warm and joyful — use bright, lively word choices; quick rhythms and "
+            "buoyant sentence structures; sensory details that feel pleasant (warmth, "
+            "light, laughter); the prose should make the reader smile"
+        ),
+        RephraseTone.PROUD: (
+            "proud and triumphant — use strong, declarative sentences; elevated diction; "
+            "imagery of standing tall, light catching, weight lifted; the prose should "
+            "feel like a chest swelling, a flag unfurling"
+        ),
+        RephraseTone.MELANCHOLIC: (
+            "melancholic and wistful — use soft, fading imagery; longer sentences that "
+            "trail off; words that echo loss without naming it directly; the beauty is "
+            "in what's missing; muted colors, quiet sounds, empty spaces"
+        ),
+        RephraseTone.SORROWFUL: (
+            "sorrowful and grief-stricken — use raw, physical language; short sentences "
+            "that land like blows; sensory details of absence; the prose should ache; "
+            "avoid sentimentality — genuine grief is sparse and stunned"
+        ),
+        RephraseTone.NOSTALGIC: (
+            "nostalgic and reminiscent — use past-tense framing even in present action; "
+            "sensory details that trigger memory (specific smells, textures, sounds); "
+            "a gentle ache of distance from something once-loved; warm but tinged with loss"
+        ),
+        RephraseTone.TENSE: (
+            "tense and suspenseful — use short, clipped sentences; incomplete thoughts; "
+            "sensory hyperawareness (every sound amplified); the prose should feel like "
+            "held breath; remove softening words; make every sentence a wire pulled taut"
+        ),
+        RephraseTone.WHIMSICAL: (
+            "whimsical and playful — use unexpected word choices and surprising images; "
+            "a light, dancing rhythm; gentle exaggeration; the prose should feel like "
+            "it's winking at the reader; delight in language itself"
+        ),
+        RephraseTone.GROSS: (
+            "visceral and uncomfortably vivid — use precise, unflinching physical detail; "
+            "textures, smells, and sounds that make the reader squirm; don't look away; "
+            "the prose should be felt in the body, not just read"
+        ),
+        RephraseTone.MYSTERIOUS: (
+            "mysterious and enigmatic — withhold as much as you reveal; use implication "
+            "over statement; shadows, half-seen things, unanswered questions; the prose "
+            "should make the reader lean forward, uncertain but drawn in"
+        ),
+        RephraseTone.ROMANTIC: (
+            "romantic and intimate — use closeness, breath, warmth, touch; slow the "
+            "rhythm; let sentences linger on sensory detail; the prose should feel like "
+            "two people in a room where no one else exists"
+        ),
+        RephraseTone.HUMOROUS: (
+            "humorous and witty — use timing, understatement, and surprise; subvert "
+            "expectations mid-sentence; dry observations; the humor should arise "
+            "naturally from the situation, not from forced jokes"
+        ),
+        RephraseTone.OMINOUS: (
+            "foreboding and ominous — the ordinary becomes threatening; use double "
+            "meanings; innocuous details that feel wrong; the prose should create "
+            "a sense that something terrible is approaching but not yet visible"
+        ),
+        RephraseTone.URGENT: (
+            "urgent and pressing — use imperative energy; strip away all decoration; "
+            "short sentences, no qualifiers; the prose should feel like running; "
+            "every word must justify its existence; breathlessness"
+        ),
     }
 
     def __init__(
@@ -2837,13 +2901,22 @@ For each option, briefly explain what makes it different from the original."""
 
         tone_note = ""
         if len(tone_descs) == 1:
-            tone_note = f"\nApply a {tone_descs[0]} tone to all variations.\n"
-        elif len(tone_descs) > 1:
-            blended = ", ".join(tone_descs[:-1]) + f", and {tone_descs[-1]}"
             tone_note = (
-                f"\nBlend these emotional tones across all variations: {blended}. "
-                f"Each variation should feel like a natural mix of these emotions "
-                f"rather than switching abruptly between them.\n"
+                f"\nEMOTIONAL TONE (this is essential, not optional):\n"
+                f"{tone_descs[0]}\n\n"
+                f"Every word choice, image, and sentence rhythm must embody this emotion. "
+                f"The reader should FEEL it without being told what to feel. "
+                f"Do not write 'she felt sad' — write prose that IS sad.\n"
+            )
+        elif len(tone_descs) > 1:
+            tone_block = "\n".join(f"  • {td}" for td in tone_descs)
+            tone_note = (
+                f"\nEMOTIONAL TONES (blend all of these — this is essential):\n"
+                f"{tone_block}\n\n"
+                f"Weave these emotions into a single texture. Each variation should feel "
+                f"like all these tones exist simultaneously — not switching between them "
+                f"but fused into one emotional experience. The reader should FEEL the "
+                f"blend in word choice, imagery, rhythm, and connotation.\n"
             )
 
         # Point of view instruction
