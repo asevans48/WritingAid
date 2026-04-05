@@ -786,6 +786,12 @@ class MainWindow(QMainWindow):
         self._rag_system: Optional[EnhancedRAGSystem] = None
         self._rag_initialized = False
 
+        # AI debug panel (hidden by default)
+        self._ai_debug_panel = None
+        self._debug_context: dict = {}  # Stashed for logging after response
+        self._debug_system_prompt: str = ""
+        self._debug_start_time = 0
+
         # Register with window manager
         self.window_manager = WindowManager()
         self.window_manager.set_main_window(self)
@@ -950,6 +956,15 @@ class MainWindow(QMainWindow):
         self.multi_window_action.setToolTip("Enable to detach tabs into separate windows")
         self.multi_window_action.triggered.connect(self._toggle_multi_window_mode)
         view_menu.addAction(self.multi_window_action)
+
+        view_menu.addSeparator()
+
+        debug_action = QAction("AI &Debug Panel", self)
+        debug_action.setShortcut(QKeySequence("Ctrl+Shift+D"))
+        debug_action.setCheckable(True)
+        debug_action.triggered.connect(self._toggle_debug_panel)
+        view_menu.addAction(debug_action)
+        self._debug_action = debug_action
 
         # Export menu
         export_menu = menubar.addMenu("E&xport")
@@ -1681,6 +1696,11 @@ class MainWindow(QMainWindow):
         else:
             self.chat_widget.add_message("Assistant", "Thinking...")
 
+        # Stash debug info for logging when response arrives
+        import time
+        self._debug_context = dict(context)
+        self._debug_start_time = time.time()
+
         # Start background worker with mode
         self._chat_worker = ChatWorker(message, context, mode)
         self._chat_worker.finished.connect(self._on_chat_response)
@@ -2043,6 +2063,19 @@ class MainWindow(QMainWindow):
             response: The AI's response text (original, with tool calls)
             system_prompt: The system prompt used for this response
         """
+        # Log to debug panel if visible
+        import time
+        if self._ai_debug_panel and self._ai_debug_panel.isVisible():
+            elapsed = int((time.time() - self._debug_start_time) * 1000)
+            self._ai_debug_panel.log_turn(
+                mode=getattr(self, '_pending_mode', 'unknown'),
+                user_message=getattr(self, '_pending_chat_message', ''),
+                system_prompt=system_prompt,
+                context=self._debug_context,
+                response=response,
+                elapsed_ms=elapsed
+            )
+
         # Check if this was a writer mode request
         if getattr(self, '_pending_mode', '') == 'writer' and hasattr(self, '_pending_insert_mode'):
             self._handle_writer_response(response)
@@ -2846,6 +2879,18 @@ class MainWindow(QMainWindow):
                 self.replace_dialog.set_status(f"'{find_text}' not found")
             else:
                 self.replace_dialog.set_status(f"Replaced {count} occurrence(s)")
+
+    def _toggle_debug_panel(self, checked: bool):
+        """Toggle the AI debug panel."""
+        if checked:
+            if not self._ai_debug_panel:
+                from src.ui.ai_debug_panel import AIDebugPanel
+                self._ai_debug_panel = AIDebugPanel(self)
+                self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self._ai_debug_panel)
+            self._ai_debug_panel.show()
+        else:
+            if self._ai_debug_panel:
+                self._ai_debug_panel.hide()
 
     def _show_settings(self):
         """Show settings dialog."""
