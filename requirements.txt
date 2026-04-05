@@ -1,20 +1,18 @@
 # GUI Framework
-PyQt6>=6.6.0
-PyQt6-WebEngine>=6.6.0
+PyQt6>=6.7.0
+PyQt6-WebEngine>=6.7.0
 
 # AI/LLM Integration
-anthropic>=0.18.0
-openai>=1.12.0
-google-genai>=1.0.0
-langchain>=0.1.0
-langgraph>=0.0.20
+anthropic>=0.49.0
+openai>=1.66.0
+google-genai>=1.14.0
 
 # Hugging Face Integration
-huggingface_hub>=0.21.0  # For model downloads and HF Inference API
-transformers>=4.47.0,<5.0.0  # For loading and running local models (4.47+ required for Gemma 3)
-safetensors>=0.4.0  # For efficient model weight loading
-sentencepiece>=0.2.0  # Tokenizer for Gemma, Llama, and other models (required on Windows)
-protobuf>=4.25.0  # Required for some model tokenizers
+huggingface_hub>=0.30.0
+transformers>=4.51.0,<5.0.0  # 4.47+ required for Gemma 3; 4.51+ for Gemma 4
+safetensors>=0.5.0
+sentencepiece>=0.2.0
+protobuf>=5.29.0
 
 # PyTorch - Local LLM Inference
 # NOTE: For GPU/CUDA support, install PyTorch separately BEFORE other packages:
@@ -27,93 +25,77 @@ protobuf>=4.25.0  # Required for some model tokenizers
 # 3. Install PyTorch with CUDA support:
 #    Visit https://pytorch.org/get-started/locally/ for the latest commands
 #
-#    CUDA 13.1 (latest):
-#      pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu131
+#    CUDA 12.8 (latest):
+#      pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 #
 #    CUDA 12.4/12.x:
 #      pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 #
-#    CUDA 12.1:
-#      pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-#
-#    CUDA 11.8:
-#      pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-#
 # 4. Verify CUDA is working:
-#    python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}'); print(f'Device: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"N/A\"}')"
+#    python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
 #
 # NOTE: The default "pip install torch" gets CPU-only version on Windows/Linux!
-torch>=2.5.0  # Core deep learning framework (CPU by default - see note above for GPU)
-# torchvision>=0.20.0  # Optional: for image models
-# torchaudio>=2.5.0  # Optional: for audio models
+torch>=2.6.0
 
 # Model Optimization (optional - for quantization)
-accelerate>=0.27.0  # For efficient model loading and device mapping
-# bitsandbytes>=0.42.0  # For 4/8-bit quantization (Linux/WSL only)
+accelerate>=1.5.0
 
 # Document Processing
 python-docx>=1.1.0
-pypandoc>=1.12
+pypandoc>=1.14
 ebooklib>=0.18
-markdown>=3.5
+markdown>=3.7
 
 # Spell Check and Grammar
 language-tool-python>=2.8.0
-pyspellchecker>=0.7.2
-pyenchant>=3.2.2  # Dictionary-based spell checking with suggestions
-nltk>=3.8.1  # Natural language toolkit for word corpus and grammar
+pyspellchecker>=0.8.0
+pyenchant>=3.2.2
+nltk>=3.9.0
 
 # NLP and Text Processing
-spacy>=3.7.0  # Advanced NLP: POS tagging, dependency parsing, NER
+spacy>=3.8.0
 # After installing, download the English model:
 #   python -m spacy download en_core_web_sm
 
 # Image Processing & Generation
-Pillow>=10.2.0
-requests>=2.31.0
+Pillow>=11.1.0
+requests>=2.32.0
 
 # Apple Silicon (MLX) - Local LLM Inference
-# mlx and mlx-lm are macOS/Apple Silicon only and cannot be installed on other platforms.
+# mlx and mlx-lm are macOS/Apple Silicon only.
 # Install separately on Mac with:
 #   pip install mlx mlx-lm
-# Or install from this file on Mac only:
-#   pip install -r requirements.txt  (will skip if not on Apple Silicon)
 #
-# mlx>=0.22.0; sys_platform == "darwin"  # MLX core framework (Apple Silicon only)
-# mlx-lm>=0.19.0; sys_platform == "darwin"  # MLX language model inference
-#
-# Recommended install command on Mac:
-#   pip install mlx mlx-lm
-#
-# To run a 27B model with 4-bit quantization (requires 36GB+ RAM):
-#   python -c "from mlx_lm import load; m,t = load('mlx-community/gemma-2-27b-it-4bit')"
+# mlx>=0.24.0; sys_platform == "darwin"
+# mlx-lm>=0.22.0; sys_platform == "darwin"
 
 # Image Generation (Optional)
-# For Apple Silicon (M1/M2/M3/M4/M5):
-#   pip install mflux  # MLX-based FLUX model for image generation
-#   pip install mlx mlx-lm  # MLX framework (if not already installed)
-#
-# For NVIDIA GPUs:
-#   pip install diffusers  # Hugging Face Diffusers for Stable Diffusion, FLUX
-#   Requires PyTorch with CUDA support (see PyTorch section above)
-#
-# For OpenAI DALL-E 3:
-#   Uses the openai package (already included above)
+# Apple Silicon:  pip install mflux
+# NVIDIA GPUs:    pip install diffusers
+# OpenAI:         uses the openai package above
 
 # Data Management
-pydantic>=2.5.0
-pyyaml>=6.0.1
+pydantic>=2.10.0
+pyyaml>=6.0.2
 
 # Utilities
 python-dotenv>=1.0.0
 
 # Secure Credential Storage
-keyring>=25.0.0  # Cross-platform credential storage (Windows Credential Manager)
+keyring>=25.6.0
 
 # Text-to-Speech
-pyttsx3>=2.90  # Offline TTS using system voices (Windows SAPI5, macOS NSSpeech, Linux espeak)
-edge-tts>=6.1.0  # High-quality Microsoft Edge neural voices (requires internet)
+pyttsx3>=2.98
+edge-tts>=7.0.0
+# pygame>=2.6.0  # Optional: audio playback for TTS. Requires SDL2 headers.
+#   macOS: brew install sdl2 sdl2_mixer sdl2_image && pip install pygame
+#   Linux: sudo apt install libsdl2-dev && pip install pygame
+#   Windows: pip install pygame  (works out of the box)
 
 # Speech-to-Text
-SpeechRecognition>=3.10.0  # Microphone speech recognition (Google, Sphinx, etc.)
-PyAudio>=0.2.14  # Microphone access for speech recognition
+SpeechRecognition>=3.12.0
+PyAudio>=0.2.14
+
+# Knowledge Base (optional - for downloading external reference datasets)
+wikipedia>=1.4.0  # Wikipedia article downloads for knowledge base
+datasets>=3.3.0   # HuggingFace datasets for bulk Wikipedia import (optional, large)

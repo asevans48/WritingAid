@@ -53,6 +53,9 @@ class WorldBuilding(BaseModel):
     political_systems: List[PoliticalSystem] = Field(default_factory=list)  # Political systems
     magic_systems: List['MagicSystem'] = Field(default_factory=list)  # Magic systems
 
+    # User-created encyclopedia entries (project-specific additions to the base knowledge)
+    custom_encyclopedia: List[Dict[str, str]] = Field(default_factory=list)
+
     @field_validator('maps', mode='before')
     @classmethod
     def convert_none_to_empty_list(cls, v):

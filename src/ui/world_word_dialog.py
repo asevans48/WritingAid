@@ -563,9 +563,50 @@ class WorldWordDialog(QDialog):
         return "\n".join(parts)
 
     def _build_worldbuilding_context(self) -> str:
-        """Gather worldbuilding context from the project."""
+        """Gather worldbuilding context, using RAG search when available.
+
+        First tries semantic/keyword search to find the most relevant
+        worldbuilding entries for the selected word and surrounding context.
+        Falls back to a static summary if RAG is unavailable.
+        """
         if not self.project:
             return ""
+
+        # Try RAG-based retrieval first — returns only the most relevant entries
+        rag_context = self._get_rag_worldbuilding()
+        if rag_context:
+            return rag_context
+
+        # Fallback: static summary of worldbuilding data
+        return self._build_static_worldbuilding()
+
+    def _get_rag_worldbuilding(self) -> str:
+        """Use the RAG system to retrieve relevant worldbuilding context."""
+        try:
+            from src.ai.enhanced_rag import EnhancedRAGSystem
+            from src.ai.semantic_search import SearchMethod
+
+            rag = EnhancedRAGSystem(project=self.project)
+            rag.rebuild_index()
+
+            # Build a query from the selected word + surrounding text
+            query = self.selected_text
+            if self.surrounding_before:
+                query = self.surrounding_before[-200:] + " " + query
+            if self.surrounding_after:
+                query = query + " " + self.surrounding_after[:200]
+
+            context = rag.get_context_for_ai(
+                query=query,
+                max_tokens=1500,
+                method=SearchMethod.HYBRID
+            )
+            return context if context else ""
+        except Exception:
+            return ""
+
+    def _build_static_worldbuilding(self) -> str:
+        """Static worldbuilding summary (fallback when RAG is unavailable)."""
         parts = []
         wb = getattr(self.project, 'worldbuilding', None)
         if not wb:

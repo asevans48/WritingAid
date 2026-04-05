@@ -83,6 +83,7 @@ class EnhancedRAGSystem:
         self._index_armies()
         self._index_economies()
         self._index_political_systems()
+        self._index_encyclopedia()
 
         # Index characters
         self._index_characters()
@@ -601,6 +602,60 @@ Notes: {system.notes or ''}
             )
             self.search_engine.index_document(chunk)
 
+    def _index_encyclopedia(self):
+        """Index encyclopedia entries (base + custom) for RAG search."""
+        wb = self.project.worldbuilding
+
+        # Index custom encyclopedia entries stored on the project
+        custom_entries = getattr(wb, 'custom_encyclopedia', []) or []
+
+        # Also load the base encyclopedia data
+        all_entries = list(custom_entries)
+        try:
+            from src.ui.worldbuilding.encyclopedia_widget import _load_base_encyclopedia
+            base_data = _load_base_encyclopedia()
+            for cat in base_data.get("categories", []):
+                cat_name = cat["name"]
+                for entry in cat.get("entries", []):
+                    merged = dict(entry)
+                    merged["category"] = cat_name
+                    all_entries.append(merged)
+        except Exception:
+            pass
+
+        for entry in all_entries:
+            title = entry.get("title", "")
+            if not title:
+                continue
+
+            parts = [f"Encyclopedia: {title}"]
+            if entry.get("category"):
+                parts.append(f"Category: {entry['category']}")
+            if entry.get("summary"):
+                parts.append(f"Summary: {entry['summary']}")
+            if entry.get("description"):
+                parts.append(entry["description"])
+            if entry.get("writing_tips"):
+                parts.append(f"Writing tips: {entry['writing_tips']}")
+            if entry.get("examples"):
+                parts.append("Examples: " + ", ".join(entry["examples"]))
+
+            content = "\n".join(parts)
+            tags = entry.get("tags", [])
+
+            chunk = self._make_chunk(
+                content=content,
+                source_type="encyclopedia",
+                source_name=title,
+                source_id=title.lower().replace(" ", "_"),
+                metadata={
+                    "category": entry.get("category", ""),
+                    "tags": tags,
+                    "is_custom": entry.get("is_custom", False),
+                }
+            )
+            self.search_engine.index_document(chunk)
+
     def _index_characters(self):
         """Index character data."""
         for char in self.project.characters:
@@ -823,6 +878,9 @@ Related Characters: {', '.join(promise.related_characters) if promise.related_ch
     ) -> str:
         """Get formatted context for AI chat.
 
+        Searches both the project index AND the external knowledge store
+        (Wikipedia, Britannica) if articles have been downloaded.
+
         Args:
             query: User's query
             max_tokens: Approximate max tokens for context
@@ -831,29 +889,75 @@ Related Characters: {', '.join(promise.related_characters) if promise.related_ch
         Returns:
             Formatted context string for AI prompt
         """
+        # Search the project index
         results = self.search(query, method, top_k=10)
-
-        if not results:
-            return ""
 
         context_parts = []
         current_tokens = 0
-        chars_per_token = 4  # Rough estimate
+        chars_per_token = 4
 
         for result in results:
             content_tokens = len(result.content) // chars_per_token
             if current_tokens + content_tokens > max_tokens:
                 break
-
             context_parts.append(
                 f"[{result.source_type.upper()}: {result.source_name}]\n{result.content}\n"
             )
             current_tokens += content_tokens
 
+        # Search the external knowledge store (Wikipedia, Britannica, etc.)
+        remaining_tokens = max_tokens - current_tokens
+        if remaining_tokens > 200:
+            kb_parts = self._search_knowledge_store(query, remaining_tokens)
+            if kb_parts:
+                context_parts.extend(kb_parts)
+
         if not context_parts:
             return ""
 
-        return "RELEVANT CONTEXT FROM PROJECT:\n\n" + "\n---\n".join(context_parts)
+        return "RELEVANT CONTEXT:\n\n" + "\n---\n".join(context_parts)
+
+    def _search_knowledge_store(self, query: str, max_tokens: int) -> list:
+        """Search the external knowledge store for relevant articles.
+
+        Respects the enable_knowledge_base setting. Returns empty if disabled.
+        """
+        try:
+            # Check if knowledge base is enabled in settings
+            from src.config.ai_config import get_ai_config
+            config = get_ai_config()
+            if not config.get_settings().get("enable_knowledge_base", True):
+                return []
+
+            from src.knowledge.knowledge_store import get_knowledge_store
+            store = get_knowledge_store()
+
+            if store.get_article_count() == 0:
+                return []
+
+            articles = store.search(query, max_results=5)
+            if not articles:
+                return []
+
+            parts = []
+            current_tokens = 0
+            chars_per_token = 4
+
+            for article in articles:
+                # Truncate long articles to a useful snippet
+                content = article.content[:1500]
+                content_tokens = len(content) // chars_per_token
+                if current_tokens + content_tokens > max_tokens:
+                    break
+                source_label = article.source.upper()
+                parts.append(
+                    f"[{source_label}: {article.title}]\n{content}\n"
+                )
+                current_tokens += content_tokens
+
+            return parts
+        except Exception:
+            return []
 
     def get_stats(self) -> Dict[str, Any]:
         """Get index statistics."""

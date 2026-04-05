@@ -21,6 +21,7 @@ from src.ui.worldbuilding.culture_builder import CultureBuilderWidget
 from src.ui.worldbuilding.place_builder import PlaceBuilderWidget
 from src.ui.worldbuilding.map_builder_widgets import MapBuilderWidget
 from src.ui.worldbuilding.magic_system_builder import MagicSystemBuilderWidget
+from src.ui.worldbuilding.encyclopedia_widget import EncyclopediaWidget
 
 
 class ComprehensiveWorldBuildingWidget(QWidget):
@@ -139,6 +140,11 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         self.maps_widget = MapBuilderWidget()
         self.maps_widget.content_changed.connect(self.content_changed.emit)
         self.tabs.addTab(self.maps_widget, "🗺️ Maps")
+
+        # Encyclopedia - Reference knowledge base
+        self.encyclopedia_widget = EncyclopediaWidget()
+        self.encyclopedia_widget.content_changed.connect(self.content_changed.emit)
+        self.tabs.addTab(self.encyclopedia_widget, "📚 Encyclopedia")
 
         layout.addWidget(self.tabs)
 
@@ -379,6 +385,10 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         if hasattr(worldbuilding, 'political_systems'):
             self.politics_widget.load_political_systems(worldbuilding.political_systems)
 
+        # Load encyclopedia custom entries
+        if hasattr(worldbuilding, 'custom_encyclopedia'):
+            self.encyclopedia_widget.load_custom_entries(worldbuilding.custom_encyclopedia)
+
     def get_data(self):
         """Get worldbuilding data."""
         from src.models.project import WorldBuilding
@@ -409,7 +419,8 @@ class ComprehensiveWorldBuildingWidget(QWidget):
             politics_elements={},  # TODO: Convert systems to dict
             military_elements={},  # TODO: Convert armies to dict
             economy_elements={},  # TODO: Convert economies to dict
-            power_hierarchy_elements={}  # TODO: Convert hierarchies to dict
+            power_hierarchy_elements={},  # TODO: Convert hierarchies to dict
+            custom_encyclopedia=self.encyclopedia_widget.get_custom_entries()
         )
 
         return worldbuilding

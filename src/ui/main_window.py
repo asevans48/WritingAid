@@ -51,6 +51,7 @@ class ChatWorker(QThread):
     SYSTEM_PROMPTS = {
         "general": """You are a helpful creative writing assistant integrated into a writer's platform.
 You have access to the author's full project context including plot, characters, worldbuilding, and manuscript chapters.
+You may also receive RELEVANT REFERENCE material from encyclopedias and knowledge bases (Wikipedia, Britannica, worldbuilding reference). When provided, use this reference to ground your suggestions in real-world or established knowledge while adapting it to the author's fictional world.
 
 IMPORTANT: Keep responses focused and concise. Answer what's asked, then stop. Don't ramble or analyze unrelated parts of the project.
 
@@ -351,6 +352,7 @@ Be encouraging, creative, and constructive. Reference specific details from thei
 Keep responses focused and actionable.""",
 
         "chapter_focus": """You are a writing assistant with the full text of the CURRENT CHAPTER available to you.
+You may receive RELEVANT REFERENCE material from encyclopedias and knowledge bases. When provided, use it to inform your analysis and suggestions — for example, referencing real-world parallels for the culture, government, or technology depicted in the chapter.
 
 YOUR ONE JOB: Answer exactly what the author asked. Nothing else.
 
@@ -519,6 +521,10 @@ When asked to continue:
         if self.context.get('worldbuilding'):
             wb = self.context['worldbuilding'][:1500]
             parts.append(f"\nWORLDBUILDING:\n{wb}")
+
+        # RAG context (relevant worldbuilding/encyclopedia entries for this query)
+        if self.context.get('rag_context'):
+            parts.append(f"\nRELEVANT REFERENCE (from project & encyclopedia):\n{self.context['rag_context'][:1500]}")
 
         # Current chapter context
         if self.context.get('current_chapter_title'):
@@ -1345,44 +1351,50 @@ class MainWindow(QMainWindow):
         self.project_changed.emit()
 
     def _init_rag_system(self):
-        """Initialize or refresh the RAG system for semantic context retrieval."""
+        """Initialize or refresh the RAG system for semantic context retrieval.
+
+        RAG works with TF-IDF/keyword search even without an LLM client.
+        If a cloud or local LLM is available, embeddings are added for
+        better semantic search quality.
+        """
         if not self.current_project:
             return
 
         try:
-            # Initialize RAG system with current project
             if not self._rag_system:
-                from src.ai.llm_client import LLMClient, LLMProvider
+                # Try to create an LLM client for embedding support (optional)
+                llm_client = None
+                try:
+                    from src.ai.llm_client import LLMClient, LLMProvider
+                    ai_config = get_ai_config()
+                    default_provider = self.settings.get("default_llm", "claude")
+                    api_key = ai_config.get_api_key(default_provider)
 
-                # Create a simple LLM client for RAG embeddings
-                ai_config = get_ai_config()
-                default_provider = self.settings.get("default_llm", "claude")
-                api_key = ai_config.get_api_key(default_provider)
+                    if api_key:
+                        provider_map = {
+                            "claude": LLMProvider.CLAUDE,
+                            "chatgpt": LLMProvider.CHATGPT,
+                            "openai": LLMProvider.CHATGPT,
+                            "gemini": LLMProvider.GEMINI
+                        }
+                        provider = provider_map.get(default_provider, LLMProvider.CLAUDE)
+                        llm_client = LLMClient(
+                            provider=provider, api_key=api_key,
+                            model=ai_config.get_model(default_provider)
+                        )
+                except Exception:
+                    pass  # RAG will work with TF-IDF only
 
-                if not api_key:
-                    print("No API key for RAG initialization - RAG will be disabled")
-                    return
-
-                provider_map = {
-                    "claude": LLMProvider.CLAUDE,
-                    "chatgpt": LLMProvider.CHATGPT,
-                    "openai": LLMProvider.CHATGPT,
-                    "gemini": LLMProvider.GEMINI
-                }
-                provider = provider_map.get(default_provider, LLMProvider.CLAUDE)
-
-                llm_client = LLMClient(
-                    provider=provider,
-                    api_key=api_key,
-                    model=ai_config.get_model(default_provider)
-                )
-
+                # Initialize RAG — works without LLM (TF-IDF + keyword search)
                 self._rag_system = EnhancedRAGSystem(
                     project=self.current_project,
                     llm_client=llm_client
                 )
+            else:
+                # Update project reference for existing RAG system
+                self._rag_system.project = self.current_project
 
-            # Rebuild index with current project data
+            # Rebuild index with current project data (including encyclopedia)
             self._rag_system.rebuild_index()
             self._rag_initialized = True
             print("RAG system initialized successfully")
@@ -1829,7 +1841,12 @@ class MainWindow(QMainWindow):
                     context['plot_summary'] = project.ai_summary.plot_summary[:500] if project.ai_summary.plot_summary else ""
                 return context
 
-        # For chapter_focus and writer modes, we want MORE context about the current chapter
+        # For chapter_focus and writer modes, also use RAG for relevant worldbuilding context
+        if mode in ("chapter_focus", "writer") and user_message and self._rag_initialized:
+            rag_context = self._get_rag_context(user_message, max_tokens=1200)
+            if rag_context:
+                context['rag_context'] = rag_context
+
         is_chapter_focused = mode in ("chapter_focus", "writer")
 
         # Try to use AI-generated summaries if available (more efficient)
@@ -2833,6 +2850,9 @@ class MainWindow(QMainWindow):
     def _show_settings(self):
         """Show settings dialog."""
         dialog = SettingsDialog(self.settings, self)
+        # Pass current project so knowledge base can download project-specific articles
+        if hasattr(dialog, 'knowledge_widget') and self.current_project:
+            dialog.knowledge_widget.set_project(self.current_project)
         if dialog.exec():
             self.settings = dialog.get_settings()
             # Save settings persistently

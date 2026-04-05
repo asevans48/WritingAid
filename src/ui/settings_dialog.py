@@ -184,6 +184,35 @@ MLX_MODELS: List[LocalModelInfo] = [
         requires_trust_remote_code=False
     ),
 
+    # === Gemma 4 Models ===
+    LocalModelInfo(
+        model_id="mlx-community/gemma-4-E2B-it-4bit",
+        display_name="Gemma 4 E2B - MLX [Tiny, Fast]",
+        size_gb=1.5,
+        description="Google Gemma 4 ultra-efficient model for edge/mobile",
+        ram_required="6GB+",
+        best_for="Quick rephrasing, fast drafts, low memory",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="mlx-community/gemma-4-E4B-it-4bit",
+        display_name="Gemma 4 E4B - MLX [Efficient]",
+        size_gb=2.5,
+        description="Google Gemma 4 efficient model, multimodal capable",
+        ram_required="8GB+",
+        best_for="General writing, creative tasks, fast inference",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="mlx-community/gemma-4-12b-it-4bit",
+        display_name="Gemma 4 (12B) - MLX",
+        size_gb=6.0,
+        description="Google Gemma 4 12B model for high-quality writing",
+        ram_required="16GB+",
+        best_for="Creative writing, complex tasks, dialogue",
+        requires_trust_remote_code=False
+    ),
+
     # === High-Performance Models (32GB+ RAM) ===
     LocalModelInfo(
         model_id="mlx-community/Qwen2.5-14B-Instruct-4bit",
@@ -246,6 +275,15 @@ MLX_MODELS: List[LocalModelInfo] = [
         description="Mistral's high-quality 22B model",
         ram_required="32GB+",
         best_for="Professional writing, complex reasoning",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="mlx-community/gemma-4-27b-it-4bit",
+        display_name="Gemma 4 (27B) - MLX [4-bit]",
+        size_gb=14.0,
+        description="Google's Gemma 4 27B, frontier-quality creative writing",
+        ram_required="32GB+",
+        best_for="Maximum quality writing, nuanced dialogue, worldbuilding",
         requires_trust_remote_code=False
     ),
 ]
@@ -595,6 +633,34 @@ PYTORCH_MODELS: List[LocalModelInfo] = [
         description="GPTQ quantized model specialized for creative storytelling",
         ram_required="32GB+",
         best_for="Fiction writing, creative storytelling, narrative prose",
+        requires_trust_remote_code=False
+    ),
+    # === Gemma 4 Models ===
+    LocalModelInfo(
+        model_id="google/gemma-4-E4B-it",
+        display_name="Gemma 4 E4B",
+        size_gb=8.0,
+        description="Google Gemma 4 efficient model, multimodal capable",
+        ram_required="8GB+",
+        best_for="General writing, fast inference",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="google/gemma-4-12b-it",
+        display_name="Gemma 4 (12B)",
+        size_gb=24.0,
+        description="Google Gemma 4 12B for high-quality writing",
+        ram_required="16GB+",
+        best_for="Creative writing, complex tasks",
+        requires_trust_remote_code=False
+    ),
+    LocalModelInfo(
+        model_id="google/gemma-4-27b-it",
+        display_name="Gemma 4 (27B)",
+        size_gb=54.0,
+        description="Google's Gemma 4 27B, frontier-quality output",
+        ram_required="32GB+",
+        best_for="Maximum quality writing, nuanced dialogue",
         requires_trust_remote_code=False
     ),
 ]
@@ -1188,6 +1254,13 @@ class SettingsDialog(QDialog):
         # Language Resources Tab
         lang_tab = self._create_language_resources_tab()
         tabs.addTab(lang_tab, "📚 Language")
+
+        # Knowledge Bases Tab
+        from src.ui.knowledge_settings_widget import KnowledgeSettingsWidget
+        self.knowledge_widget = KnowledgeSettingsWidget()
+        self.knowledge_widget.set_britannica_key(self.settings.get("britannica_api_key", ""))
+        self.knowledge_widget.set_knowledge_enabled(self.settings.get("enable_knowledge_base", True))
+        tabs.addTab(self.knowledge_widget, "📖 Knowledge Bases")
 
         layout.addWidget(tabs)
 
@@ -3959,6 +4032,10 @@ class SettingsDialog(QDialog):
             "vibevoice_path": self.vibevoice_path_edit.text(),
             "vibevoice_model": self.vibevoice_model_combo.currentData(),
             "vibevoice_voice": self.vibevoice_voice_combo.currentData(),
+
+            # Knowledge Bases
+            "britannica_api_key": self.knowledge_widget.get_britannica_key(),
+            "enable_knowledge_base": self.knowledge_widget.is_knowledge_enabled(),
         }
 
 

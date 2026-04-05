@@ -87,6 +87,62 @@ class WorldbuildingAgent:
         self.local_model_calls = 0
         self.cloud_model_calls = 0
 
+    def _get_encyclopedia_context(self, query: str, max_entries: int = 3) -> str:
+        """Search the worldbuilding encyclopedia for relevant reference entries.
+
+        Uses keyword matching to find encyclopedia entries that are relevant
+        to the current query. Returns formatted text suitable for injection
+        into prompts.
+        """
+        try:
+            from src.ui.worldbuilding.encyclopedia_widget import _load_base_encyclopedia
+            base = _load_base_encyclopedia()
+
+            # Also include custom entries from the project
+            custom = []
+            if self.project and hasattr(self.project, 'worldbuilding'):
+                custom = getattr(self.project.worldbuilding, 'custom_encyclopedia', []) or []
+
+            # Flatten all entries
+            all_entries = list(custom)
+            for cat in base.get("categories", []):
+                for entry in cat.get("entries", []):
+                    e = dict(entry)
+                    e["category"] = cat["name"]
+                    all_entries.append(e)
+
+            if not all_entries:
+                return ""
+
+            # Score entries by keyword relevance
+            query_words = set(query.lower().split())
+            scored = []
+            for entry in all_entries:
+                searchable = " ".join([
+                    entry.get("title", ""),
+                    entry.get("summary", ""),
+                    " ".join(entry.get("tags", [])),
+                ]).lower()
+                score = sum(1 for w in query_words if w in searchable)
+                if score > 0:
+                    scored.append((score, entry))
+
+            scored.sort(key=lambda x: x[0], reverse=True)
+
+            if not scored:
+                return ""
+
+            parts = []
+            for _, entry in scored[:max_entries]:
+                text = f"[{entry.get('category', '')}] {entry['title']}: {entry.get('summary', '')}"
+                if entry.get("writing_tips"):
+                    text += f"\n  Tip: {entry['writing_tips'][:200]}"
+                parts.append(text)
+
+            return "ENCYCLOPEDIA REFERENCE:\n" + "\n".join(parts)
+        except Exception:
+            return ""
+
     def _estimate_complexity(self, task: str, context_size: int) -> TaskComplexity:
         """Estimate task complexity to route to appropriate model.
 
@@ -184,13 +240,18 @@ class WorldbuildingAgent:
         if existing_elements:
             existing_text = f"\n\nExisting {category}: {', '.join(existing_elements)}"
 
+        # Get relevant encyclopedia reference
+        encyclopedia = self._get_encyclopedia_context(f"{category} {question}")
+
         prompt = f"""
 Category: {category}
 
 Existing Context:
-{context[:1000]}  # Limit context for cost
+{context[:1000]}
 
 {existing_text}
+
+{encyclopedia}
 
 User Request:
 {question}
@@ -248,9 +309,13 @@ Format as a numbered list.
         Returns:
             Structured character data
         """
+        encyclopedia = self._get_encyclopedia_context(f"character {user_description}")
+
         prompt = f"""
 World Context:
 {world_context[:800]}
+
+{encyclopedia}
 
 User Description:
 {user_description}
@@ -304,9 +369,13 @@ Keep suggestions brief and leave room for the writer to develop.
         world_context: str
     ) -> Dict[str, Any]:
         """Help create faction from description."""
+        encyclopedia = self._get_encyclopedia_context(f"faction government {user_description}")
+
         prompt = f"""
 World Context:
 {world_context[:800]}
+
+{encyclopedia}
 
 User Description:
 {user_description}
@@ -349,12 +418,15 @@ Brief suggestions only.
     ) -> Dict[str, Any]:
         """Help create place/location from description."""
         planets_text = f"Available planets: {', '.join(available_planets)}" if available_planets else ""
+        encyclopedia = self._get_encyclopedia_context(f"place geography {user_description}")
 
         prompt = f"""
 World Context:
 {world_context[:800]}
 
 {planets_text}
+
+{encyclopedia}
 
 User Description:
 {user_description}

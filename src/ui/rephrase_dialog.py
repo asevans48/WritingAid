@@ -799,6 +799,14 @@ class RephraseDialog(QDialog):
                 else thesaurus_hint
             )
 
+        # Add RAG-based worldbuilding context if available
+        rag_context = self._get_rag_worldbuilding()
+        if rag_context:
+            scene_description = (
+                f"{scene_description}\nWORLDBUILDING CONTEXT:\n{rag_context}"
+                if scene_description else f"WORLDBUILDING CONTEXT:\n{rag_context}"
+            )
+
         # Show progress
         self.progress_bar.setVisible(True)
         self.generate_btn.setEnabled(False)
@@ -1072,6 +1080,30 @@ class RephraseDialog(QDialog):
         if c.backstory:
             desc.append(f"Backstory: {c.backstory[:300]}")
         return "\n".join(desc)
+
+    def _get_rag_worldbuilding(self) -> str:
+        """Use RAG to retrieve relevant worldbuilding context for the text."""
+        if not self.project:
+            return ""
+        try:
+            from src.ai.enhanced_rag import EnhancedRAGSystem
+            from src.ai.semantic_search import SearchMethod
+
+            rag = EnhancedRAGSystem(project=self.project)
+            rag.rebuild_index()
+
+            query = self.original_text
+            if self.surrounding_before:
+                query = self.surrounding_before[-200:] + " " + query
+            if self.surrounding_after:
+                query = query + " " + self.surrounding_after[:200]
+
+            context = rag.get_context_for_ai(
+                query=query, max_tokens=1000, method=SearchMethod.HYBRID
+            )
+            return context if context else ""
+        except Exception:
+            return ""
 
     def get_selected_text(self) -> Optional[str]:
         """Get the selected replacement text."""
