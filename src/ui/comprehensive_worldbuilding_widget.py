@@ -546,8 +546,11 @@ class _StrengthenWorker(QThread):
                     if elem in elements:
                         elements.remove(elem)
 
-            # --- Phase 2: Index proper nouns from manuscript ---
+            # --- Phase 2: Load and index manuscript text ---
             chapter_texts = self._get_chapter_texts()
+            if not chapter_texts:
+                report_lines.append("(no chapter content found — skipping manuscript enrichment)")
+
             all_text = "\n\n".join(chapter_texts.values())
 
             # Build a name index: element_name -> list of (chapter_title, sentences)
@@ -568,8 +571,18 @@ class _StrengthenWorker(QThread):
                 if mentions:
                     name_index[name] = (category, elem, mentions)
 
-            # --- Phase 3: Enrich from manuscript ---
-            # Fields to check per element type (beyond just description)
+            # --- Phase 2b: Discover untracked proper nouns in manuscript ---
+            # Find capitalized multi-word phrases that appear 2+ times but
+            # aren't any existing element name
+            if all_text:
+                untracked = self._discover_untracked_nouns(all_text, all_names)
+                if untracked:
+                    report_lines.append(
+                        f"Potential untracked elements in manuscript: "
+                        f"{', '.join(n for n, _ in untracked[:10])}"
+                    )
+
+            # --- Phase 3: Enrich ALL thin fields from manuscript ---
             enrichable_fields = {
                 "characters": ["personality", "backstory", "physical_description",
                                "speaking_style", "motivations"],
@@ -584,21 +597,22 @@ class _StrengthenWorker(QThread):
             }
 
             for name, (category, elem, mentions) in name_index.items():
-                # Combine all mentions into context
                 all_sents = []
                 for ch_title, sents in mentions:
                     for s in sents:
                         all_sents.append(f"[{ch_title}] {s}")
                 context = " ... ".join(all_sents[:5])[:800]
 
-                # Check which fields are thin
+                # Enrich ALL thin fields (not just the first one)
                 fields_to_check = enrichable_fields.get(category, ["description"])
                 for field in fields_to_check:
                     current = getattr(elem, field, None)
-                    if current is None or (isinstance(current, str) and len(current) < 30):
-                        # Enrich this field with manuscript context
+                    # Skip fields that don't exist on this model
+                    if not hasattr(elem, field):
+                        continue
+                    if isinstance(current, str) and len(current) < 30:
                         enriched = f"From manuscript: {context}"
-                        if current and isinstance(current, str):
+                        if current:
                             enriched = f"{current}\n\n{enriched}"
                         try:
                             setattr(elem, field, enriched)
@@ -607,9 +621,8 @@ class _StrengthenWorker(QThread):
                                 f"({len(mentions)} chapter mentions)"
                             )
                             enrichments += 1
-                        except (AttributeError, TypeError):
+                        except (AttributeError, TypeError, ValueError):
                             pass
-                        break  # One field per pass to avoid over-enriching
 
             # --- Phase 4: RAG / encyclopedia / knowledge store ---
             try:
@@ -627,46 +640,61 @@ class _StrengthenWorker(QThread):
                 rag = EnhancedRAGSystem(project=self.project)
                 rag.rebuild_index()
 
+                # Map each element type to its primary text field
+                primary_field = {
+                    "characters": "backstory",
+                    "factions": "description",
+                    "places": "description",
+                    "cultures": "description",
+                    "technologies": "description",
+                    "myths": "description",
+                    "magic_systems": "description",
+                    "flora": "description",
+                    "fauna": "description",
+                }
+
                 for category, elements in element_lists.items():
+                    field = primary_field.get(category, "description")
                     for elem in elements:
                         name = getattr(elem, 'name', '')
-                        desc = getattr(elem, 'description', '')
+                        current = getattr(elem, field, None)
 
-                        # Skip if already has a solid description
-                        if not name or (desc and len(desc) > 50):
+                        # Skip if field doesn't exist or already has solid content
+                        if current is None and not hasattr(elem, field):
+                            continue
+                        if not name or (current and len(str(current)) > 50):
                             continue
 
-                        # Build a richer query using the element type + name
                         query = f"{category.rstrip('s')} {name}"
-
                         context = rag.get_context_for_ai(
                             query, max_tokens=600, method=SearchMethod.HYBRID
                         )
                         if not context:
                             continue
 
-                        # Extract useful content from RAG results
                         useful_lines = []
                         for line in context.split('\n'):
                             line = line.strip()
                             if not line or line.startswith('RELEVANT') or line == '---':
                                 continue
                             if line.startswith('[') and ']' in line:
-                                # Source header like [ENCYCLOPEDIA: Feudalism]
                                 continue
                             useful_lines.append(line)
 
                         if useful_lines:
                             reference = " ".join(useful_lines[:3])[:400]
-                            if not desc:
-                                elem.description = f"Reference: {reference}"
-                            else:
-                                elem.description = f"{desc}\n\nReference: {reference}"
-                            source = "encyclopedia + knowledge base" if kb_enabled else "encyclopedia"
-                            report_lines.append(
-                                f"Enriched {category}: '{name}' from {source}"
-                            )
-                            enrichments += 1
+                            try:
+                                if not current:
+                                    setattr(elem, field, f"Reference: {reference}")
+                                else:
+                                    setattr(elem, field, f"{current}\n\nReference: {reference}")
+                                source_label = "encyclopedia + knowledge base" if kb_enabled else "encyclopedia"
+                                report_lines.append(
+                                    f"Enriched {category}: '{name}'.{field} from {source_label}"
+                                )
+                                enrichments += 1
+                            except (AttributeError, TypeError, ValueError):
+                                pass
 
             except Exception as e:
                 report_lines.append(f"(RAG enrichment skipped: {e})")
@@ -699,12 +727,30 @@ class _StrengthenWorker(QThread):
         return merged
 
     def _get_chapter_texts(self) -> dict:
-        """Get chapter texts indexed by title."""
+        """Get chapter texts indexed by title.
+
+        Loads content from disk if not already in memory.
+        """
         if not hasattr(self.project, 'manuscript'):
             return {}
+
+        from pathlib import Path
+        project_dir = None
+        if hasattr(self.project, 'project_path') and self.project.project_path:
+            project_dir = Path(self.project.project_path).parent
+
         result = {}
         for ch in self.project.manuscript.chapters:
             content = getattr(ch, 'content', '')
+
+            # If content is empty, try loading from disk
+            if not content and project_dir:
+                try:
+                    ch.load_content_from_file(project_dir)
+                    content = getattr(ch, 'content', '')
+                except Exception:
+                    pass
+
             if content:
                 title = getattr(ch, 'title', f"Chapter {getattr(ch, 'number', '?')}")
                 result[title] = content
@@ -722,3 +768,47 @@ class _StrengthenWorker(QThread):
                 if len(matches) >= 3:
                     break
         return matches
+
+    def _discover_untracked_nouns(self, text: str, known_names: list) -> list:
+        """Find capitalized phrases in the manuscript that aren't tracked elements.
+
+        Returns list of (name, count) tuples for potential new worldbuilding entries.
+        """
+        import re
+        from src.utils.fuzzy_match import find_similar
+
+        # Extract capitalized phrases (2-4 words, likely proper nouns)
+        # Pattern: two or more capitalized words in sequence
+        pattern = r'\b([A-Z][a-z]+(?:\s+(?:of|the|and|de|von|van)\s+)?(?:[A-Z][a-z]+\s*){1,3})\b'
+        found = re.findall(pattern, text)
+
+        # Count occurrences
+        from collections import Counter
+        counts = Counter(found)
+
+        # Filter: must appear 2+ times, not be a known element
+        known_set = {n.lower() for n, _, _ in known_names}
+        # Also exclude common English phrases that get capitalized at sentence starts
+        common_skip = {
+            "the", "and", "but", "she", "her", "his", "they", "them",
+            "this", "that", "what", "when", "where", "how", "who",
+            "was", "were", "had", "have", "been", "could", "would",
+        }
+
+        untracked = []
+        for phrase, count in counts.most_common(30):
+            phrase_clean = phrase.strip()
+            if count < 2:
+                continue
+            if phrase_clean.lower() in known_set:
+                continue
+            if any(w.lower() in common_skip for w in phrase_clean.split()):
+                continue
+            if len(phrase_clean) < 4:
+                continue
+            # Check fuzzy match against known names
+            if find_similar(phrase_clean, [n for n, _, _ in known_names], threshold=0.7):
+                continue
+            untracked.append((phrase_clean, count))
+
+        return untracked[:15]

@@ -35,18 +35,23 @@ class ProjectSummarizer:
         """
         # Serialize relevant project data
         data_dict = {
-            'plot': project.story_planning.main_plot,
-            'themes': project.story_planning.themes,
-            'subplots': [sp.title for sp in project.story_planning.subplots],
+            'plot': getattr(project.story_planning, 'main_plot', ''),
+            'themes': getattr(project.story_planning, 'themes', []),
+            'subplots': [sp.title for sp in getattr(project.story_planning, 'subplots', [])],
             'characters': [
-                {'name': char.name, 'role': char.role, 'description': char.description}
-                for char in project.characters[:20]  # Limit for hash
+                {'name': char.name, 'type': getattr(char, 'character_type', ''),
+                 'personality': getattr(char, 'personality', '')[:100]}
+                for char in project.characters[:20]
             ],
             'worldbuilding': {
-                'mythology': project.worldbuilding.mythology[:1000],
-                'history': project.worldbuilding.history[:1000],
-                'politics': project.worldbuilding.politics[:1000],
-            }
+                'mythology': getattr(project.worldbuilding, 'mythology', '')[:500],
+                'history': getattr(project.worldbuilding, 'history', '')[:500],
+                'politics': getattr(project.worldbuilding, 'politics', '')[:500],
+                'factions': len(getattr(project.worldbuilding, 'factions', [])),
+                'cultures': len(getattr(project.worldbuilding, 'cultures', [])),
+                'places': len(getattr(project.worldbuilding, 'places', [])),
+            },
+            'chapters': len(getattr(project.manuscript, 'chapters', [])),
         }
 
         # Create hash
@@ -181,9 +186,15 @@ Keep it under 300 words. Be specific and concrete."""
         # Gather top characters (limit to 10)
         char_data = []
         for char in project.characters[:10]:
-            char_info = f"**{char.name}** ({char.role})"
-            if char.description:
-                char_info += f": {char.description[:200]}"
+            char_info = f"**{char.name}** ({getattr(char, 'character_type', 'minor')})"
+            if getattr(char, 'personality', ''):
+                char_info += f": {char.personality[:150]}"
+            if getattr(char, 'personality_traits', None):
+                char_info += f" | Traits: {', '.join(char.personality_traits)}"
+            if getattr(char, 'speaking_style', ''):
+                char_info += f" | Voice: {char.speaking_style[:80]}"
+            if getattr(char, 'backstory', ''):
+                char_info += f" | Background: {char.backstory[:100]}"
             char_data.append(char_info)
 
         if not char_data:
@@ -221,15 +232,27 @@ Keep it under 300 words. Focus on what's most relevant for understanding the sto
 
         # Gather worldbuilding data
         wb_sections = []
-        if wb.mythology:
-            wb_sections.append(f"Mythology: {wb.mythology[:500]}")
-        if wb.history:
-            wb_sections.append(f"History: {wb.history[:500]}")
-        if wb.politics:
-            wb_sections.append(f"Politics: {wb.politics[:500]}")
-        if wb.places:
-            places = [p.name for p in wb.places[:5]]
+        if getattr(wb, 'mythology', ''):
+            wb_sections.append(f"Mythology: {wb.mythology[:400]}")
+        if getattr(wb, 'history', ''):
+            wb_sections.append(f"History: {wb.history[:400]}")
+        if getattr(wb, 'politics', ''):
+            wb_sections.append(f"Politics: {wb.politics[:300]}")
+        if getattr(wb, 'factions', []):
+            factions = [f"{f.name}: {getattr(f, 'description', '')[:80]}" for f in wb.factions[:5]]
+            wb_sections.append(f"Factions: {'; '.join(factions)}")
+        if getattr(wb, 'cultures', []):
+            cultures = [f"{c.name}: {getattr(c, 'description', '')[:80]}" for c in wb.cultures[:4]]
+            wb_sections.append(f"Cultures: {'; '.join(cultures)}")
+        if getattr(wb, 'places', []):
+            places = [p.name for p in wb.places[:6]]
             wb_sections.append(f"Key Places: {', '.join(places)}")
+        if getattr(wb, 'magic_systems', []):
+            magic = [f"{m.name}: {getattr(m, 'description', '')[:80]}" for m in wb.magic_systems[:3]]
+            wb_sections.append(f"Magic Systems: {'; '.join(magic)}")
+        if getattr(wb, 'technologies', []):
+            tech = [t.name for t in wb.technologies[:5]]
+            wb_sections.append(f"Technologies: {', '.join(tech)}")
 
         if not wb_sections:
             return ""

@@ -32,117 +32,52 @@ class LocalModelInfo:
 
 # MLX Models for Apple Silicon (M1/M2/M3/M4/M5)
 MLX_MODELS: List[LocalModelInfo] = [
-    # === Lightweight Models (4-8GB RAM) ===
+    # === Small (8GB RAM) — Gemma, Qwen, Phi ===
     LocalModelInfo(
-        model_id="mlx-community/Phi-3-mini-4k-instruct-4bit",
-        display_name="Phi-3 Mini (3.8B) - MLX",
-        size_gb=2.0,
-        description="Microsoft's efficient model optimized for Apple Silicon",
+        model_id="unsloth/gemma-4-E4B-it-UD-MLX-4bit",
+        display_name="Gemma 4 E4B - MLX",
+        size_gb=2.5,
+        description="Google Gemma 4, multimodal, very fast",
         ram_required="8GB+",
-        best_for="General writing, rephrasing, fast inference",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="mlx-community/Qwen2.5-3B-Instruct-4bit",
-        display_name="Qwen 2.5 (3B) - MLX",
-        size_gb=1.6,
-        description="Alibaba's very fast 3B model",
-        ram_required="6GB+",
-        best_for="Quick rephrasing, instructions, very fast",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="mlx-community/Qwen3-4B-4bit",
-        display_name="Qwen 3 (4B) - MLX [Latest]",
-        size_gb=2.0,
-        description="Latest Qwen model (January 2026)",
-        ram_required="8GB+",
-        best_for="General writing, latest features",
+        best_for="General writing, creative tasks, fast inference",
         requires_trust_remote_code=False
     ),
     LocalModelInfo(
         model_id="mlx-community/gemma-3-4b-it-4bit",
         display_name="Gemma 3 (4B) - MLX",
         size_gb=2.0,
-        description="Google's multimodal model, works great on MLX",
+        description="Google's solid 4B model, great on MLX",
         ram_required="8GB+",
         best_for="Creative writing, dialogue",
         requires_trust_remote_code=False
     ),
     LocalModelInfo(
-        model_id="roneneldan/TinyStories-33M",
-        display_name="📖 TinyStories (33M) - MLX [Ultra Fast]",
-        size_gb=0.07,
-        description="Tiny story-focused model, runs instantly on Apple Silicon",
-        ram_required="1GB+",
-        best_for="Quick story drafts, testing, ultra-fast generation",
-        requires_trust_remote_code=False
-    ),
-
-    # === Reasoning Models for Planning & Critique ===
-    LocalModelInfo(
-        model_id="mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit",
-        display_name="🧠 DeepSeek-R1 Qwen 7B - MLX [Reasoning]",
-        size_gb=4.0,
-        description="Chain-of-thought reasoning for plot analysis and planning",
-        ram_required="12GB+",
-        best_for="Chapter planning, outline critique, continuity checking",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="mlx-community/Phi-4-reasoning-plus-4bit",
-        display_name="🧠 Phi-4 Reasoning Plus - MLX [Recommended]",
-        size_gb=7.0,
-        description="Microsoft's 14B reasoning model for story analysis (128K context)",
-        ram_required="16GB+",
-        best_for="Story planning, plot analysis, character consistency, critique",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="mlx-community/DeepSeek-R1-Distill-Qwen-14B-4bit",
-        display_name="🧠 DeepSeek-R1 Qwen 14B - MLX [High Quality]",
-        size_gb=7.0,
-        description="Advanced reasoning for complex plot and multi-character tracking",
-        ram_required="16GB+",
-        best_for="Complex plot analysis, logic verification, full critique",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="mlx-community/Ministral-3-3B-Reasoning-2512-bf16",
-        display_name="🧠 Ministral 3 3B Reasoning - MLX [Lightweight]",
-        size_gb=6.0,
-        description="Mistral's compact reasoning model with 128K context",
-        ram_required="8GB+",
-        best_for="Quick plot checks, outline validation, fast iterations",
-        requires_trust_remote_code=False
-    ),
-
-    # === Medium Models (16GB RAM) ===
-    LocalModelInfo(
-        model_id="mlx-community/Qwen2.5-7B-Instruct-4bit",
-        display_name="Qwen 2.5 (7B) - MLX [Recommended]",
-        size_gb=4.0,
-        description="Excellent balance of speed and quality",
-        ram_required="8GB+",
-        best_for="All-around best choice for most tasks",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="mlx-community/Qwen3-8B-4bit",
-        display_name="Qwen 3 (8B) - MLX [Latest]",
-        size_gb=4.0,
-        description="Latest Qwen 8B model (January 2026)",
+        model_id="mlx-community/Qwen3-4B-4bit",
+        display_name="Qwen 3 (4B) - MLX",
+        size_gb=2.0,
+        description="Latest Qwen, fast and capable",
         ram_required="8GB+",
         best_for="General writing, latest features",
         requires_trust_remote_code=False
     ),
     LocalModelInfo(
-        model_id="mlx-community/Mistral-7B-Instruct-v0.3-4bit",
-        display_name="Mistral 7B v0.3 - MLX",
-        size_gb=4.0,
-        description="Mistral AI's powerful 7B model",
+        model_id="mlx-community/Phi-3-mini-4k-instruct-4bit",
+        display_name="Phi-3 Mini (3.8B) - MLX",
+        size_gb=2.0,
+        description="Microsoft's efficient model",
         ram_required="8GB+",
-        best_for="High-quality writing, reasoning",
+        best_for="General writing, rephrasing, fast",
+        requires_trust_remote_code=False
+    ),
+
+    # === Medium (16GB RAM) — Best balance of speed and quality ===
+    LocalModelInfo(
+        model_id="mlx-community/Qwen3-8B-4bit",
+        display_name="Qwen 3 (8B) - MLX [Recommended]",
+        size_gb=4.0,
+        description="Excellent all-around model",
+        ram_required="8GB+",
+        best_for="All-around best choice for most tasks",
         requires_trust_remote_code=False
     ),
     LocalModelInfo(
@@ -154,505 +89,151 @@ MLX_MODELS: List[LocalModelInfo] = [
         best_for="Creative writing, complex tasks",
         requires_trust_remote_code=False
     ),
-    # === Storytelling-Specialized Models (Latest Mistral Models) ===
-    # Note: Using verified mlx-community models optimized for Apple Silicon
-    LocalModelInfo(
-        model_id="mlx-community/Ministral-3-8B-Instruct-2512-4bit",
-        display_name="⭐ Ministral 3 8B - MLX [Latest, Dec 2024]",
-        size_gb=5.6,
-        description="Latest Mistral model with 256K context, excellent for storytelling",
-        ram_required="8GB+",
-        best_for="Creative writing, storytelling, dialogue, long narratives",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="mlx-community/Mistral-Nemo-Instruct-2407-4bit",
-        display_name="⭐ Mistral Nemo 12B - MLX [High Quality]",
-        size_gb=6.89,
-        description="Mistral-NVIDIA collaboration, 128K context for long-form writing",
-        ram_required="12GB+",
-        best_for="High-quality creative writing, complex narratives",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="mlx-community/Meta-Llama-3.1-8B-Instruct-4bit",
-        display_name="📝 Llama 3.1 8B - MLX (128K context)",
-        size_gb=5.0,
-        description="Meta's Llama 3.1 with 128K context window, excellent for long-form",
-        ram_required="12GB+",
-        best_for="Long chapters, extended narratives, worldbuilding documents",
-        requires_trust_remote_code=False
-    ),
-
-    # === Gemma 4 Models ===
-    LocalModelInfo(
-        model_id="unsloth/gemma-4-E2B-it-UD-MLX-4bit",
-        display_name="Gemma 4 E2B - MLX [Tiny, Fast]",
-        size_gb=1.5,
-        description="Google Gemma 4 ultra-efficient model for edge/mobile",
-        ram_required="6GB+",
-        best_for="Quick rephrasing, fast drafts, low memory",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="unsloth/gemma-4-E4B-it-UD-MLX-4bit",
-        display_name="Gemma 4 E4B - MLX [Efficient]",
-        size_gb=2.5,
-        description="Google Gemma 4 efficient model, multimodal capable",
-        ram_required="8GB+",
-        best_for="General writing, creative tasks, fast inference",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="mlx-community/gemma-4-26b-a4b-it-4bit",
-        display_name="Gemma 4 26B-A4B - MLX [Mixture of Experts]",
-        size_gb=14.0,
-        description="Google Gemma 4 MoE — only 4B params active per token, fast for its size",
-        ram_required="24GB+",
-        best_for="High-quality writing with fast inference, creative tasks",
-        requires_trust_remote_code=False
-    ),
-
-    # === High-Performance Models (32GB+ RAM) ===
-    LocalModelInfo(
-        model_id="mlx-community/Qwen2.5-14B-Instruct-4bit",
-        display_name="Qwen 2.5 (14B) - MLX",
-        size_gb=7.0,
-        description="High-quality 14B model with excellent reasoning",
-        ram_required="16GB+",
-        best_for="Complex writing, long context (128K)",
-        requires_trust_remote_code=False
-    ),
     LocalModelInfo(
         model_id="mlx-community/Qwen3-14B-4bit",
-        display_name="📝 Qwen 3 (14B) - MLX [Latest, High Quality]",
+        display_name="Qwen 3 (14B) - MLX",
         size_gb=7.0,
-        description="Latest Qwen 3 with exceptional creative writing, 128K context",
+        description="High-quality, 128K context",
         ram_required="16GB+",
-        best_for="High-quality storytelling, long chapters, worldbuilding",
+        best_for="Storytelling, long chapters, worldbuilding",
         requires_trust_remote_code=False
     ),
+
+    # === Large (32GB RAM) — Maximum quality ===
     LocalModelInfo(
-        model_id="mlx-community/gemma-2-27b-it-4bit",
-        display_name="Gemma 2 (27B) - MLX [4-bit]",
+        model_id="mlx-community/gemma-4-26b-a4b-it-4bit",
+        display_name="Gemma 4 26B-A4B - MLX [MoE, Fast]",
         size_gb=14.0,
-        description="Google's Gemma 2 27B quantized to 4-bit for Apple Silicon — replaces MPS loading",
-        ram_required="36GB+",
-        best_for="High-quality creative writing, long context",
+        description="Gemma 4 MoE — only 4B params active, fast for its size",
+        ram_required="24GB+",
+        best_for="High quality with fast inference",
         requires_trust_remote_code=False
     ),
     LocalModelInfo(
         model_id="mlx-community/gemma-3-27b-it-4bit",
-        display_name="Gemma 3 (27B) - MLX [4-bit]",
+        display_name="Gemma 3 (27B) - MLX",
         size_gb=14.0,
-        description="Google's top-tier Gemma 3 model for Apple Silicon",
-        ram_required="36GB+",
+        description="Google's top-tier Gemma 3",
+        ram_required="32GB+",
         best_for="Maximum quality creative writing",
         requires_trust_remote_code=False
     ),
     LocalModelInfo(
         model_id="mlx-community/Qwen3-30B-A3B-4bit",
-        display_name="Qwen 3 (30B) - MLX [Latest]",
+        display_name="Qwen 3 (30B) - MLX",
         size_gb=15.0,
-        description="Latest Qwen model with exceptional quality",
+        description="Qwen MoE with exceptional quality",
         ram_required="32GB+",
         best_for="Highest quality, latest features",
         requires_trust_remote_code=False
     ),
     LocalModelInfo(
-        model_id="mlx-community/Qwen2.5-32B-Instruct-4bit",
-        display_name="Qwen 2.5 (32B) - MLX",
-        size_gb=17.0,
-        description="Top-tier model with exceptional capabilities",
-        ram_required="32GB+",
-        best_for="Maximum quality across all tasks",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="mlx-community/Mistral-Small-Instruct-2409-4bit",
-        display_name="Mistral Small (22B) - MLX",
-        size_gb=12.0,
-        description="Mistral's high-quality 22B model",
-        ram_required="32GB+",
-        best_for="Professional writing, complex reasoning",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
         model_id="mlx-community/gemma-4-31b-it-4bit",
-        display_name="Gemma 4 31B - MLX [4-bit, Frontier]",
+        display_name="Gemma 4 31B - MLX [Frontier]",
         size_gb=17.0,
-        description="Google Gemma 4 31B — frontier-quality, 256K context, multimodal",
+        description="Gemma 4 31B — frontier quality, 256K context",
         ram_required="32GB+",
-        best_for="Maximum quality writing, nuanced dialogue, worldbuilding",
+        best_for="Maximum quality, nuanced dialogue, worldbuilding",
         requires_trust_remote_code=False
     ),
 ]
 
 # PyTorch Models for Windows/Linux/Intel Macs
 PYTORCH_MODELS: List[LocalModelInfo] = [
-    # === Lightweight Models (4-6GB RAM) ===
+    # === Small (8GB RAM) — Gemma, Qwen, Phi ===
     LocalModelInfo(
-        model_id="microsoft/Phi-4-mini-instruct",
-        display_name="Phi-4 Mini (3.8B)",
-        size_gb=7.6,
-        description="Microsoft's latest small model with excellent reasoning",
+        model_id="google/gemma-4-E4B-it",
+        display_name="Gemma 4 E4B",
+        size_gb=8.0,
+        description="Google Gemma 4, multimodal, efficient",
         ram_required="8GB+",
-        best_for="General writing, rephrasing, creative tasks",
-        requires_trust_remote_code=True
-    ),
-    LocalModelInfo(
-        model_id="microsoft/Phi-3.5-mini-instruct",
-        display_name="Phi-3.5 Mini (3.8B)",
-        size_gb=7.6,
-        description="Improved Phi-3 with better multilingual support",
-        ram_required="8GB+",
-        best_for="Writing, translation, general tasks",
-        requires_trust_remote_code=True
+        best_for="General writing, fast inference",
+        requires_trust_remote_code=False
     ),
     LocalModelInfo(
         model_id="google/gemma-3-4b-it",
-        display_name="Gemma 3 (4B) ⚠️ Not Mac Compatible",
+        display_name="Gemma 3 (4B)",
         size_gb=8.0,
-        description="Google's latest efficient model - WARNING: Known to crash on macOS/Apple Silicon due to stack overflow. Use Qwen or Phi instead.",
+        description="Google's solid 4B model",
         ram_required="8GB+",
-        best_for="Creative writing, instructions, dialogue (Linux/Windows only)",
+        best_for="Creative writing, dialogue",
         requires_trust_remote_code=False
     ),
     LocalModelInfo(
         model_id="Qwen/Qwen2.5-3B-Instruct",
         display_name="Qwen 2.5 (3B)",
         size_gb=6.0,
-        description="Alibaba's efficient instruction-following model",
+        description="Fast and capable",
         ram_required="6GB+",
         best_for="Instructions, rephrasing, multilingual",
         requires_trust_remote_code=True
     ),
     LocalModelInfo(
-        model_id="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-        display_name="TinyLlama (1.1B)",
-        size_gb=2.2,
-        description="Very fast and lightweight chat model",
-        ram_required="4GB+",
-        best_for="Quick suggestions, low-resource systems",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="roneneldan/TinyStories-33M",
-        display_name="📖 TinyStories (33M) [Ultra Fast]",
-        size_gb=0.07,
-        description="Tiny model trained specifically on story generation, runs instantly on CPU",
-        ram_required="1GB+",
-        best_for="Quick story drafts, testing, CPU-only systems",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="roneneldan/TinyStories-8M",
-        display_name="📖 TinyStories (8M) [Fastest]",
-        size_gb=0.02,
-        description="Ultra-lightweight story model, instant generation on any device",
-        ram_required="512MB+",
-        best_for="Rapid prototyping, story outlines, minimal resources",
-        requires_trust_remote_code=False
-    ),
-
-    # === Reasoning Models for Planning & Critique ===
-    LocalModelInfo(
-        model_id="deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
-        display_name="🧠 DeepSeek-R1 Qwen 7B [Reasoning, Fits 16GB]",
-        size_gb=14.0,
-        description="Chain-of-thought reasoning for plot analysis and planning",
-        ram_required="16GB+",
-        best_for="Chapter planning, outline critique, continuity checking",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="mistralai/Ministral-3-8B-Reasoning-2512",
-        display_name="🧠 Ministral 3 8B Reasoning [Balanced]",
-        size_gb=16.0,
-        description="Mistral's reasoning model with 128K context, vision-capable",
-        ram_required="16GB+",
-        best_for="Plot structure, character arcs, scene analysis",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="Qwen/Qwen3-4B-Thinking-2507",
-        display_name="🧠 Qwen3 4B Thinking [Efficient, 262K context]",
-        size_gb=8.0,
-        description="Latest Qwen3 thinking model with massive 262K context",
-        ram_required="12GB+",
-        best_for="Long narrative analysis, multi-chapter tracking, continuity",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="microsoft/Phi-4-reasoning-plus",
-        display_name="🧠 Phi-4 Reasoning Plus [Recommended]",
-        size_gb=28.0,
-        description="Microsoft's 14B reasoning model with 128K context, enhanced RL",
-        ram_required="32GB+",
-        best_for="Story planning, plot analysis, character consistency, critique",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
-        display_name="🧠 DeepSeek-R1 Qwen 14B [High Quality]",
-        size_gb=28.0,
-        description="Advanced reasoning for complex plot and multi-character tracking",
-        ram_required="32GB+",
-        best_for="Complex plot analysis, logic verification, full critique",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="Qwen/QwQ-32B",
-        display_name="🧠 QwQ 32B [High Performance]",
-        size_gb=64.0,
-        description="Qwen's powerful 32B reasoning model with 131K context",
-        ram_required="64GB+",
-        best_for="Deep plot analysis, complex worldbuilding, full manuscript",
-        requires_trust_remote_code=False
-    ),
-
-    # === Medium Models (8-16GB RAM) ===
-    LocalModelInfo(
-        model_id="meta-llama/Llama-3.2-3B-Instruct",
-        display_name="Llama 3.2 (3B)",
-        size_gb=6.0,
-        description="Meta's latest small Llama with strong performance",
+        model_id="microsoft/Phi-4-mini-instruct",
+        display_name="Phi-4 Mini (3.8B)",
+        size_gb=7.6,
+        description="Microsoft's efficient model",
         ram_required="8GB+",
-        best_for="General writing, chat, creative tasks",
-        requires_trust_remote_code=False
+        best_for="General writing, rephrasing",
+        requires_trust_remote_code=True
     ),
+
+    # === Medium (16GB RAM) ===
     LocalModelInfo(
-        model_id="meta-llama/Llama-3.1-8B-Instruct",
-        display_name="Llama 3.1 (8B)",
-        size_gb=16.0,
-        description="Meta's powerful 8B model with excellent quality",
-        ram_required="16GB+",
-        best_for="High-quality writing, complex tasks",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="mistralai/Mistral-7B-Instruct-v0.3",
-        display_name="Mistral 7B v0.3",
+        model_id="Qwen/Qwen2.5-7B-Instruct",
+        display_name="Qwen 2.5 (7B) [Recommended]",
         size_gb=14.0,
-        description="Latest Mistral 7B with improved capabilities",
+        description="Excellent all-around, 128K context",
         ram_required="16GB+",
-        best_for="High-quality writing, complex reasoning",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="mistralai/Ministral-8B-Instruct-2410",
-        display_name="Ministral 8B (Oct 2024)",
-        size_gb=16.0,
-        description="Mistral's efficient 8B model optimized for edge",
-        ram_required="16GB+",
-        best_for="Quality writing with reasonable resources",
-        requires_trust_remote_code=False
+        best_for="Long chapters, worldbuilding, all tasks",
+        requires_trust_remote_code=True
     ),
     LocalModelInfo(
         model_id="google/gemma-3-12b-it",
-        display_name="Gemma 3 (12B) ⚠️ Not Mac Compatible",
+        display_name="Gemma 3 (12B)",
         size_gb=24.0,
-        description="Google's high-quality 12B model - WARNING: Known to crash on macOS/Apple Silicon due to stack overflow. Use Qwen 2.5-14B instead.",
+        description="Google's high-quality 12B model",
         ram_required="24GB+",
-        best_for="Best quality creative writing, complex tasks (Linux/Windows only)",
+        best_for="Creative writing, complex tasks",
         requires_trust_remote_code=False
-    ),
-
-    # === Specialized/Community Models ===
-    LocalModelInfo(
-        model_id="ToastyPigeon/Gemma-3-Starshine-12B",
-        display_name="Gemma 3 Starshine (12B) ⚠️ Not Mac Compatible",
-        size_gb=24.0,
-        description="Story-focused Gemma 3 merge - WARNING: Known to crash on macOS/Apple Silicon due to stack overflow. Use Qwen or Mistral Nemo instead.",
-        ram_required="24GB+",
-        best_for="Creative fiction, storytelling (Linux/Windows only)",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="ibm-research/Granite-3.2-3B-Instruct",
-        display_name="Granite 3.2 (3B)",
-        size_gb=6.0,
-        description="IBM's efficient model optimized for enterprise tasks",
-        ram_required="6GB+",
-        best_for="Writing, summarization, structured output",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="01-ai/Yi-1.5-6B-Chat",
-        display_name="Yi 1.5 (6B)",
-        size_gb=12.0,
-        description="Strong bilingual model (English/Chinese)",
-        ram_required="12GB+",
-        best_for="Multilingual writing, dialogue",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="arcee-ai/Arcee-Spark",
-        display_name="Arcee Spark (7B)",
-        size_gb=14.0,
-        description="Optimized for creative and conversational tasks",
-        ram_required="16GB+",
-        best_for="Creative writing, storytelling",
-        requires_trust_remote_code=False
-    ),
-
-    # === Storytelling-Specialized Models ===
-    # Note: These are verified HuggingFace models optimized for creative writing
-    LocalModelInfo(
-        model_id="NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO",
-        display_name="⭐ Nous Hermes 2 Mixtral (47B)",
-        size_gb=90.0,
-        description="Excellent creative writing model from Nous Research, DPO fine-tuned",
-        ram_required="64GB+ (or use with CPU offloading)",
-        best_for="Story writing, character dialogue, creative fiction",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="mistralai/Ministral-3-8B-Instruct-2512",
-        display_name="⭐ Ministral 3 8B [Latest, Dec 2024]",
-        size_gb=16.0,
-        description="Latest Mistral model with 256K context, excellent for storytelling",
-        ram_required="16GB+",
-        best_for="Creative writing, storytelling, dialogue, long narratives",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="Qwen/Qwen2.5-7B-Instruct",
-        display_name="📝 Qwen 2.5 7B (128K context)",
-        size_gb=14.0,
-        description="Excellent for long-form writing with massive 128K context window",
-        ram_required="16GB+",
-        best_for="Long chapters, extended narratives, worldbuilding documents",
-        requires_trust_remote_code=True
-    ),
-
-    # === High-Performance Models (32GB RAM, optimized for M5 Mac) ===
-    LocalModelInfo(
-        model_id="Qwen/Qwen2.5-14B-Instruct",
-        display_name="Qwen 2.5 (14B)",
-        size_gb=28.0,
-        description="Alibaba's powerful 14B model with excellent reasoning and coding",
-        ram_required="32GB+",
-        best_for="High-quality writing, complex reasoning, long context (128K)",
-        requires_trust_remote_code=True
     ),
     LocalModelInfo(
         model_id="Qwen/Qwen3-14B-Instruct",
-        display_name="📝 Qwen 3 (14B) [Latest, High Quality]",
+        display_name="Qwen 3 (14B)",
         size_gb=28.0,
-        description="Latest Qwen 3 with exceptional creative writing, 128K context",
+        description="Latest Qwen 3, 128K context",
         ram_required="32GB+",
-        best_for="High-quality storytelling, long chapters, worldbuilding",
+        best_for="Storytelling, long chapters, worldbuilding",
         requires_trust_remote_code=True
     ),
+
+    # === Large (32GB RAM) — Maximum quality ===
     LocalModelInfo(
-        model_id="Qwen/Qwen2.5-32B-Instruct",
-        display_name="Qwen 2.5 (32B)",
-        size_gb=64.0,
-        description="Top-tier Qwen model with exceptional capabilities across all tasks",
-        ram_required="32GB+",
-        best_for="Professional writing, complex analysis, multilingual (29 languages)",
-        requires_trust_remote_code=True
-    ),
-    LocalModelInfo(
-        model_id="Qwen/Qwen3-30B-A3B",
-        display_name="Qwen 3 (30B-A3B) [Latest]",
-        size_gb=60.0,
-        description="Latest Qwen 3 model with exceptional reasoning and quality",
-        ram_required="64GB+ (32GB with 4-bit quantization)",
-        best_for="Highest quality critique, complex analysis, professional writing",
-        requires_trust_remote_code=True
-    ),
-    LocalModelInfo(
-        model_id="mistralai/Mistral-Nemo-Instruct-2407",
-        display_name="⭐ Mistral Nemo 12B [High Quality]",
-        size_gb=24.0,
-        description="Mistral-NVIDIA collaboration, 128K context for long-form writing",
+        model_id="google/gemma-4-26b-a4b-it",
+        display_name="Gemma 4 26B-A4B (MoE)",
+        size_gb=26.0,
+        description="Gemma 4 MoE — 4B active, fast for its size",
         ram_required="24GB+",
-        best_for="High-quality creative writing, complex narratives, long chapters",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="Qwen/Qwen2.5-Coder-14B-Instruct",
-        display_name="Qwen 2.5 Coder (14B)",
-        size_gb=28.0,
-        description="Specialized coding variant with excellent technical writing",
-        ram_required="32GB+",
-        best_for="Technical documentation, code explanations, structured output",
-        requires_trust_remote_code=True
-    ),
-    LocalModelInfo(
-        model_id="google/gemma-2-27b-it",
-        display_name="Gemma 2 (27B)",
-        size_gb=54.0,
-        description="Google's powerful 27B model trained on 13T tokens",
-        ram_required="32GB+",
-        best_for="High-quality creative writing, summarization, reasoning",
+        best_for="High quality with fast inference",
         requires_trust_remote_code=False
     ),
     LocalModelInfo(
         model_id="google/gemma-3-27b-it",
-        display_name="Gemma 3 (27B) ⚠️ Not Mac Compatible",
+        display_name="Gemma 3 (27B)",
         size_gb=54.0,
-        description="Latest Gemma with multimodal support - WARNING: Known to crash on macOS/Apple Silicon due to stack overflow. Use Qwen 2.5-32B or Mistral Small instead.",
+        description="Google's top-tier Gemma 3",
         ram_required="32GB+",
-        best_for="Advanced creative writing, multilingual (Linux/Windows only)",
+        best_for="Advanced creative writing, multilingual",
         requires_trust_remote_code=False
     ),
     LocalModelInfo(
-        model_id="mistralai/Mistral-Small-Instruct-2409",
-        display_name="Mistral Small (22B)",
-        size_gb=44.0,
-        description="Mistral's efficient 22B model with strong performance",
+        model_id="Qwen/Qwen3-30B-A3B",
+        display_name="Qwen 3 (30B-A3B)",
+        size_gb=60.0,
+        description="Qwen MoE with exceptional quality",
         ram_required="32GB+",
-        best_for="Balanced writing tasks, efficient reasoning",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="mistralai/Codestral-22B-v0.1",
-        display_name="Codestral (22B)",
-        size_gb=44.0,
-        description="Mistral's specialized code model with strong technical writing",
-        ram_required="32GB+",
-        best_for="Code generation, technical documentation, structured content",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="mistralai/Mistral-Small-3.2-24B-Instruct-2506",
-        display_name="Mistral Small 3 (24B)",
-        size_gb=48.0,
-        description="Latest Mistral Small 3, rivals Llama 3.3 70B in performance",
-        ram_required="32GB+",
-        best_for="High-quality writing, reasoning, best performance for size",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="TheBloke/WizardLM-Uncensored-SuperCOT-StoryTelling-30B-GPTQ",
-        display_name="WizardLM Storytelling (30B)",
-        size_gb=20.0,
-        description="GPTQ quantized model specialized for creative storytelling",
-        ram_required="32GB+",
-        best_for="Fiction writing, creative storytelling, narrative prose",
-        requires_trust_remote_code=False
-    ),
-    # === Gemma 4 Models ===
-    LocalModelInfo(
-        model_id="google/gemma-4-E4B-it",
-        display_name="Gemma 4 E4B",
-        size_gb=8.0,
-        description="Google Gemma 4 efficient model, multimodal capable",
-        ram_required="8GB+",
-        best_for="General writing, fast inference",
-        requires_trust_remote_code=False
-    ),
-    LocalModelInfo(
-        model_id="google/gemma-4-26b-a4b-it",
-        display_name="Gemma 4 26B-A4B (Mixture of Experts)",
-        size_gb=26.0,
-        description="Google Gemma 4 MoE — 4B active params per token, efficient for its size",
-        ram_required="24GB+",
-        best_for="High-quality writing with fast inference",
-        requires_trust_remote_code=False
+        best_for="Highest quality, professional writing",
+        requires_trust_remote_code=True
     ),
     LocalModelInfo(
         model_id="google/gemma-4-31b-it",

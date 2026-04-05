@@ -51,7 +51,16 @@ class ChatWorker(QThread):
     SYSTEM_PROMPTS = {
         "general": """You are a helpful creative writing assistant integrated into a writer's platform.
 You have access to the author's full project context including plot, characters, worldbuilding, and manuscript chapters.
-You may also receive RELEVANT REFERENCE material from encyclopedias and knowledge bases (Wikipedia, Britannica, worldbuilding reference). When provided, use this reference to ground your suggestions in real-world or established knowledge while adapting it to the author's fictional world.
+
+CONTEXT PRIORITY (most to least important):
+1. MANUSCRIPT TEXT — the actual written chapters are the primary source of truth
+2. CHARACTERS — personality, backstory, traits, speaking style, motivations, arcs
+3. PLOT — main plot, subplots, themes, story promises, Freytag pyramid
+4. WORLDBUILDING — factions, cultures, places, magic systems, technology, history
+5. EXISTING ELEMENTS — names and types of all project elements (avoid duplicates)
+6. REFERENCE/ENCYCLOPEDIA — real-world reference material for grounding ideas in reality
+
+The manuscript and project elements ALWAYS take precedence. Reference material (encyclopedia, Wikipedia, etc.) is supplementary — use it to inspire creativity, ground fiction in plausible real-world parallels, and suggest authentic details. Never let reference override what the author has established.
 
 IMPORTANT: Keep responses focused and concise. Answer what's asked, then stop. Don't ramble or analyze unrelated parts of the project.
 
@@ -390,7 +399,8 @@ Be encouraging, creative, and constructive. Reference specific details from thei
 Keep responses focused and actionable.""",
 
         "chapter_focus": """You are a writing assistant with the full text of the CURRENT CHAPTER available to you.
-You may receive RELEVANT REFERENCE material from encyclopedias and knowledge bases. When provided, use it to inform your analysis and suggestions — for example, referencing real-world parallels for the culture, government, or technology depicted in the chapter.
+You also have the author's characters, plot, and worldbuilding for consistency checks.
+If REFERENCE material is provided (encyclopedia, knowledge base), use it to inform your suggestions — for example, noting real-world parallels that could deepen the culture, government, or technology in the chapter. But the manuscript and the author's existing elements always take priority over reference material.
 
 YOUR ONE JOB: Answer exactly what the author asked. Nothing else.
 
@@ -416,6 +426,8 @@ QUESTION TYPES AND HOW TO HANDLE THEM:
   Answer it directly.""",
 
         "writer": """You are a skilled creative writer working as a ghostwriter/collaborator. Your job is to WRITE prose based on the author's outline, world, and characters.
+
+You have access to the author's characters (personality, voice, traits), plot, worldbuilding, and the current chapter. Use ALL of this context to write prose that is consistent with the established world and characters. If reference material (encyclopedia) is provided, draw from it to add authentic detail — but never contradict the author's established world.
 
 === SCENE-BY-SCENE WRITING ===
 If a CHAPTER OUTLINE or SCENE LIST is provided:
@@ -533,40 +545,30 @@ When asked to continue:
         if self.context.get('existing_elements'):
             parts.append(f"\nEXISTING ELEMENTS (use these exact names — do NOT create duplicates):\n{self.context['existing_elements']}")
 
-        # For GENERAL mode: Use RAG-enhanced semantic context if available
-        # This provides BOTH creation and discussion capabilities with relevant context
-        if self.mode == "general" and self.context.get('rag_context'):
-            parts.append(f"\n{'='*60}")
-            parts.append("RELEVANT PROJECT CONTEXT (Semantic Search):")
-            parts.append(f"{'='*60}")
-            parts.append(self.context['rag_context'])
-
-            # Add plot summary if available for broader context
-            if self.context.get('plot_summary'):
-                parts.append(f"\nPLOT OVERVIEW:\n{self.context['plot_summary']}")
-
-            # Return early - RAG context has all relevant details
-            return "\n".join(parts) if parts else ""
-
-        # For other modes: Continue with standard comprehensive context
+        # === PRIMARY CONTEXT (always included, highest priority) ===
+        # These come from the author's own work and are the source of truth.
 
         # Plot/Story planning
         if self.context.get('plot_summary'):
             parts.append(f"\nPLOT OUTLINE:\n{self.context['plot_summary'][:2000]}")
 
-        # Characters
+        # Characters — personality, backstory, traits, speaking style
         if self.context.get('characters'):
-            chars = self.context['characters'][:1500]
-            parts.append(f"\nMAIN CHARACTERS:\n{chars}")
+            parts.append(f"\nMAIN CHARACTERS:\n{self.context['characters'][:2000]}")
 
-        # Worldbuilding
+        # Worldbuilding — factions, cultures, magic, places, etc.
         if self.context.get('worldbuilding'):
-            wb = self.context['worldbuilding'][:1500]
-            parts.append(f"\nWORLDBUILDING:\n{wb}")
+            parts.append(f"\nWORLDBUILDING:\n{self.context['worldbuilding'][:2000]}")
 
-        # RAG context (relevant worldbuilding/encyclopedia entries for this query)
+        # === SECONDARY CONTEXT (RAG results — enriches with specifics) ===
+        # Includes relevant worldbuilding entries, character details, and
+        # encyclopedia/knowledge base if enabled. Supplements primary context.
         if self.context.get('rag_context'):
-            parts.append(f"\nRELEVANT REFERENCE (from project & encyclopedia):\n{self.context['rag_context'][:1500]}")
+            parts.append(
+                f"\nRELEVANT REFERENCE (from project data"
+                f"{' & encyclopedia' if self.context.get('kb_enabled') else ''}):\n"
+                f"{self.context['rag_context'][:1500]}"
+            )
 
         # Current chapter context
         if self.context.get('current_chapter_title'):
@@ -706,7 +708,83 @@ When asked to continue:
             chapters_info = self.context['all_chapters'][:1500]
             parts.append(f"\nMANUSCRIPT CHAPTERS:\n{chapters_info}")
 
-        return "\n".join(parts) if parts else ""
+        full_context = "\n".join(parts) if parts else ""
+
+        # If context is very large, add a focused summary at the top.
+        # Prefer the AI-generated project summary (from ProjectSummarizer)
+        # over the heuristic one — it's richer and more coherent.
+        if len(full_context) > 6000:
+            ai_sum = self.context.get('ai_summary')
+            if ai_sum:
+                summary = ai_sum
+            else:
+                summary = self._build_context_summary()
+            if summary:
+                full_context = (
+                    f"=== CONTEXT SUMMARY (read this first) ===\n"
+                    f"{summary}\n\n"
+                    f"=== DETAILED CONTEXT (reference as needed) ===\n"
+                    f"{full_context}"
+                )
+
+        return full_context
+
+    def _build_context_summary(self) -> str:
+        """Build a concise summary of the most important context.
+
+        This is prepended when the full context is very large so the model
+        has a focused overview before diving into detailed sections.
+        """
+        lines = []
+
+        # One-line project summary
+        if self.context.get('project_name'):
+            desc = self.context.get('project_description', '')
+            lines.append(f"Project: {self.context['project_name']}"
+                         + (f" — {desc[:100]}" if desc else ""))
+
+        # Current chapter
+        if self.context.get('current_chapter_title'):
+            ch = self.context['current_chapter_title']
+            num = self.context.get('chapter_number', '')
+            lines.append(f"Current chapter: {ch}" + (f" (#{num})" if num else ""))
+
+        # Key characters (names + types only)
+        if self.context.get('characters'):
+            chars = self.context['characters']
+            # Extract just the first line per character (name + type)
+            char_names = []
+            for line in chars.split('\n'):
+                line = line.strip()
+                if line.startswith('- ') and '(' in line:
+                    char_names.append(line[2:line.index(')') + 1] if ')' in line else line[2:40])
+            if char_names:
+                lines.append(f"Characters: {', '.join(char_names[:8])}")
+
+        # Plot gist
+        if self.context.get('plot_summary'):
+            plot = self.context['plot_summary']
+            first_line = plot.split('\n')[0][:150]
+            lines.append(f"Plot: {first_line}")
+
+        # Worldbuilding gist
+        if self.context.get('worldbuilding'):
+            wb = self.context['worldbuilding'][:150]
+            lines.append(f"World: {wb.split(chr(10))[0]}")
+
+        # Scene context
+        if self.context.get('chapter_planning'):
+            planning = self.context['chapter_planning']
+            if planning.get('description'):
+                lines.append(f"Scene goal: {planning['description'][:100]}")
+            if planning.get('tone'):
+                lines.append(f"Tone: {planning['tone']}")
+
+        # User's query
+        if self.message:
+            lines.append(f"User asks: {self.message[:100]}")
+
+        return "\n".join(lines) if lines else ""
 
     def run(self):
         """Process the chat message with AI."""
@@ -1405,6 +1483,9 @@ class MainWindow(QMainWindow):
         # Initialize/refresh RAG system for semantic context retrieval
         self._init_rag_system()
 
+        # Generate AI project summary if stale (runs in background)
+        self._update_project_summary()
+
         self._loading_project = False
         self.project_changed.emit()
 
@@ -1460,6 +1541,88 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"Failed to initialize RAG system: {e}")
             self._rag_initialized = False
+
+    def _update_project_summary(self):
+        """Generate or refresh the AI project summary in the background.
+
+        Only regenerates if the project data has changed since the last summary.
+        Uses a background thread to avoid blocking the UI.
+        """
+        if not self.current_project:
+            return
+
+        try:
+            from src.ai.project_summarizer import get_project_summarizer
+
+            summarizer = get_project_summarizer()
+            if not summarizer.needs_update(self.current_project):
+                return
+
+            # Set up the AI handler if not already done
+            if not summarizer._ai_handler:
+                def _handler(prompt: str) -> str:
+                    # Use the same LLM as the chat
+                    from src.ai.llm_client import LLMClient, LLMProvider, HuggingFaceConfig
+                    ai_config = get_ai_config()
+                    settings = ai_config.get_settings()
+
+                    prefer_local = settings.get("prefer_local_model", False)
+                    enable_local = settings.get("enable_local_models", False)
+                    local_model_id = settings.get("local_model_id", "")
+
+                    if prefer_local and enable_local and local_model_id:
+                        is_mlx = "mlx" in local_model_id.lower()
+                        hf_config = HuggingFaceConfig(
+                            model_id=local_model_id, use_local=True,
+                            device=settings.get("local_model_device", "auto"),
+                            quantization=settings.get("local_model_quantization", "none")
+                                if settings.get("local_model_quantization") != "none" else None,
+                            trust_remote_code=settings.get("local_model_trust_remote_code", False)
+                        )
+                        provider = LLMProvider.MLX_LOCAL if is_mlx else LLMProvider.HUGGINGFACE_LOCAL
+                        client = LLMClient(provider=provider, hf_config=hf_config)
+                    else:
+                        provider_name = settings.get("default_llm", "claude").lower()
+                        api_key = ai_config.get_api_key(provider_name)
+                        if not api_key:
+                            return ""
+                        provider_enum = {
+                            "claude": LLMProvider.CLAUDE, "chatgpt": LLMProvider.CHATGPT,
+                            "openai": LLMProvider.CHATGPT, "gemini": LLMProvider.GEMINI,
+                        }.get(provider_name, LLMProvider.CLAUDE)
+                        client = LLMClient(
+                            provider=provider_enum, api_key=api_key,
+                            model=ai_config.get_model(provider_name)
+                        )
+
+                    return client.generate_text(
+                        prompt=prompt,
+                        system_prompt="You are a concise summarizer. Be specific, use names and details.",
+                        max_tokens=400,
+                        temperature=0.3,
+                        task_type="project_summary"
+                    )
+
+                summarizer.set_ai_handler(_handler)
+
+            # Run in background thread
+            class _SummaryWorker(QThread):
+                def __init__(self, summarizer, project):
+                    super().__init__()
+                    self.summarizer = summarizer
+                    self.project = project
+
+                def run(self):
+                    try:
+                        self.summarizer.update_project_summary(self.project)
+                    except Exception as e:
+                        print(f"Project summary generation failed: {e}")
+
+            self._summary_worker = _SummaryWorker(summarizer, self.current_project)
+            self._summary_worker.start()
+
+        except Exception as e:
+            print(f"Project summary setup failed: {e}")
 
     def _get_rag_context(self, query: str, max_tokens: int = 2000) -> str:
         """Get RAG-enhanced context for a query.
@@ -1642,11 +1805,120 @@ class MainWindow(QMainWindow):
         self._chat_history = []
 
     def _compact_chat_history(self):
-        """Keep at most _MAX_CHAT_TURNS turns; drop oldest pairs when over limit."""
-        # Each turn = one user message + one assistant message = 2 items
-        max_messages = self._MAX_CHAT_TURNS * 2
-        if len(self._chat_history) > max_messages:
+        """Compact conversation history when it grows too large.
+
+        Strategy:
+        - Under threshold: keep everything
+        - Over threshold: use AI to summarize the oldest turns into a single
+          context message, then keep only the recent turns verbatim
+        - Falls back to simple truncation if AI is unavailable
+        """
+        max_messages = self._MAX_CHAT_TURNS * 2  # 12 turns = 24 messages
+
+        if len(self._chat_history) <= max_messages:
+            return
+
+        # Split: old messages to summarize, recent messages to keep verbatim
+        keep_recent = 8 * 2  # Keep last 8 turns verbatim
+        old_messages = self._chat_history[:-keep_recent]
+        recent_messages = self._chat_history[-keep_recent:]
+
+        # Check if there's already a summary at the front
+        has_summary = (old_messages and
+                       old_messages[0].get("role") == "system" and
+                       old_messages[0].get("content", "").startswith("[Conversation summary"))
+
+        # Try AI-powered summarization
+        summary = self._summarize_old_turns(old_messages)
+
+        if summary:
+            # Replace history with: summary + recent turns
+            self._chat_history = [
+                {"role": "system", "content": f"[Conversation summary of earlier messages]\n{summary}"}
+            ] + recent_messages
+        else:
+            # Fallback: simple truncation
             self._chat_history = self._chat_history[-max_messages:]
+
+    def _summarize_old_turns(self, messages: list) -> str:
+        """Use AI to summarize old conversation turns into a concise context.
+
+        Returns a summary string, or empty string if AI is unavailable.
+        """
+        if not messages:
+            return ""
+
+        # Build a text representation of the old turns
+        turns_text = []
+        for msg in messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if role == "system" and content.startswith("[Conversation summary"):
+                # Carry forward the existing summary
+                turns_text.append(f"PRIOR SUMMARY: {content}")
+            elif role == "user":
+                turns_text.append(f"User: {content[:300]}")
+            elif role == "assistant":
+                turns_text.append(f"Assistant: {content[:300]}")
+
+        if not turns_text:
+            return ""
+
+        conversation_block = "\n".join(turns_text)
+
+        try:
+            from src.config.ai_config import get_ai_config
+            from src.ai.llm_client import LLMClient, LLMProvider, HuggingFaceConfig
+
+            ai_config = get_ai_config()
+            settings = ai_config.get_settings()
+
+            prefer_local = settings.get("prefer_local_model", False)
+            enable_local = settings.get("enable_local_models", False)
+            local_model_id = settings.get("local_model_id", "")
+
+            if prefer_local and enable_local and local_model_id:
+                is_mlx = "mlx" in local_model_id.lower()
+                hf_config = HuggingFaceConfig(
+                    model_id=local_model_id, use_local=True,
+                    device=settings.get("local_model_device", "auto"),
+                    quantization=settings.get("local_model_quantization", "none")
+                        if settings.get("local_model_quantization") != "none" else None,
+                    trust_remote_code=settings.get("local_model_trust_remote_code", False)
+                )
+                provider = LLMProvider.MLX_LOCAL if is_mlx else LLMProvider.HUGGINGFACE_LOCAL
+                client = LLMClient(provider=provider, hf_config=hf_config)
+            else:
+                provider_name = settings.get("default_llm", "claude").lower()
+                api_key = ai_config.get_api_key(provider_name)
+                if not api_key:
+                    return ""
+                provider_enum = {
+                    "claude": LLMProvider.CLAUDE, "chatgpt": LLMProvider.CHATGPT,
+                    "openai": LLMProvider.CHATGPT, "gemini": LLMProvider.GEMINI,
+                }.get(provider_name, LLMProvider.CLAUDE)
+                client = LLMClient(
+                    provider=provider_enum, api_key=api_key,
+                    model=ai_config.get_model(provider_name)
+                )
+
+            summary = client.generate_text(
+                prompt=(
+                    f"Summarize this conversation between a writer and their AI assistant. "
+                    f"Capture: key decisions made, elements created/modified, "
+                    f"topics discussed, and any ongoing threads. Be concise (3-5 sentences).\n\n"
+                    f"{conversation_block[:3000]}"
+                ),
+                system_prompt="You summarize conversations. Be concise and specific. Use names and details.",
+                max_tokens=200,
+                temperature=0.2,
+                task_type="chat_compaction"
+            )
+            return summary.strip()
+
+        except Exception as e:
+            print(f"Chat compaction summarization failed: {e}")
+            return ""
 
     def _handle_chat_message(self, message: str, mode: str = "general", insert_mode: str = ""):
         """Handle chat message from user.
@@ -1929,22 +2201,36 @@ class MainWindow(QMainWindow):
         if existing_names:
             context['existing_elements'] = existing_names
 
-        # For GENERAL mode, use RAG for semantic context retrieval
-        # This allows both element creation AND discussion based on relevant context
-        if mode == "general" and user_message and self._rag_initialized:
-            rag_context = self._get_rag_context(user_message, max_tokens=2000)
+        # Include AI-generated project summary if available
+        if hasattr(project, 'ai_summary') and project.ai_summary and not project.ai_summary.is_empty():
+            ai_sum_parts = []
+            if project.ai_summary.plot_summary:
+                ai_sum_parts.append(f"Plot: {project.ai_summary.plot_summary}")
+            if project.ai_summary.character_summary:
+                ai_sum_parts.append(f"Characters: {project.ai_summary.character_summary}")
+            if project.ai_summary.worldbuilding_summary:
+                ai_sum_parts.append(f"World: {project.ai_summary.worldbuilding_summary}")
+            if project.ai_summary.themes_summary:
+                ai_sum_parts.append(f"Themes: {project.ai_summary.themes_summary}")
+            if ai_sum_parts:
+                context['ai_summary'] = "\n".join(ai_sum_parts)
+
+        # Use RAG for ALL modes to retrieve relevant project + encyclopedia context
+        if user_message and self._rag_initialized:
+            rag_tokens = 1500 if mode == "general" else 1000
+            rag_context = self._get_rag_context(user_message, max_tokens=rag_tokens)
             if rag_context:
                 context['rag_context'] = rag_context
-                # Also add a summary for discussion
-                context['semantic_context'] = rag_context
-                # Return early with RAG context - it already has relevant info
-                # But still add basic summaries if available
-                if hasattr(project, 'ai_summary') and project.ai_summary and not project.ai_summary.is_empty():
-                    context['plot_summary'] = project.ai_summary.plot_summary[:500] if project.ai_summary.plot_summary else ""
-                return context
 
-        # For chapter_focus and writer modes, also use RAG for relevant worldbuilding context
-        if mode in ("chapter_focus", "writer") and user_message and self._rag_initialized:
+        # Track whether knowledge base is enabled (for labeling in the prompt)
+        try:
+            from src.config.ai_config import get_ai_config
+            context['kb_enabled'] = get_ai_config().get_settings().get("enable_knowledge_base", True)
+        except Exception:
+            context['kb_enabled'] = False
+
+        # For chapter_focus and writer modes, additional RAG if not already set
+        if mode in ("chapter_focus", "writer") and not context.get('rag_context') and user_message and self._rag_initialized:
             rag_context = self._get_rag_context(user_message, max_tokens=1200)
             if rag_context:
                 context['rag_context'] = rag_context
