@@ -186,7 +186,7 @@ MLX_MODELS: List[LocalModelInfo] = [
 
     # === Gemma 4 Models ===
     LocalModelInfo(
-        model_id="mlx-community/gemma-4-E2B-it-4bit",
+        model_id="unsloth/gemma-4-E2B-it-UD-MLX-4bit",
         display_name="Gemma 4 E2B - MLX [Tiny, Fast]",
         size_gb=1.5,
         description="Google Gemma 4 ultra-efficient model for edge/mobile",
@@ -195,7 +195,7 @@ MLX_MODELS: List[LocalModelInfo] = [
         requires_trust_remote_code=False
     ),
     LocalModelInfo(
-        model_id="mlx-community/gemma-4-E4B-it-4bit",
+        model_id="unsloth/gemma-4-E4B-it-UD-MLX-4bit",
         display_name="Gemma 4 E4B - MLX [Efficient]",
         size_gb=2.5,
         description="Google Gemma 4 efficient model, multimodal capable",
@@ -204,12 +204,12 @@ MLX_MODELS: List[LocalModelInfo] = [
         requires_trust_remote_code=False
     ),
     LocalModelInfo(
-        model_id="mlx-community/gemma-4-12b-it-4bit",
-        display_name="Gemma 4 (12B) - MLX",
-        size_gb=6.0,
-        description="Google Gemma 4 12B model for high-quality writing",
-        ram_required="16GB+",
-        best_for="Creative writing, complex tasks, dialogue",
+        model_id="mlx-community/gemma-4-26b-a4b-it-4bit",
+        display_name="Gemma 4 26B-A4B - MLX [Mixture of Experts]",
+        size_gb=14.0,
+        description="Google Gemma 4 MoE — only 4B params active per token, fast for its size",
+        ram_required="24GB+",
+        best_for="High-quality writing with fast inference, creative tasks",
         requires_trust_remote_code=False
     ),
 
@@ -278,10 +278,10 @@ MLX_MODELS: List[LocalModelInfo] = [
         requires_trust_remote_code=False
     ),
     LocalModelInfo(
-        model_id="mlx-community/gemma-4-27b-it-4bit",
-        display_name="Gemma 4 (27B) - MLX [4-bit]",
-        size_gb=14.0,
-        description="Google's Gemma 4 27B, frontier-quality creative writing",
+        model_id="mlx-community/gemma-4-31b-it-4bit",
+        display_name="Gemma 4 31B - MLX [4-bit, Frontier]",
+        size_gb=17.0,
+        description="Google Gemma 4 31B — frontier-quality, 256K context, multimodal",
         ram_required="32GB+",
         best_for="Maximum quality writing, nuanced dialogue, worldbuilding",
         requires_trust_remote_code=False
@@ -646,19 +646,19 @@ PYTORCH_MODELS: List[LocalModelInfo] = [
         requires_trust_remote_code=False
     ),
     LocalModelInfo(
-        model_id="google/gemma-4-12b-it",
-        display_name="Gemma 4 (12B)",
-        size_gb=24.0,
-        description="Google Gemma 4 12B for high-quality writing",
-        ram_required="16GB+",
-        best_for="Creative writing, complex tasks",
+        model_id="google/gemma-4-26b-a4b-it",
+        display_name="Gemma 4 26B-A4B (Mixture of Experts)",
+        size_gb=26.0,
+        description="Google Gemma 4 MoE — 4B active params per token, efficient for its size",
+        ram_required="24GB+",
+        best_for="High-quality writing with fast inference",
         requires_trust_remote_code=False
     ),
     LocalModelInfo(
-        model_id="google/gemma-4-27b-it",
-        display_name="Gemma 4 (27B)",
-        size_gb=54.0,
-        description="Google's Gemma 4 27B, frontier-quality output",
+        model_id="google/gemma-4-31b-it",
+        display_name="Gemma 4 31B",
+        size_gb=62.0,
+        description="Google Gemma 4 31B — frontier-quality, 256K context",
         ram_required="32GB+",
         best_for="Maximum quality writing, nuanced dialogue",
         requires_trust_remote_code=False

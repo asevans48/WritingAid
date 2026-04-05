@@ -621,11 +621,36 @@ For each option, briefly explain what makes it different from the original."""
                 print(f"  This may be a PyTorch model, not an MLX model.")
                 print(f"  Attempting to load anyway...")
 
-            from mlx_lm import load
+            model, tokenizer = None, None
 
-            print("  Loading model and tokenizer...")
-            model, tokenizer = load(model_id)
-            print(f"[OK] MLX model loaded successfully")
+            # Try mlx_lm first (text-only models)
+            try:
+                from mlx_lm import load
+                print("  Loading with mlx_lm...")
+                model, tokenizer = load(model_id)
+                print(f"[OK] MLX model loaded via mlx_lm")
+            except Exception as mlx_lm_err:
+                err_str = str(mlx_lm_err)
+                if "not supported" in err_str.lower() or "model type" in err_str.lower():
+                    # Model type not in mlx_lm — try mlx_vlm which supports
+                    # newer architectures like gemma4
+                    print(f"  mlx_lm does not support this model type: {err_str}")
+                    print(f"  Trying mlx_vlm...")
+                    try:
+                        from mlx_vlm import load as vlm_load
+                        model, tokenizer = vlm_load(model_id)
+                        print(f"[OK] MLX model loaded via mlx_vlm")
+                    except ImportError:
+                        raise RuntimeError(
+                            f"Model type not supported by mlx_lm. "
+                            f"Install mlx_vlm for Gemma 4 support:\n"
+                            f"  pip install --upgrade mlx-vlm"
+                        )
+                else:
+                    raise
+
+            if model is None:
+                raise RuntimeError(f"Failed to load model: no loader succeeded")
 
             # Store in instance
             self._mlx_model = model
@@ -724,6 +749,8 @@ For each option, briefly explain what makes it different from the original."""
                     f"Install with: pip install torch\n"
                     f"Python executable: {sys.executable}"
                 )
+
+            import torch  # Ensure torch is in local scope for all fallback paths
 
             if not _TRANSFORMERS_AVAILABLE:
                 error_details = f"\nOriginal error: {_TRANSFORMERS_IMPORT_ERROR}" if _TRANSFORMERS_IMPORT_ERROR else ""
@@ -1016,20 +1043,30 @@ For each option, briefly explain what makes it different from the original."""
             gen_start_time = time.time()
             print(f"  ⏱️  Starting generation at {time.strftime('%H:%M:%S')}...")
 
-            from mlx_lm import generate as mlx_generate
-            from mlx_lm.sample_utils import make_sampler
-
-            # Create sampler with temperature
-            sampler = make_sampler(temp=0.7)
-
-            response = mlx_generate(
-                self._mlx_model,
-                self._mlx_tokenizer,
-                prompt=prompt_text,
-                max_tokens=max_tokens,
-                sampler=sampler,
-                verbose=False
-            )
+            # Try mlx_lm.generate first, fall back to mlx_vlm.generate
+            # for newer architectures (gemma4, etc.)
+            try:
+                from mlx_lm import generate as mlx_generate
+                from mlx_lm.sample_utils import make_sampler
+                sampler = make_sampler(temp=0.7)
+                response = mlx_generate(
+                    self._mlx_model,
+                    self._mlx_tokenizer,
+                    prompt=prompt_text,
+                    max_tokens=max_tokens,
+                    sampler=sampler,
+                    verbose=False
+                )
+            except Exception:
+                from mlx_vlm import generate as vlm_generate
+                response = vlm_generate(
+                    self._mlx_model,
+                    self._mlx_tokenizer,
+                    prompt_text,
+                    max_tokens=max_tokens,
+                    temp=0.7,
+                    verbose=False
+                )
 
             # Calculate and log generation time
             gen_end_time = time.time()
@@ -1038,6 +1075,9 @@ For each option, briefly explain what makes it different from the original."""
             print(f"  ⏱️  Generation took {gen_elapsed:.2f} seconds")
 
             print(f"\n[4/4] Extracting response...")
+            # mlx_vlm.generate returns a GenerationResult object, not a string
+            if not isinstance(response, str):
+                response = getattr(response, 'text', '') or str(response)
             # Extract just the generated part (remove the prompt)
             if response.startswith(prompt_text):
                 response = response[len(prompt_text):].strip()
@@ -1109,10 +1149,23 @@ For each option, briefly explain what makes it different from the original."""
             try:
                 return self._generate_mlx(prompt, max_tokens)
             except Exception as mlx_error:
+                # If the model is MLX-only (mlx-community/ or unsloth/..MLX),
+                # don't fall back to PyTorch — it can't load MLX-quantized weights
+                model_lower = (self.local_model_id or "").lower()
+                is_mlx_only = (
+                    "mlx-community/" in model_lower
+                    or "mlx" in model_lower.split("/")[-1]
+                )
+                if is_mlx_only:
+                    raise RuntimeError(
+                        f"MLX generation failed for '{self.local_model_id}': {mlx_error}\n\n"
+                        f"This is an MLX-only model and cannot fall back to PyTorch.\n"
+                        f"Try: pip install --upgrade mlx mlx-lm mlx-vlm"
+                    )
+
                 print(f"⚠ MLX generation failed: {mlx_error}")
                 print("  Falling back to PyTorch...")
 
-                # If MLX fails, try PyTorch as fallback
                 if not _TORCH_AVAILABLE:
                     raise RuntimeError(f"MLX failed and PyTorch not available: {mlx_error}")
 

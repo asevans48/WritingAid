@@ -231,28 +231,62 @@ class LLMClient:
     def _init_mlx_local(self) -> None:
         """Initialize local MLX model for Apple Silicon.
 
-        Supports on-the-fly 4-bit or 8-bit quantization for non-pre-quantized
-        models (e.g. google/gemma-2-27b-it). Pre-quantized mlx-community models
-        (e.g. mlx-community/gemma-2-27b-it-4bit) are loaded directly without
-        re-quantization.
+        Uses the global MLXModelCache to share a single loaded model across
+        all LLMClient instances and the RephrasingAgent, avoiding duplicate
+        loads that waste memory and time.
         """
         if not self.hf_config:
             raise ValueError("HuggingFaceConfig is required for MLX models")
 
         try:
-            from mlx_lm import load
-
             model_id = self.hf_config.model_id
-            quantization = self.hf_config.quantization  # "4bit", "8bit", or None
+            quantization = self.hf_config.quantization
+
+            # Check the global cache first — shared with RephrasingAgent
+            from src.ai.mlx_utils import get_mlx_cache
+            cache = get_mlx_cache()
+            cached_model, cached_tokenizer = cache.get_model(model_id)
+            if cached_model is not None:
+                print(f"Using cached MLX model: {model_id}")
+                self._mlx_model = cached_model
+                self._mlx_tokenizer = cached_tokenizer
+                return
 
             print(f"Loading MLX model: {model_id}")
 
-            # Load MLX model and tokenizer
-            self._mlx_model, self._mlx_tokenizer = load(model_id)
+            from mlx_lm import load
+
+            # Load MLX model — try mlx_lm first, fall back to mlx_vlm
+            # for newer architectures (gemma4, etc.) not yet in mlx_lm
+            try:
+                self._mlx_model, self._mlx_tokenizer = load(model_id)
+            except Exception as load_err:
+                err_str = str(load_err)
+                if "not supported" in err_str.lower() or "model type" in err_str.lower():
+                    print(f"mlx_lm does not support this model type, trying mlx_vlm...")
+                    try:
+                        from mlx_vlm import load as vlm_load
+                        self._mlx_model, self._mlx_tokenizer = vlm_load(model_id)
+                    except ImportError:
+                        raise RuntimeError(
+                            f"Model type not supported by mlx_lm. "
+                            f"Install mlx_vlm:\n  pip install --upgrade mlx-vlm"
+                        )
+                elif "'list' object has no attribute 'keys'" in err_str:
+                    raise RuntimeError(
+                        f"Failed to load '{model_id}': tokenizer config incompatibility.\n\n"
+                        f"Run: pip install --upgrade mlx mlx-lm mlx-vlm transformers"
+                    )
+                else:
+                    raise RuntimeError(
+                        f"Failed to load '{model_id}': {load_err}\n\n"
+                        f"Try: pip install --upgrade mlx mlx-lm"
+                    )
+
+            # Store in global cache so other components reuse it
+            cache.set_model(model_id, self._mlx_model, self._mlx_tokenizer)
 
             # Apply on-the-fly quantization if requested and model isn't already quantized.
-            # Pre-quantized mlx-community models (model_id contains "4bit"/"8bit") are
-            # already quantized at download time, so we skip re-quantization for them.
             already_quantized = "4bit" in model_id or "8bit" in model_id
             if quantization and not already_quantized:
                 try:
@@ -421,8 +455,6 @@ class LLMClient:
         if not self._mlx_model or not self._mlx_tokenizer:
             raise RuntimeError("MLX model not initialized")
 
-        from mlx_lm import generate
-
         # Build prompt using chat template if available
         if hasattr(self._mlx_tokenizer, 'apply_chat_template'):
             messages = []
@@ -438,7 +470,6 @@ class LLMClient:
                 add_generation_prompt=True
             )
         else:
-            # Fallback to simple format
             history_text = ""
             if history:
                 lines = []
@@ -451,18 +482,35 @@ class LLMClient:
             else:
                 full_prompt = f"{history_text}User: {prompt}\n\nAssistant:"
 
-        # Generate response with sampler for temperature control
-        from mlx_lm.sample_utils import make_sampler
-        sampler = make_sampler(temp=temperature)
+        # Try mlx_lm.generate first, fall back to mlx_vlm.generate for
+        # newer model architectures (gemma4, etc.)
+        try:
+            from mlx_lm import generate
+            from mlx_lm.sample_utils import make_sampler
+            sampler = make_sampler(temp=temperature)
+            response = generate(
+                self._mlx_model,
+                self._mlx_tokenizer,
+                prompt=full_prompt,
+                max_tokens=max_tokens,
+                sampler=sampler,
+                verbose=False
+            )
+        except Exception:
+            # Model was likely loaded via mlx_vlm — use its generate
+            from mlx_vlm import generate as vlm_generate
+            response = vlm_generate(
+                self._mlx_model,
+                self._mlx_tokenizer,
+                full_prompt,
+                max_tokens=max_tokens,
+                temp=temperature,
+                verbose=False
+            )
 
-        response = generate(
-            self._mlx_model,
-            self._mlx_tokenizer,
-            prompt=full_prompt,
-            max_tokens=max_tokens,
-            sampler=sampler,
-            verbose=False
-        )
+        # mlx_vlm.generate may return a GenerationResult object, not a string
+        if not isinstance(response, str):
+            response = getattr(response, 'text', '') or str(response)
 
         return response.strip()
 

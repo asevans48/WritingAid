@@ -9,10 +9,10 @@ google-genai>=1.14.0
 
 # Hugging Face Integration
 huggingface_hub>=0.30.0
-transformers>=4.51.0,<5.0.0  # 4.47+ required for Gemma 3; 4.51+ for Gemma 4
+transformers>=4.51.0  # 4.47+ for Gemma 3; 5.0+ needed by mlx-lm 0.31+ for Gemma 4
 safetensors>=0.5.0
 sentencepiece>=0.2.0
-protobuf>=5.29.0
+protobuf>=4.25.0,<6.0  # Capped for mflux compatibility
 
 # PyTorch - Local LLM Inference
 # NOTE: For GPU/CUDA support, install PyTorch separately BEFORE other packages:
@@ -62,12 +62,13 @@ Pillow>=11.1.0
 requests>=2.32.0
 
 # Apple Silicon (MLX) - Local LLM Inference
-# mlx and mlx-lm are macOS/Apple Silicon only.
-# Install separately on Mac with:
-#   pip install mlx mlx-lm
+# These are macOS/Apple Silicon only. Install on Mac with:
+#   pip install mlx mlx-lm mlx-vlm
 #
-# mlx>=0.24.0; sys_platform == "darwin"
-# mlx-lm>=0.22.0; sys_platform == "darwin"
+# Gemma 4 requires mlx-lm >= 0.31.0 and mlx-vlm >= 0.4.3
+mlx>=0.31.0; sys_platform == "darwin"
+mlx-lm>=0.31.0; sys_platform == "darwin"
+mlx-vlm>=0.4.3; sys_platform == "darwin"  # Required for Gemma 4 multimodal support
 
 # Image Generation (Optional)
 # Apple Silicon:  pip install mflux

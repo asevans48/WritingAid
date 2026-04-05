@@ -65,36 +65,41 @@ class EnhancedRAGSystem:
     def rebuild_index(self, compute_embeddings: bool = False):
         """Rebuild the search index from project data.
 
-        Args:
-            compute_embeddings: Whether to compute neural embeddings (slower but better)
+        Each indexer is called independently so one failure doesn't
+        prevent the rest from being indexed.
         """
         self.search_engine.clear()
 
-        # Index all worldbuilding elements
-        self._index_worldbuilding_text()
-        self._index_factions()
-        self._index_places()
-        self._index_technologies()
-        self._index_cultures()
-        self._index_historical_events()
-        self._index_flora_fauna()
-        self._index_myths()
-        self._index_star_systems()
-        self._index_armies()
-        self._index_economies()
-        self._index_political_systems()
-        self._index_encyclopedia()
+        indexers = [
+            self._index_worldbuilding_text,
+            self._index_factions,
+            self._index_places,
+            self._index_technologies,
+            self._index_cultures,
+            self._index_historical_events,
+            self._index_flora_fauna,
+            self._index_myths,
+            self._index_star_systems,
+            self._index_armies,
+            self._index_economies,
+            self._index_political_systems,
+            self._index_encyclopedia,
+            self._index_characters,
+            self._index_plot,
+            self._index_promises,
+        ]
 
-        # Index characters
-        self._index_characters()
+        for indexer in indexers:
+            try:
+                indexer()
+            except Exception as e:
+                print(f"RAG indexer {indexer.__name__} failed: {e}")
 
-        # Index plot elements
-        self._index_plot()
-        self._index_promises()
-
-        # Index chapter content if memory manager available
         if self.memory_manager:
-            self._index_chapter_data()
+            try:
+                self._index_chapter_data()
+            except Exception as e:
+                print(f"RAG chapter indexer failed: {e}")
 
         self._indexed = True
 
@@ -121,17 +126,12 @@ class EnhancedRAGSystem:
         """Index basic worldbuilding text sections."""
         wb = self.project.worldbuilding
 
-        sections = {
-            "mythology": wb.mythology,
-            "planets": wb.planets,
-            "climate": wb.climate,
-            "history": wb.history,
-            "politics": wb.politics,
-            "military": wb.military,
-            "economy": wb.economy,
-            "power_hierarchy": wb.power_hierarchy
-        }
-        sections.update(wb.custom_sections)
+        sections = {}
+        for field in ["mythology", "planets", "climate", "history",
+                       "politics", "military", "economy", "power_hierarchy"]:
+            sections[field] = getattr(wb, field, "")
+        custom = getattr(wb, 'custom_sections', {}) or {}
+        sections.update(custom)
 
         for name, content in sections.items():
             if content and content.strip():
@@ -150,22 +150,22 @@ class EnhancedRAGSystem:
             return
 
         for faction in wb.factions:
+            territory = getattr(faction, 'territory', []) or []
+            allies = getattr(faction, 'allies', []) or []
+            enemies = getattr(faction, 'enemies', []) or []
             content = f"""
 Faction: {faction.name}
-Type: {faction.faction_type}
-Government: {faction.government_type or 'Unknown'}
-Leader: {faction.leader or 'Unknown'}
-Population: {faction.population or 'Unknown'}
-Territory: {faction.territory or 'Unknown'}
-Description: {faction.description}
-Ideology: {faction.ideology or ''}
-Military Strength: {faction.military_strength or 'Unknown'}
-Economic Strength: {faction.economic_strength or 'Unknown'}
-Allies: {', '.join(faction.allies) if faction.allies else 'None'}
-Enemies: {', '.join(faction.enemies) if faction.enemies else 'None'}
-Notable Members: {', '.join(faction.notable_members) if faction.notable_members else 'None'}
-History: {faction.history or ''}
-Notes: {faction.notes or ''}
+Type: {getattr(faction, 'faction_type', '')}
+Government: {getattr(faction, 'government_type', '') or 'Unknown'}
+Leader: {getattr(faction, 'leader', '') or 'Unknown'}
+Territory: {', '.join(territory) if territory else 'Unknown'}
+Description: {getattr(faction, 'description', '')}
+Military Strength: {getattr(faction, 'military_strength', 0)}
+Economic Power: {getattr(faction, 'economic_power', 0)}
+Allies: {', '.join(allies) if allies else 'None'}
+Enemies: {', '.join(enemies) if enemies else 'None'}
+Capital: {getattr(faction, 'capital', '') or ''}
+Notes: {getattr(faction, 'notes', '')}
             """.strip()
 
             chunk = self._make_chunk(
@@ -189,25 +189,24 @@ Notes: {faction.notes or ''}
             return
 
         for place in wb.places:
-            features = ", ".join(place.key_features) if place.key_features else "None"
-            inhabitants = ", ".join(place.notable_inhabitants) if place.notable_inhabitants else "None"
+            features = getattr(place, 'key_features', []) or []
+            inhabitants = getattr(place, 'notable_inhabitants', []) or []
 
             content = f"""
 Place: {place.name}
-Type: {place.place_type}
-Planet: {place.planet or 'Unknown'}
-Continent: {place.continent or 'Unknown'}
-Region: {place.region or 'Unknown'}
-Controlling Faction: {place.controlling_faction or 'None'}
-Population: {place.population or 'Unknown'}
-Description: {place.description}
-Key Features: {features}
-Atmosphere: {place.atmosphere or ''}
-Cultural Significance: {place.cultural_significance or ''}
-Story Relevance: {place.story_relevance or ''}
-Notable Inhabitants: {inhabitants}
-History: {place.history or ''}
-Notes: {place.notes or ''}
+Type: {getattr(place, 'place_type', '')}
+Planet: {getattr(place, 'planet', '') or 'Unknown'}
+Continent: {getattr(place, 'continent', '') or 'Unknown'}
+Region: {getattr(place, 'region', '') or 'Unknown'}
+Controlling Faction: {getattr(place, 'controlling_faction', '') or 'None'}
+Population: {getattr(place, 'population', '') or 'Unknown'}
+Description: {getattr(place, 'description', '')}
+Key Features: {', '.join(features) if features else 'None'}
+Atmosphere: {getattr(place, 'atmosphere', '')}
+Cultural Significance: {getattr(place, 'cultural_significance', '')}
+Story Relevance: {getattr(place, 'story_relevance', '')}
+Notable Inhabitants: {', '.join(inhabitants) if inhabitants else 'None'}
+Notes: {getattr(place, 'notes', '')}
             """.strip()
 
             chunk = self._make_chunk(
@@ -216,9 +215,9 @@ Notes: {place.notes or ''}
                 source_name=place.name,
                 source_id=place.id,
                 metadata={
-                    "place_type": place.place_type,
-                    "planet": place.planet,
-                    "controlling_faction": place.controlling_faction
+                    "place_type": str(getattr(place, 'place_type', '')),
+                    "planet": getattr(place, 'planet', ''),
+                    "controlling_faction": getattr(place, 'controlling_faction', '')
                 }
             )
             self.search_engine.index_document(chunk)
@@ -230,23 +229,25 @@ Notes: {place.notes or ''}
             return
 
         for tech in wb.technologies:
-            factions = ", ".join(tech.factions_with_access) if tech.factions_with_access else "All"
-            prerequisites = ", ".join(tech.prerequisites) if tech.prerequisites else "None"
+            factions = getattr(tech, 'factions_with_access', []) or []
+            prerequisites = getattr(tech, 'prerequisites', []) or []
+            applications = getattr(tech, 'applications', []) or []
+            tt = getattr(tech, 'technology_type', '')
+            type_str = tt.value.replace('_', ' ').title() if hasattr(tt, 'value') else str(tt)
 
             content = f"""
 Technology: {tech.name}
-Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.technology_type, 'value') else tech.technology_type}
-Description: {tech.description}
-How It Works: {tech.how_it_works or ''}
-Factions with Access: {factions}
-Prerequisites: {prerequisites}
-Cost to Build: {tech.cost_to_build or 'Unknown'}
-Game-Changing Impact: {tech.game_changing_level}/100
-Destructive Potential: {tech.destructive_level}/100
-Limitations: {tech.limitations or 'None specified'}
-Story Importance: {tech.story_importance or ''}
-Discovery History: {tech.discovery_history or ''}
-Notes: {tech.notes or ''}
+Type: {type_str}
+Description: {getattr(tech, 'description', '')}
+Factions with Access: {', '.join(factions) if factions else 'All'}
+Prerequisites: {', '.join(prerequisites) if prerequisites else 'None'}
+Applications: {', '.join(applications) if applications else ''}
+Cost to Build: {getattr(tech, 'cost_to_build', '') or 'Unknown'}
+Game-Changing Impact: {getattr(tech, 'game_changing_level', 50)}/100
+Destructive Potential: {getattr(tech, 'destructive_level', 50)}/100
+Limitations: {getattr(tech, 'limitations', '') or 'None specified'}
+Story Relevance: {getattr(tech, 'story_relevance', '')}
+Notes: {getattr(tech, 'notes', '')}
             """.strip()
 
             chunk = self._make_chunk(
@@ -255,9 +256,9 @@ Notes: {tech.notes or ''}
                 source_name=tech.name,
                 source_id=tech.id,
                 metadata={
-                    "tech_type": str(tech.technology_type),
-                    "impact_level": tech.game_changing_level,
-                    "factions": tech.factions_with_access
+                    "tech_type": str(getattr(tech, 'technology_type', '')),
+                    "impact_level": getattr(tech, 'game_changing_level', 50),
+                    "factions": factions
                 }
             )
             self.search_engine.index_document(chunk)
@@ -269,35 +270,43 @@ Notes: {tech.notes or ''}
             return
 
         for culture in wb.cultures:
-            # Build comprehensive culture text
             rituals = ""
             if hasattr(culture, 'rituals') and culture.rituals:
-                rituals = "\n".join(f"  - {r.name}: {r.description}" for r in culture.rituals)
+                rituals = "\n".join(
+                    f"  - {getattr(r, 'name', '')}: {getattr(r, 'description', '')}"
+                    for r in culture.rituals
+                )
 
             languages = ""
             if hasattr(culture, 'languages') and culture.languages:
-                languages = ", ".join(l.name for l in culture.languages)
+                languages = ", ".join(getattr(l, 'name', '') for l in culture.languages)
 
             traditions = ""
             if hasattr(culture, 'traditions') and culture.traditions:
-                traditions = "\n".join(f"  - {t.name}: {t.description}" for t in culture.traditions)
+                traditions = "\n".join(
+                    f"  - {getattr(t, 'name', '')}: {getattr(t, 'description', '')}"
+                    for t in culture.traditions
+                )
+
+            factions = getattr(culture, 'associated_factions', []) or []
+            core_values = getattr(culture, 'core_values', []) or []
+            taboos = getattr(culture, 'taboos', []) or []
 
             content = f"""
 Culture: {culture.name}
-Associated Factions: {', '.join(culture.associated_factions) if culture.associated_factions else 'None'}
-Description: {culture.description or ''}
-Values: {culture.values or ''}
-Social Structure: {culture.social_structure or ''}
-Religion: {culture.religion or ''}
+Associated Factions: {', '.join(factions) if factions else 'None'}
+Description: {getattr(culture, 'description', '')}
+Core Values: {', '.join(core_values) if core_values else ''}
+Social Structure: {getattr(culture, 'social_structure', '')}
+Family Structure: {getattr(culture, 'family_structure', '')}
+Coming of Age: {getattr(culture, 'coming_of_age', '')}
 Languages: {languages or 'Unknown'}
-Taboos: {culture.taboos or 'None specified'}
+Taboos: {', '.join(taboos) if taboos else 'None specified'}
 Rituals:
 {rituals or '  None documented'}
 Traditions:
 {traditions or '  None documented'}
-Clothing Style: {culture.clothing_style or ''}
-Architecture Style: {culture.architecture_style or ''}
-Notes: {culture.notes or ''}
+Notes: {getattr(culture, 'notes', '')}
             """.strip()
 
             chunk = self._make_chunk(
@@ -306,7 +315,7 @@ Notes: {culture.notes or ''}
                 source_name=culture.name,
                 source_id=culture.id,
                 metadata={
-                    "factions": culture.associated_factions
+                    "factions": factions
                 }
             )
             self.search_engine.index_document(chunk)
@@ -318,110 +327,117 @@ Notes: {culture.notes or ''}
             return
 
         for event in wb.historical_events:
-            participants = ", ".join(event.participants) if event.participants else "Unknown"
-            factions = ", ".join(event.factions_involved) if event.factions_involved else "Unknown"
-
-            content = f"""
+            try:
+                factions = getattr(event, 'factions_involved', []) or []
+                key_figures = getattr(event, 'key_figures', []) or []
+                content = f"""
 Historical Event: {event.name}
-Year: {event.year or 'Unknown'}
-Era: {event.era or 'Unknown'}
-Event Type: {event.event_type or 'Unknown'}
-Location: {event.location or 'Unknown'}
-Description: {event.description}
-Causes: {event.causes or 'Unknown'}
-Consequences: {event.consequences or 'Unknown'}
-Participants: {participants}
-Factions Involved: {factions}
-Duration: {event.duration or 'Unknown'}
-Significance: {event.significance or ''}
-Sources: {event.sources or ''}
-Notes: {event.notes or ''}
-            """.strip()
+Date: {getattr(event, 'date', '') or getattr(event, 'year', '') or 'Unknown'}
+Event Type: {getattr(event, 'event_type', '') or 'Unknown'}
+Location: {getattr(event, 'location', '') or 'Unknown'}
+Description: {getattr(event, 'description', '')}
+Consequences: {getattr(event, 'consequences', '') or ''}
+Key Figures: {', '.join(key_figures) if key_figures else 'Unknown'}
+Factions Involved: {', '.join(factions) if factions else 'Unknown'}
+Notes: {getattr(event, 'notes', '')}
+                """.strip()
 
-            chunk = self._make_chunk(
-                content=content,
-                source_type="historical_event",
-                source_name=event.name,
-                source_id=event.id,
-                metadata={
-                    "year": event.year,
-                    "event_type": event.event_type,
-                    "factions": event.factions_involved
-                }
-            )
-            self.search_engine.index_document(chunk)
+                chunk = self._make_chunk(
+                    content=content,
+                    source_type="historical_event",
+                    source_name=event.name,
+                    source_id=event.id,
+                    metadata={
+                        "event_type": getattr(event, 'event_type', ''),
+                        "factions": factions
+                    }
+                )
+                self.search_engine.index_document(chunk)
+            except Exception:
+                continue  # Skip malformed events
 
     def _index_flora_fauna(self):
         """Index flora and fauna."""
         wb = self.project.worldbuilding
 
-        # Flora
         if hasattr(wb, 'flora'):
             for flora in wb.flora:
-                properties = []
-                if flora.edible:
-                    properties.append("Edible")
-                if flora.medicinal_properties:
-                    properties.append(f"Medicinal: {flora.medicinal_properties}")
-                if flora.toxicity:
-                    properties.append(f"Toxic: {flora.toxicity}")
-                if flora.magical_properties:
-                    properties.append(f"Magical: {flora.magical_properties}")
+                try:
+                    properties = []
+                    if getattr(flora, 'edible', False):
+                        properties.append("Edible")
+                    if getattr(flora, 'medicinal_properties', ''):
+                        properties.append(f"Medicinal: {flora.medicinal_properties}")
+                    if getattr(flora, 'toxicity', ''):
+                        properties.append(f"Toxic: {flora.toxicity}")
+                    if getattr(flora, 'magical_properties', ''):
+                        properties.append(f"Magical: {flora.magical_properties}")
 
-                content = f"""
+                    ft = getattr(flora, 'flora_type', '')
+                    type_str = ft.value.replace('_', ' ').title() if hasattr(ft, 'value') else str(ft)
+                    native = getattr(flora, 'native_planets', []) or []
+
+                    content = f"""
 Flora: {flora.name}
-Type: {flora.flora_type.value.replace('_', ' ').title() if hasattr(flora.flora_type, 'value') else flora.flora_type}
-Native Planets: {', '.join(flora.native_planets) if flora.native_planets else 'Unknown'}
-Preferred Climate: {flora.preferred_climate or 'Unknown'}
-Rarity: {flora.rarity or 'Common'}
-Description: {flora.description}
+Type: {type_str}
+Native Planets: {', '.join(native) if native else 'Unknown'}
+Preferred Climate: {getattr(flora, 'preferred_climate', '') or 'Unknown'}
+Description: {getattr(flora, 'description', '')}
 Properties: {', '.join(properties) if properties else 'None special'}
-Uses: {flora.uses or 'None documented'}
-Cultural Significance: {flora.cultural_significance or ''}
-Notes: {flora.notes or ''}
-                """.strip()
+Cultural Significance: {getattr(flora, 'cultural_significance', '')}
+Story Relevance: {getattr(flora, 'story_relevance', '')}
+Notes: {getattr(flora, 'notes', '')}
+                    """.strip()
 
-                chunk = self._make_chunk(
-                    content=content,
-                    source_type="flora",
-                    source_name=flora.name,
-                    source_id=flora.id,
-                    metadata={"flora_type": str(flora.flora_type)}
-                )
-                self.search_engine.index_document(chunk)
+                    chunk = self._make_chunk(
+                        content=content,
+                        source_type="flora",
+                        source_name=flora.name,
+                        source_id=flora.id,
+                        metadata={"flora_type": str(getattr(flora, 'flora_type', ''))}
+                    )
+                    self.search_engine.index_document(chunk)
+                except Exception:
+                    continue
 
-        # Fauna
         if hasattr(wb, 'fauna'):
             for fauna in wb.fauna:
-                content = f"""
-Fauna: {fauna.name}
-Type: {fauna.fauna_type.value.replace('_', ' ').title() if hasattr(fauna.fauna_type, 'value') else fauna.fauna_type}
-Native Planets: {', '.join(fauna.native_planets) if fauna.native_planets else 'Unknown'}
-Preferred Habitat: {fauna.preferred_habitat or 'Unknown'}
-Diet: {fauna.diet or 'Unknown'}
-Danger Level: {fauna.danger_level}/100
-Size Category: {fauna.size_category or 'Medium'}
-Intelligence Level: {fauna.intelligence_level or 'Animal'}
-Domestication Status: {fauna.domestication_status or 'Wild'}
-Description: {fauna.description}
-Behavior: {fauna.behavior or ''}
-Abilities: {fauna.abilities or 'None special'}
-Weaknesses: {fauna.weaknesses or 'None known'}
-Cultural Significance: {fauna.cultural_significance or ''}
-Notes: {fauna.notes or ''}
-                """.strip()
+                try:
+                    ft = getattr(fauna, 'fauna_type', '')
+                    type_str = ft.value.replace('_', ' ').title() if hasattr(ft, 'value') else str(ft)
+                    native = getattr(fauna, 'native_planets', []) or []
+                    special = getattr(fauna, 'special_abilities', []) or []
 
-                chunk = self._make_chunk(
-                    content=content,
-                    source_type="fauna",
-                    source_name=fauna.name,
-                    source_id=fauna.id,
-                    metadata={
-                        "fauna_type": str(fauna.fauna_type),
-                        "danger_level": fauna.danger_level
-                    }
-                )
-                self.search_engine.index_document(chunk)
+                    content = f"""
+Fauna: {fauna.name}
+Type: {type_str}
+Native Planets: {', '.join(native) if native else 'Unknown'}
+Habitat: {getattr(fauna, 'habitat', '') or getattr(fauna, 'preferred_climate', '') or 'Unknown'}
+Diet: {getattr(fauna, 'diet', '') or 'Unknown'}
+Danger Level: {getattr(fauna, 'danger_level', 0)}
+Intelligence: {getattr(fauna, 'intelligence_level', '') or 'Animal'}
+Domestication: {getattr(fauna, 'domestication_status', '') or 'Wild'}
+Description: {getattr(fauna, 'description', '')}
+Behavior: {getattr(fauna, 'behavior', '')}
+Special Abilities: {', '.join(special) if special else 'None'}
+Cultural Significance: {getattr(fauna, 'cultural_significance', '')}
+Story Relevance: {getattr(fauna, 'story_relevance', '')}
+Notes: {getattr(fauna, 'notes', '')}
+                    """.strip()
+
+                    chunk = self._make_chunk(
+                        content=content,
+                        source_type="fauna",
+                        source_name=fauna.name,
+                        source_id=fauna.id,
+                        metadata={
+                            "fauna_type": str(getattr(fauna, 'fauna_type', '')),
+                            "danger_level": getattr(fauna, 'danger_level', 0)
+                        }
+                    )
+                    self.search_engine.index_document(chunk)
+                except Exception:
+                    continue
 
     def _index_myths(self):
         """Index mythology entries."""
@@ -430,33 +446,33 @@ Notes: {fauna.notes or ''}
             return
 
         for myth in wb.myths:
-            figures = ", ".join(myth.key_figures) if myth.key_figures else "None"
-            factions = ", ".join(myth.associated_factions) if myth.associated_factions else "Universal"
+            try:
+                figures = getattr(myth, 'key_figures', []) or []
+                factions = getattr(myth, 'associated_factions', []) or []
 
-            content = f"""
+                content = f"""
 Myth/Legend: {myth.name}
-Type: {myth.myth_type or 'Legend'}
-Believed By: {factions}
-Key Figures: {figures}
-Description: {myth.description}
-Origin Story: {myth.origin or ''}
-Moral/Lesson: {myth.moral_lesson or ''}
-Truth Behind It: {myth.truth_behind or 'Unknown'}
-Related Locations: {', '.join(myth.related_locations) if myth.related_locations else 'None'}
-Notes: {myth.notes or ''}
-            """.strip()
+Type: {getattr(myth, 'myth_type', '') or 'Legend'}
+Believed By: {', '.join(factions) if factions else 'Universal'}
+Key Figures: {', '.join(figures) if figures else 'None'}
+Description: {getattr(myth, 'description', '')}
+Moral/Lesson: {getattr(myth, 'moral_lesson', '')}
+Full Text: {getattr(myth, 'full_text', '')[:500]}
+                """.strip()
 
-            chunk = self._make_chunk(
-                content=content,
-                source_type="myth",
-                source_name=myth.name,
-                source_id=myth.id,
-                metadata={
-                    "myth_type": myth.myth_type,
-                    "factions": myth.associated_factions
-                }
-            )
-            self.search_engine.index_document(chunk)
+                chunk = self._make_chunk(
+                    content=content,
+                    source_type="myth",
+                    source_name=myth.name,
+                    source_id=myth.id,
+                    metadata={
+                        "myth_type": getattr(myth, 'myth_type', ''),
+                        "factions": factions
+                    }
+                )
+                self.search_engine.index_document(chunk)
+            except Exception:
+                continue
 
     def _index_star_systems(self):
         """Index star systems and celestial bodies."""
@@ -465,40 +481,42 @@ Notes: {myth.notes or ''}
             return
 
         for system in wb.star_systems:
-            stars_info = ""
-            if hasattr(system, 'stars') and system.stars:
-                stars_info = ", ".join(f"{s.name} ({s.spectral_class})" for s in system.stars)
+            try:
+                stars_info = ""
+                if hasattr(system, 'stars') and system.stars:
+                    stars_info = ", ".join(
+                        f"{getattr(s, 'name', '?')} ({getattr(s, 'spectral_class', '?')})"
+                        for s in system.stars
+                    )
 
-            planets_info = ""
-            if hasattr(system, 'planets') and system.planets:
-                planets_info = ", ".join(p.name for p in system.planets)
+                planets_info = ""
+                if hasattr(system, 'planets') and system.planets:
+                    planets_info = ", ".join(getattr(p, 'name', '?') for p in system.planets)
 
-            content = f"""
+                content = f"""
 Star System: {system.name}
-Type: {system.system_type}
-Galaxy: {system.galaxy or 'Unknown'}
-Location: {system.location or 'Unknown'}
-Distance from Earth: {system.distance_from_earth or 'Unknown'}
+Type: {getattr(system, 'system_type', '')}
+Galaxy: {getattr(system, 'galaxy', '') or 'Unknown'}
+Location: {getattr(system, 'location', '') or 'Unknown'}
 Stars: {stars_info or 'Unknown'}
 Planets: {planets_info or 'None discovered'}
-Habitable Zone: {system.habitable_zone_inner or '?'} - {system.habitable_zone_outer or '?'}
-Description: {system.description or ''}
-Key Facts: {system.key_facts or ''}
-Controlling Faction: {system.controlling_faction or 'Uncontrolled'}
-Notes: {system.notes or ''}
-            """.strip()
+Description: {getattr(system, 'description', '')}
+Key Facts: {getattr(system, 'key_facts', '')}
+Notes: {getattr(system, 'notes', '')}
+                """.strip()
 
-            chunk = self._make_chunk(
-                content=content,
-                source_type="star_system",
-                source_name=system.name,
-                source_id=system.id,
-                metadata={
-                    "system_type": system.system_type,
-                    "controlling_faction": system.controlling_faction
-                }
-            )
-            self.search_engine.index_document(chunk)
+                chunk = self._make_chunk(
+                    content=content,
+                    source_type="star_system",
+                    source_name=system.name,
+                    source_id=system.id,
+                    metadata={
+                        "system_type": str(getattr(system, 'system_type', '')),
+                    }
+                )
+                self.search_engine.index_document(chunk)
+            except Exception:
+                continue
 
     def _index_armies(self):
         """Index military/army data."""
@@ -507,36 +525,33 @@ Notes: {system.notes or ''}
             return
 
         for army in wb.armies:
-            branches_info = ""
-            if hasattr(army, 'branches') and army.branches:
-                branches_info = "\n".join(
-                    f"  - {b.name}: {b.description}" for b in army.branches
-                )
+            try:
+                branches_info = ""
+                if hasattr(army, 'branches') and army.branches:
+                    branches_info = "\n".join(
+                        f"  - {getattr(b, 'name', '?')}: {getattr(b, 'description', '')}"
+                        for b in army.branches
+                    )
 
-            content = f"""
+                content = f"""
 Military Force: {army.name}
-Faction: {army.faction or 'Independent'}
-Total Personnel: {army.total_personnel or 'Unknown'}
-Commander: {army.commander or 'Unknown'}
-Description: {army.description or ''}
-Doctrine: {army.doctrine or ''}
+Faction: {getattr(army, 'faction_id', '') or getattr(army, 'faction', '') or 'Independent'}
+Total Strength: {getattr(army, 'total_strength', '') or 'Unknown'}
+Description: {getattr(army, 'description', '')}
 Branches:
 {branches_info or '  None specified'}
-Key Technologies: {', '.join(army.key_technologies) if army.key_technologies else 'Standard'}
-Strengths: {army.strengths or ''}
-Weaknesses: {army.weaknesses or ''}
-Notable Campaigns: {army.notable_campaigns or ''}
-Notes: {army.notes or ''}
-            """.strip()
+                """.strip()
 
-            chunk = self._make_chunk(
-                content=content,
-                source_type="military",
-                source_name=army.name,
-                source_id=army.id,
-                metadata={"faction": army.faction}
-            )
-            self.search_engine.index_document(chunk)
+                chunk = self._make_chunk(
+                    content=content,
+                    source_type="military",
+                    source_name=army.name,
+                    source_id=army.id,
+                    metadata={"faction": getattr(army, 'faction_id', '')}
+                )
+                self.search_engine.index_document(chunk)
+            except Exception:
+                continue
 
     def _index_economies(self):
         """Index economy data."""
@@ -545,27 +560,34 @@ Notes: {army.notes or ''}
             return
 
         for economy in wb.economies:
-            content = f"""
-Economy: {economy.name}
-Type: {economy.economy_type.value if hasattr(economy.economy_type, 'value') else economy.economy_type}
-Faction/Region: {economy.faction or 'Global'}
-Currency: {economy.currency or 'Unknown'}
-Description: {economy.description or ''}
-Main Industries: {', '.join(economy.main_industries) if economy.main_industries else 'Varied'}
-Trade Partners: {', '.join(economy.trade_partners) if economy.trade_partners else 'Various'}
-Economic Strength: {economy.strength or 'Moderate'}
-Challenges: {economy.challenges or ''}
-Notes: {economy.notes or ''}
-            """.strip()
+            try:
+                et = getattr(economy, 'economy_type', '')
+                type_str = et.value if hasattr(et, 'value') else str(et)
+                major_ind = getattr(economy, 'major_industries', []) or []
+                trade_partners = getattr(economy, 'trade_partners', []) or []
+                goods = getattr(economy, 'goods', []) or []
 
-            chunk = self._make_chunk(
-                content=content,
-                source_type="economy",
-                source_name=economy.name,
-                source_id=economy.id,
-                metadata={"economy_type": str(economy.economy_type)}
-            )
-            self.search_engine.index_document(chunk)
+                content = f"""
+Economy: {economy.name}
+Type: {type_str}
+Faction: {getattr(economy, 'faction_id', '') or getattr(economy, 'faction', '') or 'Global'}
+Currency: {getattr(economy, 'currency', '') or 'Unknown'}
+Description: {getattr(economy, 'description', '')}
+Major Industries: {', '.join(major_ind) if major_ind else 'Varied'}
+Trade Partners: {', '.join(trade_partners) if trade_partners else 'Various'}
+Goods: {len(goods)} types
+                """.strip()
+
+                chunk = self._make_chunk(
+                    content=content,
+                    source_type="economy",
+                    source_name=economy.name,
+                    source_id=economy.id,
+                    metadata={"economy_type": type_str}
+                )
+                self.search_engine.index_document(chunk)
+            except Exception:
+                continue
 
     def _index_political_systems(self):
         """Index political system data."""
@@ -574,33 +596,33 @@ Notes: {economy.notes or ''}
             return
 
         for system in wb.political_systems:
-            branches_info = ""
-            if hasattr(system, 'branches') and system.branches:
-                branches_info = "\n".join(
-                    f"  - {b.name}: {b.powers}" for b in system.branches
-                )
+            try:
+                branches_info = ""
+                if hasattr(system, 'branches') and system.branches:
+                    branches_info = "\n".join(
+                        f"  - {getattr(b, 'name', '?')}: {getattr(b, 'powers', '')}"
+                        for b in system.branches
+                    )
 
-            content = f"""
-Political System: {system.name}
-Faction: {system.faction or 'Multiple'}
-Government Type: {system.government_type or 'Unknown'}
-Description: {system.description or ''}
-Branches of Government:
+                content = f"""
+Political System: {getattr(system, 'name', '')}
+Faction: {getattr(system, 'faction_id', '') or getattr(system, 'faction', '') or 'Multiple'}
+System Type: {getattr(system, 'system_type', '') or 'Unknown'}
+Description: {getattr(system, 'description', '')}
+Branches:
 {branches_info or '  Not specified'}
-Voting/Selection: {system.selection_method or 'Unknown'}
-Checks and Balances: {system.checks_balances or ''}
-Citizen Rights: {system.citizen_rights or ''}
-Notes: {system.notes or ''}
-            """.strip()
+                """.strip()
 
-            chunk = self._make_chunk(
-                content=content,
-                source_type="political_system",
-                source_name=system.name,
-                source_id=system.id,
-                metadata={"government_type": system.government_type}
-            )
-            self.search_engine.index_document(chunk)
+                chunk = self._make_chunk(
+                    content=content,
+                    source_type="political_system",
+                    source_name=getattr(system, 'name', ''),
+                    source_id=getattr(system, 'id', ''),
+                    metadata={"system_type": getattr(system, 'system_type', '')}
+                )
+                self.search_engine.index_document(chunk)
+            except Exception:
+                continue
 
     def _index_encyclopedia(self):
         """Index encyclopedia entries (base + custom) for RAG search."""
@@ -659,37 +681,50 @@ Notes: {system.notes or ''}
     def _index_characters(self):
         """Index character data."""
         for char in self.project.characters:
-            relationships = ""
-            if char.social_network:
-                relationships = "\n".join(
-                    f"  - {name}: {rel}" for name, rel in char.social_network.items()
-                )
+            try:
+                relationships = ""
+                if getattr(char, 'social_network', None):
+                    relationships = "\n".join(
+                        f"  - {name}: {rel}"
+                        for name, rel in char.social_network.items()
+                    )
 
-            content = f"""
+                traits = getattr(char, 'personality_traits', []) or []
+                content = f"""
 Character: {char.name}
-Type: {char.character_type}
-Personality: {char.personality}
-Backstory: {char.backstory}
+Type: {getattr(char, 'character_type', '')}
+Personality: {getattr(char, 'personality', '')}
+Traits: {', '.join(traits) if traits else ''}
+Speaking Style: {getattr(char, 'speaking_style', '')}
+Motivations: {getattr(char, 'motivations', '')}
+Fears: {getattr(char, 'fears', '')}
+Emotional Baseline: {getattr(char, 'emotional_baseline', '')}
+Backstory: {getattr(char, 'backstory', '')}
+Physical Description: {getattr(char, 'physical_description', '')}
 Relationships:
 {relationships or '  None documented'}
-Notes: {char.notes}
-            """.strip()
+Notes: {getattr(char, 'notes', '')}
+                """.strip()
 
-            chunk = self._make_chunk(
-                content=content,
-                source_type="character",
-                source_name=char.name,
-                source_id=char.id,
-                metadata={"character_type": char.character_type}
-            )
-            self.search_engine.index_document(chunk)
+                chunk = self._make_chunk(
+                    content=content,
+                    source_type="character",
+                    source_name=char.name,
+                    source_id=char.id,
+                    metadata={"character_type": getattr(char, 'character_type', '')}
+                )
+                self.search_engine.index_document(chunk)
+            except Exception:
+                continue
 
     def _index_plot(self):
         """Index plot and story planning data."""
-        sp = self.project.story_planning
+        sp = getattr(self.project, 'story_planning', None)
+        if not sp:
+            return
 
         # Main plot
-        if sp.main_plot:
+        if getattr(sp, 'main_plot', ''):
             chunk = self._make_chunk(
                 content=f"Main Plot:\n{sp.main_plot}",
                 source_type="plot",
@@ -699,52 +734,62 @@ Notes: {char.notes}
             self.search_engine.index_document(chunk)
 
         # Plot events
-        if hasattr(sp.freytag_pyramid, 'events'):
-            for event in sp.freytag_pyramid.events:
+        fp = getattr(sp, 'freytag_pyramid', None)
+        if fp and hasattr(fp, 'events'):
+            for event in fp.events:
+                try:
+                    chars = getattr(event, 'related_characters', []) or []
+                    content = f"""
+Plot Event: {getattr(event, 'title', '')}
+Stage: {getattr(event, 'stage', '').replace('_', ' ').title()}
+Act: {getattr(event, 'act', 1)}
+Description: {getattr(event, 'description', '')}
+Outcome: {getattr(event, 'outcome', '')}
+Related Characters: {', '.join(chars) if chars else 'None'}
+Notes: {getattr(event, 'notes', '')}
+                    """.strip()
+
+                    chunk = self._make_chunk(
+                        content=content,
+                        source_type="plot_event",
+                        source_name=getattr(event, 'title', ''),
+                        source_id=getattr(event, 'id', ''),
+                        metadata={
+                            "stage": getattr(event, 'stage', ''),
+                            "act": getattr(event, 'act', 1)
+                        }
+                    )
+                    self.search_engine.index_document(chunk)
+                except Exception:
+                    continue
+
+        # Subplots
+        for subplot in getattr(sp, 'subplots', []):
+            try:
+                chars = getattr(subplot, 'related_characters', []) or []
                 content = f"""
-Plot Event: {event.title}
-Stage: {event.stage.replace('_', ' ').title()}
-Act: {event.act}
-Description: {event.description}
-Outcome: {event.outcome}
-Related Characters: {', '.join(event.related_characters) if event.related_characters else 'None'}
-Notes: {event.notes}
+Subplot: {getattr(subplot, 'title', '')}
+Status: {getattr(subplot, 'status', 'active')}
+Description: {getattr(subplot, 'description', '')}
+Connection to Main Plot: {getattr(subplot, 'connection_to_main', '')}
+Related Characters: {', '.join(chars) if chars else 'Various'}
                 """.strip()
 
                 chunk = self._make_chunk(
                     content=content,
-                    source_type="plot_event",
-                    source_name=event.title,
-                    source_id=event.id,
-                    metadata={
-                        "stage": event.stage,
-                        "act": event.act
-                    }
+                    source_type="subplot",
+                    source_name=getattr(subplot, 'title', ''),
+                    source_id=getattr(subplot, 'id', ''),
+                    metadata={"status": getattr(subplot, 'status', 'active')}
                 )
                 self.search_engine.index_document(chunk)
-
-        # Subplots
-        for subplot in sp.subplots:
-            content = f"""
-Subplot: {subplot.title}
-Status: {subplot.status}
-Description: {subplot.description}
-Connection to Main Plot: {subplot.connection_to_main}
-Characters Involved: {', '.join(subplot.characters_involved) if subplot.characters_involved else 'Various'}
-            """.strip()
-
-            chunk = self._make_chunk(
-                content=content,
-                source_type="subplot",
-                source_name=subplot.title,
-                source_id=subplot.id,
-                metadata={"status": subplot.status}
-            )
-            self.search_engine.index_document(chunk)
+            except Exception:
+                continue
 
         # Themes
-        if sp.themes:
-            content = "Story Themes:\n" + "\n".join(f"- {theme}" for theme in sp.themes)
+        themes = getattr(sp, 'themes', []) or []
+        if themes:
+            content = "Story Themes:\n" + "\n".join(f"- {theme}" for theme in themes)
             chunk = self._make_chunk(
                 content=content,
                 source_type="themes",
@@ -755,26 +800,30 @@ Characters Involved: {', '.join(subplot.characters_involved) if subplot.characte
 
     def _index_promises(self):
         """Index story promises."""
-        sp = self.project.story_planning
-        if not hasattr(sp, 'promises'):
+        sp = getattr(self.project, 'story_planning', None)
+        if not sp or not hasattr(sp, 'promises'):
             return
 
-        for promise in sp.promises:
-            content = f"""
-Story Promise: {promise.title}
-Type: {promise.promise_type.title()}
-Description: {promise.description}
-Related Characters: {', '.join(promise.related_characters) if promise.related_characters else 'All'}
-            """.strip()
+        for promise in getattr(sp, 'promises', []):
+            try:
+                chars = getattr(promise, 'related_characters', []) or []
+                content = f"""
+Story Promise: {getattr(promise, 'title', '')}
+Type: {getattr(promise, 'promise_type', '').title()}
+Description: {getattr(promise, 'description', '')}
+Related Characters: {', '.join(chars) if chars else 'All'}
+                """.strip()
 
-            chunk = self._make_chunk(
-                content=content,
-                source_type="promise",
-                source_name=promise.title,
-                source_id=promise.id,
-                metadata={"promise_type": promise.promise_type}
-            )
-            self.search_engine.index_document(chunk)
+                chunk = self._make_chunk(
+                    content=content,
+                    source_type="promise",
+                    source_name=getattr(promise, 'title', ''),
+                    source_id=getattr(promise, 'id', ''),
+                    metadata={"promise_type": getattr(promise, 'promise_type', '')}
+                )
+                self.search_engine.index_document(chunk)
+            except Exception:
+                continue
 
     def _index_chapter_data(self):
         """Index chapter key points from memory manager."""
