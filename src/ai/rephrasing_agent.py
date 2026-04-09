@@ -334,6 +334,100 @@ class RephraseResult:
     cost_estimate: float
 
 
+# Mapping from personality traits → concrete writing style directives
+_TRAIT_VOICE_MAP = {
+    # Emotional traits → sentence structure and word choice
+    "stoic": "Use short, declarative sentences. Avoid emotional language. Favor understatement.",
+    "calm": "Use measured pacing. Avoid exclamation. Favor deliberate, unhurried phrasing.",
+    "anxious": "Use fragmented thoughts, qualifiers ('maybe', 'probably'). Shorter sentences when tense.",
+    "confident": "Use strong, direct statements. No hedging. Favor active voice and certainty.",
+    "insecure": "Use self-correcting phrases, hesitation. Avoid bold declarations.",
+    "sarcastic": "Use dry understatement, ironic contrast. Say the opposite of what's meant.",
+    "warm": "Use inclusive language ('we', 'us'). Softer word choices. Longer, flowing sentences.",
+    "cold": "Use clinical, detached language. Short sentences. Avoid warmth words.",
+    "cheerful": "Use bright, energetic words. Shorter, punchy sentences. Exclamation marks sparingly.",
+    "brooding": "Use longer, heavier sentences. Dark imagery. Introspective phrasing.",
+    "playful": "Use unexpected word choices, light rhythm. Occasional humor or teasing tone.",
+    "serious": "Use measured, deliberate word choice. No levity. Weighty phrasing.",
+    "cynical": "Use world-weary phrasing. Expect the worst. Dismissive of idealism.",
+    "optimistic": "Frame negatives as opportunities. Forward-looking language.",
+    "cautious": "Use conditional language ('if', 'might', 'could'). Hedge statements.",
+    "reckless": "Use impulsive, action-oriented language. Short, blunt. No hesitation.",
+    "loyal": "Reference duty, promises, bonds. Firm convictions about people.",
+    "selfish": "Frame everything in terms of personal gain or loss.",
+    "honest": "Direct, no euphemisms. Say things plainly even when uncomfortable.",
+    "deceptive": "Use careful word choice that technically doesn't lie. Misdirect.",
+    "proud": "Use elevated language. Resist showing weakness. Dignified phrasing.",
+    "humble": "Downplay achievements. Deflect praise. Simple, unadorned language.",
+    "gentle": "Use soft consonants, flowing rhythms. Avoid harsh or blunt phrasing.",
+    "fierce": "Use sharp, punchy words. Hard consonants. Aggressive rhythm.",
+    "patient": "Use unhurried phrasing. Long, complete thoughts. No rushing.",
+    "impatient": "Use clipped sentences. Interruptions. Cut to the point.",
+    "compassionate": "Acknowledge others' feelings. Use empathetic framing.",
+    "ruthless": "Use cold, calculating language. Efficiency over emotion.",
+    "disciplined": "Use structured, orderly sentences. Military precision.",
+    "chaotic": "Use run-on thoughts, tangents, unexpected pivots.",
+    "clever": "Use wordplay, double meanings. Precise vocabulary.",
+    "stubborn": "Use repetition, refusal language. 'No.' 'I won't.' Dig in.",
+    "quiet": "Use fewer words. Let silence speak. Short, sparse sentences.",
+    "loud": "Use emphatic language. Bold statements. Fill the space.",
+}
+
+# Mapping from speaking style keywords → writing directives
+_SPEECH_STYLE_MAP = {
+    "soft-spoken": "Keep volume low — whispered asides, gentle word choice.",
+    "clipped": "Maximum 8-10 words per sentence in dialogue. No filler.",
+    "formal": "Use proper grammar, no contractions, elevated vocabulary.",
+    "casual": "Use contractions, slang, conversational rhythm.",
+    "sarcastic": "Understatement, ironic contrast, deadpan delivery.",
+    "direct": "Subject-verb-object. No circling around the point.",
+    "verbose": "Use longer explanations, tangents, over-qualification.",
+    "terse": "Minimum words. Grunts. Single-word answers.",
+    "drawl": "Use stretched vowels in dialogue, unhurried rhythm.",
+    "accent": "Suggest accent through word order and idiom, not spelling.",
+    "humor": "Break tension with unexpected observations or dry wit.",
+    "forceful": "Use imperative mood. Commands. No room for argument.",
+}
+
+
+def _build_character_voice_rules(character_context: str) -> str:
+    """Convert character traits and profile into concrete writing directives.
+
+    Takes the character context string (from _get_selected_characters_context)
+    and maps traits, speaking style, and personality to actionable rules
+    that tell the LLM exactly how to phrase things for this character.
+    """
+    context_lower = character_context.lower()
+    rules = []
+
+    # Match personality traits
+    for trait, rule in _TRAIT_VOICE_MAP.items():
+        if trait in context_lower:
+            rules.append(f"• {rule}")
+
+    # Match speaking style patterns
+    for pattern, rule in _SPEECH_STYLE_MAP.items():
+        if pattern in context_lower:
+            rules.append(f"• {rule}")
+
+    # Extract specific guidance from character fields
+    if "motivations:" in context_lower:
+        rules.append("• Filter word choices through what this character WANTS — "
+                      "their motivation colors how they see everything.")
+    if "fears:" in context_lower:
+        rules.append("• The character's fears affect their language — "
+                      "they avoid, deflect, or overcompensate around what scares them.")
+    if "emotional baseline:" in context_lower:
+        rules.append("• Return to the character's baseline mood between emotional peaks. "
+                      "This is their 'resting voice.'")
+
+    if not rules:
+        rules.append("• Write as this character would naturally think and speak.")
+        rules.append("• Match their education level, social class, and temperament.")
+
+    return "\n".join(rules)
+
+
 class RephrasingAgent:
     """Agent for generating multiple rephrasing options for text.
 
@@ -2935,16 +3029,16 @@ For each option, briefly explain what makes it different from the original."""
                 f"Adjust pronouns, verb forms, and perspective accordingly.\n"
             )
 
-        # Character POV context — let the model understand whose eyes we see through
+        # Character POV context — convert traits into concrete writing directives
         character_context = character_context.strip() if character_context else ""
         char_note = ""
         if character_context:
+            voice_rules = _build_character_voice_rules(character_context)
             char_note = (
-                f"\nThe text is experienced through the following character(s). "
-                f"Write as if the reader is seeing, feeling, and thinking from their perspective. "
-                f"Let their personality, voice, and worldview color the language — "
-                f"but subtly, as the writer's art, not a caricature.\n\n"
-                f"CHARACTER DETAILS:\n{character_context}\n"
+                f"\nCHARACTER VOICE — this text belongs to a specific character. "
+                f"The phrasing must sound like THIS person wrote/thought/said it.\n\n"
+                f"CHARACTER PROFILE:\n{character_context}\n\n"
+                f"VOICE RULES (follow these strictly):\n{voice_rules}\n"
             )
 
         # Scene and surrounding text context — helps the model understand what's happening

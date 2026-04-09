@@ -135,7 +135,7 @@ class RevisionDialog(QDialog):
         edit_btn.clicked.connect(self._edit_alongside_selected)
         left_layout.addWidget(edit_btn)
 
-        restore_btn = QPushButton("Restore Selected")
+        restore_btn = QPushButton("Set as Active Draft")
         restore_btn.setStyleSheet(btn_style + """
             QPushButton { background-color: #f59e0b; color: white; border: none; }
             QPushButton:hover { background-color: #d97706; }
@@ -419,16 +419,16 @@ class RevisionDialog(QDialog):
         identifier = item.data(Qt.ItemDataRole.UserRole)
 
         if identifier == "current":
-            QMessageBox.information(self, "Already Current",
+            QMessageBox.information(self, "Already Active",
                                    "This is already the current draft.")
             return
 
         content, html = self._get_revision_content(identifier)
 
         reply = QMessageBox.question(
-            self, "Restore Draft",
-            f"Set Draft #{identifier} as the active draft?\n\n"
-            "Your current draft will be auto-saved first.",
+            self, "Set Active Draft",
+            f"Switch to Draft #{identifier} as the active working draft?\n\n"
+            "Your current draft will be auto-saved first so you don't lose any work.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
         )
         if reply != QMessageBox.StandardButton.Yes:
@@ -453,9 +453,9 @@ class RevisionDialog(QDialog):
         self._populate_compare_combo()
 
         QMessageBox.information(
-            self, "Draft Restored",
-            f"Draft #{identifier} is now the active draft.\n"
-            "Your previous draft was auto-saved."
+            self, "Active Draft Changed",
+            f"Draft #{identifier} is now your active working draft.\n"
+            "Your previous draft was auto-saved as a new snapshot."
         )
 
     def _delete_selected(self):

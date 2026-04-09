@@ -73,6 +73,14 @@ You help authors with:
 - Identifying plot holes or inconsistencies across chapters
 - CREATING new characters, places, factions, cultures, myths, historical events, technologies, flora, fauna, chapters, climate presets, planets, and star systems when asked
 
+USING THE MANUSCRIPT:
+You have access to the CURRENT CHAPTER content and a PROJECT INDEX of all chapters, characters, and worldbuilding elements. When the user asks about their story, characters, or scenes:
+- READ the manuscript text provided — it is the source of truth
+- CITE specific details from the text to support your analysis
+- If the user mentions a chapter by name or number, its full text is included
+- Base your feedback on what is ACTUALLY WRITTEN, not assumptions
+- When suggesting changes, reference the specific passages that need work
+
 IMPORTANT: Before creating a new element, check the EXISTING ELEMENTS list. If an element with a similar name already exists, use its EXACT name in the creation block so the system can update it instead of creating a duplicate. For example, if "Northern Reaches" exists and the user asks about "The Northern Reaches", use "Northern Reaches" as the name.
 
 === CREATING PROJECT ELEMENTS ===
@@ -596,6 +604,10 @@ When asked to continue:
         if self.context.get('existing_elements'):
             parts.append(f"\nEXISTING ELEMENTS (use these exact names — do NOT create duplicates):\n{self.context['existing_elements']}")
 
+        # Project index — complete catalog of manuscript, characters, worldbuilding
+        if self.context.get('project_index'):
+            parts.append(f"\nPROJECT INDEX (everything in the project):\n{self.context['project_index']}")
+
         # === PRIMARY CONTEXT (always included, highest priority) ===
         # These come from the author's own work and are the source of truth.
 
@@ -757,6 +769,14 @@ When asked to continue:
                         f"{content[-half:]}"
                     )
 
+
+        # Referenced chapter (user asked about a specific chapter by name/number)
+        if self.context.get('referenced_chapter'):
+            ref = self.context['referenced_chapter']
+            parts.append(
+                f"\n=== REFERENCED CHAPTER: {ref['title']} (Chapter {ref['number']}) ===\n"
+                f"{ref['content']}"
+            )
 
         # All chapters summary (for cross-chapter questions)
         if self.context.get('all_chapters'):
@@ -2445,7 +2465,7 @@ class MainWindow(QMainWindow):
                     wb_parts.append(f"Places: {', '.join(place_info)}")
                 context['worldbuilding'] = "\n".join(wb_parts)
 
-        # Current chapter context - include MORE for chapter_focus and writer modes
+        # Current chapter context — include for ALL modes
         if hasattr(self, 'manuscript_editor'):
             content, title = self.manuscript_editor.get_current_chapter_info()
             if title:
@@ -2454,11 +2474,12 @@ class MainWindow(QMainWindow):
                     # Include FULL chapter content for focused modes
                     context['current_chapter_content'] = content or ""
                 else:
-                    # General mode: just include excerpt
-                    context['current_chapter_content'] = content[:2000] if content else ""
+                    # General mode: include the full current chapter so the AI
+                    # can reference the actual manuscript text
+                    context['current_chapter_content'] = content or ""
 
-                # Get chapter planning/outline if available (especially for writer mode)
-                if is_chapter_focused and self.manuscript_editor.current_chapter_editor:
+                # Get chapter planning/outline for ALL modes
+                if self.manuscript_editor.current_chapter_editor:
                     chapter = self.manuscript_editor.current_chapter_editor.chapter
                     if hasattr(chapter, 'planning') and chapter.planning:
                         planning = chapter.planning
@@ -2509,6 +2530,97 @@ class MainWindow(QMainWindow):
                         ]
                         if any(kw in user_message.lower() for kw in improvement_kws):
                             context['is_improvement_question'] = True
+
+        # If user mentions a specific chapter by name or number, include its content
+        if user_message and hasattr(project, 'manuscript') and project.manuscript.chapters:
+            import re as _re
+            msg_lower = user_message.lower()
+            for ch in project.manuscript.chapters:
+                # Match "chapter 3", "ch3", "chapter three", or the chapter title
+                ch_mentioned = False
+                if f"chapter {ch.number}" in msg_lower or f"ch{ch.number}" in msg_lower:
+                    ch_mentioned = True
+                elif ch.title and ch.title.lower() in msg_lower:
+                    ch_mentioned = True
+
+                if ch_mentioned and ch.content and ch.id != context.get('_current_ch_id', ''):
+                    # Load content from disk if empty
+                    if not ch.content:
+                        from pathlib import Path
+                        pd = Path(project.project_path).parent if project.project_path else None
+                        if pd:
+                            try:
+                                ch.load_content_from_file(pd)
+                            except Exception:
+                                pass
+                    if ch.content:
+                        context['referenced_chapter'] = {
+                            'title': ch.title,
+                            'number': ch.number,
+                            'content': ch.content[:8000],
+                        }
+                        break
+
+        # === PROJECT INDEX — complete catalog of all elements ===
+        # This gives the AI a browsable inventory of everything in the project.
+        # Not full content (too large), but enough to know what exists.
+        index_parts = []
+
+        # Manuscript index: chapter titles + synopsis
+        if hasattr(project, 'manuscript') and project.manuscript.chapters:
+            ch_lines = []
+            for ch in project.manuscript.chapters[:25]:
+                wc = len(ch.content.split()) if ch.content else 0
+                synopsis = ""
+                if hasattr(ch, 'planning') and ch.planning and ch.planning.description:
+                    synopsis = f" — {ch.planning.description[:80]}"
+                ch_lines.append(f"  Ch{ch.number}. {ch.title} ({wc}w){synopsis}")
+            index_parts.append("CHAPTERS:\n" + "\n".join(ch_lines))
+
+        # Character index: name, type, key traits
+        if hasattr(project, 'characters') and project.characters:
+            char_lines = []
+            for c in project.characters:
+                parts = [f"  {c.name} ({getattr(c, 'character_type', 'minor')})"]
+                traits = getattr(c, 'personality_traits', [])
+                if traits:
+                    parts.append(f"traits: {', '.join(traits[:4])}")
+                if getattr(c, 'speaking_style', ''):
+                    parts.append(f"speech: {c.speaking_style[:40]}")
+                if getattr(c, 'motivations', ''):
+                    parts.append(f"wants: {c.motivations[:40]}")
+                char_lines.append(" | ".join(parts))
+            index_parts.append("CHARACTERS:\n" + "\n".join(char_lines))
+
+        # Worldbuilding index: all element names grouped by type
+        wb = getattr(project, 'worldbuilding', None)
+        if wb:
+            wb_lines = []
+            for label, lst in [
+                ("Factions", getattr(wb, 'factions', [])),
+                ("Places", getattr(wb, 'places', [])),
+                ("Cultures", getattr(wb, 'cultures', [])),
+                ("Technologies", getattr(wb, 'technologies', [])),
+                ("Magic Systems", getattr(wb, 'magic_systems', [])),
+                ("Myths", getattr(wb, 'myths', [])),
+                ("Flora", getattr(wb, 'flora', [])),
+                ("Fauna", getattr(wb, 'fauna', [])),
+            ]:
+                if lst:
+                    names = []
+                    for e in lst[:10]:
+                        name = getattr(e, 'name', '')
+                        desc = getattr(e, 'description', '')[:50]
+                        if desc:
+                            names.append(f"{name} ({desc})")
+                        else:
+                            names.append(name)
+                    wb_lines.append(f"  {label}: {', '.join(names)}")
+            if wb_lines:
+                index_parts.append("WORLDBUILDING:\n" + "\n".join(wb_lines))
+
+        if index_parts:
+            context['project_index'] = "\n\n".join(index_parts)
 
         # All chapters list (for cross-chapter questions) + chapter position metadata
         if hasattr(project, 'manuscript') and project.manuscript and project.manuscript.chapters:
