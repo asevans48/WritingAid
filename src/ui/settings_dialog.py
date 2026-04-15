@@ -2313,7 +2313,7 @@ class SettingsDialog(QDialog):
         self.tts_engine_combo.addItem("System TTS (pyttsx3) - Offline", "system")
         self.tts_engine_combo.addItem("Edge TTS - Microsoft Neural Voices (Online)", "edge")
         self.tts_engine_combo.addItem("VibeVoice - High Quality Neural TTS (Local)", "vibevoice")
-        self.tts_engine_combo.addItem("Higgs Audio V2 - Neural TTS (Local, 3B)", "higgs_audio")
+        self.tts_engine_combo.addItem("Chatterbox Turbo - Neural TTS (Local, 350M)", "chatterbox")
         self.tts_engine_combo.addItem("Kokoro - High Quality Neural TTS (Local, 82M)", "kokoro")
 
         current_engine = self.settings.get("tts_engine", "system")
@@ -2324,6 +2324,25 @@ class SettingsDialog(QDialog):
 
         self.tts_engine_combo.currentIndexChanged.connect(self._on_tts_engine_changed)
         engine_layout.addWidget(self.tts_engine_combo)
+
+        # Narrative style
+        genre_label = QLabel("Narrative Style:")
+        engine_layout.addWidget(genre_label)
+        self.tts_genre_combo = QComboBox()
+        self.tts_genre_combo.addItem("Custom (manual voice selection)", "")
+        try:
+            from src.services.tts_service import NARRATIVE_GENRES
+            for key, info in NARRATIVE_GENRES.items():
+                self.tts_genre_combo.addItem(
+                    f"{info['label']} — {info['description']}", key)
+        except Exception:
+            pass
+        current_genre = self.settings.get("tts_genre", "")
+        for i in range(self.tts_genre_combo.count()):
+            if self.tts_genre_combo.itemData(i) == current_genre:
+                self.tts_genre_combo.setCurrentIndex(i)
+                break
+        engine_layout.addWidget(self.tts_genre_combo)
 
         engine_group.setLayout(engine_layout)
         layout.addWidget(engine_group)
@@ -3691,6 +3710,7 @@ class SettingsDialog(QDialog):
 
             # Text-to-Speech Settings
             "tts_engine": self.tts_engine_combo.currentData(),
+            "tts_genre": self.tts_genre_combo.currentData() or "",
             "tts_rate": self.tts_rate_slider.value(),
             "tts_volume": self.tts_volume_slider.value() / 100,
             "vibevoice_path": self.vibevoice_path_edit.text(),

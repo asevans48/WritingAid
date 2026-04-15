@@ -69,6 +69,7 @@ requests>=2.32.0
 mlx>=0.31.0; sys_platform == "darwin"
 mlx-lm>=0.31.0; sys_platform == "darwin"
 mlx-vlm>=0.4.3; sys_platform == "darwin"  # Required for Gemma 4 multimodal support
+mlx-audio>=0.4.0; sys_platform == "darwin"  # Chatterbox Turbo TTS (voice cloning, 350M)
 
 # Image Generation (Optional)
 # Apple Silicon:  pip install mflux
@@ -93,10 +94,10 @@ edge-tts>=7.0.0
 #   Linux: sudo apt install libsdl2-dev && pip install pygame
 #   Windows: pip install pygame  (works out of the box)
 
-# Text-to-Speech — Local neural TTS (optional, pick one):
+# Text-to-Speech — Local neural TTS (optional):
 #   pip install kokoro-onnx soundfile   # Kokoro: 82M params, fast, high quality (recommended)
-#   pip install soundfile               # Required for Higgs Audio V2 (3B params, ~6GB download)
-# Models download automatically on first use (~200MB for Kokoro, ~6GB for Higgs)
+#   pip install mlx-audio soundfile     # Chatterbox Turbo: 350M params, voice cloning (macOS only)
+# Models download automatically on first use (~200MB for Kokoro, ~3GB for Chatterbox)
 
 # Speech-to-Text (microphone capture)
 SpeechRecognition>=3.12.0

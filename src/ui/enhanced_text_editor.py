@@ -2935,7 +2935,7 @@ class EnhancedTextEditor(QTextEdit):
                 engine_map = {
                     "vibevoice": TTSEngine.VIBEVOICE,
                     "edge": TTSEngine.EDGE,
-                    "higgs_audio": TTSEngine.HIGGS_AUDIO,
+                    "chatterbox": TTSEngine.CHATTERBOX,
                     "kokoro": TTSEngine.KOKORO,
                     "system": TTSEngine.SYSTEM,
                 }
@@ -2943,6 +2943,17 @@ class EnhancedTextEditor(QTextEdit):
                 self._tts_service.set_engine(engine)
             except ValueError:
                 pass
+
+            # Apply narrative genre voice if set
+            genre = settings.get("tts_genre", "")
+            if genre and engine_name:
+                try:
+                    from src.services.tts_service import get_genre_voice
+                    voice_id = get_genre_voice(genre, engine_name)
+                    if voice_id:
+                        self._tts_service.set_voice(voice_id)
+                except Exception:
+                    pass
 
             # Apply VibeVoice settings if configured
             vv_path = settings.get("vibevoice_path", "")
@@ -3108,7 +3119,7 @@ class EnhancedTextEditor(QTextEdit):
                     "system": TTSEngine.SYSTEM,
                     "edge": TTSEngine.EDGE,
                     "vibevoice": TTSEngine.VIBEVOICE,
-                    "higgs_audio": TTSEngine.HIGGS_AUDIO,
+                    "chatterbox": TTSEngine.CHATTERBOX,
                     "kokoro": TTSEngine.KOKORO,
                 }
                 engine = engine_map.get(engine_name, TTSEngine.SYSTEM)
@@ -3308,7 +3319,7 @@ class TTSSettingsDialog(QDialog):
                 "system": TTSEngine.SYSTEM,
                 "edge": TTSEngine.EDGE,
                 "vibevoice": TTSEngine.VIBEVOICE,
-                "higgs_audio": TTSEngine.HIGGS_AUDIO,
+                "chatterbox": TTSEngine.CHATTERBOX,
             }
             engine = engine_map.get(engine_value, TTSEngine.EDGE)
             self.tts_service.set_engine(engine)

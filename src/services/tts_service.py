@@ -15,7 +15,7 @@ class TTSEngine(Enum):
     SYSTEM = "system"  # pyttsx3 - offline, uses system voices
     EDGE = "edge"  # edge-tts - Microsoft neural voices, requires internet
     VIBEVOICE = "vibevoice"  # VibeVoice Community - high-quality local neural TTS
-    HIGGS_AUDIO = "higgs_audio"  # Higgs Audio V2 - high-quality neural TTS from Boson AI
+    CHATTERBOX = "chatterbox"  # Chatterbox Turbo - 350M param high-quality local TTS (MLX)
     KOKORO = "kokoro"  # Kokoro - 82M param high-quality local TTS
 
 
@@ -27,6 +27,120 @@ class TTSVoice:
     language: str
     gender: str
     engine: TTSEngine
+    genres: tuple = ()  # Narrative genres this voice suits (e.g. "horror", "romance")
+
+
+# ── Narrative genre presets ──────────────────────────────────────
+# Maps genre → recommended voice IDs per engine.  The first match
+# found in the engine's voice list is selected.
+
+NARRATIVE_GENRES = {
+    "horror": {
+        "label": "Horror / Dark",
+        "description": "Low, measured, tense — dread in every pause",
+        "kokoro":     ("am_adam", "bm_george", "am_michael"),
+        "edge":       ("en-US-DavisNeural", "en-US-GuyNeural", "en-GB-RyanNeural"),
+        "chatterbox": ("default",),
+        "system":     ("default",),
+    },
+    "romance": {
+        "label": "Romance",
+        "description": "Warm, intimate, expressive — every sigh matters",
+        "kokoro":     ("af_heart", "af_bella", "af_nicole"),
+        "edge":       ("en-US-AvaMultilingualNeural", "en-US-JennyNeural", "en-US-SaraNeural"),
+        "chatterbox": ("default",),
+        "system":     ("default",),
+    },
+    "thriller": {
+        "label": "Thriller / Suspense",
+        "description": "Crisp, urgent, controlled intensity",
+        "kokoro":     ("am_michael", "am_adam", "af_nova"),
+        "edge":       ("en-US-BrianMultilingualNeural", "en-US-DavisNeural", "en-US-JasonNeural"),
+        "chatterbox": ("default",),
+        "system":     ("default",),
+    },
+    "fantasy": {
+        "label": "Fantasy / Epic",
+        "description": "Rich, authoritative, grand scope — sweeping narration",
+        "kokoro":     ("bm_george", "am_adam", "bf_emma"),
+        "edge":       ("en-GB-RyanNeural", "en-US-AndrewMultilingualNeural", "en-GB-SoniaNeural"),
+        "chatterbox": ("default",),
+        "system":     ("default",),
+    },
+    "literary": {
+        "label": "Literary Fiction",
+        "description": "Refined, measured, thoughtful — lets the prose breathe",
+        "kokoro":     ("af_sarah", "bf_emma", "bm_george"),
+        "edge":       ("en-GB-SoniaNeural", "en-US-EmmaMultilingualNeural", "en-GB-LibbyNeural"),
+        "chatterbox": ("default",),
+        "system":     ("default",),
+    },
+    "scifi": {
+        "label": "Science Fiction",
+        "description": "Clean, precise, slightly detached — future-facing",
+        "kokoro":     ("am_michael", "af_nova", "af_sky"),
+        "edge":       ("en-US-EmmaMultilingualNeural", "en-US-BrianMultilingualNeural", "en-US-JaneNeural"),
+        "chatterbox": ("default",),
+        "system":     ("default",),
+    },
+    "mystery": {
+        "label": "Mystery / Detective",
+        "description": "Steady, observant, measured reveals",
+        "kokoro":     ("am_michael", "af_sarah", "am_adam"),
+        "edge":       ("en-US-GuyNeural", "en-US-DavisNeural", "en-US-JasonNeural"),
+        "chatterbox": ("default",),
+        "system":     ("default",),
+    },
+    "ya": {
+        "label": "Young Adult",
+        "description": "Energetic, relatable, emotionally present",
+        "kokoro":     ("af_nova", "af_bella", "af_sky"),
+        "edge":       ("en-US-AriaNeural", "en-GB-MaisieNeural", "en-US-JennyNeural"),
+        "chatterbox": ("default",),
+        "system":     ("default",),
+    },
+    "comedy": {
+        "label": "Comedy / Humorous",
+        "description": "Light, playful, good comic timing",
+        "kokoro":     ("af_nova", "af_bella", "am_michael"),
+        "edge":       ("en-US-TonyNeural", "en-US-GuyNeural", "en-US-AriaNeural"),
+        "chatterbox": ("default",),
+        "system":     ("default",),
+    },
+    "historical": {
+        "label": "Historical Fiction",
+        "description": "Dignified, period-appropriate gravitas",
+        "kokoro":     ("bm_george", "bf_emma", "am_adam"),
+        "edge":       ("en-GB-RyanNeural", "en-GB-SoniaNeural", "en-US-AndrewMultilingualNeural"),
+        "chatterbox": ("default",),
+        "system":     ("default",),
+    },
+    "childrens": {
+        "label": "Children's",
+        "description": "Bright, clear, engaging — easy to follow",
+        "kokoro":     ("af_sky", "af_bella", "af_nova"),
+        "edge":       ("en-GB-MaisieNeural", "en-US-JennyNeural", "en-US-SaraNeural"),
+        "chatterbox": ("default",),
+        "system":     ("default",),
+    },
+    "nonfiction": {
+        "label": "Non-Fiction / Documentary",
+        "description": "Authoritative, clear, informative",
+        "kokoro":     ("am_michael", "af_sarah", "bm_george"),
+        "edge":       ("en-US-AndrewMultilingualNeural", "en-US-JaneNeural", "en-US-DavisNeural"),
+        "chatterbox": ("default",),
+        "system":     ("default",),
+    },
+}
+
+
+def get_genre_voice(genre_key: str, engine_key: str) -> Optional[str]:
+    """Return the recommended voice ID for a genre + engine combination."""
+    genre = NARRATIVE_GENRES.get(genre_key)
+    if not genre:
+        return None
+    candidates = genre.get(engine_key, ())
+    return candidates[0] if candidates else None
 
 
 class TTSService:
@@ -188,8 +302,8 @@ class TTSService:
             voices.extend(self._get_edge_voices())
         elif engine == TTSEngine.VIBEVOICE:
             voices.extend(self._get_vibevoice_voices())
-        elif engine == TTSEngine.HIGGS_AUDIO:
-            voices.extend(self._get_higgs_audio_voices())
+        elif engine == TTSEngine.CHATTERBOX:
+            voices.extend(self._get_chatterbox_voices())
         elif engine == TTSEngine.KOKORO:
             voices.extend(self._get_kokoro_voices())
 
@@ -275,26 +389,45 @@ class TTSService:
         ]
         return voices
 
-    def _get_higgs_audio_voices(self) -> List[TTSVoice]:
-        """Get Higgs Audio V2 voices (uses model's built-in voice generation)."""
+    def _get_chatterbox_voices(self) -> List[TTSVoice]:
+        """Get Chatterbox Turbo voices (default + any reference audio in ~/.writer_platform/voices/)."""
         voices = [
-            TTSVoice("default", "Default (Neural)", "en", "neutral", TTSEngine.HIGGS_AUDIO),
+            TTSVoice("default", "Default (Neural)", "en", "neutral", TTSEngine.CHATTERBOX),
         ]
+        # Scan for user-provided reference audio files for voice cloning
+        voices_dir = Path.home() / ".writer_platform" / "voices"
+        if voices_dir.exists():
+            for f in sorted(voices_dir.iterdir()):
+                if f.suffix.lower() in ('.wav', '.mp3', '.flac', '.ogg'):
+                    name = f.stem.replace('_', ' ').replace('-', ' ').title()
+                    voices.append(TTSVoice(
+                        str(f), f"{name} (cloned)", "en", "neutral",
+                        TTSEngine.CHATTERBOX))
         return voices
 
     def _get_kokoro_voices(self) -> List[TTSVoice]:
-        """Get Kokoro voice presets."""
+        """Get Kokoro voice presets with narrative genre tags."""
         voices = [
-            TTSVoice("af_heart", "Heart (warm, natural)", "en-US", "female", TTSEngine.KOKORO),
-            TTSVoice("af_bella", "Bella (clear, bright)", "en-US", "female", TTSEngine.KOKORO),
-            TTSVoice("af_sarah", "Sarah (calm, steady)", "en-US", "female", TTSEngine.KOKORO),
-            TTSVoice("af_nicole", "Nicole (smooth)", "en-US", "female", TTSEngine.KOKORO),
-            TTSVoice("af_sky", "Sky (light, airy)", "en-US", "female", TTSEngine.KOKORO),
-            TTSVoice("af_nova", "Nova (energetic)", "en-US", "female", TTSEngine.KOKORO),
-            TTSVoice("am_adam", "Adam (deep, warm)", "en-US", "male", TTSEngine.KOKORO),
-            TTSVoice("am_michael", "Michael (clear)", "en-US", "male", TTSEngine.KOKORO),
-            TTSVoice("bf_emma", "Emma (British)", "en-GB", "female", TTSEngine.KOKORO),
-            TTSVoice("bm_george", "George (British)", "en-GB", "male", TTSEngine.KOKORO),
+            TTSVoice("af_heart", "Heart (warm, natural)", "en-US", "female", TTSEngine.KOKORO,
+                     genres=("romance",)),
+            TTSVoice("af_bella", "Bella (clear, bright)", "en-US", "female", TTSEngine.KOKORO,
+                     genres=("romance", "ya", "comedy")),
+            TTSVoice("af_sarah", "Sarah (calm, steady)", "en-US", "female", TTSEngine.KOKORO,
+                     genres=("literary", "mystery", "nonfiction")),
+            TTSVoice("af_nicole", "Nicole (smooth)", "en-US", "female", TTSEngine.KOKORO,
+                     genres=("romance", "literary")),
+            TTSVoice("af_sky", "Sky (light, airy)", "en-US", "female", TTSEngine.KOKORO,
+                     genres=("ya", "childrens", "scifi")),
+            TTSVoice("af_nova", "Nova (energetic)", "en-US", "female", TTSEngine.KOKORO,
+                     genres=("ya", "comedy", "scifi", "thriller")),
+            TTSVoice("am_adam", "Adam (deep, warm)", "en-US", "male", TTSEngine.KOKORO,
+                     genres=("horror", "fantasy", "thriller", "historical")),
+            TTSVoice("am_michael", "Michael (clear)", "en-US", "male", TTSEngine.KOKORO,
+                     genres=("thriller", "mystery", "scifi", "nonfiction")),
+            TTSVoice("bf_emma", "Emma (British)", "en-GB", "female", TTSEngine.KOKORO,
+                     genres=("literary", "historical", "fantasy")),
+            TTSVoice("bm_george", "George (British)", "en-GB", "male", TTSEngine.KOKORO,
+                     genres=("fantasy", "historical", "literary", "horror")),
         ]
         return voices
 
@@ -397,9 +530,9 @@ class TTSService:
                 args=(text,),
                 daemon=True
             )
-        elif self._current_engine == TTSEngine.HIGGS_AUDIO:
+        elif self._current_engine == TTSEngine.CHATTERBOX:
             self._speech_thread = threading.Thread(
-                target=self._speak_higgs_audio,
+                target=self._speak_chatterbox,
                 args=(text,),
                 daemon=True
             )
@@ -667,39 +800,22 @@ class TTSService:
             if self._on_end:
                 self._on_end()
 
-    def _speak_higgs_audio(self, text: str):
-        """Speak using Higgs Audio V2 (runs in thread).
+    def _speak_chatterbox(self, text: str):
+        """Speak using Chatterbox Turbo via mlx-audio (runs in thread).
 
-        Downloads the model from HuggingFace on first use.
-        Uses transformers pipeline for generation.
+        Downloads the model from HuggingFace on first use (~3 GB).
+        Supports voice cloning from a reference audio file.
         """
         try:
             if self._on_progress:
-                self._on_progress("Loading Higgs Audio V2...")
+                self._on_progress("Loading Chatterbox Turbo...")
 
-            import torch
-            from transformers import pipeline
-
-            # Use a cached pipeline — only load once
-            if not hasattr(self, '_higgs_pipeline') or self._higgs_pipeline is None:
-                print("[TTS] Loading Higgs Audio V2 model (will download on first use)...")
-
-                # Get HF token if available
-                hf_token = None
-                try:
-                    from src.config.credential_manager import get_credential_manager
-                    hf_token = get_credential_manager().get_huggingface_token()
-                except Exception:
-                    pass
-
-                self._higgs_pipeline = pipeline(
-                    "text-to-audio",
-                    model="bosonai/higgs-audio-v2-generation-3B-base",
-                    torch_dtype=torch.bfloat16,
-                    device="mps" if torch.backends.mps.is_available() else "cpu",
-                    token=hf_token
-                )
-                print("[TTS] Higgs Audio V2 loaded")
+            if not hasattr(self, '_chatterbox_model') or self._chatterbox_model is None:
+                print("[TTS] Loading Chatterbox Turbo model (will download on first use)...")
+                from mlx_audio.tts.utils import load_model
+                self._chatterbox_model = load_model(
+                    "mlx-community/chatterbox-turbo-fp16")
+                print("[TTS] Chatterbox Turbo loaded")
 
             if self._stop_requested:
                 return
@@ -707,28 +823,26 @@ class TTSService:
             if self._on_progress:
                 self._on_progress("Generating speech...")
 
-            # Generate audio
-            output = self._higgs_pipeline(text)
+            # Check if voice is a file path (cloned voice) or "default"
+            voice_id = getattr(self, '_current_voice', 'default')
+            gen_kwargs = {"text": text, "stream": False}
+            if voice_id and voice_id != "default" and os.path.isfile(voice_id):
+                gen_kwargs["ref_audio"] = voice_id
 
-            if self._stop_requested:
+            results = list(self._chatterbox_model.generate(**gen_kwargs))
+
+            if self._stop_requested or not results:
                 return
 
             # Save to temp file and play
             import soundfile as sf
-            temp_path = os.path.join(tempfile.gettempdir(), "higgs_tts_output.wav")
-
-            audio_data = output["audio"]
-            sample_rate = output["sampling_rate"]
-
-            # Handle different output shapes
             import numpy as np
-            if isinstance(audio_data, torch.Tensor):
-                audio_data = audio_data.cpu().numpy()
-            if isinstance(audio_data, np.ndarray):
-                if audio_data.ndim > 1:
-                    audio_data = audio_data.squeeze()
-
-            sf.write(temp_path, audio_data, sample_rate)
+            temp_path = os.path.join(tempfile.gettempdir(), "chatterbox_tts_output.wav")
+            audio = results[0].audio
+            if hasattr(audio, 'numpy'):
+                audio = audio.numpy()
+            sr = getattr(self._chatterbox_model, 'sample_rate', 24000)
+            sf.write(temp_path, np.array(audio).flatten(), sr)
 
             if not self._stop_requested:
                 self._play_audio_file(temp_path)
@@ -737,14 +851,14 @@ class TTSService:
             missing = str(e)
             if self._on_error:
                 self._on_error(
-                    f"Higgs Audio V2 requires additional packages.\n"
+                    f"Chatterbox Turbo requires the mlx-audio package.\n"
                     f"Missing: {missing}\n\n"
                     f"Install with:\n"
-                    f"  pip install transformers torch soundfile"
+                    f"  pip install mlx-audio soundfile"
                 )
         except Exception as e:
             if self._on_error:
-                self._on_error(f"Higgs Audio V2 error: {e}")
+                self._on_error(f"Chatterbox Turbo error: {e}")
         finally:
             self._is_speaking = False
             if self._on_end:

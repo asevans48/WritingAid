@@ -1104,6 +1104,12 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
+        export_audio_action = QAction("Export &Audio Book...", self)
+        export_audio_action.triggered.connect(self._export_audio_book)
+        file_menu.addAction(export_audio_action)
+
+        file_menu.addSeparator()
+
         exit_action = QAction("E&xit", self)
         exit_action.setShortcut(QKeySequence.StandardKey.Quit)
         exit_action.triggered.connect(self.close)
@@ -3729,6 +3735,46 @@ class MainWindow(QMainWindow):
                 self.replace_dialog.set_status(f"'{find_text}' not found")
             else:
                 self.replace_dialog.set_status(f"Replaced {count} occurrence(s)")
+
+    def _export_audio_book(self):
+        """Export chapters as audio files."""
+        if not self.current_project or not self.current_project.manuscript.chapters:
+            QMessageBox.information(self, "No Content", "No chapters to export.")
+            return
+
+        # Sync current editor content to the chapter model so export
+        # gets the latest text (not stale from last save/load)
+        if hasattr(self, 'manuscript_editor') and self.manuscript_editor.current_chapter_editor:
+            try:
+                self.manuscript_editor.current_chapter_editor.save_to_model()
+            except Exception:
+                pass
+
+        # Ensure every chapter has content loaded from disk
+        project_dir = Path(self.current_project.project_path).parent
+        for ch in self.current_project.manuscript.chapters:
+            if not ch.content or not ch.content.strip():
+                try:
+                    ch.load_content_from_file(project_dir)
+                except Exception:
+                    pass
+
+        # Determine current chapter index
+        current_idx = -1
+        if hasattr(self, 'manuscript_editor') and self.manuscript_editor.current_chapter_editor:
+            current_ch = self.manuscript_editor.current_chapter_editor.chapter
+            for i, ch in enumerate(self.current_project.manuscript.chapters):
+                if ch.id == current_ch.id:
+                    current_idx = i
+                    break
+
+        from src.ui.export_audio_dialog import ExportAudioDialog
+        dialog = ExportAudioDialog(
+            self.current_project.manuscript.chapters,
+            current_chapter_idx=current_idx,
+            parent=self
+        )
+        dialog.exec()
 
     def _toggle_debug_panel(self, checked: bool):
         """Toggle the AI debug panel."""
