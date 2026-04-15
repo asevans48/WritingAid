@@ -2313,6 +2313,8 @@ class SettingsDialog(QDialog):
         self.tts_engine_combo.addItem("System TTS (pyttsx3) - Offline", "system")
         self.tts_engine_combo.addItem("Edge TTS - Microsoft Neural Voices (Online)", "edge")
         self.tts_engine_combo.addItem("VibeVoice - High Quality Neural TTS (Local)", "vibevoice")
+        self.tts_engine_combo.addItem("Higgs Audio V2 - Neural TTS (Local, 3B)", "higgs_audio")
+        self.tts_engine_combo.addItem("Kokoro - High Quality Neural TTS (Local, 82M)", "kokoro")
 
         current_engine = self.settings.get("tts_engine", "system")
         for i in range(self.tts_engine_combo.count()):
@@ -2495,6 +2497,79 @@ class SettingsDialog(QDialog):
         # Check initial status
         self._check_vibevoice_status()
         self._on_tts_engine_changed()
+
+        # === Speech-to-Text (STT) Settings ===
+        stt_group = QGroupBox("Speech-to-Text (Voice Input)")
+        stt_layout = QVBoxLayout()
+
+        stt_info = QLabel(
+            "Configure how voice input is transcribed. Local models keep your audio "
+            "private and work offline. Install one for best results."
+        )
+        stt_info.setWordWrap(True)
+        stt_info.setStyleSheet("color: #6b7280; font-size: 11px; padding: 4px;")
+        stt_layout.addWidget(stt_info)
+
+        # Engine selection
+        stt_engine_layout = QFormLayout()
+
+        self.stt_engine_combo = QComboBox()
+        self.stt_engine_combo.addItem("Auto-detect best available", "auto")
+        self.stt_engine_combo.addItem("Whisper (local, high quality)", "whisper_local")
+        self.stt_engine_combo.addItem("Moonshine (local, ultra-fast)", "moonshine")
+        self.stt_engine_combo.addItem("Google (online, requires internet)", "google")
+
+        current_stt = self.settings.get("stt_engine", "auto")
+        for i in range(self.stt_engine_combo.count()):
+            if self.stt_engine_combo.itemData(i) == current_stt:
+                self.stt_engine_combo.setCurrentIndex(i)
+                break
+
+        stt_engine_layout.addRow("Engine:", self.stt_engine_combo)
+
+        # Whisper model size
+        self.stt_model_combo = QComboBox()
+        self.stt_model_combo.addItem("tiny (fastest, ~1GB RAM)", "tiny")
+        self.stt_model_combo.addItem("base (balanced, ~1GB RAM)", "base")
+        self.stt_model_combo.addItem("small (better accuracy, ~2GB RAM)", "small")
+        self.stt_model_combo.addItem("medium (high accuracy, ~5GB RAM)", "medium")
+        self.stt_model_combo.addItem("large-v3 (best accuracy, ~10GB RAM)", "large-v3")
+
+        current_stt_model = self.settings.get("stt_model_size", "base")
+        for i in range(self.stt_model_combo.count()):
+            if self.stt_model_combo.itemData(i) == current_stt_model:
+                self.stt_model_combo.setCurrentIndex(i)
+                break
+
+        stt_engine_layout.addRow("Whisper Model:", self.stt_model_combo)
+
+        stt_layout.addLayout(stt_engine_layout)
+
+        # Status of available engines
+        stt_status_parts = []
+        try:
+            from src.services.stt_service import STTService
+            for name, engine_id, available in STTService.get_available_engines():
+                status = "installed" if available else "not installed"
+                color = "#059669" if available else "#9ca3af"
+                stt_status_parts.append(f'<span style="color:{color}">● {name}: {status}</span>')
+        except Exception:
+            stt_status_parts.append("Could not detect STT engines")
+
+        stt_status = QLabel("<br>".join(stt_status_parts))
+        stt_status.setStyleSheet("font-size: 11px; padding: 4px;")
+        stt_layout.addWidget(stt_status)
+
+        install_note = QLabel(
+            "Install a local engine for offline voice input:\n"
+            "  pip install faster-whisper   (recommended, fastest)\n"
+            "  pip install moonshine        (ultra-fast, 250M params)"
+        )
+        install_note.setStyleSheet("color: #6b7280; font-size: 10px; font-family: monospace; padding: 4px;")
+        stt_layout.addWidget(install_note)
+
+        stt_group.setLayout(stt_layout)
+        layout.addWidget(stt_group)
 
         layout.addStretch()
         scroll_area.setWidget(widget)
@@ -3621,6 +3696,10 @@ class SettingsDialog(QDialog):
             "vibevoice_path": self.vibevoice_path_edit.text(),
             "vibevoice_model": self.vibevoice_model_combo.currentData(),
             "vibevoice_voice": self.vibevoice_voice_combo.currentData(),
+
+            # Speech-to-Text
+            "stt_engine": self.stt_engine_combo.currentData(),
+            "stt_model_size": self.stt_model_combo.currentData(),
 
             # Knowledge Bases
             "britannica_api_key": self.knowledge_widget.get_britannica_key(),

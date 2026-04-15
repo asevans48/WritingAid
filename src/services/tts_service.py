@@ -15,6 +15,8 @@ class TTSEngine(Enum):
     SYSTEM = "system"  # pyttsx3 - offline, uses system voices
     EDGE = "edge"  # edge-tts - Microsoft neural voices, requires internet
     VIBEVOICE = "vibevoice"  # VibeVoice Community - high-quality local neural TTS
+    HIGGS_AUDIO = "higgs_audio"  # Higgs Audio V2 - high-quality neural TTS from Boson AI
+    KOKORO = "kokoro"  # Kokoro - 82M param high-quality local TTS
 
 
 @dataclass
@@ -186,6 +188,10 @@ class TTSService:
             voices.extend(self._get_edge_voices())
         elif engine == TTSEngine.VIBEVOICE:
             voices.extend(self._get_vibevoice_voices())
+        elif engine == TTSEngine.HIGGS_AUDIO:
+            voices.extend(self._get_higgs_audio_voices())
+        elif engine == TTSEngine.KOKORO:
+            voices.extend(self._get_kokoro_voices())
 
         return voices
 
@@ -269,6 +275,29 @@ class TTSService:
         ]
         return voices
 
+    def _get_higgs_audio_voices(self) -> List[TTSVoice]:
+        """Get Higgs Audio V2 voices (uses model's built-in voice generation)."""
+        voices = [
+            TTSVoice("default", "Default (Neural)", "en", "neutral", TTSEngine.HIGGS_AUDIO),
+        ]
+        return voices
+
+    def _get_kokoro_voices(self) -> List[TTSVoice]:
+        """Get Kokoro voice presets."""
+        voices = [
+            TTSVoice("af_heart", "Heart (warm, natural)", "en-US", "female", TTSEngine.KOKORO),
+            TTSVoice("af_bella", "Bella (clear, bright)", "en-US", "female", TTSEngine.KOKORO),
+            TTSVoice("af_sarah", "Sarah (calm, steady)", "en-US", "female", TTSEngine.KOKORO),
+            TTSVoice("af_nicole", "Nicole (smooth)", "en-US", "female", TTSEngine.KOKORO),
+            TTSVoice("af_sky", "Sky (light, airy)", "en-US", "female", TTSEngine.KOKORO),
+            TTSVoice("af_nova", "Nova (energetic)", "en-US", "female", TTSEngine.KOKORO),
+            TTSVoice("am_adam", "Adam (deep, warm)", "en-US", "male", TTSEngine.KOKORO),
+            TTSVoice("am_michael", "Michael (clear)", "en-US", "male", TTSEngine.KOKORO),
+            TTSVoice("bf_emma", "Emma (British)", "en-GB", "female", TTSEngine.KOKORO),
+            TTSVoice("bm_george", "George (British)", "en-GB", "male", TTSEngine.KOKORO),
+        ]
+        return voices
+
     def get_vibevoice_models(self) -> List[str]:
         """Get available VibeVoice models."""
         return ["0.5B", "1.5B", "7B"]
@@ -349,6 +378,10 @@ class TTSService:
 
         self._is_speaking = True
 
+        voice_name = self._voice_id or "default"
+        print(f"[TTS] Read Aloud: engine={self._current_engine.value}, "
+              f"voice={voice_name}, text={len(text)} chars")
+
         if self._on_start:
             self._on_start()
 
@@ -361,6 +394,18 @@ class TTSService:
         elif self._current_engine == TTSEngine.VIBEVOICE:
             self._speech_thread = threading.Thread(
                 target=self._speak_vibevoice,
+                args=(text,),
+                daemon=True
+            )
+        elif self._current_engine == TTSEngine.HIGGS_AUDIO:
+            self._speech_thread = threading.Thread(
+                target=self._speak_higgs_audio,
+                args=(text,),
+                daemon=True
+            )
+        elif self._current_engine == TTSEngine.KOKORO:
+            self._speech_thread = threading.Thread(
+                target=self._speak_kokoro,
                 args=(text,),
                 daemon=True
             )
@@ -622,50 +667,235 @@ class TTSService:
             if self._on_end:
                 self._on_end()
 
-    def _play_audio_file(self, file_path: str):
-        """Play an audio file using system audio."""
-        try:
-            # Try pygame first (cross-platform)
-            try:
-                import pygame
-                pygame.mixer.init()
-                pygame.mixer.music.load(file_path)
-                pygame.mixer.music.set_volume(self._volume)
-                pygame.mixer.music.play()
-                while pygame.mixer.music.get_busy() and not self._stop_requested:
-                    pygame.time.wait(100)
-                pygame.mixer.music.stop()
-                return
-            except ImportError:
-                pass
+    def _speak_higgs_audio(self, text: str):
+        """Speak using Higgs Audio V2 (runs in thread).
 
-            # Fallback: use system commands
+        Downloads the model from HuggingFace on first use.
+        Uses transformers pipeline for generation.
+        """
+        try:
+            if self._on_progress:
+                self._on_progress("Loading Higgs Audio V2...")
+
+            import torch
+            from transformers import pipeline
+
+            # Use a cached pipeline — only load once
+            if not hasattr(self, '_higgs_pipeline') or self._higgs_pipeline is None:
+                print("[TTS] Loading Higgs Audio V2 model (will download on first use)...")
+
+                # Get HF token if available
+                hf_token = None
+                try:
+                    from src.config.credential_manager import get_credential_manager
+                    hf_token = get_credential_manager().get_huggingface_token()
+                except Exception:
+                    pass
+
+                self._higgs_pipeline = pipeline(
+                    "text-to-audio",
+                    model="bosonai/higgs-audio-v2-generation-3B-base",
+                    torch_dtype=torch.bfloat16,
+                    device="mps" if torch.backends.mps.is_available() else "cpu",
+                    token=hf_token
+                )
+                print("[TTS] Higgs Audio V2 loaded")
+
+            if self._stop_requested:
+                return
+
+            if self._on_progress:
+                self._on_progress("Generating speech...")
+
+            # Generate audio
+            output = self._higgs_pipeline(text)
+
+            if self._stop_requested:
+                return
+
+            # Save to temp file and play
+            import soundfile as sf
+            temp_path = os.path.join(tempfile.gettempdir(), "higgs_tts_output.wav")
+
+            audio_data = output["audio"]
+            sample_rate = output["sampling_rate"]
+
+            # Handle different output shapes
+            import numpy as np
+            if isinstance(audio_data, torch.Tensor):
+                audio_data = audio_data.cpu().numpy()
+            if isinstance(audio_data, np.ndarray):
+                if audio_data.ndim > 1:
+                    audio_data = audio_data.squeeze()
+
+            sf.write(temp_path, audio_data, sample_rate)
+
+            if not self._stop_requested:
+                self._play_audio_file(temp_path)
+
+        except ImportError as e:
+            missing = str(e)
+            if self._on_error:
+                self._on_error(
+                    f"Higgs Audio V2 requires additional packages.\n"
+                    f"Missing: {missing}\n\n"
+                    f"Install with:\n"
+                    f"  pip install transformers torch soundfile"
+                )
+        except Exception as e:
+            if self._on_error:
+                self._on_error(f"Higgs Audio V2 error: {e}")
+        finally:
+            self._is_speaking = False
+            if self._on_end:
+                self._on_end()
+
+    def _speak_kokoro(self, text: str):
+        """Speak using Kokoro TTS via kokoro-onnx (runs in thread).
+
+        Downloads model files (~200MB) on first use.
+        82M parameters — fast even on CPU.
+        """
+        try:
+            if self._on_progress:
+                self._on_progress("Loading Kokoro...")
+
+            from kokoro_onnx import Kokoro
+            import soundfile as sf
+
+            # Cache the Kokoro instance
+            if not hasattr(self, '_kokoro_instance') or self._kokoro_instance is None:
+                # Model files stored in ~/.writer_platform/kokoro/
+                model_dir = Path.home() / ".writer_platform" / "kokoro"
+                model_dir.mkdir(parents=True, exist_ok=True)
+
+                model_path = model_dir / "kokoro-v1.0.onnx"
+                voices_path = model_dir / "voices-v1.0.bin"
+
+                # Download model files if not present
+                if not model_path.exists() or not voices_path.exists():
+                    print("[TTS] Downloading Kokoro model files (~200MB)...")
+                    if self._on_progress:
+                        self._on_progress("Downloading Kokoro model...")
+                    import requests
+                    base_url = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
+
+                    if not model_path.exists():
+                        r = requests.get(f"{base_url}/kokoro-v1.0.onnx", stream=True)
+                        r.raise_for_status()
+                        with open(model_path, 'wb') as f:
+                            for chunk in r.iter_content(chunk_size=8192):
+                                f.write(chunk)
+
+                    if not voices_path.exists():
+                        r = requests.get(f"{base_url}/voices-v1.0.bin", stream=True)
+                        r.raise_for_status()
+                        with open(voices_path, 'wb') as f:
+                            for chunk in r.iter_content(chunk_size=8192):
+                                f.write(chunk)
+
+                    print("[TTS] Kokoro model files downloaded")
+
+                print("[TTS] Loading Kokoro ONNX model...")
+                self._kokoro_instance = Kokoro(str(model_path), str(voices_path))
+                print("[TTS] Kokoro ready")
+
+            if self._stop_requested:
+                return
+
+            voice = self._voice_id if self._voice_id else "af_heart"
+
+            if self._on_progress:
+                self._on_progress("Generating speech...")
+
+            samples, sample_rate = self._kokoro_instance.create(
+                text, voice=voice, speed=1.0
+            )
+
+            if self._stop_requested:
+                return
+
+            temp_path = os.path.join(tempfile.gettempdir(), "kokoro_tts_output.wav")
+            sf.write(temp_path, samples, sample_rate)
+
+            if not self._stop_requested:
+                self._play_audio_file(temp_path)
+
+        except ImportError:
+            if self._on_error:
+                self._on_error(
+                    "Kokoro TTS not installed.\n\n"
+                    "Install with:\n"
+                    "  pip install kokoro-onnx soundfile\n\n"
+                    "The model (~200MB) downloads automatically on first use."
+                )
+        except Exception as e:
+            if self._on_error:
+                self._on_error(f"Kokoro error: {e}")
+        finally:
+            self._is_speaking = False
+            if self._on_end:
+                self._on_end()
+
+    def _play_audio_file(self, file_path: str):
+        """Play an audio file using system audio.
+
+        Uses subprocess with Popen (non-blocking) so stop() can kill it.
+        """
+        try:
             import subprocess
             import platform
 
             system = platform.system()
             if system == "Windows":
-                # Use Windows Media Player
-                subprocess.run(
+                proc = subprocess.Popen(
                     ['powershell', '-c', f'(New-Object Media.SoundPlayer "{file_path}").PlaySync()'],
-                    capture_output=True
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
                 )
-            elif system == "Darwin":  # macOS
-                subprocess.run(['afplay', file_path], capture_output=True)
-            else:  # Linux
-                subprocess.run(['aplay', file_path], capture_output=True)
+            elif system == "Darwin":
+                proc = subprocess.Popen(
+                    ['afplay', file_path],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+            else:
+                proc = subprocess.Popen(
+                    ['aplay', file_path],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+
+            # Store the process so stop() can kill it
+            self._audio_proc = proc
+
+            # Poll instead of blocking — check stop flag every 100ms
+            while proc.poll() is None:
+                if self._stop_requested:
+                    proc.terminate()
+                    proc.wait(timeout=2)
+                    return
+                import time
+                time.sleep(0.1)
 
         except Exception as e:
             print(f"Error playing audio: {e}")
             if self._on_error:
                 self._on_error(f"Audio playback error: {e}")
+        finally:
+            self._audio_proc = None
 
     def stop(self):
-        """Stop speaking."""
+        """Stop speaking immediately."""
         self._stop_requested = True
 
+        # Kill audio playback subprocess
+        proc = getattr(self, '_audio_proc', None)
+        if proc is not None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
         # Kill macOS 'say' subprocess if it is active
-        macos_proc = self._macos_say_proc
+        macos_proc = getattr(self, '_macos_say_proc', None)
         if macos_proc is not None:
             self._macos_say_proc = None
             try:
@@ -676,19 +906,9 @@ class TTSService:
         if self._current_engine == TTSEngine.SYSTEM and self._pyttsx3_engine:
             try:
                 self._pyttsx3_engine.stop()
-                # Re-initialize pyttsx3 to clear its state after stop
-                # This prevents issues where the engine won't speak after being stopped
                 self._pyttsx3_engine = None
             except:
                 pass
-
-        # Stop pygame audio if it's playing
-        try:
-            import pygame
-            if pygame.mixer.get_init():
-                pygame.mixer.music.stop()
-        except:
-            pass
 
         self._is_speaking = False
 

@@ -1795,6 +1795,16 @@ class MainWindow(QMainWindow):
     def _toggle_voice_input(self):
         """Toggle speech-to-text input."""
         stt = get_stt_service()
+
+        # Apply STT settings
+        from src.services.stt_service import STTEngine
+        stt_engine = self.settings.get("stt_engine", "auto")
+        try:
+            stt.set_engine(STTEngine(stt_engine))
+        except (ValueError, KeyError):
+            stt.set_engine(STTEngine.AUTO)
+        stt.set_whisper_model_size(self.settings.get("stt_model_size", "base"))
+
         if stt.is_listening():
             stt.stop()
             return
@@ -4226,6 +4236,21 @@ class MainWindow(QMainWindow):
         if self.current_project and not self._confirm_unsaved_changes():
             event.ignore()
         else:
+            # Stop speech-to-text and unload model
+            try:
+                stt = get_stt_service()
+                stt.shutdown()
+            except Exception:
+                pass
+
+            # Stop text-to-speech
+            try:
+                from src.services.tts_service import get_tts_service
+                tts = get_tts_service()
+                tts.stop()
+            except Exception:
+                pass
+
             # Hide tray icon before closing
             if hasattr(self, 'tray_icon'):
                 self.tray_icon.hide()

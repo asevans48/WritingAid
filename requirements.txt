@@ -93,9 +93,20 @@ edge-tts>=7.0.0
 #   Linux: sudo apt install libsdl2-dev && pip install pygame
 #   Windows: pip install pygame  (works out of the box)
 
-# Speech-to-Text
+# Text-to-Speech — Local neural TTS (optional, pick one):
+#   pip install kokoro-onnx soundfile   # Kokoro: 82M params, fast, high quality (recommended)
+#   pip install soundfile               # Required for Higgs Audio V2 (3B params, ~6GB download)
+# Models download automatically on first use (~200MB for Kokoro, ~6GB for Higgs)
+
+# Speech-to-Text (microphone capture)
 SpeechRecognition>=3.12.0
 PyAudio>=0.2.14
+
+# Speech-to-Text Engines (install one for local transcription):
+#   pip install faster-whisper    # Recommended: 6x faster than original Whisper
+#   pip install openai-whisper    # Original OpenAI Whisper (slower but reliable)
+#   pip install moonshine         # Ultra-fast edge model (250M params, fast on CPU)
+# If none installed, falls back to Google Speech Recognition (requires internet)
 
 # Knowledge Base (optional - for downloading external reference datasets)
 wikipedia>=1.4.0  # Wikipedia article downloads for knowledge base

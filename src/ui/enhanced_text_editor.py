@@ -2932,15 +2932,17 @@ class EnhancedTextEditor(QTextEdit):
             # Apply engine preference
             engine_name = settings.get("tts_engine", "system")
             try:
-                if engine_name == "vibevoice":
-                    engine = TTSEngine.VIBEVOICE
-                elif engine_name == "edge":
-                    engine = TTSEngine.EDGE
-                else:
-                    engine = TTSEngine.SYSTEM
+                engine_map = {
+                    "vibevoice": TTSEngine.VIBEVOICE,
+                    "edge": TTSEngine.EDGE,
+                    "higgs_audio": TTSEngine.HIGGS_AUDIO,
+                    "kokoro": TTSEngine.KOKORO,
+                    "system": TTSEngine.SYSTEM,
+                }
+                engine = engine_map.get(engine_name, TTSEngine.SYSTEM)
                 self._tts_service.set_engine(engine)
             except ValueError:
-                pass  # Engine not available, use default
+                pass
 
             # Apply VibeVoice settings if configured
             vv_path = settings.get("vibevoice_path", "")
@@ -3099,10 +3101,17 @@ class EnhancedTextEditor(QTextEdit):
             self._tts_service.set_volume(volume)
 
     def set_tts_engine(self, engine_name: str):
-        """Set TTS engine ('system' or 'edge')."""
+        """Set TTS engine by name."""
         if self._tts_service:
             try:
-                engine = TTSEngine.SYSTEM if engine_name == "system" else TTSEngine.EDGE
+                engine_map = {
+                    "system": TTSEngine.SYSTEM,
+                    "edge": TTSEngine.EDGE,
+                    "vibevoice": TTSEngine.VIBEVOICE,
+                    "higgs_audio": TTSEngine.HIGGS_AUDIO,
+                    "kokoro": TTSEngine.KOKORO,
+                }
+                engine = engine_map.get(engine_name, TTSEngine.SYSTEM)
                 self._tts_service.set_engine(engine)
             except ValueError as e:
                 QMessageBox.warning(self, "Engine Not Available", str(e))
@@ -3295,12 +3304,13 @@ class TTSSettingsDialog(QDialog):
         """Handle engine selection change."""
         engine_value = self.engine_combo.currentData()
         try:
-            if engine_value == "system":
-                engine = TTSEngine.SYSTEM
-            elif engine_value == "vibevoice":
-                engine = TTSEngine.VIBEVOICE
-            else:
-                engine = TTSEngine.EDGE
+            engine_map = {
+                "system": TTSEngine.SYSTEM,
+                "edge": TTSEngine.EDGE,
+                "vibevoice": TTSEngine.VIBEVOICE,
+                "higgs_audio": TTSEngine.HIGGS_AUDIO,
+            }
+            engine = engine_map.get(engine_value, TTSEngine.EDGE)
             self.tts_service.set_engine(engine)
             self._populate_voices()
         except ValueError as e:
