@@ -3099,7 +3099,7 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
     # ==================== Text-to-Speech Methods ====================
 
     def _tts_speak_chapter(self):
-        """Speak the chapter or selected text aloud."""
+        """Read aloud with pause/resume: toggles between play, pause, resume."""
         if not self.editor.is_tts_available():
             QMessageBox.warning(
                 self,
@@ -3109,11 +3109,28 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
             )
             return
 
-        # Only stop if something is currently playing (avoids spurious tts_stopped signal)
+        # If currently paused, resume
+        if self.editor.is_tts_paused():
+            if self.editor.resume_speaking():
+                self.tts_speak_btn.setText("⏸ Pause")
+                self.tts_stop_btn.setEnabled(True)
+                if hasattr(self, '_tts_poll_timer'):
+                    self._tts_poll_timer.start(400)
+            return
+
+        # If currently speaking, pause instead
         if self.editor.is_tts_speaking():
+            if self.editor.pause_speaking():
+                self.tts_speak_btn.setText("▶ Resume")
+                # Keep enabled so user can resume
+                self.tts_speak_btn.setEnabled(True)
+                if hasattr(self, '_tts_poll_timer'):
+                    self._tts_poll_timer.stop()
+                return
+            # pause() failed — fall through to stop+restart
             self.editor.stop_speaking()
 
-        # Check if there's selected text
+        # Fresh start: grab text and begin speaking
         cursor = self.editor.textCursor()
         if cursor.hasSelection():
             text = cursor.selectedText().replace('\u2029', '\n')
@@ -3126,12 +3143,10 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
 
         self.editor.speak_text(text)
 
-        # Update buttons synchronously — don't wait for async tts_started signal
-        self.tts_speak_btn.setText("🗣 Playing…")
-        self.tts_speak_btn.setEnabled(False)
+        self.tts_speak_btn.setText("⏸ Pause")
+        self.tts_speak_btn.setEnabled(True)
         self.tts_stop_btn.setEnabled(True)
 
-        # Polling fallback to re-enable Read when speech ends naturally
         if not hasattr(self, '_tts_poll_timer'):
             self._tts_poll_timer = QTimer(self)
             self._tts_poll_timer.timeout.connect(self._poll_tts_state)
@@ -3148,6 +3163,13 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
 
         if not self.manuscript or not self.manuscript.chapters:
             QMessageBox.information(self, "No Chapters", "No chapters available to read.")
+            return
+
+        if self.editor.is_tts_speaking():
+            QMessageBox.information(
+                self, "Already Reading",
+                "Audio is currently playing. Stop the current playback "
+                "before starting a new one.")
             return
 
         dialog = _ChapterRangeDialog(self.manuscript.chapters, self.chapter, self)
@@ -3173,16 +3195,11 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
             return
 
         combined = "\n\n".join(parts)
-
-        # Stop any ongoing playback first
-        if self.editor.is_tts_speaking():
-            self.editor.stop_speaking()
-
         self.editor.speak_text(combined)
 
-        # Update buttons
-        self.tts_speak_btn.setText("🗣 Playing…")
-        self.tts_speak_btn.setEnabled(False)
+        # Update buttons — Read Aloud becomes Pause while playing
+        self.tts_speak_btn.setText("⏸ Pause")
+        self.tts_speak_btn.setEnabled(True)
         self.tts_read_range_btn.setEnabled(False)
         self.tts_stop_btn.setEnabled(True)
 
@@ -3224,8 +3241,12 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
             )
             return
 
-        # Stop any ongoing playback first
-        self.editor.stop_speaking()
+        if self.editor.is_tts_speaking():
+            QMessageBox.information(
+                self, "Already Reading",
+                "Audio is currently playing. Stop the current playback "
+                "before starting a new one.")
+            return
 
         # Replace paragraph separator with newline
         text = selected_text.replace('\u2029', '\n')
@@ -3252,17 +3273,14 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
 
     def _on_tts_progress(self, message: str):
         """Handle TTS progress update - show status on Read button."""
-        # Only update label if TTS is still actively speaking; don't re-disable
-        # the button if a late progress event arrives after TTS has already stopped.
-        if self.editor.is_tts_speaking():
-            self.tts_speak_btn.setText(f"🗣 {message}")
-            self.tts_speak_btn.setEnabled(False)
+        # Only show progress while actively playing (not paused)
+        if self.editor.is_tts_speaking() and not self.editor.is_tts_paused():
+            self.tts_speak_btn.setText(f"⏸ {message}")
 
     def _on_tts_started(self):
         """Handle TTS playback started (async signal — buttons already set synchronously)."""
-        # Ensure correct state in case TTS was started from a path other than _tts_speak_chapter
-        self.tts_speak_btn.setText("🗣 Playing…")
-        self.tts_speak_btn.setEnabled(False)
+        self.tts_speak_btn.setText("⏸ Pause")
+        self.tts_speak_btn.setEnabled(True)
         self.tts_stop_btn.setEnabled(True)
 
     def _poll_tts_state(self):

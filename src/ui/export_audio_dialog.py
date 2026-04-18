@@ -534,9 +534,9 @@ class _ExportWorker(QThread):
                 f"{text}"
             )
             # max_tokens must be generous — reformatted text is at least as long
-            formatted = llm.generate(prompt=prompt, system_prompt=system,
-                                     max_tokens=max(len(text), 2000),
-                                     temperature=0.1)
+            formatted = llm.generate_text(prompt=prompt, system_prompt=system,
+                                          max_tokens=max(len(text), 2000),
+                                          temperature=0.1)
             return formatted if formatted else text
         except Exception:
             return text
@@ -694,12 +694,21 @@ class ExportAudioDialog(QDialog):
                 pass
         return self._tts_service
 
+    def _load_tts_settings(self) -> dict:
+        """Load saved TTS settings so the export dialog matches the user's config."""
+        try:
+            from src.services.ai_config_service import get_ai_config
+            return get_ai_config().get_settings()
+        except Exception:
+            return {}
+
     def _init_ui(self):
         self.setWindowTitle("Export Audio Book")
         self.setMinimumWidth(520)
-        self.resize(560, 550)
+        self.resize(560, 600)
 
         layout = QVBoxLayout(self)
+        saved = self._load_tts_settings()
 
         # Engine + voice
         engine_group = QGroupBox("Voice Engine")
@@ -710,6 +719,12 @@ class ExportAudioDialog(QDialog):
         self.engine_combo.addItem("Chatterbox Turbo - Neural (Local, 350M)", "chatterbox")
         self.engine_combo.addItem("Edge TTS - Microsoft Neural (Online)", "edge")
         self.engine_combo.addItem("System TTS (macOS only)", "system")
+        # Pre-select saved engine
+        saved_engine = saved.get("tts_engine", "kokoro")
+        for i in range(self.engine_combo.count()):
+            if self.engine_combo.itemData(i) == saved_engine:
+                self.engine_combo.setCurrentIndex(i)
+                break
         self.engine_combo.currentIndexChanged.connect(self._on_engine_changed)
         engine_layout.addRow("Engine:", self.engine_combo)
 
@@ -722,11 +737,24 @@ class ExportAudioDialog(QDialog):
                     f"{info['label']} — {info['description']}", key)
         except Exception:
             pass
+        # Pre-select saved genre
+        saved_genre = saved.get("tts_genre", "")
+        for i in range(self.genre_combo.count()):
+            if self.genre_combo.itemData(i) == saved_genre:
+                self.genre_combo.setCurrentIndex(i)
+                break
         self.genre_combo.currentIndexChanged.connect(self._on_genre_changed)
         engine_layout.addRow("Narrative Style:", self.genre_combo)
 
         self.voice_combo = QComboBox()
         self._populate_voices()
+        # Pre-select saved voice
+        saved_voice = saved.get("tts_voice", "")
+        if saved_voice:
+            for i in range(self.voice_combo.count()):
+                if self.voice_combo.itemData(i) == saved_voice:
+                    self.voice_combo.setCurrentIndex(i)
+                    break
         engine_layout.addRow("Voice:", self.voice_combo)
 
         engine_group.setLayout(engine_layout)

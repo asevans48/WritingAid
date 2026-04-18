@@ -2342,7 +2342,49 @@ class SettingsDialog(QDialog):
             if self.tts_genre_combo.itemData(i) == current_genre:
                 self.tts_genre_combo.setCurrentIndex(i)
                 break
+        self.tts_genre_combo.currentIndexChanged.connect(self._on_tts_genre_changed)
         engine_layout.addWidget(self.tts_genre_combo)
+
+        # Voice selection (populated from TTS service based on engine)
+        voice_label = QLabel("Voice:")
+        engine_layout.addWidget(voice_label)
+        self.tts_voice_combo = QComboBox()
+        self._populate_tts_voices()
+        engine_layout.addWidget(self.tts_voice_combo)
+
+        voice_hint_layout = QVBoxLayout()
+        self.tts_voice_hint = QLabel(
+            "The built-in voices are robotic. For natural Siri-quality voices,\n"
+            "download them in macOS Settings, then restart this app."
+        )
+        self.tts_voice_hint.setStyleSheet("font-size: 11px; color: #6b7280;")
+        self.tts_voice_hint.setWordWrap(True)
+        voice_hint_layout.addWidget(self.tts_voice_hint)
+
+        self.tts_download_voices_btn = QPushButton("Open macOS Voice Manager...")
+        self.tts_download_voices_btn.setStyleSheet("font-size: 11px; padding: 4px 10px;")
+        self.tts_download_voices_btn.setMaximumWidth(220)
+        self.tts_download_voices_btn.clicked.connect(self._open_macos_voice_manager)
+        voice_hint_layout.addWidget(self.tts_download_voices_btn)
+
+        self.tts_voice_hint_container = QWidget()
+        self.tts_voice_hint_container.setLayout(voice_hint_layout)
+        self.tts_voice_hint_container.setVisible(
+            self.tts_engine_combo.currentData() == "system")
+        engine_layout.addWidget(self.tts_voice_hint_container)
+
+        # AI enhancement toggle — adds natural pauses via LLM
+        self.tts_ai_enhance_cb = QCheckBox(
+            "Enhance text with AI (adds natural pauses and expands abbreviations)")
+        self.tts_ai_enhance_cb.setToolTip(
+            "Before reading, pass text through the configured LLM to add "
+            "commas for breath pauses, em-dashes for dramatic pauses, "
+            "ellipses for trailing thoughts, and expand abbreviations.\n"
+            "Uses your narrative style setting to shape the prosody.\n"
+            "Slower (one LLM call per read) but more natural.")
+        self.tts_ai_enhance_cb.setChecked(
+            self.settings.get("tts_ai_enhance", False))
+        engine_layout.addWidget(self.tts_ai_enhance_cb)
 
         engine_group.setLayout(engine_layout)
         layout.addWidget(engine_group)
@@ -2599,6 +2641,66 @@ class SettingsDialog(QDialog):
         engine = self.tts_engine_combo.currentData()
         # Show/hide VibeVoice settings based on selection
         self.vibevoice_settings_group.setVisible(engine == "vibevoice")
+        # Show hint for downloading premium macOS voices
+        self.tts_voice_hint_container.setVisible(engine == "system")
+        # Refresh voice list for the new engine
+        self._populate_tts_voices()
+
+    def _on_tts_genre_changed(self):
+        """When a narrative genre is selected, auto-pick the best voice."""
+        genre_key = self.tts_genre_combo.currentData()
+        if not genre_key:
+            return
+        engine_key = self.tts_engine_combo.currentData()
+        try:
+            from src.services.tts_service import get_genre_voice
+            voice_id = get_genre_voice(genre_key, engine_key)
+            if voice_id:
+                for i in range(self.tts_voice_combo.count()):
+                    if self.tts_voice_combo.itemData(i) == voice_id:
+                        self.tts_voice_combo.setCurrentIndex(i)
+                        return
+        except Exception:
+            pass
+
+    def _open_macos_voice_manager(self):
+        """Open macOS Accessibility > Spoken Content settings to download voices."""
+        import subprocess
+        import platform
+        if platform.system() == "Darwin":
+            subprocess.Popen([
+                'open', 'x-apple.systempreferences:com.apple.preference.universalaccess?TextToSpeech'
+            ])
+
+    def _populate_tts_voices(self):
+        """Populate the voice combo from the TTS service for the selected engine."""
+        self.tts_voice_combo.clear()
+        engine_key = self.tts_engine_combo.currentData()
+        try:
+            from src.services.tts_service import TTSService, TTSEngine
+            engine_map = {
+                "kokoro": TTSEngine.KOKORO,
+                "chatterbox": TTSEngine.CHATTERBOX,
+                "edge": TTSEngine.EDGE,
+                "system": TTSEngine.SYSTEM,
+                "vibevoice": TTSEngine.VIBEVOICE,
+            }
+            engine_enum = engine_map.get(engine_key)
+            if engine_enum:
+                svc = TTSService()
+                voices = svc.get_voices(engine_enum)
+                for v in voices:
+                    self.tts_voice_combo.addItem(v.name, v.id)
+        except Exception:
+            self.tts_voice_combo.addItem("Default", "default")
+
+        # Restore saved voice
+        current_voice = self.settings.get("tts_voice", "")
+        if current_voice:
+            for i in range(self.tts_voice_combo.count()):
+                if self.tts_voice_combo.itemData(i) == current_voice:
+                    self.tts_voice_combo.setCurrentIndex(i)
+                    break
 
     def _browse_vibevoice_path(self):
         """Browse for VibeVoice installation directory."""
@@ -3711,6 +3813,8 @@ class SettingsDialog(QDialog):
             # Text-to-Speech Settings
             "tts_engine": self.tts_engine_combo.currentData(),
             "tts_genre": self.tts_genre_combo.currentData() or "",
+            "tts_voice": self.tts_voice_combo.currentData() or "",
+            "tts_ai_enhance": self.tts_ai_enhance_cb.isChecked(),
             "tts_rate": self.tts_rate_slider.value(),
             "tts_volume": self.tts_volume_slider.value() / 100,
             "vibevoice_path": self.vibevoice_path_edit.text(),

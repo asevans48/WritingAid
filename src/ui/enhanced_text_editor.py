@@ -2944,16 +2944,39 @@ class EnhancedTextEditor(QTextEdit):
             except ValueError:
                 pass
 
-            # Apply narrative genre voice if set
+            # Apply voice: explicit voice setting takes priority, but only
+            # if it's valid for the current engine. Otherwise fall back to
+            # genre-based voice, then engine default.
+            voice = settings.get("tts_voice", "")
             genre = settings.get("tts_genre", "")
-            if genre and engine_name:
+
+            # Validate saved voice against current engine's voice list
+            voice_valid = False
+            if voice and voice != "default":
+                try:
+                    available_ids = {v.id for v in self._tts_service.get_voices()}
+                    voice_valid = voice in available_ids
+                except Exception:
+                    voice_valid = True  # Assume valid if we can't check
+
+            if voice == "default":
+                # "System Default" — clear any explicit voice
+                self._tts_service.set_voice(None)
+            elif voice and voice_valid:
+                self._tts_service.set_voice(voice)
+            elif genre and engine_name:
                 try:
                     from src.services.tts_service import get_genre_voice
                     voice_id = get_genre_voice(genre, engine_name)
-                    if voice_id:
+                    if voice_id and voice_id != "default":
                         self._tts_service.set_voice(voice_id)
+                    else:
+                        self._tts_service.set_voice(None)
                 except Exception:
-                    pass
+                    self._tts_service.set_voice(None)
+            else:
+                # No voice or genre set — use engine default
+                self._tts_service.set_voice(None)
 
             # Apply VibeVoice settings if configured
             vv_path = settings.get("vibevoice_path", "")
@@ -2999,11 +3022,33 @@ class EnhancedTextEditor(QTextEdit):
             return self._tts_service.is_speaking
         return False
 
+    def is_tts_paused(self) -> bool:
+        """Check if TTS is currently paused."""
+        if self._tts_service:
+            return self._tts_service.is_paused
+        return False
+
+    def pause_speaking(self):
+        """Pause TTS playback (can be resumed)."""
+        if self._tts_service:
+            return self._tts_service.pause()
+        return False
+
+    def resume_speaking(self):
+        """Resume TTS playback after pause."""
+        if self._tts_service:
+            return self._tts_service.resume()
+        return False
+
     def speak_text(self, text: str = None):
         """Speak text using TTS.
 
         Args:
             text: Text to speak. If None, speaks selected text or entire document.
+
+        If playback is already running or paused, this call is refused
+        (returns without starting new speech). Use stop_speaking() first
+        if you need to interrupt.
         """
         if not self.is_tts_available():
             QMessageBox.warning(
@@ -3014,9 +3059,17 @@ class EnhancedTextEditor(QTextEdit):
             )
             return
 
-        # Stop any ongoing playback first
+        # Don't start a new playback while one is running or paused
         if self._tts_service.is_speaking:
-            self._tts_service.stop()
+            state = "paused" if self._tts_service.is_paused else "playing"
+            QMessageBox.information(
+                self, "Already Reading",
+                f"Audio is currently {state}. "
+                f"Stop the current playback before starting a new one.")
+            return
+
+        # Re-apply settings so engine/voice changes take effect immediately
+        self._apply_tts_settings()
 
         if text is None:
             # Use selected text or entire document
@@ -3034,6 +3087,19 @@ class EnhancedTextEditor(QTextEdit):
 
         # Strip Markdown formatting before speaking
         clean_text = strip_markdown(text)
+
+        # Optional: AI enhancement for more natural prosody (adds pauses,
+        # expands abbreviations). Controlled by the tts_ai_enhance setting.
+        try:
+            from src.config.ai_config import get_ai_config
+            settings = get_ai_config().settings
+            if settings.get("tts_ai_enhance", False):
+                from src.services.tts_service import enhance_text_for_speech
+                genre = settings.get("tts_genre", "")
+                clean_text = enhance_text_for_speech(clean_text, genre)
+        except Exception:
+            pass
+
         self._tts_service.speak(clean_text)
 
     def speak_selection(self):
@@ -3056,9 +3122,14 @@ class EnhancedTextEditor(QTextEdit):
 
     def speak_document(self):
         """Speak the entire document."""
-        # Stop any ongoing playback first
         if self._tts_service and self._tts_service.is_speaking:
-            self._tts_service.stop()
+            state = "paused" if self._tts_service.is_paused else "playing"
+            QMessageBox.information(
+                self, "Already Reading",
+                f"Audio is currently {state}. "
+                f"Stop the current playback before starting a new one.")
+            return
+        self._apply_tts_settings()
 
         text = self.toPlainText()
         if text.strip():
@@ -3070,9 +3141,14 @@ class EnhancedTextEditor(QTextEdit):
 
     def speak_from_cursor(self):
         """Speak from cursor position to end of document."""
-        # Stop any ongoing playback first
         if self._tts_service and self._tts_service.is_speaking:
-            self._tts_service.stop()
+            state = "paused" if self._tts_service.is_paused else "playing"
+            QMessageBox.information(
+                self, "Already Reading",
+                f"Audio is currently {state}. "
+                f"Stop the current playback before starting a new one.")
+            return
+        self._apply_tts_settings()
 
         cursor = self.textCursor()
         position = cursor.position()

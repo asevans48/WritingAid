@@ -143,6 +143,83 @@ def get_genre_voice(genre_key: str, engine_key: str) -> Optional[str]:
     return candidates[0] if candidates else None
 
 
+def enhance_text_for_speech(text: str, genre_key: str = "") -> str:
+    """Use the configured LLM to add natural pauses to text for TTS.
+
+    Adds commas, em-dashes, and ellipses where a human reader would
+    breathe or pause for emphasis. Never changes meaning or omits content.
+    Returns the original text unchanged if the LLM isn't available.
+    """
+    if not text or not text.strip():
+        return text
+
+    try:
+        from src.ai.llm_client import LLMClient, LLMProvider, HuggingFaceConfig
+        from src.config.ai_config import get_ai_config
+
+        ai_config = get_ai_config()
+        settings = ai_config.settings
+
+        prefer_local = settings.get("prefer_local_model", False)
+        enable_local = settings.get("enable_local_models", False)
+        local_model_id = settings.get("local_model_id", "")
+
+        if prefer_local and enable_local and local_model_id:
+            is_mlx = "mlx" in local_model_id.lower()
+            hf_config = HuggingFaceConfig(
+                model_id=local_model_id, use_local=True,
+                device=settings.get("local_model_device", "auto"),
+                quantization=settings.get("local_model_quantization", "none") if settings.get("local_model_quantization") != "none" else None,
+                trust_remote_code=settings.get("local_model_trust_remote_code", False),
+            )
+            provider = LLMProvider.MLX_LOCAL if is_mlx else LLMProvider.HUGGINGFACE_LOCAL
+            llm = LLMClient(provider=provider, hf_config=hf_config)
+        else:
+            default_provider = settings.get("default_llm", "claude")
+            api_key = ai_config.get_api_key(default_provider)
+            if not api_key:
+                return text
+            provider_map = {
+                "claude": LLMProvider.CLAUDE,
+                "chatgpt": LLMProvider.CHATGPT,
+                "openai": LLMProvider.CHATGPT,
+                "gemini": LLMProvider.GEMINI,
+            }
+            provider = provider_map.get(default_provider, LLMProvider.CLAUDE)
+            llm = LLMClient(
+                provider=provider, api_key=api_key,
+                model=ai_config.get_model(default_provider),
+            )
+
+        genre_hint = ""
+        if genre_key:
+            genre_info = NARRATIVE_GENRES.get(genre_key, {})
+            if genre_info:
+                genre_hint = (
+                    f"This is for {genre_info.get('label', genre_key)} narration "
+                    f"({genre_info.get('description', '')}). ")
+
+        system = "You reformat text for text-to-speech narration. Output ONLY the reformatted text."
+        prompt = (
+            f"{genre_hint}Reformat this text so a TTS engine will read it with "
+            "natural prosody. Add commas where a narrator would naturally pause "
+            "for breath, em-dashes (—) for dramatic pauses, and ellipses (...) "
+            "for trailing or suspended thoughts. Expand abbreviations "
+            "(Mr. -> Mister, Dr. -> Doctor). Do NOT remove, summarize, reorder, "
+            "or add content. Do NOT insert stage directions. Output the "
+            "complete reformatted text only.\n\n"
+            f"{text}"
+        )
+        result = llm.generate_text(
+            prompt=prompt, system_prompt=system,
+            max_tokens=max(len(text) + 200, 2000),
+            temperature=0.2)
+        return result if result and result.strip() else text
+    except Exception as e:
+        print(f"[TTS] enhance_text_for_speech failed: {e}")
+        return text
+
+
 class TTSService:
     """Text-to-Speech service supporting multiple engines.
 
@@ -310,7 +387,17 @@ class TTSService:
         return voices
 
     def _get_pyttsx3_voices(self) -> List[TTSVoice]:
-        """Get pyttsx3 voices."""
+        """Get system voices.
+
+        On macOS, uses AVSpeechSynthesizer to list ALL installed voices
+        including premium/Siri-quality ones downloaded via System Settings.
+        Falls back to pyttsx3 on other platforms.
+        """
+        import platform
+        if platform.system() == "Darwin":
+            return self._get_macos_voices()
+
+        # Non-macOS: use pyttsx3
         self._init_pyttsx3()
         if not self._pyttsx3_engine:
             return []
@@ -318,26 +405,128 @@ class TTSService:
         voices = []
         try:
             for voice in self._pyttsx3_engine.getProperty('voices'):
-                # Parse voice info
                 name = voice.name
                 lang = getattr(voice, 'languages', ['en'])[0] if hasattr(voice, 'languages') else 'en'
                 if isinstance(lang, bytes):
                     lang = lang.decode('utf-8', errors='ignore')
-
-                # Guess gender from name
                 gender = "female" if any(f in name.lower() for f in ['zira', 'hazel', 'susan', 'female']) else "male"
-
                 voices.append(TTSVoice(
-                    id=voice.id,
-                    name=name,
-                    language=str(lang)[:5],
-                    gender=gender,
+                    id=voice.id, name=name,
+                    language=str(lang)[:5], gender=gender,
                     engine=TTSEngine.SYSTEM
                 ))
         except Exception as e:
             print(f"Error getting pyttsx3 voices: {e}")
-
         return voices
+
+    def _get_macos_voices(self) -> List[TTSVoice]:
+        """Get macOS voices via AVSpeechSynthesizer (includes Siri/premium voices).
+
+        Premium voices must be downloaded in:
+        System Settings > Accessibility > Spoken Content > System Voice > Manage Voices
+        """
+        voices = []
+        try:
+            from AVFoundation import AVSpeechSynthesisVoice
+
+            quality_labels = {1: "", 2: " [Enhanced]", 3: " [Premium]"}
+            # Novelty/joke voices to sort to the end
+            novelty = {'albert', 'bad news', 'bahh', 'bells', 'boing',
+                       'bubbles', 'cellos', 'good news', 'jester', 'junior',
+                       'kathy', 'organ', 'superstar', 'ralph', 'trinoids',
+                       'whisper', 'zarvox', 'wobble'}
+
+            # Language region labels for display
+            region_labels = {
+                'en-US': 'US', 'en-GB': 'UK', 'en-AU': 'AU',
+                'en-IE': 'IE', 'en-IN': 'IN', 'en-ZA': 'ZA',
+                'en-CA': 'CA', 'en-NZ': 'NZ',
+            }
+
+            female_names = {'samantha', 'karen', 'moira', 'flo', 'sandy',
+                            'shelley', 'grandma', 'ava', 'allison', 'susan',
+                            'kate', 'tessa', 'veena', 'victoria', 'zoe',
+                            'siri', 'alice', 'amelie', 'anna', 'sara',
+                            'nora', 'tina', 'kathy'}
+
+            for v in AVSpeechSynthesisVoice.speechVoices():
+                name = str(v.name())
+                lang = str(v.language())
+                ident = str(v.identifier())
+                quality = v.quality()  # 1=default, 2=enhanced, 3=premium
+                q_suffix = quality_labels.get(quality, "")
+
+                # Only show English voices (this is a writing app)
+                if not lang.startswith('en'):
+                    continue
+
+                base_name = name.split('(')[0].strip().lower()
+                gender = "female" if base_name in female_names else "male"
+                is_novelty = base_name in novelty
+
+                # Identify Siri natural voices (the "Voice 1-4" slots in
+                # macOS System Settings > Accessibility > Spoken Content).
+                # Quality >= 2 is the definitive marker (Enhanced or Premium).
+                # Identifier patterns catch cases where quality flag isn't set.
+                is_siri = (quality >= 2 or
+                           'siri' in ident.lower() or
+                           'natural' in ident.lower() or
+                           'premium' in ident.lower() or
+                           'enhanced' in ident.lower())
+
+                region = region_labels.get(lang, lang)
+                if is_siri:
+                    # Highlight Siri voices with a clear prefix
+                    display = f"🎙 Siri: {name} ({region}){q_suffix}"
+                elif '(' in name:
+                    display = f"{name}{q_suffix}"
+                else:
+                    display = f"{name} ({region}){q_suffix}"
+
+                # Sort key: Siri voices first (0), then by -quality,
+                # then novelty last
+                sort_rank = 0 if is_siri else (2 if is_novelty else 1)
+                voices.append((sort_rank, -quality, display, TTSVoice(
+                    id=ident, name=display,
+                    language=lang, gender=gender,
+                    engine=TTSEngine.SYSTEM
+                )))
+
+            voices.sort(key=lambda x: (x[0], x[1], x[2]))
+
+            # Add "System Default" at the very top — uses whatever macOS has set
+            result = [TTSVoice(
+                id="default", name="⭐ System Default (macOS Spoken Content)",
+                language="en", gender="neutral",
+                engine=TTSEngine.SYSTEM
+            )]
+            result.extend(v[3] for v in voices)
+            return result
+
+        except ImportError:
+            print("[TTS] AVFoundation not available — falling back to pyttsx3")
+            # Fallback to pyttsx3 if pyobjc/AVFoundation isn't installed
+            self._init_pyttsx3()
+            if not self._pyttsx3_engine:
+                return []
+            result = []
+            try:
+                for voice in self._pyttsx3_engine.getProperty('voices'):
+                    name = voice.name
+                    lang = getattr(voice, 'languages', ['en'])[0] if hasattr(voice, 'languages') else 'en'
+                    if isinstance(lang, bytes):
+                        lang = lang.decode('utf-8', errors='ignore')
+                    result.append(TTSVoice(
+                        id=voice.id, name=name,
+                        language=str(lang)[:5], gender="male",
+                        engine=TTSEngine.SYSTEM
+                    ))
+            except Exception as e:
+                print(f"Error getting pyttsx3 voices: {e}")
+            return result
+        except Exception as e:
+            print(f"Error getting macOS voices: {e}")
+            return []
 
     def _get_edge_voices(self) -> List[TTSVoice]:
         """Get edge-tts voices curated for narration and storytelling."""
@@ -494,10 +683,65 @@ class TTSService:
         """Check if currently speaking."""
         return self._is_speaking
 
+    @property
+    def is_paused(self) -> bool:
+        """Check if playback is currently paused."""
+        return getattr(self, '_is_paused', False)
+
+    def pause(self):
+        """Pause the current speech (can be resumed with resume())."""
+        # AVSpeechSynthesizer path (macOS Siri voices)
+        av_synth = getattr(self, '_avspeech_synth', None)
+        if av_synth is not None:
+            try:
+                # AVSpeechBoundaryImmediate = 0
+                av_synth.pauseSpeakingAtBoundary_(0)
+                self._is_paused = True
+                return True
+            except Exception as e:
+                print(f"[TTS] pause via AVSpeech failed: {e}")
+
+        # afplay subprocess path (macOS fallback)
+        proc = getattr(self, '_macos_say_proc', None) or getattr(self, '_audio_proc', None)
+        if proc is not None and proc.poll() is None:
+            try:
+                import signal
+                proc.send_signal(signal.SIGSTOP)
+                self._is_paused = True
+                return True
+            except Exception as e:
+                print(f"[TTS] pause via SIGSTOP failed: {e}")
+
+        return False
+
+    def resume(self):
+        """Resume playback after pause()."""
+        av_synth = getattr(self, '_avspeech_synth', None)
+        if av_synth is not None:
+            try:
+                av_synth.continueSpeaking()
+                self._is_paused = False
+                return True
+            except Exception as e:
+                print(f"[TTS] resume via AVSpeech failed: {e}")
+
+        proc = getattr(self, '_macos_say_proc', None) or getattr(self, '_audio_proc', None)
+        if proc is not None and proc.poll() is None:
+            try:
+                import signal
+                proc.send_signal(signal.SIGCONT)
+                self._is_paused = False
+                return True
+            except Exception as e:
+                print(f"[TTS] resume via SIGCONT failed: {e}")
+
+        return False
+
     def speak(self, text: str):
         """Speak text using the current engine (non-blocking)."""
         # Always reset state first - this ensures we can start fresh
         self._stop_requested = False
+        self._is_paused = False
 
         # If still marked as speaking, force reset
         if self._is_speaking:
@@ -584,60 +828,428 @@ class TTSService:
             if self._on_end:
                 self._on_end()
 
-    def _speak_macos_say(self, text: str):
-        """Speak using macOS built-in 'say' command (blocks until audio is done).
+    def _find_default_macos_voice_id(self) -> Optional[str]:
+        """Return the identifier of the user's configured macOS system voice.
 
-        This bypasses pyttsx3's unreliable runAndWait() on macOS, where the
-        method may return before the OS finishes playing queued audio.
+        Reads com.apple.accessibility SpokenContentDefaultVoiceSelectionsByLanguage
+        to find the exact voice ID the user selected in System Settings.
+        Returns None if not configured or on error.
         """
-        import subprocess
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['defaults', 'read', 'com.apple.accessibility',
+                 'SpokenContentDefaultVoiceSelectionsByLanguage'],
+                capture_output=True, text=True, timeout=2)
+            if result.returncode == 0:
+                import re
+                m = re.search(r'voiceId\s*=\s*"([^"]+)"', result.stdout)
+                if m:
+                    return m.group(1)
+        except Exception:
+            pass
+        return None
 
-        cmd = ['say']
+    def _find_default_macos_voice(self) -> str:
+        """Resolve system default to a voice NAME (for `say -v` fallback).
 
-        # Extract voice name from pyttsx3-style voice ID if set.
-        # pyttsx3 IDs on macOS look like:
-        #   "com.apple.speech.synthesis.voice.samantha.premium"
-        # The 'say' command accepts the voice name portion (e.g. "Samantha").
-        if self._voice_id:
-            skip = {'premium', 'compact', 'enhanced', 'com', 'apple',
-                    'speech', 'synthesis', 'voice', ''}
-            for part in reversed(self._voice_id.split('.')):
-                if part.lower() not in skip:
-                    cmd.extend(['-v', part.capitalize()])
-                    break
-
-        # Pass speech rate (words per minute — same unit as pyttsx3)
-        if self._rate:
-            cmd.extend(['--rate', str(int(self._rate))])
-
-        # Launch 'say', feeding text via stdin to handle any length
-        proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        self._macos_say_proc = proc
+        Tries the user's configured Spoken Content voice first, falls back
+        to a heuristic preferring Siri natural voices, then Samantha.
+        """
+        preferred_voice_id = self._find_default_macos_voice_id()
 
         try:
-            proc.stdin.write(text.encode('utf-8', errors='replace'))
-            proc.stdin.close()
+            from AVFoundation import AVSpeechSynthesisVoice
+            all_voices = list(AVSpeechSynthesisVoice.speechVoices())
 
-            # Wait for completion, honouring stop requests
+            if preferred_voice_id:
+                for v in all_voices:
+                    if str(v.identifier()) == preferred_voice_id:
+                        return str(v.name()).split('(')[0].strip()
+
+            en_voices = [v for v in all_voices
+                         if str(v.language()).startswith('en')]
+            if not en_voices:
+                return "Samantha"
+
+            def rank(v):
+                ident = str(v.identifier()).lower()
+                is_siri = ('siri' in ident or 'natural' in ident or
+                           'premium' in ident)
+                return (0 if is_siri else 1, -v.quality())
+
+            en_voices.sort(key=rank)
+
+            novelty = {'albert', 'bad news', 'bahh', 'bells', 'boing',
+                       'bubbles', 'cellos', 'good news', 'jester', 'junior',
+                       'organ', 'superstar', 'ralph', 'trinoids',
+                       'whisper', 'zarvox', 'wobble', 'kathy'}
+            for v in en_voices:
+                name = str(v.name()).split('(')[0].strip()
+                if name.lower() not in novelty:
+                    return name
+            return str(en_voices[0].name()).split('(')[0].strip()
+        except Exception:
+            return "Samantha"
+
+    def _speak_macos_say(self, text: str):
+        """Speak on macOS using AVSpeechSynthesizer.
+
+        The `say` command-line tool cannot access Siri/premium natural
+        voices — they're only available through AVSpeechSynthesizer.  To
+        support those voices we dispatch the synthesis to the main thread
+        (which has a pumping run loop in Qt apps) and wait for completion.
+
+        Falls back to `say -v <name>` if pyobjc isn't available.
+        """
+        # Try AVSpeechSynthesizer first (required for Siri voices)
+        if self._speak_macos_avspeech(text):
+            return
+        # Fall back to say command for basic voices
+        self._speak_macos_say_cmd(text)
+
+    def _speak_macos_avspeech(self, text: str) -> bool:
+        """Speak via AVSpeechSynthesizer on the main thread.
+
+        Returns True if audio played successfully, False if pyobjc/AVFoundation
+        is unavailable so the caller should fall back to `say`.
+        """
+        try:
+            from AVFoundation import (
+                AVSpeechSynthesisVoice, AVSpeechSynthesizer, AVSpeechUtterance,
+            )
+            from Foundation import NSObject, NSRunLoop, NSDate, NSThread
+            import objc as _objc
+            import threading as _threading
+            import time as _t
+        except ImportError:
+            return False
+
+        # Resolve voice — user's explicit choice first, then macOS system
+        # default (read from com.apple.accessibility plist as a voice ID),
+        # then heuristic fallback.
+        voice = None
+        voice_label = "default"
+
+        # Cache the full voice list once; also use it for manual lookup in
+        # case voiceWithIdentifier_ returns None due to pyobjc quirks.
+        all_voices = list(AVSpeechSynthesisVoice.speechVoices())
+
+        # One-time: log all enhanced/premium/Siri voices to help diagnose
+        # voice-resolution issues
+        if not getattr(self, '_logged_voices', False):
+            self._logged_voices = True
+            siri_list = []
+            for v in all_voices:
+                q = v.quality()
+                ident = str(v.identifier()).lower()
+                if q >= 2 or 'siri' in ident or 'natural' in ident or 'premium' in ident:
+                    siri_list.append(v)
+            if siri_list:
+                print(f"[TTS/AVSpeech] Installed Siri/Premium voices ({len(siri_list)}):")
+                for v in sorted(siri_list, key=lambda x: (-x.quality(), str(x.name()))):
+                    print(f"  q={v.quality()} lang={v.language()} "
+                          f"name={str(v.name())!r} id={str(v.identifier())!r}")
+            else:
+                print(f"[TTS/AVSpeech] No Siri/Premium voices detected. "
+                      f"Total voices: {len(all_voices)}")
+
+        def find_by_id(target_id):
+            # Try the official lookup first
+            v = AVSpeechSynthesisVoice.voiceWithIdentifier_(target_id)
+            if v:
+                return v
+            # Fall back to linear scan with string comparison
+            for v in all_voices:
+                if str(v.identifier()) == str(target_id):
+                    return v
+            return None
+
+        if self._voice_id and self._voice_id != "default":
+            # User explicitly picked a voice — use its exact identifier
+            voice = find_by_id(self._voice_id)
+            if voice:
+                voice_label = str(voice.name())
+            else:
+                print(f"[TTS/AVSpeech] Voice id {self._voice_id!r} not found.")
+                print(f"[TTS/AVSpeech] Installed Siri/premium English voices:")
+                for v in all_voices:
+                    ident = str(v.identifier()).lower()
+                    if str(v.language()).startswith('en') and (
+                            'siri' in ident or 'natural' in ident or v.quality() >= 2):
+                        print(f"  {v.name()!r} q={v.quality()} "
+                              f"id={str(v.identifier())!r}")
+
+        if voice is None:
+            # Use the user's macOS Spoken Content voice — via exact identifier
+            preferred_id = self._find_default_macos_voice_id()
+            if preferred_id:
+                voice = find_by_id(preferred_id)
+                if voice:
+                    voice_label = f"{voice.name()} (Spoken Content default)"
+                    print(f"[TTS/AVSpeech] Resolved macOS Spoken Content default: "
+                          f"id={preferred_id!r}")
+                else:
+                    print(f"[TTS/AVSpeech] Spoken Content voice {preferred_id!r} "
+                          f"not found in AVSpeechSynthesizer — scanning for "
+                          f"installed Siri voices")
+
+        if voice is None:
+            # Try to find any installed Siri natural voice (the 4 Apple
+            # voices downloaded via System Settings > Spoken Content).
+            # Quality >= 2 = Enhanced/Premium. Also check id patterns.
+            siri_voices = []
+            for v in all_voices:
+                ident = str(v.identifier()).lower()
+                if not str(v.language()).startswith('en'):
+                    continue
+                if (v.quality() >= 2 or 'siri' in ident or 'natural' in ident
+                        or 'premium' in ident or 'enhanced' in ident):
+                    siri_voices.append(v)
+            if siri_voices:
+                siri_voices.sort(key=lambda v: -v.quality())
+                voice = siri_voices[0]
+                voice_label = (f"{voice.name()} (Siri voice, "
+                               f"q={voice.quality()})")
+                print(f"[TTS/AVSpeech] Using installed Siri voice: "
+                      f"id={str(voice.identifier())!r}")
+
+        if voice is None:
+            # Last resort: heuristic — any high-quality English voice
+            default_name = self._find_default_macos_voice()
+            best = None
+            for v in all_voices:
+                n = str(v.name()).split('(')[0].strip()
+                if n == default_name and str(v.language()).startswith('en'):
+                    if best is None or v.quality() > best.quality():
+                        best = v
+            if best:
+                voice = best
+                voice_label = f"{default_name} (heuristic fallback, q={best.quality()})"
+                # If the user's Spoken Content setting points to a Siri voice
+                # that isn't downloaded, call it out clearly
+                preferred_id = self._find_default_macos_voice_id()
+                if preferred_id and ('siri' in preferred_id.lower() or
+                                      'natural' in preferred_id.lower() or
+                                      'premium' in preferred_id.lower()):
+                    print(f"[TTS/AVSpeech] ⚠️  Your macOS Spoken Content is set to "
+                          f"{preferred_id!r} but that voice is NOT downloaded.")
+                    print(f"[TTS/AVSpeech] To install it: System Settings > "
+                          f"Accessibility > Spoken Content > System Voice > "
+                          f"Manage Voices... > click the download arrow next to "
+                          f"your Siri voice (Voice 1-4).")
+                    print(f"[TTS/AVSpeech] Using basic {default_name} instead.")
+                else:
+                    print(f"[TTS/AVSpeech] No Siri voices installed — using basic {default_name}")
+
+        if voice is None:
+            print("[TTS/AVSpeech] ERROR: no voice found, falling back to say")
+            return False
+
+        print(f"[TTS/AVSpeech] Voice: {voice_label} "
+              f"id={str(voice.identifier())!r} q={voice.quality()}, "
+              f"text={len(text)} chars")
+
+        # Build utterance
+        utt = AVSpeechUtterance.speechUtteranceWithString_(text)
+        utt.setVoice_(voice)
+        if self._rate:
+            av_rate = max(0.1, min(1.0, (self._rate / 150.0) * 0.5))
+            utt.setRate_(av_rate)
+        utt.setVolume_(self._volume)
+
+        done_event = _threading.Event()
+        synth_ref = [None]
+        error_ref = [None]
+
+        # Dispatch synthesis to the main thread (where Qt's run loop is pumping
+        # on macOS, which handles AVSpeechSynthesizer callbacks).
+        class _SpeechRunner(NSObject):
+            def run_(self_, utt_obj):
+                try:
+                    synth = AVSpeechSynthesizer.alloc().init()
+                    synth_ref[0] = synth
+                    synth.speakUtterance_(utt_obj)
+                except Exception as e:
+                    error_ref[0] = str(e)
+                    done_event.set()
+
+        runner = _SpeechRunner.alloc().init()
+        runner.performSelectorOnMainThread_withObject_waitUntilDone_(
+            'run:', utt, False)
+
+        # Wait for synthesis to start, with a timeout
+        _t0 = _t.time()
+        while synth_ref[0] is None and _t.time() - _t0 < 5:
+            _t.sleep(0.05)
+
+        if synth_ref[0] is None:
+            print(f"[TTS/AVSpeech] ERROR: synth never started. err={error_ref[0]}")
+            return False
+
+        # Store synth so stop() can cancel it
+        self._avspeech_synth = synth_ref[0]
+
+        # Poll until speech completes or stop is requested
+        play_start = _t.time()
+        while synth_ref[0].isSpeaking() or synth_ref[0].isPaused():
+            _t.sleep(0.1)
+            if self._stop_requested:
+                synth_ref[0].stopSpeakingAtBoundary_(0)  # AVSpeechBoundaryImmediate
+                break
+            if _t.time() - play_start > 600:
+                print("[TTS/AVSpeech] Timeout after 10 minutes")
+                synth_ref[0].stopSpeakingAtBoundary_(0)
+                break
+
+        self._avspeech_synth = None
+        duration = _t.time() - play_start
+        print(f"[TTS/AVSpeech] Playback complete in {duration:.2f}s")
+        return True
+
+    def _speak_macos_say_cmd(self, text: str):
+        """Fallback: speak using `say -o` + `afplay` (basic voices only).
+
+        - `say -o` requires `-v <name>` or it produces an empty file
+        - Cannot access Siri/premium voices
+        """
+        import subprocess
+        import time as _t
+        import tempfile as _tf
+
+        if not text.strip():
+            print("[TTS/say] ERROR: empty text — aborting")
+            return
+
+        # Resolve voice name from voice ID using AVSpeechSynthesizer
+        voice_name = None
+        voice_quality = 1
+        resolved_identifier = None
+
+        if self._voice_id and self._voice_id != "default":
+            try:
+                from AVFoundation import AVSpeechSynthesisVoice
+                for v in AVSpeechSynthesisVoice.speechVoices():
+                    if str(v.identifier()) == self._voice_id:
+                        voice_name = str(v.name()).split('(')[0].strip()
+                        voice_quality = v.quality()
+                        resolved_identifier = self._voice_id
+                        break
+            except Exception:
+                pass
+
+        if not voice_name:
+            voice_name = self._find_default_macos_voice()
+            try:
+                from AVFoundation import AVSpeechSynthesisVoice
+                for v in AVSpeechSynthesisVoice.speechVoices():
+                    n = str(v.name()).split('(')[0].strip()
+                    if n == voice_name:
+                        voice_quality = v.quality()
+                        resolved_identifier = str(v.identifier())
+                        break
+            except Exception:
+                pass
+
+        # Write text to a temp file
+        with _tf.NamedTemporaryFile(
+                mode='w', suffix='.txt', delete=False, encoding='utf-8') as f:
+            f.write(text)
+            text_file = f.name
+
+        audio_file = text_file.replace('.txt', '.aiff')
+
+        # For high-quality (Siri/Premium) voices where the short name might
+        # match a basic voice too, try the full identifier first — some
+        # macOS versions accept it for -v.
+        quality_labels = {1: "default", 2: "enhanced", 3: "premium"}
+        print(f"[TTS/say] Voice: {voice_name} "
+              f"(quality={quality_labels.get(voice_quality, 'unknown')}, "
+              f"id={resolved_identifier}), text={len(text)} chars")
+
+        rate_args = ['-r', str(int(self._rate))] if self._rate else []
+
+        # Try using the full identifier first for enhanced/premium voices
+        # (some macOS versions accept it); fall back to the short name
+        def try_generate(voice_spec):
+            cmd = ['say', '-v', voice_spec] + rate_args + [
+                '-o', audio_file, '-f', text_file]
+            result = subprocess.run(
+                cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE, timeout=120)
+            import os as _os
+            size = _os.path.getsize(audio_file) if _os.path.exists(audio_file) else 0
+            return result.returncode == 0 and size > 5000, size, result.stderr
+
+        try:
+            gen_start = _t.time()
+            success = False
+            file_size = 0
+
+            # For enhanced/premium voices, try full identifier first
+            if voice_quality > 1 and resolved_identifier:
+                success, file_size, stderr = try_generate(resolved_identifier)
+                if success:
+                    print(f"[TTS/say] Used full identifier for {voice_quality}-quality voice")
+
+            # Fall back to short name
+            if not success:
+                success, file_size, stderr = try_generate(voice_name)
+
+            gen_duration = _t.time() - gen_start
+            print(f"[TTS/say] Generated {file_size} bytes in {gen_duration:.2f}s")
+
+            if not success or file_size < 1000:
+                err_msg = stderr.decode(errors='replace') if stderr else ''
+                print(f"[TTS/say] ERROR: audio too small ({file_size} bytes). "
+                      f"stderr: {err_msg}")
+                return
+
+            if self._stop_requested:
+                return
+
+            # Play with afplay
+            play_start = _t.time()
+            play_proc = subprocess.Popen(
+                ['afplay', audio_file],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+            self._macos_say_proc = play_proc
+
             while True:
                 try:
-                    proc.wait(timeout=0.1)
-                    break  # Process finished naturally
+                    play_proc.wait(timeout=0.1)
+                    break
                 except subprocess.TimeoutExpired:
                     if self._stop_requested:
-                        proc.terminate()
+                        play_proc.terminate()
                         try:
-                            proc.wait(timeout=2.0)
+                            play_proc.wait(timeout=1.0)
                         except subprocess.TimeoutExpired:
-                            proc.kill()
+                            play_proc.kill()
                         break
+
+            play_duration = _t.time() - play_start
+            expected_play = max(1.0, len(text) / 20)
+            if play_duration < expected_play and not self._stop_requested:
+                print(f"[TTS/say] WARNING: afplay exited in {play_duration:.2f}s "
+                      f"(expected ~{expected_play:.1f}s). Check audio output.")
+            else:
+                print(f"[TTS/say] Playback complete in {play_duration:.2f}s")
+
+        except subprocess.TimeoutExpired:
+            print(f"[TTS/say] Generation timed out")
+        except Exception as e:
+            print(f"[TTS/say] Error: {e}")
         finally:
             self._macos_say_proc = None
+            for f in (text_file, audio_file):
+                try:
+                    os.unlink(f)
+                except Exception:
+                    pass
 
     def _speak_edge(self, text: str):
         """Speak using edge-tts (runs in thread)."""
@@ -922,8 +1534,10 @@ class TTSService:
             if self._on_progress:
                 self._on_progress("Generating speech...")
 
+            # Map WPM rate to Kokoro speed multiplier (150 WPM = 1.0x)
+            speed = max(0.5, min(2.0, self._rate / 150.0)) if self._rate else 1.0
             samples, sample_rate = self._kokoro_instance.create(
-                text, voice=voice, speed=1.0
+                text, voice=voice, speed=speed
             )
 
             if self._stop_requested:
@@ -1017,6 +1631,15 @@ class TTSService:
             except Exception:
                 pass
 
+        # Cancel AVSpeechSynthesizer if active (macOS Siri voices)
+        av_synth = getattr(self, '_avspeech_synth', None)
+        if av_synth is not None:
+            try:
+                av_synth.stopSpeakingAtBoundary_(0)  # AVSpeechBoundaryImmediate
+            except Exception:
+                pass
+            self._avspeech_synth = None
+
         if self._current_engine == TTSEngine.SYSTEM and self._pyttsx3_engine:
             try:
                 self._pyttsx3_engine.stop()
@@ -1024,7 +1647,19 @@ class TTSService:
             except:
                 pass
 
+        # Wait briefly for the speech thread to notice _stop_requested,
+        # then abandon it if it's stuck in a blocking generation call.
+        thread = self._speech_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=0.5)
+            # If still alive, it's stuck generating — detach and move on.
+            # The daemon thread will finish on its own; we just stop waiting.
+            if thread.is_alive():
+                print("[TTS] Speech thread did not stop in time — detaching")
+        self._speech_thread = None
+
         self._is_speaking = False
+        self._is_paused = False
 
         # Call end callback to ensure UI is updated
         if self._on_end:
