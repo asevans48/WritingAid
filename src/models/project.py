@@ -77,6 +77,20 @@ class PersonalitySnapshot(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
 
 
+class LoveInterest(BaseModel):
+    """A romantic connection from one character to another.
+
+    Stored on Character.love_interests. The `character_id` points to
+    another Character in the project; the other fields describe the bond.
+    """
+    character_id: str  # ID of the other character
+    relationship_type: str = "romantic interest"  # spouse, lover, crush, unrequited, ex-partner, etc.
+    status: str = "active"  # active, past, complicated, forbidden, secret, broken-off
+    description: str = ""  # Free-text describing the nature of the relationship
+    tension: str = ""  # Obstacles, conflicts, stakes in this relationship
+    started: str = ""  # When the relationship began (narrative reference or date)
+
+
 class Character(BaseModel):
     """Character with full details including image, personality, backstory."""
     id: str
@@ -95,6 +109,24 @@ class Character(BaseModel):
     fears: str = ""  # What they fear or avoid
     speaking_style: str = ""  # How they talk: dialect, vocabulary, patterns
     emotional_baseline: str = ""  # Default emotional state
+
+    # Story-arc engine (drawn from Truby / Lisa Cron / K.M. Weiland / Save the Cat)
+    want: str = ""  # External conscious goal — what they THINK they want
+    need: str = ""  # Internal unconscious truth they must embrace to grow
+    lie_they_believe: str = ""  # False conviction about self/world driving behaviour
+    ghost: str = ""  # Formative past event/wound that created the lie
+    character_arc: str = ""  # Arc type: positive change, flat, negative change, fall, corruption, disillusionment
+
+    # Depth (makes them feel real)
+    moral_code: str = ""  # Ethical lines they won't cross / what they stand for
+    worldview: str = ""  # Philosophical lens — how they see the world
+    secret: str = ""  # What they hide from others (or themselves)
+    contradictions: str = ""  # Internal inconsistencies that humanise them
+    defining_relationship: str = ""  # The bond that shapes them most
+    quirks: str = ""  # Distinctive mannerisms, tics, gestures, phrases
+
+    # Love interests — connections to other characters with a described relationship
+    love_interests: List[LoveInterest] = Field(default_factory=list)
 
     # Personality arc — tracks how personality evolves across chapters
     personality_arc: List[PersonalitySnapshot] = Field(default_factory=list)

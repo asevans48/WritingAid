@@ -1051,29 +1051,69 @@ class CultureEditor(QWidget):
             self.planets_layout.addWidget(label)
 
     def load_culture(self, culture: Culture):
-        """Load culture data into editor."""
+        """Load culture data into editor.
+
+        Before swapping to the new culture, we:
+          1. Save any pending edits for the currently-loaded culture.
+          2. Block signals while populating form fields so setText/setPlainText
+             calls don't fire _on_content_changed (which would save the
+             half-loaded data into the new culture, corrupting it).
+        """
+        # Persist any pending edits to the previous culture first
+        if self.culture is not None and self.culture is not culture:
+            self.save_to_culture()
+
         self.culture = culture
 
-        self.name_edit.setText(culture.name)
-        self.description_edit.setPlainText(culture.description)
-        self.core_values_edit.setPlainText("\n".join(culture.core_values))
-        self.taboos_edit.setPlainText("\n".join(culture.taboos))
-        self.social_structure_edit.setPlainText(culture.social_structure)
-        self.family_structure_edit.setText(culture.family_structure)
-        self.gender_roles_edit.setPlainText(culture.gender_roles)
-        self.coming_of_age_edit.setPlainText(culture.coming_of_age)
-        self.origin_edit.setText(culture.origin_location or "")
-        self.notes_edit.setPlainText(culture.notes)
+        # Collect all widgets that fire signals during population
+        widgets_to_block = [
+            self.name_edit, self.description_edit, self.core_values_edit,
+            self.taboos_edit, self.social_structure_edit,
+            self.family_structure_edit, self.gender_roles_edit,
+            self.coming_of_age_edit, self.origin_edit, self.notes_edit,
+        ]
 
-        # Load sub-elements
-        self.rituals_list.load_elements(culture.rituals)
-        self.languages_list.load_elements(culture.languages)
-        self.music_list.load_elements(culture.music_styles)
-        self.art_list.load_elements(culture.art_forms)
-        self.traditions_list.load_elements(culture.traditions)
-        self.cuisine_list.load_elements(culture.cuisines)
+        for w in widgets_to_block:
+            w.blockSignals(True)
+        try:
+            self.name_edit.setText(culture.name)
+            self.description_edit.setPlainText(culture.description)
+            self.core_values_edit.setPlainText("\n".join(culture.core_values))
+            self.taboos_edit.setPlainText("\n".join(culture.taboos))
+            self.social_structure_edit.setPlainText(culture.social_structure)
+            self.family_structure_edit.setText(culture.family_structure)
+            self.gender_roles_edit.setPlainText(culture.gender_roles)
+            self.coming_of_age_edit.setPlainText(culture.coming_of_age)
+            self.origin_edit.setText(culture.origin_location or "")
+            self.notes_edit.setPlainText(culture.notes)
+        finally:
+            for w in widgets_to_block:
+                w.blockSignals(False)
 
-        # Rebuild checkboxes with current selections
+        # Sub-element lists — these use their own signal emission
+        self.rituals_list.blockSignals(True)
+        self.languages_list.blockSignals(True)
+        self.music_list.blockSignals(True)
+        self.art_list.blockSignals(True)
+        self.traditions_list.blockSignals(True)
+        self.cuisine_list.blockSignals(True)
+        try:
+            self.rituals_list.load_elements(culture.rituals)
+            self.languages_list.load_elements(culture.languages)
+            self.music_list.load_elements(culture.music_styles)
+            self.art_list.load_elements(culture.art_forms)
+            self.traditions_list.load_elements(culture.traditions)
+            self.cuisine_list.load_elements(culture.cuisines)
+        finally:
+            self.rituals_list.blockSignals(False)
+            self.languages_list.blockSignals(False)
+            self.music_list.blockSignals(False)
+            self.art_list.blockSignals(False)
+            self.traditions_list.blockSignals(False)
+            self.cuisine_list.blockSignals(False)
+
+        # Rebuild checkboxes with current selections (these methods need
+        # their own signal blocking for the individual checkboxes they create)
         self._rebuild_faction_checkboxes()
         self._rebuild_planet_checkboxes()
 

@@ -10,7 +10,8 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from typing import List, Optional
 import uuid
 
-from src.models.worldbuilding_objects import PoliticalSystem, GovernmentBranch
+from src.models.worldbuilding_objects import PoliticalSystem, GovernmentBranch, Faction
+from PyQt6.QtWidgets import QMessageBox
 
 
 class GovernmentBranchEditor(QWidget):
@@ -322,13 +323,20 @@ class PoliticalSystemEditor(QWidget):
 
     content_changed = pyqtSignal()
 
-    def __init__(self, political_system: PoliticalSystem):
+    def __init__(self, political_system: PoliticalSystem,
+                 available_factions: Optional[List[Faction]] = None):
         """Initialize political system editor."""
         super().__init__()
         self.political_system = political_system
+        self.available_factions: List[Faction] = available_factions or []
         self.current_branch_editor: Optional[GovernmentBranchEditor] = None
         self._init_ui()
         self._load_system()
+
+    def set_available_factions(self, factions: List[Faction]):
+        """Update the list of available factions and repopulate the combo."""
+        self.available_factions = factions or []
+        self._populate_faction_combo()
 
     def _init_ui(self):
         """Initialize UI."""
@@ -357,8 +365,12 @@ class PoliticalSystemEditor(QWidget):
         widget = QWidget()
         layout = QFormLayout(widget)
 
-        self.faction_edit = QLineEdit()
-        layout.addRow("Faction ID:", self.faction_edit)
+        # Faction picker — shows names, stores IDs
+        self.faction_combo = QComboBox()
+        self._populate_faction_combo()
+        self.faction_combo.currentIndexChanged.connect(
+            lambda _: self.content_changed.emit())
+        layout.addRow("Associated Faction:", self.faction_combo)
 
         self.system_type_edit = QLineEdit()
         self.system_type_edit.setPlaceholderText("Democracy, Monarchy, Dictatorship, etc.")
@@ -368,6 +380,35 @@ class PoliticalSystemEditor(QWidget):
         layout.addRow("Constitution/Charter:", self.constitution_edit)
 
         return widget
+
+    def _populate_faction_combo(self):
+        """Populate the faction combo with available factions (names + types)."""
+        if not hasattr(self, 'faction_combo'):
+            return  # UI not built yet
+
+        # Preserve current selection's faction ID
+        current_faction_id = (
+            self.faction_combo.currentData()
+            if self.faction_combo.count() > 0
+            else self.political_system.faction_id
+        )
+
+        self.faction_combo.blockSignals(True)
+        try:
+            self.faction_combo.clear()
+            self.faction_combo.addItem("(none)", "")
+            for faction in self.available_factions:
+                label = f"{faction.name} ({faction.faction_type.value})"
+                self.faction_combo.addItem(label, faction.id)
+
+            # Restore selection
+            if current_faction_id:
+                for i in range(self.faction_combo.count()):
+                    if self.faction_combo.itemData(i) == current_faction_id:
+                        self.faction_combo.setCurrentIndex(i)
+                        break
+        finally:
+            self.faction_combo.blockSignals(False)
 
     def _create_structure_tab(self) -> QWidget:
         """Create government structure tab."""
@@ -432,7 +473,16 @@ class PoliticalSystemEditor(QWidget):
 
     def _load_system(self):
         """Load political system data."""
-        self.faction_edit.setText(self.political_system.faction_id)
+        # Repopulate combo to ensure the system's faction_id gets selected
+        self._populate_faction_combo()
+        # Select the system's current faction in the combo
+        target = self.political_system.faction_id or ""
+        for i in range(self.faction_combo.count()):
+            if self.faction_combo.itemData(i) == target:
+                self.faction_combo.blockSignals(True)
+                self.faction_combo.setCurrentIndex(i)
+                self.faction_combo.blockSignals(False)
+                break
         self.system_type_edit.setText(self.political_system.system_type)
         self.constitution_edit.setPlainText(self.political_system.constitution)
 
@@ -476,7 +526,7 @@ class PoliticalSystemEditor(QWidget):
         if self.current_branch_editor:
             self.current_branch_editor.save_to_model()
 
-        self.political_system.faction_id = self.faction_edit.text()
+        self.political_system.faction_id = self.faction_combo.currentData() or ""
         self.political_system.system_type = self.system_type_edit.text()
         self.political_system.constitution = self.constitution_edit.toPlainText()
         self.political_system.ruling_party = self.ruling_party_edit.text()
@@ -496,8 +546,15 @@ class PoliticsBuilderWidget(QWidget):
         """Initialize politics builder."""
         super().__init__()
         self.political_systems: List[PoliticalSystem] = []
+        self.available_factions: List[Faction] = []
         self.current_editor: Optional[PoliticalSystemEditor] = None
         self._init_ui()
+
+    def set_available_factions(self, factions: List[Faction]):
+        """Supply the list of factions so the editor can show names."""
+        self.available_factions = factions or []
+        if self.current_editor:
+            self.current_editor.set_available_factions(self.available_factions)
 
     def _init_ui(self):
         """Initialize UI."""
@@ -551,10 +608,21 @@ class PoliticsBuilderWidget(QWidget):
         layout.addWidget(splitter)
 
     def _add_system(self):
-        """Add new political system."""
+        """Add new political system (name must be unique)."""
         system_name, ok = QInputDialog.getText(self, "New Political System", "Enter political system name:")
 
         if ok and system_name:
+            system_name = system_name.strip()
+            if not system_name:
+                return
+            # Enforce unique names — id IS the name for political systems
+            existing_names = {s.id for s in self.political_systems}
+            if system_name in existing_names:
+                QMessageBox.warning(
+                    self, "Duplicate Name",
+                    f"A political system named '{system_name}' already exists. "
+                    f"Please choose a different name.")
+                return
             # Create default branches
             executive = GovernmentBranch(
                 id=str(uuid.uuid4()),
@@ -620,7 +688,8 @@ class PoliticsBuilderWidget(QWidget):
         political_system = next((s for s in self.political_systems if s.id == system_id), None)
 
         if political_system:
-            self.current_editor = PoliticalSystemEditor(political_system)
+            self.current_editor = PoliticalSystemEditor(
+                political_system, available_factions=self.available_factions)
             self.current_editor.content_changed.connect(self.content_changed.emit)
             self.editor_scroll.setWidget(self.current_editor)
 

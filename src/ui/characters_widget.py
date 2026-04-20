@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QPushButton, QLabel, QLineEdit, QTextEdit, QComboBox,
     QFileDialog, QGroupBox, QFormLayout, QScrollArea, QMessageBox,
-    QProgressBar
+    QProgressBar, QDialog, QDialogButtonBox
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QThread
 from PyQt6.QtGui import QPixmap
@@ -13,7 +13,7 @@ import uuid
 from pathlib import Path
 from datetime import datetime
 
-from src.models.project import Character
+from src.models.project import Character, LoveInterest
 
 if TYPE_CHECKING:
     from src.models.project import WriterProject
@@ -91,22 +91,130 @@ class ImageGenerationWorker(QThread):
             self.error.emit(f"Image generation error: {str(e)}")
 
 
+class _LoveInterestDialog(QDialog):
+    """Dialog for adding / editing a single love interest."""
+
+    RELATIONSHIP_TYPES = [
+        "spouse", "partner", "lover", "fiancé(e)", "crush",
+        "unrequited love", "ex-partner", "forbidden love",
+        "romantic interest", "one-sided attraction", "affair",
+        "arranged marriage", "soulmate",
+    ]
+    STATUSES = [
+        "active", "past", "complicated", "forbidden", "secret",
+        "broken-off", "unconsummated", "rekindling",
+    ]
+
+    def __init__(self, available_characters: List[Character],
+                 existing: Optional[LoveInterest] = None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Love Interest")
+        self.setMinimumWidth(480)
+        self._available = available_characters
+        self._existing = existing
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+
+        # Character picker
+        self.char_combo = QComboBox()
+        for c in available_characters:
+            label = c.name or "(unnamed)"
+            if c.character_type:
+                label += f" ({c.character_type})"
+            self.char_combo.addItem(label, c.id)
+        if existing:
+            for i in range(self.char_combo.count()):
+                if self.char_combo.itemData(i) == existing.character_id:
+                    self.char_combo.setCurrentIndex(i)
+                    break
+        form.addRow("Character:", self.char_combo)
+
+        # Relationship type (editable so user can invent their own)
+        self.rel_type_combo = QComboBox()
+        self.rel_type_combo.setEditable(True)
+        self.rel_type_combo.addItems(self.RELATIONSHIP_TYPES)
+        if existing and existing.relationship_type:
+            self.rel_type_combo.setEditText(existing.relationship_type)
+        form.addRow("Relationship:", self.rel_type_combo)
+
+        # Status
+        self.status_combo = QComboBox()
+        self.status_combo.setEditable(True)
+        self.status_combo.addItems(self.STATUSES)
+        if existing and existing.status:
+            self.status_combo.setEditText(existing.status)
+        form.addRow("Status:", self.status_combo)
+
+        # Started (free-text narrative reference)
+        self.started_edit = QLineEdit()
+        self.started_edit.setPlaceholderText(
+            "When it began (e.g. 'Chapter 3', 'childhood', 'spring of the war')")
+        if existing:
+            self.started_edit.setText(existing.started)
+        form.addRow("Began:", self.started_edit)
+
+        # Description
+        self.desc_edit = QTextEdit()
+        self.desc_edit.setPlaceholderText(
+            "How they met, what they mean to each other, the shape of the bond...")
+        self.desc_edit.setMaximumHeight(110)
+        if existing:
+            self.desc_edit.setPlainText(existing.description)
+        form.addRow("Description:", self.desc_edit)
+
+        # Tension (obstacles, conflicts)
+        self.tension_edit = QTextEdit()
+        self.tension_edit.setPlaceholderText(
+            "Obstacles, conflicts, stakes — what keeps it from being simple")
+        self.tension_edit.setMaximumHeight(90)
+        if existing:
+            self.tension_edit.setPlainText(existing.tension)
+        form.addRow("Tension:", self.tension_edit)
+
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def get_love_interest(self) -> Optional[LoveInterest]:
+        char_id = self.char_combo.currentData()
+        if not char_id:
+            return None
+        return LoveInterest(
+            character_id=char_id,
+            relationship_type=self.rel_type_combo.currentText().strip() or "romantic interest",
+            status=self.status_combo.currentText().strip() or "active",
+            description=self.desc_edit.toPlainText().strip(),
+            tension=self.tension_edit.toPlainText().strip(),
+            started=self.started_edit.text().strip(),
+        )
+
+
 class CharacterWidget(QWidget):
     """Widget for editing a single character."""
 
     content_changed = pyqtSignal()
 
-    def __init__(self, character: Character, project_path: Optional[Path] = None, project=None):
+    def __init__(self, character: Character,
+                 project_path: Optional[Path] = None, project=None,
+                 available_characters: Optional[List[Character]] = None):
         """Initialize character widget.
 
         Args:
             character: The character to edit
             project_path: Path to the project directory for saving generated images
             project: The WriterProject (for accessing chapters in personality arc)
+            available_characters: Other characters in the project (for love interests)
         """
         super().__init__()
         self.character = character
         self._project_path = project_path
+        self._available_characters: List[Character] = available_characters or []
         self._project = project
         self._image_worker: Optional[ImageGenerationWorker] = None
         self._init_ui()
@@ -326,6 +434,120 @@ class CharacterWidget(QWidget):
         backstory_group.setLayout(backstory_layout)
         layout.addWidget(backstory_group)
 
+        # ── Story Arc Engine (Truby / Lisa Cron / K.M. Weiland / Save the Cat) ──
+        arc_engine_group = QGroupBox(
+            "Story Arc Engine — what powers their transformation")
+        arc_engine_form = QFormLayout()
+
+        self.want_edit = QLineEdit()
+        self.want_edit.setPlaceholderText(
+            "External goal — what they THINK they want (e.g. the throne)")
+        self.want_edit.textChanged.connect(self.content_changed.emit)
+        arc_engine_form.addRow("Want:", self.want_edit)
+
+        self.need_edit = QLineEdit()
+        self.need_edit.setPlaceholderText(
+            "Internal truth — what they actually need (e.g. to forgive himself)")
+        self.need_edit.textChanged.connect(self.content_changed.emit)
+        arc_engine_form.addRow("Need:", self.need_edit)
+
+        self.lie_edit = QTextEdit()
+        self.lie_edit.setPlaceholderText(
+            "False belief driving their behaviour (e.g. 'I can only be loved if I am useful')")
+        self.lie_edit.setMaximumHeight(60)
+        self.lie_edit.textChanged.connect(self.content_changed.emit)
+        arc_engine_form.addRow("Lie they believe:", self.lie_edit)
+
+        self.ghost_edit = QTextEdit()
+        self.ghost_edit.setPlaceholderText(
+            "Formative wound — the past event that created the lie")
+        self.ghost_edit.setMaximumHeight(60)
+        self.ghost_edit.textChanged.connect(self.content_changed.emit)
+        arc_engine_form.addRow("Ghost / Wound:", self.ghost_edit)
+
+        self.arc_type_combo = QComboBox()
+        self.arc_type_combo.setEditable(True)
+        self.arc_type_combo.addItems([
+            "", "Positive change", "Flat / Steadfast", "Negative change",
+            "Fall", "Corruption", "Disillusionment", "Redemption",
+        ])
+        self.arc_type_combo.currentTextChanged.connect(self.content_changed.emit)
+        arc_engine_form.addRow("Arc type:", self.arc_type_combo)
+
+        arc_engine_group.setLayout(arc_engine_form)
+        layout.addWidget(arc_engine_group)
+
+        # ── Character Depth (makes them feel real) ──
+        depth_group = QGroupBox("Character Depth — what makes them feel real")
+        depth_form = QFormLayout()
+
+        self.moral_code_edit = QLineEdit()
+        self.moral_code_edit.setPlaceholderText(
+            "Lines they won't cross / what they stand for")
+        self.moral_code_edit.textChanged.connect(self.content_changed.emit)
+        depth_form.addRow("Moral code:", self.moral_code_edit)
+
+        self.worldview_edit = QLineEdit()
+        self.worldview_edit.setPlaceholderText(
+            "Philosophical lens — how they see the world")
+        self.worldview_edit.textChanged.connect(self.content_changed.emit)
+        depth_form.addRow("Worldview:", self.worldview_edit)
+
+        self.secret_edit = QTextEdit()
+        self.secret_edit.setPlaceholderText(
+            "What they hide — from others, or from themselves")
+        self.secret_edit.setMaximumHeight(60)
+        self.secret_edit.textChanged.connect(self.content_changed.emit)
+        depth_form.addRow("Secret:", self.secret_edit)
+
+        self.contradictions_edit = QLineEdit()
+        self.contradictions_edit.setPlaceholderText(
+            "Internal inconsistencies (brutal but tender, pious but vain)")
+        self.contradictions_edit.textChanged.connect(self.content_changed.emit)
+        depth_form.addRow("Contradictions:", self.contradictions_edit)
+
+        self.defining_relationship_edit = QLineEdit()
+        self.defining_relationship_edit.setPlaceholderText(
+            "The bond that shapes them most (mentor, sibling, lost love)")
+        self.defining_relationship_edit.textChanged.connect(self.content_changed.emit)
+        depth_form.addRow("Defining relationship:", self.defining_relationship_edit)
+
+        self.quirks_edit = QLineEdit()
+        self.quirks_edit.setPlaceholderText(
+            "Distinctive mannerisms, tics, phrases")
+        self.quirks_edit.textChanged.connect(self.content_changed.emit)
+        depth_form.addRow("Quirks:", self.quirks_edit)
+
+        depth_group.setLayout(depth_form)
+        layout.addWidget(depth_group)
+
+        # ── Love Interests ──
+        love_group = QGroupBox("Love Interests — romantic bonds with other characters")
+        love_layout = QVBoxLayout()
+
+        self.love_list = QListWidget()
+        self.love_list.setMaximumHeight(150)
+        self.love_list.itemDoubleClicked.connect(self._edit_love_interest)
+        love_layout.addWidget(self.love_list)
+
+        love_btn_row = QHBoxLayout()
+        self.add_love_btn = QPushButton("➕ Add Love Interest")
+        self.add_love_btn.clicked.connect(self._add_love_interest)
+        love_btn_row.addWidget(self.add_love_btn)
+
+        self.edit_love_btn = QPushButton("✏️ Edit")
+        self.edit_love_btn.clicked.connect(self._edit_love_interest)
+        love_btn_row.addWidget(self.edit_love_btn)
+
+        self.remove_love_btn = QPushButton("🗑 Remove")
+        self.remove_love_btn.clicked.connect(self._remove_love_interest)
+        love_btn_row.addWidget(self.remove_love_btn)
+        love_btn_row.addStretch()
+        love_layout.addLayout(love_btn_row)
+
+        love_group.setLayout(love_layout)
+        layout.addWidget(love_group)
+
         # Notes
         notes_group = QGroupBox("Notes")
         notes_layout = QVBoxLayout()
@@ -352,7 +574,31 @@ class CharacterWidget(QWidget):
         main_layout.addWidget(scroll_area)
 
     def _load_character(self):
-        """Load character data into widgets."""
+        """Load character data into widgets.
+
+        Blocks signals during population to prevent textChanged cascades
+        from triggering save_to_model with half-loaded data.
+        """
+        editable_widgets = [
+            self.name_edit, self.type_combo, self.physical_desc_edit,
+            self.personality_edit, self.backstory_edit, self.notes_edit,
+            self.traits_edit, self.motivations_edit, self.fears_edit,
+            self.speaking_style_edit, self.emotional_baseline_edit,
+            self.want_edit, self.need_edit, self.lie_edit, self.ghost_edit,
+            self.arc_type_combo, self.moral_code_edit, self.worldview_edit,
+            self.secret_edit, self.contradictions_edit,
+            self.defining_relationship_edit, self.quirks_edit,
+        ]
+        for w in editable_widgets:
+            w.blockSignals(True)
+        try:
+            self._load_character_fields()
+        finally:
+            for w in editable_widgets:
+                w.blockSignals(False)
+
+    def _load_character_fields(self):
+        """Populate all fields from the character model (no signal management)."""
         self.name_edit.setText(self.character.name)
         self.type_combo.setCurrentText(self.character.character_type.capitalize())
         self.physical_desc_edit.setPlainText(self.character.physical_description)
@@ -367,8 +613,35 @@ class CharacterWidget(QWidget):
         self.speaking_style_edit.setText(self.character.speaking_style)
         self.emotional_baseline_edit.setText(self.character.emotional_baseline)
 
+        # Story arc engine fields (getattr for backwards compat with older saves)
+        self.want_edit.setText(getattr(self.character, 'want', '') or '')
+        self.need_edit.setText(getattr(self.character, 'need', '') or '')
+        self.lie_edit.setPlainText(getattr(self.character, 'lie_they_believe', '') or '')
+        self.ghost_edit.setPlainText(getattr(self.character, 'ghost', '') or '')
+        arc_val = getattr(self.character, 'character_arc', '') or ''
+        if arc_val:
+            idx = self.arc_type_combo.findText(arc_val)
+            if idx >= 0:
+                self.arc_type_combo.setCurrentIndex(idx)
+            else:
+                self.arc_type_combo.setEditText(arc_val)
+        else:
+            self.arc_type_combo.setCurrentIndex(0)
+
+        # Depth fields
+        self.moral_code_edit.setText(getattr(self.character, 'moral_code', '') or '')
+        self.worldview_edit.setText(getattr(self.character, 'worldview', '') or '')
+        self.secret_edit.setPlainText(getattr(self.character, 'secret', '') or '')
+        self.contradictions_edit.setText(getattr(self.character, 'contradictions', '') or '')
+        self.defining_relationship_edit.setText(
+            getattr(self.character, 'defining_relationship', '') or '')
+        self.quirks_edit.setText(getattr(self.character, 'quirks', '') or '')
+
         # Personality arc
         self._refresh_arc_list()
+
+        # Love interests
+        self._refresh_love_list()
 
         if self.character.image_path and Path(self.character.image_path).exists():
             pixmap = QPixmap(self.character.image_path)
@@ -456,32 +729,9 @@ class CharacterWidget(QWidget):
             print(f"  {f}: {preview}")
 
         try:
-            # Block signals to prevent textChanged → save_to_model → overwrite
-            for w in [self.personality_edit, self.physical_desc_edit,
-                      self.backstory_edit, self.notes_edit,
-                      self.traits_edit, self.motivations_edit,
-                      self.fears_edit, self.speaking_style_edit,
-                      self.emotional_baseline_edit]:
-                w.blockSignals(True)
-
-            self.personality_edit.setPlainText(self.character.personality or '')
-            self.physical_desc_edit.setPlainText(self.character.physical_description or '')
-            self.backstory_edit.setPlainText(self.character.backstory or '')
-            self.notes_edit.setPlainText(self.character.notes or '')
-            self.traits_edit.setText(", ".join(self.character.personality_traits or []))
-            self.motivations_edit.setText(self.character.motivations or '')
-            self.fears_edit.setText(self.character.fears or '')
-            self.speaking_style_edit.setText(self.character.speaking_style or '')
-            self.emotional_baseline_edit.setText(self.character.emotional_baseline or '')
-
-            for w in [self.personality_edit, self.physical_desc_edit,
-                      self.backstory_edit, self.notes_edit,
-                      self.traits_edit, self.motivations_edit,
-                      self.fears_edit, self.speaking_style_edit,
-                      self.emotional_baseline_edit]:
-                w.blockSignals(False)
-
-            print(f"[Strengthen Done] UI widgets updated directly")
+            # Reload everything — this already blocks signals on the new fields too
+            self._load_character()
+            print(f"[Strengthen Done] UI widgets updated via _load_character")
         except RuntimeError as e:
             print(f"[Strengthen Done] Widget update failed: {e}")
 
@@ -605,12 +855,109 @@ class CharacterWidget(QWidget):
             self.character.fears = self.fears_edit.text().strip()
             self.character.speaking_style = self.speaking_style_edit.text().strip()
             self.character.emotional_baseline = self.emotional_baseline_edit.text().strip()
+
+            # Story arc engine fields
+            self.character.want = self.want_edit.text().strip()
+            self.character.need = self.need_edit.text().strip()
+            self.character.lie_they_believe = self.lie_edit.toPlainText().strip()
+            self.character.ghost = self.ghost_edit.toPlainText().strip()
+            self.character.character_arc = self.arc_type_combo.currentText().strip()
+
+            # Depth fields
+            self.character.moral_code = self.moral_code_edit.text().strip()
+            self.character.worldview = self.worldview_edit.text().strip()
+            self.character.secret = self.secret_edit.toPlainText().strip()
+            self.character.contradictions = self.contradictions_edit.text().strip()
+            self.character.defining_relationship = self.defining_relationship_edit.text().strip()
+            self.character.quirks = self.quirks_edit.text().strip()
+
             self.character.updated_at = datetime.now()
         except RuntimeError:
             # Widget has been deleted — character model retains last saved state
             pass
 
     # --- Personality Arc Methods ---
+
+    # --- Love Interest Methods ---
+
+    def _refresh_love_list(self):
+        """Refresh the love interests list widget."""
+        self.love_list.clear()
+        for li in getattr(self.character, 'love_interests', []):
+            other = next(
+                (c for c in self._available_characters if c.id == li.character_id),
+                None)
+            other_name = other.name if other else "(unknown character)"
+            status = f" [{li.status}]" if li.status and li.status != "active" else ""
+            label = f"{other_name} — {li.relationship_type}{status}"
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, li.character_id)
+            self.love_list.addItem(item)
+
+    def _add_love_interest(self):
+        """Open dialog to add a new love interest."""
+        if not self._available_characters:
+            QMessageBox.information(
+                self, "No Other Characters",
+                "Add other characters to the project before creating a "
+                "love-interest link.")
+            return
+
+        existing_ids = {li.character_id for li in
+                        getattr(self.character, 'love_interests', [])}
+        selectable = [c for c in self._available_characters
+                      if c.id not in existing_ids]
+        if not selectable:
+            QMessageBox.information(
+                self, "No More Characters",
+                "This character already has love-interest links to every "
+                "other character.")
+            return
+
+        dlg = _LoveInterestDialog(selectable, None, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            new_li = dlg.get_love_interest()
+            if new_li:
+                self.character.love_interests.append(new_li)
+                self._refresh_love_list()
+                self.content_changed.emit()
+
+    def _edit_love_interest(self):
+        """Edit the currently selected love interest."""
+        item = self.love_list.currentItem()
+        if not item:
+            return
+        target_id = item.data(Qt.ItemDataRole.UserRole)
+        li = next((x for x in self.character.love_interests
+                   if x.character_id == target_id), None)
+        if not li:
+            return
+
+        # Allow picking any other character (including the currently linked one)
+        dlg = _LoveInterestDialog(self._available_characters, li, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            updated = dlg.get_love_interest()
+            if updated:
+                # Replace by character_id match
+                for i, x in enumerate(self.character.love_interests):
+                    if x.character_id == target_id:
+                        self.character.love_interests[i] = updated
+                        break
+                self._refresh_love_list()
+                self.content_changed.emit()
+
+    def _remove_love_interest(self):
+        """Remove the currently selected love interest."""
+        item = self.love_list.currentItem()
+        if not item:
+            return
+        target_id = item.data(Qt.ItemDataRole.UserRole)
+        self.character.love_interests = [
+            x for x in self.character.love_interests
+            if x.character_id != target_id
+        ]
+        self._refresh_love_list()
+        self.content_changed.emit()
 
     def _refresh_arc_list(self):
         """Refresh the personality arc list widget."""
@@ -993,10 +1340,13 @@ class CharactersWidget(QWidget):
         character = next((c for c in self.characters if c.id == character_id), None)
 
         if character:
+            # Other characters (for love-interest picker) — exclude self
+            others = [c for c in self.characters if c.id != character.id]
             self.current_character_widget = CharacterWidget(
                 character,
                 project_path=self._project_path,
-                project=self._project
+                project=self._project,
+                available_characters=others,
             )
             self.current_character_widget.content_changed.connect(self.content_changed.emit)
             self.details_scroll.setWidget(self.current_character_widget)

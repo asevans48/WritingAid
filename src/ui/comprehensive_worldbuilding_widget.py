@@ -130,6 +130,7 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         self.factions_widget.content_changed.connect(self._update_places_factions)
         self.factions_widget.content_changed.connect(self._update_maps_factions)
         self.factions_widget.content_changed.connect(self._update_magic_system_factions)
+        self.factions_widget.content_changed.connect(self._update_politics_factions)
 
         # Connect flora/fauna/climate changes to update star systems
         self.flora_widget.content_changed.connect(self._update_star_system_flora)
@@ -199,6 +200,12 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         """Update available factions in culture widget."""
         factions = self.factions_widget.get_factions()
         self.culture_widget.set_available_factions(factions)
+
+    def _update_politics_factions(self):
+        """Update available factions in politics widget."""
+        factions = self.factions_widget.get_factions()
+        if hasattr(self.politics_widget, 'set_available_factions'):
+            self.politics_widget.set_available_factions(factions)
 
     def _update_military_factions(self):
         """Update available factions in military widget."""
@@ -354,8 +361,9 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         if hasattr(worldbuilding, 'hierarchies'):
             self.hierarchy_widget.load_hierarchies(worldbuilding.hierarchies)
 
-        # Load political systems
+        # Load political systems (with available factions for the picker)
         if hasattr(worldbuilding, 'political_systems'):
+            self._update_politics_factions()
             self.politics_widget.load_political_systems(worldbuilding.political_systems)
 
         # Load encyclopedia custom entries
