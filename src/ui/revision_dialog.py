@@ -143,6 +143,18 @@ class RevisionDialog(QDialog):
         restore_btn.clicked.connect(self._restore_selected)
         left_layout.addWidget(restore_btn)
 
+        promote_btn = QPushButton("⬆ Promote to New Revision")
+        promote_btn.setToolTip(
+            "Copy the selected revision into a brand-new revision and make "
+            "it the active one. The original revision is preserved and the "
+            "new revision will record it as its parent.")
+        promote_btn.setStyleSheet(btn_style + """
+            QPushButton { background-color: #10b981; color: white; border: none; }
+            QPushButton:hover { background-color: #059669; }
+        """)
+        promote_btn.clicked.connect(self._promote_selected)
+        left_layout.addWidget(promote_btn)
+
         delete_btn = QPushButton("Delete Selected")
         delete_btn.setStyleSheet(btn_style + """
             QPushButton { background-color: #ef4444; color: white; border: none; }
@@ -457,6 +469,69 @@ class RevisionDialog(QDialog):
             f"Draft #{identifier} is now your active working draft.\n"
             "Your previous draft was auto-saved as a new snapshot."
         )
+
+    def _promote_selected(self):
+        """Promote the selected revision to a NEW revision (never overwrites)."""
+        row = self.revision_list.currentRow()
+        if row < 0:
+            return
+        item = self.revision_list.item(row)
+        identifier = item.data(Qt.ItemDataRole.UserRole)
+
+        if identifier == "current":
+            QMessageBox.information(
+                self, "Already Active",
+                "This is the active draft — nothing to promote.")
+            return
+
+        # Auto-snapshot the current draft so edits aren't lost when we switch
+        self.chapter.add_revision(
+            notes="Auto-saved before promote",
+            content=self.current_content,
+            html_content=self.current_html,
+            project_dir=self.project_dir,
+        )
+
+        label, ok = QInputDialog.getText(
+            self, "Promote Revision",
+            f"Promoting revision #{identifier} to a new revision.\n"
+            "Give it a label (optional):",
+            text="")
+        if not ok:
+            return
+
+        new_rev = self.chapter.promote_revision(
+            int(identifier), label=label.strip())
+        if new_rev is None:
+            QMessageBox.warning(
+                self, "Not Found",
+                f"Revision #{identifier} could not be located.")
+            return
+
+        # Persist the new revision to disk if we have a project dir
+        if self.project_dir and self.chapter.folder_path:
+            try:
+                file_name = f"revision_{new_rev.revision_number:03d}.md"
+                new_rev.file_path = f"{self.chapter.folder_path}/{file_name}"
+                full_path = self.project_dir / new_rev.file_path
+                full_path.parent.mkdir(parents=True, exist_ok=True)
+                full_path.write_text(new_rev.content, encoding='utf-8')
+            except Exception as e:
+                print(f"[RevisionDialog] Could not write promoted revision: {e}")
+
+        # Update the editor's view and current state
+        self.current_content = self.chapter.content
+        self.current_html = self.chapter.html_content
+        self._restored = True
+        self.revision_restored.emit(self.chapter.content, self.chapter.html_content)
+
+        self._populate_revision_list()
+        self._populate_compare_combo()
+
+        QMessageBox.information(
+            self, "Revision Promoted",
+            f"Created new revision #{new_rev.revision_number} "
+            f"(parent: #{identifier}). The original revision is preserved.")
 
     def _delete_selected(self):
         row = self.revision_list.currentRow()

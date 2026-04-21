@@ -3422,6 +3422,11 @@ class ManuscriptEditor(QWidget):
         self.current_chapter_editor: Optional[ChapterEditor] = None
         self._current_chapter_id: Optional[str] = None
 
+        # Draft state: None = editing main manuscript; otherwise the
+        # ManuscriptDraft currently being edited (its chapters are shown
+        # inside a Manuscript wrapper held by self.manuscript).
+        self._active_draft = None
+
         # Initialize memory manager for chapter caching and key points
         self.memory_manager = ChapterMemoryManager(
             project=project,
@@ -3467,6 +3472,51 @@ class ManuscriptEditor(QWidget):
         header_layout.addWidget(self.total_word_count_label)
 
         header_layout.addStretch()
+
+        # Draft selector — swap the editor between the main manuscript and
+        # any saved draft. "Compare" opens a second window side-by-side.
+        draft_label = QLabel("Editing:")
+        draft_label.setStyleSheet("font-size: 12px; color: #6b7280;")
+        header_layout.addWidget(draft_label)
+
+        self.draft_selector = QComboBox()
+        self.draft_selector.setMinimumWidth(180)
+        self.draft_selector.setToolTip(
+            "Switch between the main manuscript and any saved draft.\n"
+            "Edits are kept separately for each draft.")
+        self.draft_selector.currentIndexChanged.connect(self._on_draft_selected)
+        header_layout.addWidget(self.draft_selector)
+
+        self.new_draft_btn = QToolButton()
+        self.new_draft_btn.setText("＋")
+        self.new_draft_btn.setToolTip("Save current manuscript as a new draft")
+        self.new_draft_btn.clicked.connect(self._create_new_draft)
+        header_layout.addWidget(self.new_draft_btn)
+
+        self.drop_draft_btn = QToolButton()
+        self.drop_draft_btn.setText("🗑")
+        self.drop_draft_btn.setToolTip(
+            "Drop the currently selected draft (you'll get the option to "
+            "preserve its chapter revisions into the main manuscript)")
+        self.drop_draft_btn.clicked.connect(self._drop_current_draft)
+        header_layout.addWidget(self.drop_draft_btn)
+
+        self.compare_drafts_btn = QPushButton("⇅ Split View")
+        self.compare_drafts_btn.setCheckable(True)
+        self.compare_drafts_btn.setToolTip(
+            "Toggle side-by-side editing — show another draft next to the "
+            "main editor within this window")
+        self.compare_drafts_btn.setStyleSheet("font-size: 11px; padding: 3px 8px;")
+        self.compare_drafts_btn.toggled.connect(self._toggle_split_view)
+        header_layout.addWidget(self.compare_drafts_btn)
+
+        self.popout_draft_btn = QPushButton("↗")
+        self.popout_draft_btn.setToolTip(
+            "Open a draft in a separate pop-out window")
+        self.popout_draft_btn.setMaximumWidth(30)
+        self.popout_draft_btn.setStyleSheet("font-size: 11px; padding: 3px;")
+        self.popout_draft_btn.clicked.connect(self._open_compare_window)
+        header_layout.addWidget(self.popout_draft_btn)
 
         layout.addLayout(header_layout)
 
@@ -3561,6 +3611,10 @@ class ManuscriptEditor(QWidget):
         # Set splitter sizes
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
+
+        # Keep a reference so split-view can add a second draft panel
+        self._write_splitter = splitter
+        self._split_draft_panel = None
 
         layout.addWidget(splitter, stretch=1)
 
@@ -4081,6 +4135,15 @@ class ManuscriptEditor(QWidget):
             self.chapter_list.addItem(item)
         self._update_nav_buttons()
 
+        # Keep the side-by-side draft panel's chapter picker in sync.
+        # Main-manuscript chapter changes made here should surface
+        # immediately if the side panel is showing Main.
+        if getattr(self, '_split_draft_panel', None) is not None:
+            try:
+                self._split_draft_panel.refresh_chapters()
+            except Exception:
+                pass
+
     def _on_chapter_selected(self, current, previous):
         """Handle chapter selection change."""
         if not current:
@@ -4171,6 +4234,13 @@ class ManuscriptEditor(QWidget):
             if item.widget():
                 item.widget().deleteLater()
 
+    def _show_placeholder(self):
+        """Show the 'select a chapter' placeholder in the editor area."""
+        placeholder = QLabel("Add or select a chapter to begin writing")
+        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        placeholder.setStyleSheet("color: #999; font-size: 16px;")
+        self.editor_layout.addWidget(placeholder)
+
     def _update_total_word_count(self):
         """Update total manuscript word count."""
         if not self.manuscript:
@@ -4201,15 +4271,382 @@ class ManuscriptEditor(QWidget):
 
         self._update_total_word_count()
         self._update_nav_buttons()
+        # Refresh the draft selector to reflect current state
+        self._refresh_draft_selector()
 
     def get_manuscript(self) -> Manuscript:
-        """Get manuscript data."""
+        """Get manuscript data.
+
+        When a draft is active, the editor's `self.manuscript` is actually
+        a wrapper around the draft's chapters. We sync edits back to the
+        draft and return the REAL main manuscript so callers that assign
+        this back (e.g. ``project.manuscript = editor.get_manuscript()``)
+        don't accidentally overwrite the main with draft content.
+        """
         # Save current chapter
         if self.current_chapter_editor:
             self.current_chapter_editor.save_to_model()
 
+        # Sync any draft edits back to the draft model
+        self._sync_active_draft_out()
+
         self._update_total_word_count()
+
+        # Return the true main manuscript, never the draft wrapper
+        if self._active_draft and self.project:
+            return self.project.manuscript
         return self.manuscript
+
+    # ── Draft switching ──────────────────────────────────────────
+
+    def _refresh_draft_selector(self):
+        """Populate the draft-picker combo with Main + all saved drafts."""
+        if not hasattr(self, 'draft_selector'):
+            return
+        self.draft_selector.blockSignals(True)
+        try:
+            self.draft_selector.clear()
+            self.draft_selector.addItem("Main Manuscript", "")
+            drafts = getattr(self.project, 'drafts', []) if self.project else []
+            for d in drafts:
+                self.draft_selector.addItem(f"📝 {d.name}", d.id)
+            # Set the current selection based on _active_draft
+            current_id = self._active_draft.id if self._active_draft else ""
+            for i in range(self.draft_selector.count()):
+                if self.draft_selector.itemData(i) == current_id:
+                    self.draft_selector.setCurrentIndex(i)
+                    break
+        finally:
+            self.draft_selector.blockSignals(False)
+
+        # Also refresh the split panel's draft combo if it's open
+        if self._split_draft_panel is not None:
+            try:
+                self._split_draft_panel.refresh_drafts()
+            except Exception:
+                pass
+
+    def _on_draft_selected(self, index: int):
+        """Handle draft selector change."""
+        if not self.project:
+            return
+        draft_id = self.draft_selector.itemData(index)
+        if draft_id == "":
+            self.switch_to_main_manuscript()
+        else:
+            draft = self.project.get_draft(draft_id)
+            if draft:
+                self.switch_to_draft(draft)
+
+    def switch_to_main_manuscript(self):
+        """Switch the editor back to the main manuscript."""
+        if self._active_draft is None:
+            return
+        # Sync current draft's edits out first
+        if self.current_chapter_editor:
+            try:
+                self.current_chapter_editor.save_to_model()
+            except Exception:
+                pass
+        self._sync_active_draft_out()
+        self._active_draft = None
+        # Clear the chapter editor area so the user sees a clean switch,
+        # not the previous draft's chapter still sitting in the editor.
+        self.current_chapter_editor = None
+        self._current_chapter_id = None
+        self._clear_editor()
+        self._show_placeholder()
+        self.load_manuscript(self.project.manuscript)
+
+        # Auto-select the first chapter so Main's content appears
+        if self.chapter_list.count() > 0:
+            self.chapter_list.setCurrentRow(0)
+
+    def switch_to_draft(self, draft):
+        """Switch the editor to edit a ManuscriptDraft."""
+        if self._active_draft and self._active_draft.id == draft.id:
+            return  # Already on this draft
+        # Sync previous state (main OR previous draft)
+        if self.current_chapter_editor:
+            try:
+                self.current_chapter_editor.save_to_model()
+            except Exception:
+                pass
+        self._sync_active_draft_out()
+
+        # Clear the chapter editor area so the user sees the draft change
+        # immediately — otherwise the previous chapter's editor widget
+        # stays visible and it looks like the switch did nothing.
+        self.current_chapter_editor = None
+        self._current_chapter_id = None
+        self._clear_editor()
+        self._show_placeholder()
+
+        # Wrap the draft's chapters in a Manuscript so the editor code
+        # that expects a Manuscript keeps working unchanged. Chapter
+        # objects are shared by reference so edits flow back.
+        self._active_draft = draft
+        wrapper = Manuscript(
+            title=draft.name,
+            author="",
+            chapters=list(draft.chapters),
+        )
+        self.load_manuscript(wrapper)
+
+        # Auto-select the first chapter so the editor shows the new
+        # draft's content instead of sitting on "select a chapter".
+        if self.chapter_list.count() > 0:
+            self.chapter_list.setCurrentRow(0)
+
+    def _sync_active_draft_out(self):
+        """If a draft is active, copy the editor's chapter list back to it."""
+        if self._active_draft and self.manuscript:
+            from datetime import datetime
+            self._active_draft.chapters = list(self.manuscript.chapters)
+            self._active_draft.updated_at = datetime.now()
+
+    def _create_new_draft(self):
+        """Snapshot the CURRENT source (main or active draft) as a new draft.
+
+        Snapshotting from the active source preserves any in-progress edits
+        the user has made in the current draft — they see those edits in
+        the newly created draft, which matches the natural expectation that
+        "new draft" means "a copy of what I'm editing right now".
+        """
+        from PyQt6.QtWidgets import QInputDialog, QMessageBox
+        if not self.project or not self.project.manuscript.chapters:
+            QMessageBox.information(
+                self, "No Content",
+                "Add some chapters before saving a draft.")
+            return
+        # Flush pending editor text → chapter.content BEFORE snapshotting.
+        if self.current_chapter_editor:
+            try:
+                self.current_chapter_editor.save_to_model()
+            except Exception:
+                pass
+        # If editing a draft, sync its chapters list from the wrapper so
+        # deep-copy captures the most recent reordering/edits.
+        self._sync_active_draft_out()
+
+        default_name = f"Draft {len(self.project.drafts) + 1}"
+        name, ok = QInputDialog.getText(
+            self, "New Draft", "Name this draft:", text=default_name)
+        if not ok or not name.strip():
+            return
+
+        name = name.strip()
+        # Guard against overwriting an existing draft by name.  Each draft
+        # is a distinct snapshot, so duplicate names would be confusing and
+        # might lead users to think a later "save" replaced an older draft.
+        existing_names = {d.name for d in self.project.drafts}
+        while name in existing_names:
+            suggested = f"{name} (copy)"
+            name, ok = QInputDialog.getText(
+                self, "Duplicate Name",
+                f"A draft named '{name}' already exists.\n"
+                "Pick a different name so the existing draft isn't overwritten:",
+                text=suggested)
+            if not ok or not name.strip():
+                return
+            name = name.strip()
+
+        # Snapshot from the currently active source
+        source = self._active_draft if self._active_draft else self.project.manuscript
+        draft = self.project.create_draft_from_current(
+            name, source=source)
+        self._refresh_draft_selector()
+
+        source_name = (self._active_draft.name
+                       if self._active_draft else "the main manuscript")
+        QMessageBox.information(
+            self, "Draft Created",
+            f"'{draft.name}' created with {len(draft.chapters)} chapters "
+            f"(snapshotted from {source_name}).\n"
+            f"Use the 'Editing:' dropdown to switch to it.")
+
+    def _drop_current_draft(self):
+        """Drop the currently selected draft with a confirm dialog.
+
+        Gives the user a checkbox to preserve chapter-level revisions by
+        merging them into the main manuscript. With the option checked,
+        no revision data is lost — each draft chapter's revisions (plus
+        its current content) are appended to the matching main chapter
+        with provenance notes.
+        """
+        from PyQt6.QtWidgets import (
+            QDialog, QVBoxLayout, QLabel, QCheckBox, QDialogButtonBox,
+            QMessageBox,
+        )
+        if not self.project:
+            return
+        if not self._active_draft:
+            QMessageBox.information(
+                self, "No Draft Selected",
+                "Switch the 'Editing:' dropdown to a draft, then click 🗑 "
+                "to drop it.")
+            return
+        draft = self._active_draft
+
+        # Count revisions we'd lose/merge
+        rev_count = sum(len(c.revisions) for c in draft.chapters)
+        ch_count = len(draft.chapters)
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Drop Draft")
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel(
+            f"<b>Drop draft '{draft.name}'?</b>"
+            f"<br><br>This contains {ch_count} chapters with {rev_count} "
+            f"revisions between them.<br>The draft cannot be recovered."))
+        preserve_cb = QCheckBox(
+            "Preserve chapter revisions by merging them into the main manuscript")
+        preserve_cb.setChecked(True)
+        preserve_cb.setToolTip(
+            "With this checked, each draft chapter's revisions are appended "
+            "to the matching chapter in the main manuscript (matched by "
+            "chapter number, falling back to title). Notes record where "
+            "each revision came from. Nothing is lost.")
+        v.addWidget(preserve_cb)
+        bb = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel)
+        bb.button(QDialogButtonBox.StandardButton.Ok).setText("Drop Draft")
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        v.addWidget(bb)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        # Switch back to main BEFORE deleting (editor currently points at draft)
+        preserve = preserve_cb.isChecked()
+        self.switch_to_main_manuscript()
+        self.project.delete_draft(draft.id,
+                                  preserve_chapter_revisions=preserve)
+        self._refresh_draft_selector()
+        self._persist_project()
+
+        QMessageBox.information(
+            self, "Draft Dropped",
+            f"'{draft.name}' deleted."
+            + ("\nChapter revisions merged into the main manuscript."
+               if preserve else
+               "\nChapter revisions discarded (as requested)."))
+
+    def _toggle_split_view(self, checked: bool):
+        """Show/hide a side-by-side draft editor panel inside the Writing view."""
+        from PyQt6.QtWidgets import QMessageBox
+        if not self.project:
+            self.compare_drafts_btn.setChecked(False)
+            return
+
+        if checked:
+            # Need at least one draft to show in the side panel
+            if not self.project.drafts:
+                QMessageBox.information(
+                    self, "No Drafts",
+                    "Create a draft first (＋ button) so there's something "
+                    "to compare against.")
+                self.compare_drafts_btn.setChecked(False)
+                return
+            self._show_split_panel()
+        else:
+            self._hide_split_panel()
+
+    def _show_split_panel(self):
+        """Add a DraftEditorPanel as a third pane in the Writing splitter."""
+        if self._split_draft_panel is not None:
+            return
+        from src.ui.draft_editor_window import DraftEditorPanel
+
+        # Prefer a draft DIFFERENT from the currently active one
+        candidates = self.project.drafts
+        if self._active_draft:
+            candidates = [d for d in candidates
+                          if d.id != self._active_draft.id] or self.project.drafts
+        initial = candidates[0].id if candidates else ""
+
+        panel = DraftEditorPanel(self.project, initial_draft_id=initial,
+                                 show_close_button=True, compact=True)
+        panel.draft_saved.connect(lambda _id: self._persist_project())
+        panel.close_requested.connect(
+            lambda: self.compare_drafts_btn.setChecked(False))
+        self._split_draft_panel = panel
+
+        # Add the panel as a new pane in the splitter, sized to ~40%
+        self._write_splitter.addWidget(panel)
+        total = sum(self._write_splitter.sizes()) or self._write_splitter.width()
+        if total > 0:
+            # give main editor ~60%, side panel ~40%
+            list_size = self._write_splitter.sizes()[0] if self._write_splitter.sizes() else 200
+            remaining = max(total - list_size, 400)
+            self._write_splitter.setSizes([
+                list_size, int(remaining * 0.6), int(remaining * 0.4)
+            ])
+
+    def _hide_split_panel(self):
+        """Remove the side-by-side draft panel from the splitter."""
+        if self._split_draft_panel is None:
+            return
+        panel = self._split_draft_panel
+        # Ask to save if dirty
+        if panel.is_dirty():
+            panel._save_current()
+        panel.setParent(None)
+        panel.deleteLater()
+        self._split_draft_panel = None
+
+    def _open_compare_window(self):
+        """Open a secondary editor pointed at a different draft."""
+        from PyQt6.QtWidgets import QInputDialog, QMessageBox
+        if not self.project:
+            return
+        drafts = self.project.drafts
+        if not drafts:
+            QMessageBox.information(
+                self, "No Drafts",
+                "Create a draft first by clicking the ＋ button.")
+            return
+        # Prefer a draft that's NOT the currently active one
+        options = [d for d in drafts if
+                   not self._active_draft or d.id != self._active_draft.id]
+        if not options:
+            options = drafts
+        names = [d.name for d in options]
+        choice, ok = QInputDialog.getItem(
+            self, "Compare Draft",
+            "Open this draft side-by-side:", names, 0, False)
+        if not ok:
+            return
+        draft = next((d for d in options if d.name == choice), None)
+        if not draft:
+            return
+
+        from src.ui.draft_editor_window import DraftEditorWindow
+        if not hasattr(self, '_draft_windows'):
+            self._draft_windows = []
+        win = DraftEditorWindow(self.project, initial_draft_id=draft.id,
+                                parent=self)
+        # Position it next to the main window
+        try:
+            top_window = self.window()
+            geo = top_window.geometry()
+            win.move(geo.x() + geo.width() + 10, geo.y())
+            win.resize(min(900, geo.width()), geo.height())
+        except Exception:
+            pass
+        win.draft_saved.connect(lambda _id: self._persist_project())
+        self._draft_windows.append(win)
+        win.show()
+
+    def _persist_project(self):
+        """Write the project to disk (called after a draft window saves)."""
+        if self.project and self.project.project_path:
+            try:
+                self.project.save_project(self.project.project_path)
+            except Exception as e:
+                print(f"[Drafts] Save failed: {e}")
 
     def get_memory_stats(self) -> dict:
         """Get memory manager statistics for debugging/monitoring."""

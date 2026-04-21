@@ -1115,6 +1115,28 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
+        # Drafts menu
+        drafts_menu = menubar.addMenu("&Drafts")
+
+        save_as_draft_action = QAction("Save Current Manuscript as &New Draft...", self)
+        save_as_draft_action.setToolTip(
+            "Snapshot the current manuscript as a separate draft you can "
+            "edit independently in a second window")
+        save_as_draft_action.triggered.connect(self._save_current_as_draft)
+        drafts_menu.addAction(save_as_draft_action)
+
+        open_draft_action = QAction("&Open Draft in New Window...", self)
+        open_draft_action.setToolTip(
+            "Open a secondary editor pointed at one of your saved drafts")
+        open_draft_action.triggered.connect(self._open_draft_window)
+        drafts_menu.addAction(open_draft_action)
+
+        drafts_menu.addSeparator()
+
+        manage_drafts_action = QAction("&Manage Drafts...", self)
+        manage_drafts_action.triggered.connect(self._manage_drafts)
+        drafts_menu.addAction(manage_drafts_action)
+
         # Edit menu
         edit_menu = menubar.addMenu("&Edit")
 
@@ -3775,6 +3797,130 @@ class MainWindow(QMainWindow):
             parent=self
         )
         dialog.exec()
+
+    # ── Manuscript Drafts ─────────────────────────────────────────
+
+    def _sync_editor_to_manuscript(self):
+        """Push any unsaved editor content to the in-memory chapter model."""
+        if hasattr(self, 'manuscript_editor') and self.manuscript_editor.current_chapter_editor:
+            try:
+                self.manuscript_editor.current_chapter_editor.save_to_model()
+            except Exception:
+                pass
+
+    def _save_current_as_draft(self):
+        """Snapshot the current manuscript into a new ManuscriptDraft."""
+        if not self.current_project:
+            QMessageBox.information(self, "No Project", "Open a project first.")
+            return
+        if not self.current_project.manuscript.chapters:
+            QMessageBox.information(self, "No Chapters",
+                                    "Write some chapters before saving a draft.")
+            return
+
+        # Sync any pending editor content into chapters
+        self._sync_editor_to_manuscript()
+
+        from PyQt6.QtWidgets import QInputDialog
+        existing_count = len(self.current_project.drafts)
+        default_name = f"Draft {existing_count + 1}"
+        name, ok = QInputDialog.getText(
+            self, "New Draft", "Name this draft:", text=default_name)
+        if not ok or not name.strip():
+            return
+
+        draft = self.current_project.create_draft_from_current(
+            name=name.strip())
+        QMessageBox.information(
+            self, "Draft Created",
+            f"Created draft '{draft.name}' with {len(draft.chapters)} chapters.\n\n"
+            f"Open it via Drafts > Open Draft in New Window...")
+
+        # Persist immediately so the user doesn't lose the snapshot
+        try:
+            self.current_project.save_project(self.current_project.project_path)
+        except Exception as e:
+            print(f"[Drafts] Save after create_draft failed: {e}")
+
+    def _open_draft_window(self):
+        """Open a secondary editor pointed at a draft of the user's choosing."""
+        if not self.current_project:
+            QMessageBox.information(self, "No Project", "Open a project first.")
+            return
+        if not self.current_project.drafts:
+            QMessageBox.information(
+                self, "No Drafts",
+                "There are no drafts yet. Use 'Save Current Manuscript as "
+                "New Draft...' to create one first.")
+            return
+
+        # Let the user pick which draft to open
+        from PyQt6.QtWidgets import QInputDialog
+        names = [d.name for d in self.current_project.drafts]
+        choice, ok = QInputDialog.getItem(
+            self, "Open Draft", "Pick a draft to open:", names, 0, False)
+        if not ok:
+            return
+        draft = next((d for d in self.current_project.drafts
+                      if d.name == choice), None)
+        if not draft:
+            return
+
+        from src.ui.draft_editor_window import DraftEditorWindow
+        # Track open windows so they aren't garbage-collected
+        if not hasattr(self, '_draft_windows'):
+            self._draft_windows = []
+        win = DraftEditorWindow(self.current_project,
+                                initial_draft_id=draft.id, parent=self)
+        # Persist edits when the user saves in the secondary window
+        win.draft_saved.connect(lambda _id: self._on_draft_saved())
+        win.destroyed.connect(lambda: self._draft_windows.remove(win)
+                              if win in self._draft_windows else None)
+        self._draft_windows.append(win)
+        win.show()
+
+    def _on_draft_saved(self):
+        """Persist the project after a draft window saves changes."""
+        if self.current_project and self.current_project.project_path:
+            try:
+                self.current_project.save_project(self.current_project.project_path)
+            except Exception as e:
+                print(f"[Drafts] Save failed: {e}")
+
+    def _manage_drafts(self):
+        """Show a simple list/manage dialog for drafts (rename, delete)."""
+        if not self.current_project:
+            QMessageBox.information(self, "No Project", "Open a project first.")
+            return
+        if not self.current_project.drafts:
+            QMessageBox.information(self, "No Drafts",
+                                    "No drafts to manage yet.")
+            return
+
+        from PyQt6.QtWidgets import QInputDialog
+        choices = [f"{d.name} ({len(d.chapters)} chapters)"
+                   for d in self.current_project.drafts]
+        choices.append("(cancel)")
+        choice, ok = QInputDialog.getItem(
+            self, "Manage Drafts",
+            "Select a draft to delete (rename via Open Draft window):",
+            choices, 0, False)
+        if not ok or choice == "(cancel)":
+            return
+        idx = choices.index(choice)
+        if idx >= len(self.current_project.drafts):
+            return
+        draft = self.current_project.drafts[idx]
+        confirm = QMessageBox.question(
+            self, "Delete Draft?",
+            f"Delete draft '{draft.name}'? This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if confirm == QMessageBox.StandardButton.Yes:
+            self.current_project.delete_draft(draft.id)
+            self._on_draft_saved()
+            QMessageBox.information(self, "Deleted",
+                                    f"Draft '{draft.name}' removed.")
 
     def _toggle_debug_panel(self, checked: bool):
         """Toggle the AI debug panel."""

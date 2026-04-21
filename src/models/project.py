@@ -200,7 +200,14 @@ class StoryPlanning(BaseModel):
 
 
 class ChapterRevision(BaseModel):
-    """Revision history for a chapter."""
+    """Revision history for a chapter.
+
+    Revisions form a tree: every revision can point at its parent via
+    ``parent_revision_number``. The first/original revision has
+    ``parent_revision_number = None``. Promoting a revision (making it the
+    active one) creates a NEW revision that points at the revision being
+    promoted, so the prior history is never overwritten.
+    """
     revision_number: int
     content: str = ""  # Plain text (loaded on demand from file when folder-based)
     html_content: str = ""  # Rich text HTML snapshot for formatting preservation
@@ -208,6 +215,12 @@ class ChapterRevision(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.now)
     notes: str = ""
     word_count: int = 0  # Cached word count for this revision
+
+    # Lineage — parent points at the revision this one was created from.
+    # None for the original/root revision. Optional for backwards compat.
+    parent_revision_number: Optional[int] = None
+    label: str = ""  # Optional user-friendly name (e.g. "Draft 1", "Pre-edit")
+    is_original: bool = False  # Marks the root revision (first ever)
 
 
 class Annotation(BaseModel):
@@ -823,6 +836,79 @@ class Chapter(BaseModel):
             return self.revisions[-1]
         return None
 
+    # --- Revision lineage & promotion ---
+
+    def _next_revision_number(self) -> int:
+        """Return the next unused revision number for this chapter."""
+        if not self.revisions:
+            return 1
+        return max(r.revision_number for r in self.revisions) + 1
+
+    def promote_revision(self, revision_number: int,
+                         label: str = "") -> Optional[ChapterRevision]:
+        """Promote a past revision by COPYING it into a new revision.
+
+        The original revision stays untouched. A new revision is created
+        whose content/html matches the source, with ``parent_revision_number``
+        pointing at the source. The chapter's active_revision_number is
+        updated to the new revision and chapter.content is synced to it.
+
+        Returns the new revision, or None if the source wasn't found.
+        """
+        from copy import deepcopy
+        source = next((r for r in self.revisions
+                       if r.revision_number == revision_number), None)
+        if source is None:
+            return None
+
+        new_num = self._next_revision_number()
+        new_rev = ChapterRevision(
+            revision_number=new_num,
+            content=source.content,
+            html_content=source.html_content,
+            file_path="",  # Will be re-derived when saved to disk
+            notes=f"Promoted from revision {revision_number}" + (
+                f" — {source.label}" if source.label else ""),
+            word_count=source.word_count,
+            parent_revision_number=source.revision_number,
+            label=label,
+            is_original=False,
+        )
+        self.revisions.append(new_rev)
+        self.active_revision_number = new_num
+        self.content = source.content
+        self.html_content = source.html_content
+        self.word_count = source.word_count
+        self.updated_at = datetime.now()
+        return new_rev
+
+    def get_revision_ancestry(self, revision_number: int) -> List[int]:
+        """Return the chain of revision numbers from root → target revision.
+
+        Walks the parent pointers backwards so callers can render a lineage.
+        Stops if a cycle or missing parent is detected.
+        """
+        chain: List[int] = []
+        seen = set()
+        current = revision_number
+        by_num = {r.revision_number: r for r in self.revisions}
+        while current is not None and current not in seen:
+            seen.add(current)
+            chain.append(current)
+            rev = by_num.get(current)
+            if rev is None:
+                break
+            current = rev.parent_revision_number
+        return list(reversed(chain))
+
+    def mark_root_revision(self):
+        """Flag the earliest revision as `is_original=True` if not already."""
+        if not self.revisions:
+            return
+        ordered = sorted(self.revisions, key=lambda r: r.revision_number)
+        if not any(r.is_original for r in self.revisions):
+            ordered[0].is_original = True
+
     # --- Migration ---
 
     def migrate_to_folder(self, project_dir: Path):
@@ -889,6 +975,26 @@ class Manuscript(BaseModel):
     author: str = ""
     chapters: List[Chapter] = Field(default_factory=list)
     total_word_count: int = 0
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
+
+
+class ManuscriptDraft(BaseModel):
+    """A complete alternate version of the manuscript.
+
+    Drafts let writers explore parallel versions of their book. The main
+    `WriterProject.manuscript` is the live editor working copy. Additional
+    drafts are stored in `WriterProject.drafts` and can be edited in a
+    secondary editor window without disturbing the main manuscript.
+
+    Chapter content is stored INLINE in the draft's chapter objects (not
+    on disk), keeping draft files self-contained inside the project JSON.
+    """
+    id: str
+    name: str  # User-friendly label, e.g. "Mystery rewrite", "Draft 2"
+    description: str = ""
+    chapters: List[Chapter] = Field(default_factory=list)
+    parent_draft_id: Optional[str] = None  # forked from this draft, if any
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 
@@ -969,6 +1075,11 @@ class WriterProject(BaseModel):
     agent_contacts: List[AgentContact] = Field(default_factory=list)
     dictionary: ProjectDictionary = Field(default_factory=ProjectDictionary)
 
+    # Alternate manuscript drafts (the main `manuscript` field stays the
+    # live working copy). Each draft is a self-contained snapshot the
+    # user can open and edit in a secondary window.
+    drafts: List[ManuscriptDraft] = Field(default_factory=list)
+
     # Prose profile — target tone, style, voice, genre
     prose_profile: ProseProfile = Field(default_factory=ProseProfile)
 
@@ -978,6 +1089,152 @@ class WriterProject(BaseModel):
     # Metadata
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
+
+    def create_draft_from_current(self, name: str, description: str = "",
+                                  source: Optional[object] = None,
+                                  parent_draft_id: Optional[str] = None) -> ManuscriptDraft:
+        """Create a new draft snapshotting a given source.
+
+        Args:
+            name: Draft label.
+            description: Optional description.
+            source: A Manuscript OR ManuscriptDraft to clone from. If None,
+                defaults to ``self.manuscript`` (the main manuscript).
+            parent_draft_id: If the source is a draft, record its id so
+                lineage is traceable.
+
+        Chapter content is deep-copied. Disk file references (folder_path,
+        file_path, revision file_paths) are stripped so the draft stays
+        self-contained inside the project JSON.
+        """
+        import uuid as _uuid
+        from copy import deepcopy
+
+        # Default to main manuscript if no source given
+        if source is None:
+            source = self.manuscript
+        if not hasattr(source, 'chapters'):
+            source = self.manuscript
+
+        # If the source is the main manuscript, pre-load chapter content
+        # from disk so empty-content chapters (lazy-loaded) snapshot
+        # with their real content.
+        if source is self.manuscript:
+            project_dir = Path(self.project_path).parent if self.project_path else None
+            if project_dir:
+                for ch in source.chapters:
+                    if not ch.content and (ch.folder_path or ch.file_path):
+                        try:
+                            ch.load_content_from_file(project_dir)
+                        except Exception:
+                            pass
+                    try:
+                        ch.mark_root_revision()
+                    except Exception:
+                        pass
+
+        cloned_chapters = [deepcopy(ch) for ch in source.chapters]
+        for ch in cloned_chapters:
+            ch.id = str(_uuid.uuid4())[:8]
+            ch.folder_path = ""
+            ch.file_path = None
+            for rev in ch.revisions:
+                rev.file_path = ""
+                if not rev.content and ch.content:
+                    rev.content = ch.content
+
+        # If snapshotting from a draft, record that draft as the parent
+        if parent_draft_id is None and isinstance(source, ManuscriptDraft):
+            parent_draft_id = source.id
+
+        draft = ManuscriptDraft(
+            id=str(_uuid.uuid4())[:8],
+            name=name,
+            description=description,
+            chapters=cloned_chapters,
+            parent_draft_id=parent_draft_id,
+        )
+        self.drafts.append(draft)
+        return draft
+
+    def get_draft(self, draft_id: str) -> Optional[ManuscriptDraft]:
+        """Look up a draft by id."""
+        return next((d for d in self.drafts if d.id == draft_id), None)
+
+    def delete_draft(self, draft_id: str,
+                     preserve_chapter_revisions: bool = False) -> bool:
+        """Remove a draft by id. Returns True if removed.
+
+        Args:
+            draft_id: Which draft to drop.
+            preserve_chapter_revisions: If True, the draft's chapter-level
+                revision history is merged into the main manuscript before
+                the draft is deleted. For each draft chapter, we look up
+                the main chapter with the same number (or, failing that,
+                the same title) and append the draft's ChapterRevisions
+                as new promoted revisions on the main chapter — with fresh
+                revision_numbers and a parent pointer so lineage is clear.
+                This guarantees no revision data is lost when a draft is
+                dropped.
+        """
+        draft = self.get_draft(draft_id)
+        if draft is None:
+            return False
+
+        if preserve_chapter_revisions:
+            from copy import deepcopy
+            from datetime import datetime as _dt
+            for draft_ch in draft.chapters:
+                # Match by chapter number first, fall back to title
+                target = next(
+                    (c for c in self.manuscript.chapters
+                     if c.number == draft_ch.number),
+                    None)
+                if target is None:
+                    target = next(
+                        (c for c in self.manuscript.chapters
+                         if c.title == draft_ch.title),
+                        None)
+                if target is None:
+                    continue
+
+                # Snapshot the draft's current content as a revision
+                # (even if it isn't in draft_ch.revisions yet)
+                combined = list(draft_ch.revisions)
+                has_current = any(r.content == draft_ch.content
+                                  for r in combined) if draft_ch.content else True
+                if draft_ch.content and not has_current:
+                    combined.append(ChapterRevision(
+                        revision_number=0,  # re-numbered below
+                        content=draft_ch.content,
+                        html_content=getattr(draft_ch, 'html_content', ''),
+                        notes=f"Current content of draft '{draft.name}' "
+                              f"at time of deletion",
+                        word_count=getattr(draft_ch, 'word_count', 0),
+                    ))
+
+                # Merge each preserved revision into target with a new number
+                for src_rev in combined:
+                    new_num = target._next_revision_number()
+                    new_rev = deepcopy(src_rev)
+                    new_rev.revision_number = new_num
+                    new_rev.file_path = ""  # will be re-derived on next save
+                    new_rev.is_original = False
+                    # Record provenance in notes
+                    provenance = (f"[merged from draft '{draft.name}' "
+                                  f"(rev {src_rev.revision_number})]")
+                    new_rev.notes = (
+                        f"{new_rev.notes}\n{provenance}".strip()
+                        if new_rev.notes else provenance)
+                    # Keep the label, prefix if blank
+                    if not new_rev.label:
+                        new_rev.label = f"from '{draft.name}'"
+                    target.revisions.append(new_rev)
+                target.updated_at = _dt.now()
+
+        before = len(self.drafts)
+        self.drafts = [d for d in self.drafts if d.id != draft_id]
+        return len(self.drafts) < before
 
     def save_project(self, file_path: str, save_chapters_separately: bool = True):
         """Save project to JSON file.
