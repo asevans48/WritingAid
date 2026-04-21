@@ -13,12 +13,12 @@ the project.
 from datetime import datetime
 from typing import Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QKeySequence, QShortcut
+from PyQt6.QtCore import Qt, pyqtSignal, QPoint
+from PyQt6.QtGui import QKeySequence, QShortcut, QAction, QTextCursor
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QListWidget, QListWidgetItem, QComboBox, QPushButton, QLabel,
-    QTextEdit, QMessageBox, QStatusBar,
+    QTextEdit, QMessageBox, QStatusBar, QMenu,
 )
 
 from src.models.project import ManuscriptDraft, Chapter, WriterProject
@@ -88,6 +88,10 @@ class DraftEditorPanel(QWidget):
         else:
             self._init_ui_full()
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self._save_current)
+        # Install a right-click context menu that targets THIS panel's
+        # editor (not the main editor), so actions like Cut/Paste/Read
+        # Aloud act on the content the user is actually right-clicking on.
+        self._install_context_menu()
 
     def _init_ui_compact(self):
         """Narrow layout for side-by-side embedding on laptop screens.
@@ -541,6 +545,263 @@ class DraftEditorPanel(QWidget):
     def _on_text_changed(self):
         self._set_dirty(True)
         self._update_status()
+
+    # ── Right-click context menu ─────────────────────────────
+
+    def _install_context_menu(self):
+        """Attach a custom context menu that targets THIS panel's editor.
+
+        Qt normally bubbles right-clicks to the parent, and in split view
+        that could hit the main writing editor's context menu on the wrong
+        content. By installing a CustomContextMenu on our own editor we
+        make sure every action runs against THIS panel's document/cursor.
+        """
+        self.editor.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.editor.customContextMenuRequested.connect(self._show_context_menu)
+
+    def _show_context_menu(self, pos: QPoint):
+        """Build and show the right-click menu for the panel's editor.
+
+        Every action uses self.editor (not any other editor in the app)
+        so there's no chance of an accidental action firing on the main
+        writing window.
+        """
+        ed = self.editor  # local ref — guarantees we target this panel
+        menu = QMenu(ed)
+        cursor = ed.textCursor()
+        has_selection = cursor.hasSelection()
+
+        # --- Undo / Redo ---
+        undo = QAction("Undo", menu)
+        undo.setShortcut(QKeySequence.StandardKey.Undo)
+        undo.setEnabled(ed.document().isUndoAvailable())
+        undo.triggered.connect(ed.undo)
+        menu.addAction(undo)
+
+        redo = QAction("Redo", menu)
+        redo.setShortcut(QKeySequence.StandardKey.Redo)
+        redo.setEnabled(ed.document().isRedoAvailable())
+        redo.triggered.connect(ed.redo)
+        menu.addAction(redo)
+
+        menu.addSeparator()
+
+        # --- Cut / Copy / Paste / Select All ---
+        cut = QAction("Cut", menu)
+        cut.setShortcut(QKeySequence.StandardKey.Cut)
+        cut.setEnabled(has_selection)
+        cut.triggered.connect(ed.cut)
+        menu.addAction(cut)
+
+        copy = QAction("Copy", menu)
+        copy.setShortcut(QKeySequence.StandardKey.Copy)
+        copy.setEnabled(has_selection)
+        copy.triggered.connect(ed.copy)
+        menu.addAction(copy)
+
+        paste = QAction("Paste", menu)
+        paste.setShortcut(QKeySequence.StandardKey.Paste)
+        paste.triggered.connect(ed.paste)
+        menu.addAction(paste)
+
+        select_all = QAction("Select All", menu)
+        select_all.setShortcut(QKeySequence.StandardKey.SelectAll)
+        select_all.triggered.connect(ed.selectAll)
+        menu.addAction(select_all)
+
+        menu.addSeparator()
+
+        # --- Markdown formatting (wraps selection) ---
+        fmt_menu = menu.addMenu("Format")
+        fmt_menu.setEnabled(has_selection or not ed.document().isEmpty())
+
+        bold = QAction("Bold", fmt_menu)
+        bold.triggered.connect(lambda: self._wrap_selection("**", "**"))
+        fmt_menu.addAction(bold)
+
+        italic = QAction("Italic", fmt_menu)
+        italic.triggered.connect(lambda: self._wrap_selection("*", "*"))
+        fmt_menu.addAction(italic)
+
+        code = QAction("Inline Code", fmt_menu)
+        code.triggered.connect(lambda: self._wrap_selection("`", "`"))
+        fmt_menu.addAction(code)
+
+        fmt_menu.addSeparator()
+
+        for level, prefix in [("Heading 1", "# "), ("Heading 2", "## "),
+                              ("Heading 3", "### ")]:
+            a = QAction(level, fmt_menu)
+            a.triggered.connect(lambda checked=False, p=prefix:
+                                self._apply_line_prefix(p))
+            fmt_menu.addAction(a)
+
+        menu.addSeparator()
+
+        # --- AI / Lookup features ---
+        # Every action below reads the selection from THIS panel's editor
+        # (captured via the local `cursor` / `ed`) so nothing can fire on
+        # the main writing editor by accident.
+        selected_text = cursor.selectedText().strip() if has_selection else ""
+
+        if selected_text:
+            # Offline synonyms submenu for single words (WordNet)
+            import re as _re
+            clean_word = _re.sub(r'^[^\w]+|[^\w]+$', '', selected_text)
+            is_single_word = (clean_word and ' ' not in clean_word
+                              and len(clean_word) <= 30)
+
+            if is_single_word:
+                try:
+                    from src.utils.thesaurus import get_synonyms, get_antonyms
+                    synonyms = get_synonyms(clean_word, max_results=12)
+                    antonyms = get_antonyms(clean_word, max_results=5)
+                except Exception:
+                    synonyms, antonyms = [], []
+
+                display_word = (clean_word[:15] + "…"
+                                if len(clean_word) > 15 else clean_word)
+                thes_menu = menu.addMenu(f"📖 Synonyms for \"{display_word}\"")
+                if synonyms:
+                    for syn in synonyms:
+                        a = thes_menu.addAction(syn)
+                        a.triggered.connect(
+                            lambda checked=False, s=syn: self._replace_selection_with(s))
+                    if antonyms:
+                        thes_menu.addSeparator()
+                        ant_menu = thes_menu.addMenu("Antonyms")
+                        for ant in antonyms:
+                            a = ant_menu.addAction(ant)
+                            a.triggered.connect(
+                                lambda checked=False, x=ant: self._replace_selection_with(x))
+                else:
+                    no_a = thes_menu.addAction("(no synonyms found)")
+                    no_a.setEnabled(False)
+                thes_menu.addSeparator()
+                ai_thes = thes_menu.addAction("🤖 AI Suggestions (world-aware)…")
+                ai_thes.triggered.connect(self._world_word_selection)
+            else:
+                # Multi-word selection — AI thesaurus only
+                ai_thes = menu.addAction("🤖 AI Thesaurus (world-aware)…")
+                ai_thes.triggered.connect(self._world_word_selection)
+
+            rephrase_act = menu.addAction("✨ Rephrase with AI…")
+            rephrase_act.triggered.connect(self._rephrase_selection)
+
+            menu.addSeparator()
+
+        # --- Draft actions ---
+        save_act = QAction("💾 Save Draft", menu)
+        save_act.setShortcut(QKeySequence.StandardKey.Save)
+        save_act.triggered.connect(self._save_current)
+        menu.addAction(save_act)
+
+        # Show at the right-click point in editor viewport coords
+        menu.exec(ed.viewport().mapToGlobal(pos))
+
+    def _wrap_selection(self, left: str, right: str):
+        """Wrap the current selection (in this panel's editor) with markers."""
+        ed = self.editor
+        cursor = ed.textCursor()
+        if not cursor.hasSelection():
+            # No selection — insert a placeholder between the markers
+            cursor.insertText(f"{left}{right}")
+            return
+        selected = cursor.selectedText()
+        cursor.insertText(f"{left}{selected}{right}")
+
+    def _apply_line_prefix(self, prefix: str):
+        """Prefix the current line in this panel's editor (for headings)."""
+        ed = self.editor
+        cursor = ed.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock)
+        cursor.insertText(prefix)
+
+    def _replace_selection_with(self, replacement: str):
+        """Replace this panel's selection with the given text.
+
+        Preserves the original case pattern (lowercase → lowercase,
+        Title → Title, UPPER → UPPER) so a synonym pick doesn't
+        accidentally change sentence capitalization.
+        """
+        ed = self.editor
+        cursor = ed.textCursor()
+        if not cursor.hasSelection():
+            return
+        original = cursor.selectedText()
+        if original and original[0].isupper():
+            if original.isupper():
+                replacement = replacement.upper()
+            elif len(original) > 1 and original[1:].islower():
+                replacement = replacement[:1].upper() + replacement[1:]
+        cursor.insertText(replacement)
+
+    def _rephrase_selection(self):
+        """Open the Rephrase dialog with this panel's selection + context."""
+        ed = self.editor
+        cursor = ed.textCursor()
+        selected = cursor.selectedText()
+        if not selected or len(selected.strip()) < 3:
+            QMessageBox.information(
+                self, "No Selection",
+                "Select some text in this panel to rephrase.")
+            return
+
+        doc_text = ed.toPlainText()
+        s = cursor.selectionStart()
+        e = cursor.selectionEnd()
+        ctx_before = doc_text[max(0, s - 500):s]
+        ctx_after = doc_text[e:e + 500]
+
+        try:
+            from src.ui.rephrase_dialog import RephraseDialog
+            from PyQt6.QtWidgets import QDialog as _QDialog
+            dialog = RephraseDialog(
+                selected, self.project, self,
+                surrounding_context=(ctx_before, ctx_after),
+                chapter_content=doc_text,
+                chapter=self._current_chapter)
+            if dialog.exec() == _QDialog.DialogCode.Accepted:
+                replacement = dialog.get_selected_text()
+                if replacement:
+                    # Apply to THIS panel's cursor — not any other editor
+                    cursor.insertText(replacement)
+                    self._set_dirty(True)
+        except Exception as ex:
+            QMessageBox.warning(self, "Rephrase Error", str(ex))
+
+    def _world_word_selection(self):
+        """Open the world-aware thesaurus dialog for this panel's selection."""
+        ed = self.editor
+        cursor = ed.textCursor()
+        selected = cursor.selectedText()
+        if not selected or not selected.strip():
+            QMessageBox.information(
+                self, "No Selection",
+                "Select a word or phrase in this panel first.")
+            return
+
+        doc_text = ed.toPlainText()
+        s = cursor.selectionStart()
+        e = cursor.selectionEnd()
+        ctx_before = doc_text[max(0, s - 300):s]
+        ctx_after = doc_text[e:e + 300]
+
+        try:
+            from src.ui.world_word_dialog import WorldWordDialog
+            from PyQt6.QtWidgets import QDialog as _QDialog
+            dialog = WorldWordDialog(
+                selected.strip(), self.project, self,
+                surrounding_context=(ctx_before, ctx_after),
+                chapter_content=doc_text,
+                chapter=self._current_chapter)
+            if dialog.exec() == _QDialog.DialogCode.Accepted:
+                replacement = dialog.get_replacement()
+                if replacement:
+                    self._replace_selection_with(replacement)
+                    self._set_dirty(True)
+        except Exception as ex:
+            QMessageBox.warning(self, "AI Thesaurus Error", str(ex))
 
     def _flush_editor_to_chapter(self):
         """Write editor markdown back to the chapter, guarding against overwrites.
