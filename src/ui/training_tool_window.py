@@ -693,6 +693,488 @@ class _MlxConversionWorker(QThread):
             self.failed.emit(str(e))
 
 
+class _CorpusQualityWorker(QThread):
+    """Run the LLM-based quality assessment off the UI thread.
+
+    The deterministic stats + verdict are computed synchronously
+    (cheap — one pass over the JSONL); the LLM verdict can take
+    10-30s on a slow API or local model, so it runs in a worker
+    and the dialog appends the result when ready.
+    """
+    finished_ok = pyqtSignal(object)  # Verdict
+    failed = pyqtSignal(str)
+
+    def __init__(self, *,
+                 stats,
+                 intent: str,
+                 llm_generate,
+                 parent=None):
+        super().__init__(parent)
+        self.stats = stats
+        self.intent = intent
+        self.llm_generate = llm_generate
+
+    def run(self):  # noqa: D401 — Qt slot
+        try:
+            from src.ai.corpus_quality import llm_verdict
+            v = llm_verdict(
+                self.stats,
+                intent=self.intent,
+                llm_generate=self.llm_generate)
+            self.finished_ok.emit(v)
+        except Exception as e:
+            self.failed.emit(str(e))
+
+
+class _CorpusQualityDialog(QDialog):
+    """Pre-training corpus quality gate.
+
+    Shown right after the dataset is exported and BEFORE the
+    trainer kicks off. Renders stats, sample passages, and a
+    deterministic verdict immediately; can also fetch an LLM
+    opinion in the background (if a configured LLM is available).
+
+    Returns one of:
+      * ``QDialog.Accepted`` — user clicked Continue, training proceeds.
+      * ``QDialog.Rejected`` — user clicked Cancel.
+
+    Side effects:
+      * Clean Now button opens the existing 🧹 retroactive cleaner.
+        The dialog stays open; once the cleaner finishes, the user
+        can re-run the quality scan via the Re-scan button.
+    """
+
+    # Custom return code so callers can route back to the cleaner
+    # flow without re-prompting. Qt's standard accept/reject are
+    # binary; we add a third "user wants to clean first" path.
+    CLEAN_REQUESTED = 1000
+
+    def __init__(self, *,
+                 jsonl_path: Path,
+                 intent: str,
+                 selected_genres,
+                 selected_tones,
+                 llm_generate=None,
+                 parent=None):
+        super().__init__(parent)
+        self.jsonl_path = jsonl_path
+        self.intent = intent
+        self.selected_genres = list(selected_genres or [])
+        self.selected_tones = list(selected_tones or [])
+        self.llm_generate = llm_generate
+        self._llm_worker: Optional[_CorpusQualityWorker] = None
+
+        self.setWindowTitle("Pre-training corpus quality check")
+        self.setMinimumSize(720, 640)
+        self._build_ui()
+        self._run_scan()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        title = QLabel("<b>Pre-training corpus quality check</b>")
+        title_font = title.font()
+        title_font.setPointSize(13)
+        title.setFont(title_font)
+        layout.addWidget(title)
+        intro = QLabel(
+            "What's about to be trained on. Address any concerns "
+            "before spending GPU time — or hit 'Continue Anyway' if "
+            "you know what you're doing.")
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color: #6b7280;")
+        layout.addWidget(intro)
+
+        # Stats panel.
+        self.stats_label = QLabel("Scanning…")
+        self.stats_label.setWordWrap(True)
+        self.stats_label.setStyleSheet(
+            "background: #f3f4f6; border-radius: 4px; "
+            "padding: 10px; font-family: monospace; font-size: 11px;")
+        self.stats_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(self.stats_label)
+
+        # Deterministic verdict.
+        self.det_label = QLabel("")
+        self.det_label.setWordWrap(True)
+        layout.addWidget(self.det_label)
+
+        # LLM verdict panel — collapsed initially.
+        self.llm_label = QLabel("")
+        self.llm_label.setWordWrap(True)
+        layout.addWidget(self.llm_label)
+
+        self.llm_btn = QPushButton("🤖 Get AI opinion")
+        self.llm_btn.setToolTip(
+            "Ask the configured LLM to review the corpus and give "
+            "an honest assessment. Falls back gracefully if no LLM "
+            "is configured.")
+        self.llm_btn.clicked.connect(self._on_request_llm_opinion)
+        layout.addWidget(self.llm_btn)
+
+        # Sample passages — collapsible.
+        layout.addWidget(QLabel("<b>Sample passages</b>"))
+        self.samples_view = QPlainTextEdit()
+        self.samples_view.setReadOnly(True)
+        self.samples_view.setStyleSheet(
+            "font-family: monospace; font-size: 10px; "
+            "background: #f9fafb; color: #111827;")
+        self.samples_view.setMaximumHeight(180)
+        layout.addWidget(self.samples_view)
+
+        layout.addStretch()
+
+        # Action row.
+        actions = QHBoxLayout()
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self.reject)
+        actions.addWidget(self.cancel_btn)
+
+        self.clean_btn = QPushButton("🧹 Clean corpora first")
+        self.clean_btn.setToolTip(
+            "Run the corpus cleaner over your DB (drops boilerplate, "
+            "tool-call JSON, page numbers, etc.). After cleaning, "
+            "this dialog re-opens with fresh stats.")
+        self.clean_btn.clicked.connect(self._on_clean_first)
+        actions.addWidget(self.clean_btn)
+
+        self.rescan_btn = QPushButton("⟳ Re-scan")
+        self.rescan_btn.setToolTip(
+            "Re-run the deterministic stats — useful after you've "
+            "cleaned the corpus or changed something else "
+            "external to this dialog.")
+        self.rescan_btn.clicked.connect(self._run_scan)
+        actions.addWidget(self.rescan_btn)
+
+        actions.addStretch()
+
+        self.continue_btn = QPushButton("▶ Continue Anyway")
+        self.continue_btn.clicked.connect(self.accept)
+        actions.addWidget(self.continue_btn)
+        layout.addLayout(actions)
+
+    # ── Behaviour ────────────────────────────────────────
+
+    def _run_scan(self):
+        """Compute stats + render. Cheap — runs synchronously."""
+        from src.ai.corpus_quality import (
+            compute_stats, deterministic_verdict, sample_passages,
+        )
+        try:
+            stats = compute_stats(
+                self.jsonl_path,
+                selected_genres=self.selected_genres,
+                selected_tones=self.selected_tones,
+                n_samples=5)
+        except Exception as e:
+            self.stats_label.setText(
+                f"<span style='color:#b91c1c'>Could not scan: {e}</span>")
+            return
+        self._stats = stats
+        self.stats_label.setText(self._render_stats(stats))
+        verdict = deterministic_verdict(stats, intent=self.intent)
+        self._render_verdict(verdict, target=self.det_label,
+                              label="Deterministic verdict")
+        # Auto-set Continue button styling based on severity.
+        if verdict.severity == "fail":
+            self.continue_btn.setStyleSheet(
+                "QPushButton { background-color: #fee2e2; "
+                "color: #991b1b; padding: 6px 14px; "
+                "border-radius: 5px; }")
+            self.cancel_btn.setDefault(True)
+        elif verdict.severity == "warn":
+            self.continue_btn.setStyleSheet(
+                "QPushButton { background-color: #fef3c7; "
+                "color: #92400e; padding: 6px 14px; "
+                "border-radius: 5px; }")
+        else:
+            self.continue_btn.setStyleSheet(
+                "QPushButton { background-color: #16a34a; "
+                "color: white; padding: 6px 14px; "
+                "border-radius: 5px; font-weight: bold; }")
+            self.continue_btn.setDefault(True)
+
+        # Render samples.
+        samples = sample_passages(stats, n=5)
+        if not samples:
+            self.samples_view.setPlainText(
+                "(no samples — corpus is empty)")
+        else:
+            blocks = []
+            for i, s in enumerate(samples):
+                blocks.append(
+                    f"--- Sample {i+1} ---\n"
+                    f"USER:\n{s['user'][:300]}\n\n"
+                    f"ASSISTANT:\n{s['assistant'][:400]}")
+            self.samples_view.setPlainText("\n\n".join(blocks))
+
+    def _render_stats(self, stats) -> str:
+        sources = ", ".join(
+            f"{k}={v}" for k, v in sorted(stats.by_source.items()))
+        lines = [
+            f"Rows:                {stats.n_rows}",
+            f"Source breakdown:    {sources or '(none)'}",
+            f"Median user chars:   {stats.median_user_len}",
+            f"Median output chars: {stats.median_output_len}  "
+            f"(p10={stats.p10_output_len}, p90={stats.p90_output_len})",
+            f"Vocab diversity:     {stats.type_token_ratio:.3f}  "
+            f"(type-token ratio)",
+            f"Unique openers:      "
+            f"{stats.pct_unique_openers:.1f}%  "
+            f"({stats.n_unique_openers}/"
+            f"{stats.n_unique_openers + stats.n_duplicate_openers})",
+            f"Voice-tagged rows:   {stats.n_voice_tagged}",
+        ]
+        if stats.pct_too_short:
+            lines.append(
+                f"Too-short outputs:   {stats.pct_too_short:.1f}%")
+        if stats.pct_too_long:
+            lines.append(
+                f"Too-long outputs:    {stats.pct_too_long:.1f}%")
+        if stats.pct_matching_genres is not None:
+            lines.append(
+                f"Genre tag match:     "
+                f"{stats.pct_matching_genres:.0f}%")
+        if stats.pct_matching_tones is not None:
+            lines.append(
+                f"Tone tag match:      "
+                f"{stats.pct_matching_tones:.0f}%")
+        return "\n".join(lines)
+
+    def _render_verdict(self, verdict, *, target, label: str):
+        body = (f"<div style='border-left: 4px solid {verdict.color}; "
+                f"padding: 8px 12px; background: #fafafa; "
+                f"margin-top: 6px;'>"
+                f"<div style='font-weight: bold; color: {verdict.color};'>"
+                f"{verdict.emoji} {label}: {verdict.severity.upper()}"
+                f"</div>"
+                f"<div style='margin: 6px 0;'>{verdict.summary}</div>")
+        if verdict.reasons:
+            body += "<div><b>Reasons:</b><ul style='margin: 4px 0;'>"
+            for r in verdict.reasons:
+                body += f"<li>{r}</li>"
+            body += "</ul></div>"
+        if verdict.suggestions:
+            body += "<div><b>Suggestions:</b><ul style='margin: 4px 0;'>"
+            for s in verdict.suggestions:
+                body += f"<li>{s}</li>"
+            body += "</ul></div>"
+        body += "</div>"
+        target.setText(body)
+
+    def _on_request_llm_opinion(self):
+        if self.llm_generate is None:
+            self.llm_label.setText(
+                "<i style='color:#6b7280;'>No LLM configured — "
+                "deterministic verdict only.</i>")
+            return
+        if self._llm_worker is not None and self._llm_worker.isRunning():
+            return
+        self.llm_btn.setEnabled(False)
+        self.llm_label.setText(
+            "<i style='color:#6b7280;'>Asking the configured LLM "
+            "for an honest review…</i>")
+        self._llm_worker = _CorpusQualityWorker(
+            stats=self._stats,
+            intent=self.intent,
+            llm_generate=self.llm_generate,
+            parent=self)
+        self._llm_worker.finished_ok.connect(self._on_llm_done)
+        self._llm_worker.failed.connect(self._on_llm_failed)
+        self._llm_worker.start()
+
+    def _on_llm_done(self, verdict):
+        self.llm_btn.setEnabled(True)
+        self.llm_btn.setText("🤖 Re-ask AI")
+        self._render_verdict(verdict, target=self.llm_label,
+                              label="LLM verdict")
+
+    def _on_llm_failed(self, msg: str):
+        self.llm_btn.setEnabled(True)
+        self.llm_label.setText(
+            f"<span style='color:#b45309;'>LLM verdict failed: "
+            f"{msg}</span>")
+
+    def _on_clean_first(self):
+        """User wants to clean before training. Close the dialog
+        with the custom CLEAN_REQUESTED code so the caller knows
+        to open the cleaner instead of just cancelling."""
+        self.done(self.CLEAN_REQUESTED)
+
+
+class _ModalConfirmDialog(QDialog):
+    """Pre-submit confirmation for Modal training.
+
+    Replaces the old single-line "Confirm Modal training?" message
+    box. Now shows three preset profiles (Economy / Balanced /
+    Performance) so the user picks the cost-vs-performance balance
+    explicitly, plus any overspend warnings the heuristic flags
+    for the chosen base + corpus + epochs combination.
+
+    Returns the picked :class:`BalanceProfile` via
+    :meth:`chosen_profile` after Accepted.
+    """
+
+    def __init__(self, *,
+                 base_model: str,
+                 base_size_b: float,
+                 n_rows: int,
+                 epochs: int,
+                 use_qlora: bool,
+                 intent: str,
+                 parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Confirm Modal training")
+        self.setMinimumSize(620, 460)
+        self._base_model = base_model
+        self._base_size_b = base_size_b
+        self._n_rows = n_rows
+        self._epochs = epochs
+        self._use_qlora = use_qlora
+        self._intent = intent
+
+        from src.cloud.modal_train import (
+            recommend_balance, flag_overspend,
+        )
+        self._profiles = recommend_balance(
+            base_size_b=base_size_b,
+            corpus_rows=n_rows,
+            epochs=epochs,
+            use_qlora=use_qlora)
+        self._chosen_name = "balanced"  # default
+        self._build_ui(flag_overspend(
+            base_size_b=base_size_b,
+            corpus_rows=n_rows,
+            epochs=epochs,
+            gpu=self._profiles["balanced"].gpu,
+            intent=intent))
+
+    def _build_ui(self, initial_warnings):
+        from PyQt6.QtWidgets import QButtonGroup, QRadioButton
+        layout = QVBoxLayout(self)
+
+        title = QLabel("<b>Submit this training run to Modal?</b>")
+        f = title.font(); f.setPointSize(13); title.setFont(f)
+        layout.addWidget(title)
+
+        summary = QLabel(
+            f"<b>Base model:</b> {self._base_model}<br>"
+            f"<b>Rows:</b> {self._n_rows} &nbsp;·&nbsp; "
+            f"<b>Epochs:</b> {self._epochs} &nbsp;·&nbsp; "
+            f"<b>QLoRA:</b> {'on' if self._use_qlora else 'off'}")
+        summary.setStyleSheet(
+            "background: #f3f4f6; border-radius: 4px; "
+            "padding: 8px 10px; color: #374151;")
+        layout.addWidget(summary)
+
+        # Preset picker. Create the warnings_label FIRST so the
+        # default-radio toggle signal (fired by setChecked) can find
+        # it when it triggers _on_preset_picked → _render_warnings.
+        layout.addWidget(QLabel(
+            "<b>Cost / performance preset</b>"))
+        self._radio_group = QButtonGroup(self)
+        self._radios: dict = {}
+
+        # Warnings panel placeholder — populated below; created up
+        # front so the radio toggle handler doesn't crash.
+        self._warnings_label = QLabel("")
+        self._warnings_label.setWordWrap(True)
+
+        for slot in ("economy", "balanced", "performance"):
+            bp = self._profiles[slot]
+            rb = QRadioButton(self._format_preset_label(bp))
+            rb.setStyleSheet(
+                "QRadioButton { padding: 6px; }"
+                "QRadioButton::indicator { margin-right: 8px; }")
+            rb.toggled.connect(
+                lambda checked, name=slot: self._on_preset_picked(name) if checked else None)
+            self._radio_group.addButton(rb)
+            self._radios[slot] = rb
+            layout.addWidget(rb)
+        # Default = Balanced. Triggers _on_preset_picked which
+        # populates the warnings panel from the right state.
+        self._radios["balanced"].setChecked(True)
+
+        # Now physically place the warnings_label below the radios.
+        layout.addWidget(self._warnings_label)
+        # Initial fill in case no toggle fired (shouldn't happen,
+        # but keeps the dialog deterministic).
+        if not self._warnings_label.text():
+            self._render_warnings(initial_warnings)
+
+        # Tail note.
+        tail = QLabel(
+            "<span style='color:#6b7280;font-size:11px;'>"
+            "The trained LoRA adapter downloads back to your local "
+            "registry automatically. Your dataset only sits on "
+            "Modal's machine for the duration of the run."
+            "</span>")
+        tail.setWordWrap(True)
+        layout.addWidget(tail)
+        layout.addStretch()
+
+        # Buttons.
+        actions = QHBoxLayout()
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        actions.addWidget(cancel)
+        actions.addStretch()
+        submit = QPushButton("☁️ Submit to Modal")
+        submit.setStyleSheet(
+            "QPushButton { background-color: #6366f1; color: white; "
+            "padding: 6px 14px; border-radius: 5px; "
+            "font-weight: bold; }"
+            "QPushButton:hover { background-color: #4f46e5; }")
+        submit.clicked.connect(self.accept)
+        submit.setDefault(True)
+        actions.addWidget(submit)
+        layout.addLayout(actions)
+
+    def _format_preset_label(self, bp) -> str:
+        """Build the radio-button text for one preset."""
+        return (f"{bp.label}  —  GPU: {bp.gpu}  ·  "
+                f"~${bp.cost_low:.2f}–${bp.cost_high:.2f}\n"
+                f"        {bp.rationale}")
+
+    def _on_preset_picked(self, name: str):
+        self._chosen_name = name
+        from src.cloud.modal_train import flag_overspend
+        warnings = flag_overspend(
+            base_size_b=self._base_size_b,
+            corpus_rows=self._n_rows,
+            epochs=self._epochs,
+            gpu=self._profiles[name].gpu,
+            intent=self._intent)
+        self._render_warnings(warnings)
+
+    def _render_warnings(self, warnings):
+        if not warnings:
+            self._warnings_label.setText(
+                "<span style='color:#16a34a;'>"
+                "✅ No overspend concerns flagged for this combo."
+                "</span>")
+            self._warnings_label.setStyleSheet(
+                "background: #ecfdf5; color: #065f46; "
+                "border-left: 3px solid #10b981; "
+                "border-radius: 4px; padding: 8px 12px; "
+                "margin-top: 4px;")
+            return
+        body = "<b>⚠ Cost-vs-performance concerns:</b>"
+        for w in warnings:
+            body += f"<br>&nbsp;&nbsp;• {w}"
+        self._warnings_label.setText(body)
+        self._warnings_label.setStyleSheet(
+            "background: #fef3c7; color: #92400e; "
+            "border-left: 3px solid #f59e0b; "
+            "border-radius: 4px; padding: 8px 12px; "
+            "margin-top: 4px;")
+
+    def chosen_profile(self):
+        return self._profiles[self._chosen_name]
+
+
 class _ModalCredentialsDialog(QDialog):
     """Paste Modal API tokens into the OS keystore.
 
@@ -3453,6 +3935,11 @@ class TrainingToolWindow(QMainWindow):
             return  # the helper already showed a warning
         dataset_path, n_rows, ds_extra = prep
 
+        # Same pre-training quality gate as the local path — even
+        # more important here since Modal runs cost real money.
+        if not self._gate_corpus_quality(dataset_path):
+            return
+
         # Build the config dict that gets shipped to Modal. Mirrors
         # the local trainer's TrainingArguments inputs so the same
         # recipe behaves the same on both sides.
@@ -3468,44 +3955,27 @@ class TrainingToolWindow(QMainWindow):
         except Exception:
             base_size_b = 0.0
 
-        gpu = modal_train.recommend_gpu(
-            base_size_b or 7.0,
-            use_qlora=self.qlora_cb.isChecked())
-        low, high, _ = modal_train.estimate_cost(
-            base_size_b or 7.0,
-            gpu=gpu,
-            epochs=self.epochs_spin.value(),
-            rows=n_rows,
-            use_qlora=self.qlora_cb.isChecked())
+        # Resolve the intent for overspend rules.
+        recipe = getattr(self, '_current_recipe', None)
+        intent = (getattr(recipe, "intent", "") or "").lower() or "general"
 
-        # Confirmation dialog — make the cost band the user's first
-        # impression so they can back out before any spend.
-        confirm = QMessageBox(self)
-        confirm.setIcon(QMessageBox.Icon.Question)
-        confirm.setWindowTitle("Confirm Modal training")
-        confirm.setText(
-            f"<b>Submit this training run to Modal?</b><br><br>"
-            f"<b>Base model:</b> {base_model}<br>"
-            f"<b>Rows:</b> {n_rows}<br>"
-            f"<b>Epochs:</b> {self.epochs_spin.value()}<br>"
-            f"<b>GPU:</b> {gpu} "
-            f"<span style='color:#6b7280'>"
-            f"(auto-picked for {base_size_b}B base)</span><br>"
-            f"<b>Estimated cost:</b> "
-            f"<span style='color:#16a34a;font-weight:bold;'>"
-            f"${low:.2f}–${high:.2f}</span><br>"
-            f"<b>Estimated time:</b> minutes to a couple hours<br><br>"
-            f"<span style='color:#6b7280;font-size:11px;'>"
-            f"The trained LoRA adapter will download back to your "
-            f"local registry automatically. Your dataset only sits "
-            f"on Modal's machine for the duration of the run."
-            f"</span>")
-        confirm.setStandardButtons(
-            QMessageBox.StandardButton.Cancel
-            | QMessageBox.StandardButton.Yes)
-        confirm.setDefaultButton(QMessageBox.StandardButton.Cancel)
-        if confirm.exec() != QMessageBox.StandardButton.Yes:
+        # Open the preset-picker confirm dialog. User picks Economy
+        # / Balanced / Performance; we read the chosen preset's GPU
+        # back from the dialog before submitting.
+        confirm_dlg = _ModalConfirmDialog(
+            base_model=base_model,
+            base_size_b=base_size_b or 7.0,
+            n_rows=n_rows,
+            epochs=self.epochs_spin.value(),
+            use_qlora=self.qlora_cb.isChecked(),
+            intent=intent,
+            parent=self)
+        if confirm_dlg.exec() != QDialog.DialogCode.Accepted:
             return
+        chosen = confirm_dlg.chosen_profile()
+        gpu = chosen.gpu
+        low = chosen.cost_low
+        high = chosen.cost_high
 
         name = self.name_edit.text().strip() or "modal-run"
         # Match the local-path collision avoidance.
@@ -3548,6 +4018,123 @@ class TrainingToolWindow(QMainWindow):
         self._modal_worker.finished_ok.connect(self._on_modal_done)
         self._modal_worker.failed.connect(self._on_modal_failed)
         self._modal_worker.start()
+
+    def _gate_corpus_quality(self, jsonl_path: Path) -> bool:
+        """Show the corpus-quality dialog. Returns True iff the user
+        clicked Continue.
+
+        Three exit paths:
+          * Continue → True, training proceeds.
+          * Cancel → False, training does not proceed.
+          * Clean → False AND we open the 🧹 retroactive cleaner so
+            the user can fix the data and re-run training. Same
+            return value as Cancel because we still abort *this*
+            attempt — the user has to click Start Training again
+            after cleaning.
+        """
+        # Build an LLM hook for the dialog if one's configured.
+        # Re-uses the same plumbing the rephrase synthesizer +
+        # recipe builder use, so any provider the OS has set up
+        # (Claude, GPT, Gemini, local HF/MLX) will work.
+        llm_generate = None
+        try:
+            from src.config.creativeos_config import get_creativeos_config
+            cfg = get_creativeos_config()
+            if (not cfg.get("disable_all_ai")
+                    and cfg.has_llm_configured()):
+                from src.ai.llm_client import (
+                    LLMClient, LLMProvider, HuggingFaceConfig,
+                )
+                s = cfg.shared_llm_settings()
+                if (s.get("prefer_local_model")
+                        and s.get("enable_local_models")
+                        and s.get("local_model_id")):
+                    is_mlx = "mlx" in s["local_model_id"].lower()
+                    hf_config = HuggingFaceConfig(
+                        model_id=s["local_model_id"], use_local=True,
+                        device=s.get("local_model_device", "auto"),
+                        quantization=(
+                            s.get("local_model_quantization", "none")
+                            if s.get("local_model_quantization") != "none"
+                            else None),
+                    )
+                    provider = (LLMProvider.MLX_LOCAL if is_mlx
+                                else LLMProvider.HUGGINGFACE_LOCAL)
+                    llm = LLMClient(provider=provider,
+                                    hf_config=hf_config)
+                else:
+                    provider_map = {
+                        "claude": LLMProvider.CLAUDE,
+                        "chatgpt": LLMProvider.CHATGPT,
+                        "openai": LLMProvider.CHATGPT,
+                        "gemini": LLMProvider.GEMINI,
+                    }
+                    provider_name = s.get("default_llm", "claude")
+                    api_key = (
+                        s.get("claude_api_key")
+                        if provider_name == "claude"
+                        else s.get("chatgpt_api_key")
+                        if provider_name in ("chatgpt", "openai")
+                        else s.get("gemini_api_key"))
+                    if api_key:
+                        llm = LLMClient(
+                            provider=provider_map.get(
+                                provider_name, LLMProvider.CLAUDE),
+                            api_key=api_key)
+                    else:
+                        llm = None
+                if llm is not None:
+                    def _llm_gen(prompt: str, system: str) -> str:
+                        return llm.generate_text(
+                            prompt, system, max_tokens=600,
+                            temperature=0.3)
+                    llm_generate = _llm_gen
+        except Exception:
+            llm_generate = None
+
+        intent = ""
+        recipe = getattr(self, '_current_recipe', None)
+        if recipe is not None:
+            intent = (getattr(recipe, "intent", "") or "").lower()
+        if not intent:
+            # Fall back to inferred intent if no recipe.
+            try:
+                intent = self._infer_intent_from_db()
+            except Exception:
+                intent = "general"
+
+        ticked_genres = (self.selected_genres()
+                          if hasattr(self, 'selected_genres') else [])
+        ticked_tones = (self.selected_tones()
+                        if hasattr(self, 'selected_tones') else [])
+
+        dlg = _CorpusQualityDialog(
+            jsonl_path=jsonl_path,
+            intent=intent,
+            selected_genres=ticked_genres,
+            selected_tones=ticked_tones,
+            llm_generate=llm_generate,
+            parent=self)
+        result = dlg.exec()
+        if result == _CorpusQualityDialog.CLEAN_REQUESTED:
+            # User wants to clean before training. Open the
+            # retroactive cleaner; abort this training attempt.
+            self.train_log.appendPlainText(
+                "[quality] User chose to clean before training. "
+                "Opening cleaner — re-click Start Training when done.")
+            try:
+                self._open_clean_corpus_dialog()
+            except Exception as e:
+                QMessageBox.warning(
+                    self, "Cleaner unavailable",
+                    f"Could not open cleaner: {e}")
+            return False
+        if result == QDialog.DialogCode.Accepted:
+            return True
+        # Cancelled.
+        self.train_log.appendPlainText(
+            "[quality] Training cancelled at quality gate.")
+        return False
 
     def _prepare_training_dataset(self):
         """Run the shared dataset-export pipeline. Returns
@@ -3855,6 +4442,14 @@ class TrainingToolWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "Dataset Error",
                                 f"Could not prepare dataset: {e}")
+            return
+
+        # Pre-training quality gate. Shows stats + samples + verdict
+        # before the GPU work starts. User can Continue, Cancel, or
+        # Clean (which closes this flow and opens the retroactive
+        # cleaner). If they cancel/clean, we don't kick off the
+        # trainer.
+        if not self._gate_corpus_quality(tmp):
             return
 
         name = self.name_edit.text().strip() or "untitled"

@@ -172,6 +172,13 @@ def recommend_gpu(base_model_size_b: float, *,
     return "H100"
 
 
+# ── GPU class ordering for preset stepping ────────────────
+# Cheap → expensive. Used by recommend_balance to step "down" for
+# Economy or "up" for Performance from the auto-fit GPU.
+_GPU_LADDER = ["T4", "L4", "A10G", "L40S", "A100",
+               "A100-80GB", "H100"]
+
+
 def estimate_cost(base_model_size_b: float, *,
                   gpu: str = "",
                   epochs: int = 2,
@@ -202,6 +209,230 @@ def estimate_cost(base_model_size_b: float, *,
     hours = seconds / 3600.0
     point = rate * hours
     return (round(point * 0.7, 2), round(point * 1.4, 2), gpu)
+
+
+# ── Cost-vs-performance balance ───────────────────────────
+#
+# The plain ``recommend_gpu`` only knows the base model's size —
+# it doesn't account for whether the *corpus* is big enough to
+# justify a beefy GPU, or whether the *epochs* setting will pile
+# on cost without commensurate quality gain. ``recommend_balance``
+# composes those factors into three presets the user picks from in
+# the Modal confirmation dialog.
+
+# Per-base-size "ideal corpus" floor + ceiling for QLoRA fine-tuning.
+# Below the floor the data is too sparse to use the base's full
+# capacity (overspend); above the ceiling you're leaving learning
+# on the table (the base is undersized for the data).
+_IDEAL_CORPUS_RANGE_BY_BASE = {
+    # base_size_b: (min_rows_to_warrant, max_rows_to_consume)
+    2:  (40,   1500),
+    4:  (80,   3000),
+    7:  (200,  6000),
+    9:  (250,  8000),
+    13: (400, 12000),
+    20: (700, 18000),
+    26: (1000, 25000),
+    34: (1300, 30000),
+    70: (3000, 60000),
+}
+
+
+def _ideal_range(base_size_b: float) -> Tuple[int, int]:
+    """Closest entry in the table for ``base_size_b``."""
+    if base_size_b <= 0:
+        return (100, 5000)
+    # Pick the table entry whose key is nearest the requested size.
+    keys = sorted(_IDEAL_CORPUS_RANGE_BY_BASE.keys())
+    best = min(keys, key=lambda k: abs(k - base_size_b))
+    return _IDEAL_CORPUS_RANGE_BY_BASE[best]
+
+
+@dataclass
+class BalanceProfile:
+    """One preset for the user to pick from in the confirm dialog."""
+    name: str                # "economy" / "balanced" / "performance"
+    label: str               # display label, e.g. "💰 Economy"
+    gpu: str
+    cost_low: float
+    cost_high: float
+    rationale: str           # one-line explanation
+
+
+def recommend_balance(*,
+                      base_size_b: float,
+                      corpus_rows: int,
+                      epochs: int = 2,
+                      use_qlora: bool = True
+                      ) -> Dict[str, BalanceProfile]:
+    """Return three GPU presets keyed by name.
+
+    The ``balanced`` preset is what ``recommend_gpu`` would have
+    picked. ``economy`` steps down one ladder rung when feasible
+    (smaller corpora can train just fine on a smaller GPU; the
+    wall-clock penalty is usually only 1.5-2× while the hourly
+    rate drops 1.3-2×). ``performance`` steps up one rung — for
+    users who prefer a faster turnaround and don't mind the
+    hourly-rate hike (often a roughly equal total cost when total
+    runtime is dominated by Modal's cold-start overhead).
+
+    All three estimates use the same ``epochs`` and ``rows`` so
+    the user is comparing apples to apples.
+    """
+    fitted = recommend_gpu(base_size_b, use_qlora=use_qlora)
+    if fitted not in _GPU_LADDER:
+        fitted = "A10G"
+    idx = _GPU_LADDER.index(fitted)
+
+    # Economy: one rung below the fit IF the smaller GPU can still
+    # hold the model. We won't recommend a GPU that flat-out can't
+    # train the base — that's not economy, that's broken.
+    economy_idx = idx
+    if idx > 0:
+        candidate = _GPU_LADDER[idx - 1]
+        cap = _GPU_MAX_PARAMS_B.get(candidate, 0)
+        if (cap >= max(0.5, base_size_b)
+                if use_qlora
+                else cap >= base_size_b * 4):
+            economy_idx = idx - 1
+
+    performance_idx = min(idx + 1, len(_GPU_LADDER) - 1)
+
+    def _make(slot_idx: int, name: str, label: str,
+               rationale: str) -> BalanceProfile:
+        gpu = _GPU_LADDER[slot_idx]
+        low, high, _g = estimate_cost(
+            base_size_b, gpu=gpu, epochs=epochs,
+            rows=corpus_rows, use_qlora=use_qlora)
+        return BalanceProfile(
+            name=name, label=label,
+            gpu=gpu, cost_low=low, cost_high=high,
+            rationale=rationale)
+
+    return {
+        "economy": _make(
+            economy_idx, "economy", "💰 Economy",
+            "Smaller GPU, lower hourly rate. Slightly longer "
+            "wall-clock; usually the cheapest total."),
+        "balanced": _make(
+            idx, "balanced", "⚖️ Balanced",
+            "Auto-fit GPU for this base model — recommended "
+            "starting point for most runs."),
+        "performance": _make(
+            performance_idx, "performance", "🚀 Performance",
+            "Step up to a faster GPU. Higher hourly rate; faster "
+            "turnaround. Total cost often only modestly higher."),
+    }
+
+
+def flag_overspend(*,
+                   base_size_b: float,
+                   corpus_rows: int,
+                   epochs: int,
+                   gpu: str = "",
+                   intent: str = "general"
+                   ) -> List[str]:
+    """Return user-facing warnings about wasteful settings.
+
+    Each warning is a self-contained paragraph the dialog renders
+    inline. Empty list = nothing to flag.
+
+    Rules (all empirically calibrated for QLoRA fine-tuning):
+
+      * **Base oversized for corpus.** If corpus_rows is below
+        20% of the ideal floor for this base, the model can't
+        meaningfully use its capacity.
+      * **Too many epochs for a large corpus.** Above ~3000 rows
+        and 5+ epochs is overfit territory at 2× the cost of a
+        2-3 epoch run.
+      * **GPU oversized for the actual workload.** If the picked
+        GPU's max-params limit is 5×+ the base model size, the
+        GPU sits mostly idle — that's spending for headroom you
+        don't use.
+      * **Voice intent on tiny corpus.** Voice acquisition needs
+        many examples; 50 rows on a 13B base is the worst of
+        both — fragile voice + expensive run.
+    """
+    out: List[str] = []
+    ideal_min, ideal_max = _ideal_range(base_size_b)
+
+    # 1. Base oversized for corpus.
+    if corpus_rows > 0 and corpus_rows < ideal_min * 0.2:
+        # Recommend a smaller base size band the corpus actually
+        # warrants. We pick the largest base whose ideal_min fits
+        # the user's corpus.
+        smaller = None
+        for size, (mn, _mx) in sorted(
+                _IDEAL_CORPUS_RANGE_BY_BASE.items()):
+            if mn <= max(corpus_rows, 1) * 5:
+                smaller = size
+        if smaller is not None and smaller < base_size_b:
+            saved_low, _, _ = estimate_cost(
+                smaller, epochs=epochs, rows=corpus_rows)
+            this_low, _, _ = estimate_cost(
+                base_size_b, epochs=epochs, rows=corpus_rows)
+            savings = max(0.0, this_low - saved_low)
+            out.append(
+                f"<b>Base may be oversized for this corpus.</b> "
+                f"Your {base_size_b:g}B base typically wants "
+                f"{ideal_min}+ rows to use its capacity; you "
+                f"have {corpus_rows}. A {smaller:g}B base would "
+                f"likely produce comparable quality at "
+                f"~${savings:.2f} less per run.")
+
+    # 2. Too many epochs for a large corpus.
+    if corpus_rows > 3000 and epochs >= 5:
+        out.append(
+            f"<b>Many epochs on a large corpus.</b> "
+            f"{epochs} epochs × {corpus_rows} rows often overfits "
+            f"and ~doubles the cost of a 2-3 epoch run. Try 2-3 "
+            f"first; you can always continue-train if needed.")
+
+    # 3. GPU oversized.
+    if gpu and gpu in _GPU_MAX_PARAMS_B:
+        gpu_cap = _GPU_MAX_PARAMS_B[gpu]
+        if gpu_cap >= base_size_b * 5 and base_size_b >= 1.0:
+            # Find the smallest GPU that still fits the base.
+            cheaper = None
+            for g in _GPU_LADDER:
+                if _GPU_MAX_PARAMS_B.get(g, 0) >= base_size_b:
+                    cheaper = g
+                    break
+            if cheaper and cheaper != gpu:
+                low_now, _, _ = estimate_cost(
+                    base_size_b, gpu=gpu, epochs=epochs,
+                    rows=corpus_rows)
+                low_cheap, _, _ = estimate_cost(
+                    base_size_b, gpu=cheaper, epochs=epochs,
+                    rows=corpus_rows)
+                savings = max(0.0, low_now - low_cheap)
+                # Flag when (a) absolute savings are meaningful OR
+                # (b) the cheaper GPU is at least 30% cheaper —
+                # tiny-job cases where dollar savings look small
+                # but the picked GPU is still wildly oversized.
+                pct_savings = (savings / low_now) if low_now > 0 else 0.0
+                if savings >= 0.20 or pct_savings >= 0.30:
+                    out.append(
+                        f"<b>GPU is much larger than this base "
+                        f"needs.</b> {gpu} can hold up to "
+                        f"{gpu_cap:g}B params — your "
+                        f"{base_size_b:g}B base will use a "
+                        f"fraction of it. {cheaper} is enough "
+                        f"and saves ~${savings:.2f} per run "
+                        f"({int(pct_savings*100)}% cheaper).")
+
+    # 4. Voice intent on tiny corpus.
+    if (intent or "").lower() == "voice" and corpus_rows < 100:
+        out.append(
+            f"<b>Voice intent + small corpus.</b> Voice "
+            f"acquisition typically needs 200+ rows for a "
+            f"recognisable style. With {corpus_rows} rows, the "
+            f"trained model will mostly reflect the base — and "
+            f"you'll pay the cloud-training cost regardless. "
+            f"Consider boosting the user-voice oversample factor "
+            f"(Step 3 recipe) or adding more voice-tagged rows.")
+
+    return out
 
 
 # ── Job handle ────────────────────────────────────────────
