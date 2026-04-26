@@ -372,6 +372,28 @@ class ModelHubWindow(QMainWindow):
         self.test_output.setReadOnly(True)
         right_layout.addWidget(self.test_output, 1)
 
+        # Rating panel — appears below the output. Lets the user
+        # save the test result with a star rating, category, and
+        # notes. Disabled until a test completes; re-enabled by
+        # ``_on_test_done`` with the new pending data.
+        from src.ui.test_history_widgets import TestRatingPanel
+        self._rating_panel = TestRatingPanel()
+        self._rating_panel.saved.connect(self._on_test_saved)
+        right_layout.addWidget(self._rating_panel)
+
+        # Per-model history button — shows all stored tests for
+        # the currently selected model with category breakdowns.
+        history_row = QHBoxLayout()
+        history_row.addStretch()
+        self._history_btn = QPushButton("📜 Test history")
+        self._history_btn.setToolTip(
+            "Show every saved test for the selected model with "
+            "overall + per-category mean ratings, plus inline "
+            "edit / delete on each row.")
+        self._history_btn.clicked.connect(self._on_open_history)
+        history_row.addWidget(self._history_btn)
+        right_layout.addLayout(history_row)
+
         # Status bar at the bottom of the right panel — the only
         # place loads/test runs report their progress.
         self.status_label = QLabel("")
@@ -627,6 +649,42 @@ class ModelHubWindow(QMainWindow):
         self._set_status("✓ Test complete.")
         self.run_btn.setEnabled(True)
         self._refresh_loaded_panel()
+
+        # Prime the rating panel with what just ran. The user can
+        # save with or without a rating; either way the test gets
+        # logged to the per-model history.
+        entry = self._selected_entry()
+        if entry is None:
+            return
+        passage = self.test_input.toPlainText().strip()
+        data = self.preset_combo.currentData()
+        intent = data[0] if isinstance(data, tuple) else "rephrase"
+        self._rating_panel.set_pending_test(
+            model_name=entry.id,
+            model_path=entry.path or entry.base_model or "",
+            prompt=passage,
+            response=response,
+            intent_used=intent,
+            generation_params={"temperature": 0.7, "top_p": 0.9},
+            default_category=intent or "other",
+        )
+
+    def _on_test_saved(self, _record):
+        """Acknowledge a saved rating in the status bar."""
+        self._set_status(
+            "💾 Test saved to history. View via 📜 Test history.")
+
+    def _on_open_history(self):
+        entry = self._selected_entry()
+        if entry is None:
+            QMessageBox.information(
+                self, "Pick a model",
+                "Select a model from the list first to view its "
+                "test history.")
+            return
+        from src.ui.test_history_widgets import TestHistoryDialog
+        dlg = TestHistoryDialog(entry.id, parent=self)
+        dlg.exec()
 
     def _on_test_failed(self, _entry_id: str, msg: str) -> None:
         self.test_output.setPlainText(f"Test failed: {msg}")

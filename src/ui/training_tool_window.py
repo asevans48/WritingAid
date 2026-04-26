@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel,
@@ -691,6 +691,265 @@ class _MlxConversionWorker(QThread):
             )
         except Exception as e:
             self.failed.emit(str(e))
+
+
+class _CorpusDashboardWidget(QWidget):
+    """Step-1 at-a-glance dashboard.
+
+    Renders the user's current corpus state — row counts, source
+    breakdown, quality signals, junk-row estimate — without
+    exporting JSONL. Updates instantly after upload / download /
+    clean. Includes inline shortcuts to:
+
+      * 🔍 Detailed quality check (full :class:`_CorpusQualityDialog`)
+      * 🧹 Clean junk rows (existing retroactive cleaner)
+      * ⟳ Refresh
+
+    The widget is intentionally compact: 4 lines of stats + one
+    action row. The full quality dialog stays the place for deep
+    analysis; this is the "what does my corpus look like RIGHT
+    NOW" surface that lives next to the corpus-actions buttons on
+    Step 1.
+
+    Stats come from :func:`corpus_quality.compute_db_stats`, which
+    queries the DB directly — fast even on 100K-row corpora.
+    """
+
+    refresh_requested = pyqtSignal()  # for "🧹 Clean" → refresh-after
+
+    def __init__(self, db_path: Path, parent_window=None):
+        super().__init__(parent_window)
+        self.db_path = db_path
+        self._parent_window = parent_window
+        self._build_ui()
+        # Initial render uses an "unloaded" placeholder; the
+        # caller calls refresh() once Step 1 is fully built.
+        self._render_placeholder()
+
+    def _build_ui(self):
+        from PyQt6.QtWidgets import QFrame, QGridLayout
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        # Frame styled as an inset panel.
+        self._panel = QFrame()
+        self._panel.setStyleSheet(
+            "QFrame { background: #f9fafb; "
+            "border: 1px solid #e5e7eb; border-radius: 6px; }")
+        layout = QVBoxLayout(self._panel)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(6)
+
+        # Header row.
+        header = QHBoxLayout()
+        title = QLabel("<b>📊 Corpus Dashboard</b>")
+        header.addWidget(title)
+        header.addStretch()
+        self._refresh_btn = QPushButton("⟳ Refresh")
+        self._refresh_btn.setStyleSheet(
+            "QPushButton { padding: 2px 8px; font-size: 11px; "
+            "background: transparent; border: 1px solid #d1d5db; "
+            "border-radius: 3px; }")
+        self._refresh_btn.setToolTip(
+            "Re-scan the training DB. Cheap; safe to click anytime.")
+        self._refresh_btn.clicked.connect(self.refresh)
+        header.addWidget(self._refresh_btn)
+        layout.addLayout(header)
+
+        # Live stats — grid of label-value pairs.
+        self._stats_grid = QGridLayout()
+        self._stats_grid.setHorizontalSpacing(20)
+        self._stats_grid.setVerticalSpacing(2)
+        layout.addLayout(self._stats_grid)
+
+        # Source breakdown bar.
+        self._source_label = QLabel("")
+        self._source_label.setStyleSheet(
+            "color: #4b5563; font-size: 11px; padding-top: 4px;")
+        self._source_label.setWordWrap(True)
+        layout.addWidget(self._source_label)
+
+        # Junk-row hint — colored to match severity.
+        self._junk_hint = QLabel("")
+        self._junk_hint.setWordWrap(True)
+        self._junk_hint.setVisible(False)
+        layout.addWidget(self._junk_hint)
+
+        # Action row — quick shortcuts that share existing dialogs.
+        actions = QHBoxLayout()
+        self._check_btn = QPushButton("🔍 Detailed quality check")
+        self._check_btn.setToolTip(
+            "Open the full quality dialog with intent-aware verdict, "
+            "sample passages, and (when LLM is configured) AI "
+            "opinion. Same dialog that fires when you click Start "
+            "Training.")
+        self._check_btn.clicked.connect(self._on_check_clicked)
+        actions.addWidget(self._check_btn)
+
+        self._clean_btn = QPushButton("🧹 Clean junk rows")
+        self._clean_btn.setToolTip(
+            "Run the corpus cleaner over the DB — drops boilerplate, "
+            "tool-call JSON, page numbers, refusal templates. Backs "
+            "up deleted rows. Refreshes the dashboard when done.")
+        self._clean_btn.clicked.connect(self._on_clean_clicked)
+        actions.addWidget(self._clean_btn)
+
+        actions.addStretch()
+        layout.addLayout(actions)
+
+        outer.addWidget(self._panel)
+
+    # ── Public API ────────────────────────────────────────
+
+    def refresh(self):
+        """Re-query the DB and re-render. Cheap (single SQLite scan
+        plus a 5K-row sample for the junk-rate estimate)."""
+        from src.ai.corpus_quality import compute_db_stats
+        try:
+            stats = compute_db_stats(self.db_path)
+        except Exception as e:
+            self._render_error(f"Could not read DB: {e}")
+            return
+        if stats.total_rows == 0:
+            self._render_empty()
+            return
+        self._render_stats(stats)
+
+    def set_db_path(self, db_path: Path):
+        """The user can switch DBs in some flows; surface that
+        without rebuilding the widget."""
+        self.db_path = db_path
+        self.refresh()
+
+    # ── Renderers ─────────────────────────────────────────
+
+    def _clear_grid(self):
+        while self._stats_grid.count():
+            item = self._stats_grid.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+
+    def _render_placeholder(self):
+        self._clear_grid()
+        self._stats_grid.addWidget(
+            QLabel("<i style='color:#9ca3af'>"
+                   "Click ⟳ Refresh to scan your DB</i>"),
+            0, 0, 1, 4)
+        self._source_label.setText("")
+        self._junk_hint.setVisible(False)
+
+    def _render_empty(self):
+        self._clear_grid()
+        self._stats_grid.addWidget(
+            QLabel("<i style='color:#6b7280'>"
+                   "Training DB is empty. Upload your writing, "
+                   "import a project, or pick corpora from the "
+                   "Library.</i>"),
+            0, 0, 1, 4)
+        self._source_label.setText("")
+        self._junk_hint.setVisible(False)
+
+    def _render_error(self, msg: str):
+        self._clear_grid()
+        self._stats_grid.addWidget(
+            QLabel(f"<span style='color:#b91c1c'>"
+                   f"{msg}</span>"),
+            0, 0, 1, 4)
+        self._source_label.setText("")
+        self._junk_hint.setVisible(False)
+
+    def _render_stats(self, stats):
+        self._clear_grid()
+
+        # Row 0: total rows + db size.
+        self._stats_grid.addWidget(
+            QLabel("<span style='color:#6b7280;font-size:11px;'>"
+                   "Rows</span>"), 0, 0)
+        self._stats_grid.addWidget(
+            QLabel(f"<b>{stats.total_rows:,}</b>"), 1, 0)
+
+        self._stats_grid.addWidget(
+            QLabel("<span style='color:#6b7280;font-size:11px;'>"
+                   "DB size</span>"), 0, 1)
+        size_str = (f"{stats.db_size_kb / 1024:.1f} MB"
+                    if stats.db_size_kb >= 1024
+                    else f"{stats.db_size_kb} KB")
+        self._stats_grid.addWidget(QLabel(f"<b>{size_str}</b>"), 1, 1)
+
+        self._stats_grid.addWidget(
+            QLabel("<span style='color:#6b7280;font-size:11px;'>"
+                   "Median output</span>"), 0, 2)
+        self._stats_grid.addWidget(
+            QLabel(f"<b>{stats.median_output_chars} chars</b>"),
+            1, 2)
+
+        self._stats_grid.addWidget(
+            QLabel("<span style='color:#6b7280;font-size:11px;'>"
+                   "Voice-tagged</span>"), 0, 3)
+        voice_pct = (stats.n_voice_tagged / stats.total_rows * 100.0
+                     if stats.total_rows else 0)
+        self._stats_grid.addWidget(
+            QLabel(f"<b>{stats.n_voice_tagged:,}</b> "
+                   f"<span style='color:#6b7280;font-size:11px;'>"
+                   f"({voice_pct:.0f}%)</span>"),
+            1, 3)
+
+        # Source breakdown.
+        if stats.by_source:
+            parts = []
+            for st, n in sorted(stats.by_source.items(),
+                                 key=lambda kv: -kv[1]):
+                pct = n / stats.total_rows * 100.0
+                parts.append(f"<b>{st}</b>: "
+                             f"{n:,} <span style='color:#9ca3af;'>"
+                             f"({pct:.0f}%)</span>")
+            self._source_label.setText(
+                "Source breakdown: " + " · ".join(parts))
+        else:
+            self._source_label.setText("")
+
+        # Junk-row hint with severity coloring.
+        if stats.n_likely_junk > 0:
+            if stats.junk_pct >= 5:
+                color, bg = "#b91c1c", "#fee2e2"
+                tone = ("⚠ Significant junk in your DB. "
+                        "Run the cleaner before training.")
+            elif stats.junk_pct >= 1:
+                color, bg = "#92400e", "#fef3c7"
+                tone = ("Some boilerplate / metadata-only rows "
+                        "detected. Consider cleaning.")
+            else:
+                color, bg = "#065f46", "#ecfdf5"
+                tone = ("Mostly clean — a small fraction looks "
+                        "like junk.")
+            self._junk_hint.setText(
+                f"<span style='color:{color}'>"
+                f"~{stats.n_likely_junk:,} likely-junk rows "
+                f"({stats.junk_pct:.1f}% of total) — {tone}"
+                f"</span>")
+            self._junk_hint.setStyleSheet(
+                f"background: {bg}; "
+                f"border-radius: 3px; padding: 4px 8px; "
+                f"font-size: 11px; margin-top: 2px;")
+            self._junk_hint.setVisible(True)
+        else:
+            self._junk_hint.setVisible(False)
+
+    # ── Action handlers (delegate to parent window) ───────
+
+    def _on_check_clicked(self):
+        if self._parent_window is not None and hasattr(
+                self._parent_window, "_open_corpus_quality_check"):
+            self._parent_window._open_corpus_quality_check()
+
+    def _on_clean_clicked(self):
+        if self._parent_window is not None and hasattr(
+                self._parent_window, "_open_clean_corpus_dialog"):
+            self._parent_window._open_clean_corpus_dialog()
+        # Refresh after the cleaner closes — it deletes rows so the
+        # dashboard's stats are stale.
+        self.refresh()
 
 
 class _CorpusQualityWorker(QThread):
@@ -1707,6 +1966,16 @@ class TrainingToolWindow(QMainWindow):
         tag_row.addStretch()
         layout.addLayout(tag_row)
 
+        # ── Corpus dashboard ──
+        # Live at-a-glance panel showing what's in the training DB:
+        # row counts, source breakdown, voice-tag rate, junk-row
+        # estimate. Inline shortcuts to the full quality check and
+        # the cleaner. Refreshes after every corpus-modifying
+        # action so the user sees the impact of what they just did.
+        self.corpus_dashboard = _CorpusDashboardWidget(
+            self.db_path, parent_window=self)
+        layout.addWidget(self.corpus_dashboard)
+
         # ── Corpus upload (local files) ──
         corpus_row = QHBoxLayout()
         self.upload_corpus_btn = QPushButton("📚 Upload Local Writing…")
@@ -1762,6 +2031,43 @@ class TrainingToolWindow(QMainWindow):
             "run multiple times — already-clean rows are no-ops.")
         self.clean_corpus_btn.clicked.connect(self._open_clean_corpus_dialog)
         corpus_row.addWidget(self.clean_corpus_btn)
+
+        # Quality preview from Step 1 — runs the same dialog that
+        # gates Start Training, but as a standalone tool so the
+        # user can iterate on corpus picks before committing to
+        # the recipe + training step. Same button on Step 3 next
+        # to Start Training.
+        self.check_quality_step1_btn = QPushButton("🔍 Check quality")
+        self.check_quality_step1_btn.setToolTip(
+            "Preview what the trainer would see for the current "
+            "corpus selection — row counts, vocab diversity, "
+            "sample passages, and a verdict. Use it to iterate "
+            "on corpus / genre / tone picks before going to "
+            "Step 3.")
+        self.check_quality_step1_btn.clicked.connect(
+            self._open_corpus_quality_check)
+        corpus_row.addWidget(self.check_quality_step1_btn)
+
+        # Smart-pick downloader — runs the recommender against
+        # the user's current intent / genres / tones and shows a
+        # short list of catalog entries worth downloading. The
+        # default Library dialog is still there for users who
+        # want manual control over every checkbox; this is the
+        # one-click "give me what I need" alternative.
+        self.smart_pick_btn = QPushButton("🎯 Smart Pick…")
+        self.smart_pick_btn.setStyleSheet(
+            "QPushButton { padding: 6px 12px; border-radius: 5px; "
+            "background-color: #ddd6fe; color: #5b21b6; }"
+            "QPushButton:hover { background-color: #c4b5fd; }")
+        self.smart_pick_btn.setToolTip(
+            "Recommend a small set of catalog entries to download "
+            "based on your current selection. Skips already-"
+            "ingested corpora and (when an LLM is configured) "
+            "uses agentic refinement to pick complementary picks. "
+            "Beats walking the full Library dialog when you just "
+            "want sensible defaults.")
+        self.smart_pick_btn.clicked.connect(self._open_smart_pick)
+        corpus_row.addWidget(self.smart_pick_btn)
         corpus_row.addStretch()
         layout.addLayout(corpus_row)
 
@@ -1914,6 +2220,14 @@ class TrainingToolWindow(QMainWindow):
                 f"<small>Path: {self.db_path}</small>")
         except Exception as e:
             self.db_summary.setText(f"Could not read database: {e}")
+        # Keep the dashboard panel in sync with the (possibly
+        # changed) DB. Cheap — same DB scan we just ran, plus one
+        # more SQL query for junk-row sampling.
+        if hasattr(self, 'corpus_dashboard'):
+            try:
+                self.corpus_dashboard.refresh()
+            except Exception:
+                pass
 
     def _selected_source_types(self) -> list:
         """Return the source_types corresponding to the checked boxes."""
@@ -2541,8 +2855,30 @@ class TrainingToolWindow(QMainWindow):
         """Show the catalog/registry browser so the user can pick or add
         a corpus to download. Each download runs through the adapter
         pipeline and lands as ``corpus`` rows in the unified DB.
+
+        Plumbs the user's current intent + genres + tones into the
+        dialog so its Smart Pick button has the context it needs to
+        recommend complementary entries.
         """
-        dlg = _CorpusLibraryDialog(self.db_path, self)
+        intent = ""
+        recipe = getattr(self, '_current_recipe', None)
+        if recipe is not None:
+            intent = (getattr(recipe, "intent", "") or "").lower()
+        if not intent:
+            try:
+                intent = self._infer_intent_from_db()
+            except Exception:
+                intent = "general"
+        ticked_genres = (self.selected_genres()
+                          if hasattr(self, 'selected_genres') else [])
+        ticked_tones = (self.selected_tones()
+                         if hasattr(self, 'selected_tones') else [])
+        dlg = _CorpusLibraryDialog(
+            self.db_path, self,
+            intent=intent,
+            genres=ticked_genres,
+            tones=ticked_tones,
+            llm_generate=self._build_quality_llm_hook())
         dlg.exec()
         # Either way, refresh stats — the user may have ingested more rows
         self._refresh_db_summary()
@@ -3295,6 +3631,34 @@ class TrainingToolWindow(QMainWindow):
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
+        # Pre-training quality preview row — same dialog the
+        # Start-Training gate uses, but here it runs standalone so
+        # the user can iterate on corpus / recipe choices without
+        # committing to a training run. The pre-training gate
+        # *also* still fires when they click Start Training; this
+        # button is the discoverable surface for "let me check
+        # this NOW".
+        check_row = QHBoxLayout()
+        self.check_quality_btn = QPushButton(
+            "🔍 Check Corpus Quality")
+        self.check_quality_btn.setStyleSheet(
+            "QPushButton { padding: 6px 14px; border-radius: 5px; "
+            "background-color: #fbbf24; color: #78350f; "
+            "font-weight: bold; }"
+            "QPushButton:hover { background-color: #f59e0b; }")
+        self.check_quality_btn.setToolTip(
+            "Preview what the trainer will see — row counts, "
+            "vocab diversity, sample passages, and a verdict on "
+            "whether the dataset is ready. Same dialog that fires "
+            "automatically when you click Start Training, but here "
+            "you can iterate on corpus / recipe choices without "
+            "starting a training run.")
+        self.check_quality_btn.clicked.connect(
+            self._open_corpus_quality_check)
+        check_row.addWidget(self.check_quality_btn)
+        check_row.addStretch()
+        layout.addLayout(check_row)
+
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         layout.addWidget(self.progress_bar)
@@ -3382,21 +3746,23 @@ class TrainingToolWindow(QMainWindow):
         """Return the set of catalog corpus ids that have rows in the DB.
 
         The downloader tags every ingested row with ``corpus_id=<id>``
-        in the ``notes`` column. Scanning that field tells us which
-        catalog entries the user has already pulled down.
+        somewhere in the ``notes`` column. Notes can also start with
+        ``corpus_title=…`` when the ingestion path knew the row's
+        title — substring-match catches both shapes.
         """
         ids = set()
+        import re as _re
         try:
             with db._conn() as c:
                 cur = c.execute(
                     "SELECT DISTINCT notes FROM rephrases "
-                    "WHERE source_type = 'corpus' AND notes LIKE 'corpus_id=%'")
+                    "WHERE source_type = 'corpus' "
+                    "AND notes LIKE '%corpus_id=%'")
                 for row in cur:
                     notes = row["notes"] or ""
-                    # First token is corpus_id=<id>
-                    token = notes.split(maxsplit=1)[0] if notes else ""
-                    if token.startswith("corpus_id="):
-                        ids.add(token.split("=", 1)[1])
+                    m = _re.search(r'corpus_id=(\S+)', notes)
+                    if m:
+                        ids.add(m.group(1))
         except Exception:
             pass
         return ids
@@ -4019,6 +4385,183 @@ class TrainingToolWindow(QMainWindow):
         self._modal_worker.failed.connect(self._on_modal_failed)
         self._modal_worker.start()
 
+    def _open_smart_pick(self) -> None:
+        """Open the smart-pick corpus downloader dialog.
+
+        Resolves the user's current intent + genres + tones and
+        passes them to ``_SmartDownloadDialog``, which runs the
+        recommender (deterministic + optional LLM agentic
+        refinement when an LLM is configured) and lets the user
+        review + confirm before any downloads start.
+        """
+        intent = ""
+        recipe = getattr(self, '_current_recipe', None)
+        if recipe is not None:
+            intent = (getattr(recipe, "intent", "") or "").lower()
+        if not intent:
+            try:
+                intent = self._infer_intent_from_db()
+            except Exception:
+                intent = "general"
+
+        ticked_genres = (self.selected_genres()
+                          if hasattr(self, 'selected_genres') else [])
+        ticked_tones = (self.selected_tones()
+                         if hasattr(self, 'selected_tones') else [])
+
+        if not ticked_genres and not ticked_tones:
+            QMessageBox.information(
+                self, "Pick genres or tones first",
+                "The smart-pick recommender uses the genres and "
+                "tones you've ticked on Step 1 to decide which "
+                "corpora to suggest. Tick at least one before "
+                "opening this dialog.")
+            return
+
+        dlg = _SmartDownloadDialog(
+            db_path=self.db_path,
+            intent=intent,
+            genres=ticked_genres,
+            tones=ticked_tones,
+            llm_generate=self._build_quality_llm_hook(),
+            parent=self)
+        dlg.exec()
+        # Refresh the DB summary line so any newly-ingested rows
+        # show up in the count immediately.
+        try:
+            self._refresh_db_summary()
+        except Exception:
+            pass
+
+    def _open_corpus_quality_check(self) -> None:
+        """Standalone corpus quality preview.
+
+        Same dialog as ``_gate_corpus_quality`` (which fires when
+        the user clicks Start Training), but here it runs without
+        committing to a training run. The dialog's Continue and
+        Cancel buttons both close it without action — only the
+        Clean button still triggers the cleaner.
+
+        Discoverable from both Step 1 (corpus actions row) and
+        Step 3 (above Start Training) so the user can run the
+        check at whichever stage feels natural.
+        """
+        # Reuse the dataset-prep pipeline. Verifies the user has
+        # data + valid sources just like Start Training would.
+        prep = self._prepare_training_dataset()
+        if prep is None:
+            return  # helper already showed the warning
+        dataset_path, _n_rows, _extras = prep
+
+        # Build LLM hook the same way the gate does. Reuse the
+        # gate's helper logic — there's no need to duplicate the
+        # provider-resolution block, but we don't want to start
+        # training on Continue. So call the gate's underlying
+        # dialog directly with the right `parent` and ignore the
+        # return code (other than the Clean shortcut).
+        # Easiest path: a thin wrapper that mirrors the LLM-hook
+        # discovery in `_gate_corpus_quality` but doesn't return
+        # a "should I train?" bool.
+        llm_generate = self._build_quality_llm_hook()
+
+        intent = ""
+        recipe = getattr(self, '_current_recipe', None)
+        if recipe is not None:
+            intent = (getattr(recipe, "intent", "") or "").lower()
+        if not intent:
+            try:
+                intent = self._infer_intent_from_db()
+            except Exception:
+                intent = "general"
+
+        ticked_genres = (self.selected_genres()
+                          if hasattr(self, 'selected_genres') else [])
+        ticked_tones = (self.selected_tones()
+                         if hasattr(self, 'selected_tones') else [])
+
+        dlg = _CorpusQualityDialog(
+            jsonl_path=dataset_path,
+            intent=intent,
+            selected_genres=ticked_genres,
+            selected_tones=ticked_tones,
+            llm_generate=llm_generate,
+            parent=self)
+        # Swap the Continue button text so the user knows clicking
+        # it doesn't kick off training in this standalone mode.
+        try:
+            dlg.continue_btn.setText("✓ Looks good")
+            dlg.continue_btn.setToolTip(
+                "Close the dialog. Quality check is informational "
+                "only — to actually train, click Start Training "
+                "or Train on Modal on Step 3.")
+        except Exception:
+            pass
+
+        result = dlg.exec()
+        # Clean shortcut still works the same way as the gate path.
+        if result == _CorpusQualityDialog.CLEAN_REQUESTED:
+            try:
+                self._open_clean_corpus_dialog()
+            except Exception as e:
+                QMessageBox.warning(
+                    self, "Cleaner unavailable",
+                    f"Could not open cleaner: {e}")
+
+    def _build_quality_llm_hook(self):
+        """Return a ``(prompt, system) -> str`` callable that uses
+        the configured CreativeOS LLM, or ``None`` when no LLM is
+        available. Used by both the standalone quality check and
+        the pre-training gate so they get identical AI-opinion
+        behaviour."""
+        try:
+            from src.config.creativeos_config import get_creativeos_config
+            cfg = get_creativeos_config()
+            if cfg.get("disable_all_ai") or not cfg.has_llm_configured():
+                return None
+            from src.ai.llm_client import (
+                LLMClient, LLMProvider, HuggingFaceConfig,
+            )
+            s = cfg.shared_llm_settings()
+            if (s.get("prefer_local_model")
+                    and s.get("enable_local_models")
+                    and s.get("local_model_id")):
+                is_mlx = "mlx" in s["local_model_id"].lower()
+                hf_config = HuggingFaceConfig(
+                    model_id=s["local_model_id"], use_local=True,
+                    device=s.get("local_model_device", "auto"),
+                    quantization=(
+                        s.get("local_model_quantization", "none")
+                        if s.get("local_model_quantization") != "none"
+                        else None),
+                )
+                provider = (LLMProvider.MLX_LOCAL if is_mlx
+                            else LLMProvider.HUGGINGFACE_LOCAL)
+                llm = LLMClient(provider=provider, hf_config=hf_config)
+            else:
+                provider_map = {
+                    "claude": LLMProvider.CLAUDE,
+                    "chatgpt": LLMProvider.CHATGPT,
+                    "openai": LLMProvider.CHATGPT,
+                    "gemini": LLMProvider.GEMINI,
+                }
+                provider_name = s.get("default_llm", "claude")
+                api_key = (
+                    s.get("claude_api_key")
+                    if provider_name == "claude"
+                    else s.get("chatgpt_api_key")
+                    if provider_name in ("chatgpt", "openai")
+                    else s.get("gemini_api_key"))
+                if not api_key:
+                    return None
+                llm = LLMClient(
+                    provider=provider_map.get(
+                        provider_name, LLMProvider.CLAUDE),
+                    api_key=api_key)
+            return lambda prompt, system: llm.generate_text(
+                prompt, system, max_tokens=600, temperature=0.3)
+        except Exception:
+            return None
+
     def _gate_corpus_quality(self, jsonl_path: Path) -> bool:
         """Show the corpus-quality dialog. Returns True iff the user
         clicked Continue.
@@ -4033,64 +4576,8 @@ class TrainingToolWindow(QMainWindow):
             after cleaning.
         """
         # Build an LLM hook for the dialog if one's configured.
-        # Re-uses the same plumbing the rephrase synthesizer +
-        # recipe builder use, so any provider the OS has set up
-        # (Claude, GPT, Gemini, local HF/MLX) will work.
-        llm_generate = None
-        try:
-            from src.config.creativeos_config import get_creativeos_config
-            cfg = get_creativeos_config()
-            if (not cfg.get("disable_all_ai")
-                    and cfg.has_llm_configured()):
-                from src.ai.llm_client import (
-                    LLMClient, LLMProvider, HuggingFaceConfig,
-                )
-                s = cfg.shared_llm_settings()
-                if (s.get("prefer_local_model")
-                        and s.get("enable_local_models")
-                        and s.get("local_model_id")):
-                    is_mlx = "mlx" in s["local_model_id"].lower()
-                    hf_config = HuggingFaceConfig(
-                        model_id=s["local_model_id"], use_local=True,
-                        device=s.get("local_model_device", "auto"),
-                        quantization=(
-                            s.get("local_model_quantization", "none")
-                            if s.get("local_model_quantization") != "none"
-                            else None),
-                    )
-                    provider = (LLMProvider.MLX_LOCAL if is_mlx
-                                else LLMProvider.HUGGINGFACE_LOCAL)
-                    llm = LLMClient(provider=provider,
-                                    hf_config=hf_config)
-                else:
-                    provider_map = {
-                        "claude": LLMProvider.CLAUDE,
-                        "chatgpt": LLMProvider.CHATGPT,
-                        "openai": LLMProvider.CHATGPT,
-                        "gemini": LLMProvider.GEMINI,
-                    }
-                    provider_name = s.get("default_llm", "claude")
-                    api_key = (
-                        s.get("claude_api_key")
-                        if provider_name == "claude"
-                        else s.get("chatgpt_api_key")
-                        if provider_name in ("chatgpt", "openai")
-                        else s.get("gemini_api_key"))
-                    if api_key:
-                        llm = LLMClient(
-                            provider=provider_map.get(
-                                provider_name, LLMProvider.CLAUDE),
-                            api_key=api_key)
-                    else:
-                        llm = None
-                if llm is not None:
-                    def _llm_gen(prompt: str, system: str) -> str:
-                        return llm.generate_text(
-                            prompt, system, max_tokens=600,
-                            temperature=0.3)
-                    llm_generate = _llm_gen
-        except Exception:
-            llm_generate = None
+        # Same plumbing as the standalone quality-check button.
+        llm_generate = self._build_quality_llm_hook()
 
         intent = ""
         recipe = getattr(self, '_current_recipe', None)
@@ -4710,6 +5197,30 @@ class TrainingToolWindow(QMainWindow):
         self.test_output.setPlaceholderText("Model output will appear here.")
         layout.addWidget(self.test_output, 1)
 
+        # Rating panel — same widget as the Hub uses. Ratings
+        # entered here flow into the same per-model JSON store, so
+        # opening the history dialog from either surface shows
+        # everything the user has rated. Disabled until a test
+        # completes.
+        from src.ui.test_history_widgets import TestRatingPanel
+        self._test_rating_panel = TestRatingPanel()
+        self._test_rating_panel.saved.connect(
+            self._on_studio_test_saved)
+        layout.addWidget(self._test_rating_panel)
+
+        # Test history shortcut row.
+        history_row = QHBoxLayout()
+        history_row.addStretch()
+        self.test_history_btn = QPushButton("📜 Test history")
+        self.test_history_btn.setToolTip(
+            "View every saved test for the selected model with "
+            "category-level mean ratings. Re-rate, re-categorize, "
+            "or delete records inline.")
+        self.test_history_btn.clicked.connect(
+            self._open_test_history)
+        history_row.addWidget(self.test_history_btn)
+        layout.addLayout(history_row)
+
         # Action row: continue training the selected model OR mark as
         # done. The two buttons cover the two ways the user wraps up:
         # "the model needs more work — train more" or "I'm satisfied —
@@ -5223,10 +5734,72 @@ class TrainingToolWindow(QMainWindow):
                     ),
                 )
             self.test_output.setPlainText(response.strip())
+
+            # Prime the rating panel so the user can save this
+            # test result with a star rating + category. Same panel
+            # the Model Hub uses; ratings persist to the shared
+            # JSON store, so the history dialog from either surface
+            # shows the same records.
+            try:
+                model_combo = self.test_model_combo
+                idx = model_combo.currentIndex()
+                model_name_label = model_combo.itemText(idx).strip()
+                # Strip the leading "  " padding used for grouped
+                # rows and the trailing "(base: …)" suffix the picker
+                # displays.
+                clean_name = model_name_label.lstrip("✓ ").strip()
+                # Use intent for default category.
+                default_cat = (intent or "other")
+                self._test_rating_panel.set_pending_test(
+                    model_name=clean_name.split(" (base:")[0].strip(),
+                    model_path=path,
+                    prompt=passage,
+                    response=response.strip(),
+                    intent_used=intent or "",
+                    generation_params={"temperature": 0.7,
+                                        "top_p": 0.9},
+                    default_category=default_cat,
+                )
+            except Exception:
+                pass
+
         except Exception as e:
             import traceback
             traceback.print_exc()
             self.test_output.setPlainText(f"Test failed: {e}")
+
+    def _on_studio_test_saved(self, _record):
+        """Acknowledge a saved test result on Step 4."""
+        # Surface in the train log so it's visible alongside
+        # training output / cleaning / Modal status.
+        try:
+            self.train_log.appendPlainText(
+                "[test] Saved test result to per-model history.")
+        except Exception:
+            pass
+
+    def _open_test_history(self):
+        """Open the per-model history dialog for whatever's
+        selected in the Step-4 model picker."""
+        path = self.test_model_combo.currentData()
+        if not path:
+            QMessageBox.information(
+                self, "Pick a trained model",
+                "Select a model from the list first.")
+            return
+        # Find its registry name.
+        from src.config.creativeos_config import load_trained_models
+        entry = next((m for m in load_trained_models()
+                      if m.get("path") == path), None)
+        if entry is None:
+            QMessageBox.warning(
+                self, "Not in registry",
+                "This model isn't in the trained-models registry. "
+                "Click Done first to register it, then retry.")
+            return
+        from src.ui.test_history_widgets import TestHistoryDialog
+        dlg = TestHistoryDialog(entry["name"], parent=self)
+        dlg.exec()
 
     # ── Navigation ──
 
@@ -5291,18 +5864,259 @@ class _CorpusDownloadWorker(QThread):
             self.failed.emit(f"Download/parse failed: {e}")
 
 
+class _SmartDownloadDialog(QDialog):
+    """Smart-pick corpus downloader.
+
+    Runs :func:`corpus_recommender.recommend_downloads` against
+    the user's current Step-1 selection (genres, tones, intent),
+    excludes anything already in the DB, and shows the top N
+    suggestions with per-entry rationale. The user reviews,
+    optionally deselects entries, and clicks Download — the
+    dialog drives a sequential batch through
+    :class:`_CorpusDownloadWorker` so downloads don't all race.
+
+    Why not auto-download everything? Because corpora vary 100×
+    in size, license, and quality. The recommender narrows the
+    catalog to a handful of high-value picks; the user gets the
+    final say on which ones land in their DB.
+    """
+
+    def __init__(self, *,
+                 db_path: Path,
+                 intent: str,
+                 genres: List[str],
+                 tones: List[str],
+                 llm_generate=None,
+                 parent=None):
+        super().__init__(parent)
+        self.db_path = db_path
+        self._intent = intent
+        self._genres = genres
+        self._tones = tones
+        self._llm_generate = llm_generate
+        self._suggestions: list = []
+        self._row_widgets: list = []  # (checkbox, suggestion)
+        self._download_queue: list = []
+        self._current_worker: Optional[_CorpusDownloadWorker] = None
+        self._completed: list = []
+        self._failed: list = []
+
+        self.setWindowTitle("Smart-pick corpora")
+        self.setMinimumSize(720, 540)
+        self._build_ui()
+        self._populate()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+
+        title = QLabel("<b>Smart-pick corpora</b>")
+        f = title.font(); f.setPointSize(13); title.setFont(f)
+        layout.addWidget(title)
+
+        intro = QLabel(
+            f"Recommendations for the current selection "
+            f"(intent: <b>{self._intent or 'general'}</b>, "
+            f"genres: {self._genres or '—'}, "
+            f"tones: {self._tones or '—'}). Already-ingested "
+            f"corpora are skipped. Deselect any you don't want, "
+            f"then click Download.")
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color: #6b7280; padding-bottom: 6px;")
+        layout.addWidget(intro)
+
+        # Suggestions list — populated in _populate.
+        from PyQt6.QtWidgets import QScrollArea, QFrame
+        self._list_widget = QWidget()
+        self._list_layout = QVBoxLayout(self._list_widget)
+        self._list_layout.setSpacing(6)
+        self._list_layout.setContentsMargins(2, 2, 2, 2)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(self._list_widget)
+        layout.addWidget(scroll, 1)
+
+        # Footer status + buttons.
+        self._status_label = QLabel("")
+        self._status_label.setWordWrap(True)
+        self._status_label.setStyleSheet(
+            "color: #6b7280; padding-top: 4px;")
+        layout.addWidget(self._status_label)
+
+        actions = QHBoxLayout()
+        self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.clicked.connect(self.reject)
+        actions.addWidget(self._cancel_btn)
+        self._refresh_btn = QPushButton("⟳ Re-recommend")
+        self._refresh_btn.clicked.connect(self._populate)
+        self._refresh_btn.setToolTip(
+            "Re-run the recommender. Useful after you've "
+            "ingested data outside this dialog and want fresh "
+            "picks that account for it.")
+        actions.addWidget(self._refresh_btn)
+        actions.addStretch()
+        self._download_btn = QPushButton("📥 Download selected")
+        self._download_btn.setStyleSheet(
+            "QPushButton { background-color: #6366f1; color: white; "
+            "padding: 6px 14px; border-radius: 5px; "
+            "font-weight: bold; }"
+            "QPushButton:hover { background-color: #4f46e5; }")
+        self._download_btn.clicked.connect(self._on_download_clicked)
+        actions.addWidget(self._download_btn)
+        layout.addLayout(actions)
+
+    def _populate(self):
+        from src.data.corpus_recommender import recommend_downloads
+        # Clear existing rows.
+        for w, _ in self._row_widgets:
+            w.parentWidget().deleteLater()
+        self._row_widgets = []
+
+        try:
+            self._suggestions = recommend_downloads(
+                intent=self._intent,
+                genres=self._genres,
+                tones=self._tones,
+                db_path=self.db_path,
+                max_suggestions=5,
+                llm_generate=self._llm_generate)
+        except Exception as e:
+            self._status_label.setText(
+                f"<span style='color:#b91c1c;'>"
+                f"Couldn't run recommender: {e}</span>")
+            return
+
+        if not self._suggestions:
+            self._status_label.setText(
+                "<i>No recommendations — either you've already "
+                "ingested everything relevant to your selection, "
+                "or no genres/tones are ticked. Pick some on "
+                "Step 1 and re-open this dialog.</i>")
+            self._download_btn.setEnabled(False)
+            return
+
+        for s in self._suggestions:
+            row_widget = QWidget()
+            row = QHBoxLayout(row_widget)
+            row.setContentsMargins(8, 6, 8, 6)
+            cb = QCheckBox()
+            cb.setChecked(True)
+            row.addWidget(cb)
+            text = (
+                f"<div><b>{s.name}</b> "
+                f"<span style='color:#6b7280;'>"
+                f"({s.size_kb} KB · {s.license})</span></div>"
+                f"<div style='color:#374151;font-size:11px;"
+                f"margin-top:2px;'>{s.reason}</div>")
+            label = QLabel(text)
+            label.setWordWrap(True)
+            row.addWidget(label, 1)
+            row_widget.setStyleSheet(
+                "QWidget { background: #f9fafb; border-radius: 4px; "
+                "border-left: 3px solid #818cf8; }")
+            self._list_layout.addWidget(row_widget)
+            self._row_widgets.append((cb, s))
+
+        self._status_label.setText(
+            f"{len(self._suggestions)} suggestions "
+            f"(deselect any you don't want).")
+        self._download_btn.setEnabled(True)
+
+    def _on_download_clicked(self):
+        # Build the download queue from selected rows.
+        self._download_queue = [
+            s for cb, s in self._row_widgets if cb.isChecked()]
+        if not self._download_queue:
+            self._status_label.setText(
+                "<span style='color:#b45309;'>"
+                "Pick at least one entry to download.</span>")
+            return
+        self._completed = []
+        self._failed = []
+        self._cancel_btn.setEnabled(False)
+        self._refresh_btn.setEnabled(False)
+        self._download_btn.setEnabled(False)
+        self._status_label.setText(
+            f"Starting download of {len(self._download_queue)} "
+            f"corpora…")
+        self._dispatch_next()
+
+    def _dispatch_next(self):
+        if not self._download_queue:
+            self._on_all_downloads_done()
+            return
+        sugg = self._download_queue.pop(0)
+        self._status_label.setText(
+            f"Downloading <b>{sugg.name}</b> "
+            f"({len(self._completed) + 1} of "
+            f"{len(self._completed) + 1 + len(self._download_queue)})…")
+        worker = _CorpusDownloadWorker(
+            sugg.catalog_entry, self.db_path)
+        worker.finished_ok.connect(
+            lambda n_passages, s=sugg: self._on_one_done(s, n_passages))
+        worker.failed.connect(
+            lambda msg, s=sugg: self._on_one_failed(s, msg))
+        self._current_worker = worker
+        worker.start()
+
+    def _on_one_done(self, sugg, n_passages: int):
+        self._completed.append((sugg, n_passages))
+        self._dispatch_next()
+
+    def _on_one_failed(self, sugg, msg: str):
+        self._failed.append((sugg, msg))
+        self._dispatch_next()
+
+    def _on_all_downloads_done(self):
+        self._cancel_btn.setEnabled(True)
+        self._refresh_btn.setEnabled(True)
+        self._download_btn.setEnabled(True)
+        msg_parts = []
+        if self._completed:
+            total_rows = sum(n for _, n in self._completed)
+            msg_parts.append(
+                f"✅ Downloaded {len(self._completed)} corpora "
+                f"({total_rows} rows logged).")
+        if self._failed:
+            msg_parts.append(
+                f"⚠️ {len(self._failed)} failed.")
+            for s, m in self._failed:
+                msg_parts.append(f"  • {s.name}: {m[:100]}")
+        self._status_label.setText("<br>".join(msg_parts))
+        # Auto-close on full success after a brief pause; leave
+        # open on partial failure so the user can read errors.
+        if self._completed and not self._failed:
+            QTimer.singleShot(1200, self.accept)
+
+
 class _CorpusLibraryDialog(QDialog):
     """Browse the catalog + custom registry, tick what to download,
     bulk-ingest with one click. Already-downloaded corpora carry a
     ✓ marker so the user can see at a glance what's still missing.
     """
 
-    def __init__(self, db_path: Path, parent=None):
+    def __init__(self, db_path: Path, parent=None,
+                 *,
+                 intent: str = "",
+                 genres: Optional[List[str]] = None,
+                 tones: Optional[List[str]] = None,
+                 llm_generate=None):
+        """Args:
+            intent / genres / tones: user's current Step-1 selection.
+                Powers the Smart Pick button — the recommender uses
+                them to score candidates. Defaults are safe:
+                ``intent=""`` plus empty lists make Smart Pick show a
+                "tick a genre first" message rather than crashing.
+            llm_generate: optional ``(prompt, system) -> str``. When
+                provided, Smart Pick uses agentic LLM refinement on
+                top of the deterministic ranker.
+        """
         super().__init__(parent)
         self.db_path = db_path
+        self._smart_intent = intent
+        self._smart_genres = list(genres or [])
+        self._smart_tones = list(tones or [])
+        self._smart_llm = llm_generate
         self.setWindowTitle("Corpus Library")
-        # Sized for a 1366×768 laptop with chrome; the list scrolls
-        # naturally when the catalog grows.
         self.resize(820, 600)
         self.setMinimumSize(640, 460)
         self._init_ui()
@@ -5349,6 +6163,27 @@ class _CorpusLibraryDialog(QDialog):
             b = QPushButton(label)
             b.clicked.connect(slot)
             quick.addWidget(b)
+        # Smart Pick — runs the recommender against the user's
+        # current intent + genres + tones and ticks the suggested
+        # rows in this dialog. Distinct visual treatment so it
+        # stands out as the "do the smart thing" path next to the
+        # generic Check-all/Uncheck-all defaults.
+        self.smart_pick_btn = QPushButton("🎯 Smart Pick")
+        self.smart_pick_btn.setStyleSheet(
+            "QPushButton { padding: 4px 10px; "
+            "background-color: #ddd6fe; color: #5b21b6; "
+            "border-radius: 3px; font-weight: bold; }"
+            "QPushButton:hover { background-color: #c4b5fd; }")
+        self.smart_pick_btn.setToolTip(
+            "Recommend a small set of catalog entries based on "
+            "your current intent / genres / tones. Already-"
+            "ingested rows are skipped. With an LLM configured, "
+            "uses agentic refinement to choose complementary "
+            "picks. Ticks them in this list — you still confirm "
+            "by hitting Download.")
+        self.smart_pick_btn.clicked.connect(
+            self._on_smart_pick_clicked)
+        quick.addWidget(self.smart_pick_btn)
         quick.addStretch()
         layout.addLayout(quick)
 
@@ -5581,6 +6416,91 @@ class _CorpusLibraryDialog(QDialog):
                 item,
                 is_license_safe(entry.license)
                 and entry.id not in ingested)
+
+    def _on_smart_pick_clicked(self) -> None:
+        """Run the recommender and tick the suggested rows in this list.
+
+        Works inline rather than opening another dialog — the user
+        sees their existing list update with checkmarks. If the
+        intent / genres / tones haven't been set on Step 1 yet
+        (the dialog was opened from a context that didn't pass them
+        in), surface a clear instruction to go back and pick first.
+        """
+        if not self._smart_genres and not self._smart_tones:
+            QMessageBox.information(
+                self, "Pick genres or tones first",
+                "Smart Pick uses the genres and tones you've ticked "
+                "on Step 1 to choose complementary catalog entries. "
+                "Tick at least one and re-open this dialog.")
+            return
+        from src.data.corpus_recommender import recommend_downloads
+        try:
+            suggs = recommend_downloads(
+                intent=self._smart_intent or "general",
+                genres=self._smart_genres,
+                tones=self._smart_tones,
+                db_path=self.db_path,
+                max_suggestions=5,
+                llm_generate=self._smart_llm)
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Smart Pick failed",
+                f"Couldn't run recommender:\n{e}")
+            return
+
+        if not suggs:
+            QMessageBox.information(
+                self, "Nothing to pick",
+                "The recommender didn't find any new corpora to "
+                "suggest — either everything relevant is already "
+                "ingested, or the genre/tone selection has no "
+                "catalog entries yet.")
+            return
+
+        target_ids = {s.corpus_id for s in suggs}
+
+        # Tick suggested rows; clear visible non-suggested rows so
+        # the user sees the picks cleanly rather than mixed with
+        # whatever they had ticked before. Rows hidden by the
+        # current filter are left alone.
+        ticked = 0
+        unticked = 0
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            cid = item.data(Qt.ItemDataRole.UserRole)
+            if cid in target_ids:
+                self._set_check(item, True)
+                ticked += 1
+            else:
+                if item.checkState() == Qt.CheckState.Checked:
+                    self._set_check(item, False)
+                    unticked += 1
+
+        # Build a compact summary so the user can see what got
+        # picked and why before they click Download.
+        lines = [f"<b>{s.name}</b> "
+                 f"<span style='color:#6b7280'>({s.size_kb} KB)</span><br>"
+                 f"&nbsp;&nbsp;<i>{s.reason}</i>"
+                 for s in suggs]
+        body = (f"Smart Pick selected {ticked} entries "
+                f"({unticked} previously-ticked entries cleared):"
+                f"<br><br>" + "<br><br>".join(lines)
+                + "<br><br><i>Hit Download checked when you're "
+                "ready.</i>")
+        QMessageBox.information(self, "Smart Pick", body)
+
+        # If the filter is hiding suggested rows, surface that —
+        # the user might think nothing got picked because the
+        # checkmarks are off-screen.
+        hidden = sum(
+            1 for i in range(self.list_widget.count())
+            if self.list_widget.item(i).isHidden()
+            and self.list_widget.item(i).data(
+                Qt.ItemDataRole.UserRole) in target_ids)
+        if hidden:
+            self.status_label.setText(
+                f"⚠ {hidden} of the picked entries are hidden by "
+                f"the current filter — clear it to see them.")
 
     def _update_status(self, *_args) -> None:
         entries = self._checked_entries()

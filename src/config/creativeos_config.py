@@ -291,6 +291,15 @@ def delete_trained_model(name: str, *, remove_files: bool = True) -> bool:
         # Agent suite not loaded in this process — fine.
         pass
 
+    # 5b. Drop the model's test history. Orphaned test records
+    # for a deleted model serve no purpose and would clutter
+    # downstream stats. Best-effort — failures don't block deletion.
+    try:
+        from src.data.model_test_store import delete_all_for_model
+        delete_all_for_model(name)
+    except Exception:
+        pass
+
     # 5. Evict from the process-wide LoadedModelCache so the Model
     # Hub / Training Studio test runner / Writing Tool agent suite
     # can't return a tokenizer+model pair that no longer corresponds

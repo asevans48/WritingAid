@@ -279,6 +279,147 @@ def compute_stats(jsonl_path: Path, *,
     return stats
 
 
+# ── DB-level dashboard stats ──────────────────────────────
+
+
+@dataclass
+class DBStats:
+    """Lightweight at-a-glance stats for the Step-1 dashboard.
+
+    These come from a direct DB query rather than from the JSONL —
+    so the dashboard updates instantly after upload / download /
+    clean, without having to re-export. They're a strict subset of
+    what :class:`CorpusStats` measures: counts, length stats,
+    source breakdown, junk-row estimate. The full quality scan
+    (vocab diversity, opener uniqueness, intent-aware verdict)
+    still runs through the gate dialog when the user is about to
+    train.
+    """
+    total_rows: int = 0
+    by_source: Dict[str, int] = field(default_factory=dict)
+    by_rating: Dict[str, int] = field(default_factory=dict)
+    n_voice_tagged: int = 0
+    n_genre_tagged: int = 0
+    median_output_chars: int = 0
+    n_too_short: int = 0       # output < 80 chars
+    n_too_long: int = 0        # output > 2500 chars
+    n_likely_junk: int = 0     # rows whose output matches a cleaner signature
+    db_size_kb: int = 0
+    most_recent_ingest: str = ""  # ISO timestamp or ""
+
+    @property
+    def junk_pct(self) -> float:
+        return ((self.n_likely_junk / self.total_rows * 100.0)
+                if self.total_rows else 0.0)
+
+
+def compute_db_stats(db_path: Path,
+                     *,
+                     junk_sample_cap: int = 5000) -> DBStats:
+    """Direct DB scan for the Step-1 dashboard.
+
+    Pulls counts + a sample of output lengths so the panel can show
+    median + too-short / too-long counts without scanning every row
+    on a 26K-row DB. ``junk_sample_cap`` bounds the cleaner-signature
+    pass — for huge corpora we estimate junk-row rate from a random
+    sample and scale up rather than walking the whole thing.
+
+    Returns an empty :class:`DBStats` if the DB doesn't exist yet
+    or anything fails — the dashboard renders an "empty corpus"
+    state in that case rather than showing an error.
+    """
+    if not Path(db_path).exists():
+        return DBStats()
+    try:
+        from src.data.rephrase_database import RephraseDatabase
+        from src.data.text_cleaner import clean_passage
+    except Exception:
+        return DBStats()
+
+    stats = DBStats()
+    try:
+        stats.db_size_kb = int(Path(db_path).stat().st_size / 1024)
+    except Exception:
+        pass
+
+    try:
+        db = RephraseDatabase(db_path)
+        with db._conn() as c:
+            cur = c.execute("SELECT COUNT(*) as n FROM rephrases")
+            stats.total_rows = cur.fetchone()["n"]
+            if stats.total_rows == 0:
+                return stats
+
+            cur = c.execute(
+                "SELECT source_type, COUNT(*) as n FROM rephrases "
+                "GROUP BY source_type")
+            for row in cur:
+                stats.by_source[row["source_type"]] = row["n"]
+
+            cur = c.execute(
+                "SELECT rating, COUNT(*) as n FROM rephrases "
+                "GROUP BY rating")
+            for row in cur:
+                stats.by_rating[row["rating"] or ""] = row["n"]
+
+            cur = c.execute(
+                "SELECT COUNT(*) as n FROM rephrases "
+                "WHERE voice IS NOT NULL AND voice != ''")
+            stats.n_voice_tagged = cur.fetchone()["n"]
+
+            cur = c.execute(
+                "SELECT COUNT(*) as n FROM rephrases "
+                "WHERE genre IS NOT NULL AND genre != ''")
+            stats.n_genre_tagged = cur.fetchone()["n"]
+
+            cur = c.execute(
+                "SELECT COUNT(*) as n FROM rephrases "
+                "WHERE LENGTH(output_text) < 80")
+            stats.n_too_short = cur.fetchone()["n"]
+
+            cur = c.execute(
+                "SELECT COUNT(*) as n FROM rephrases "
+                "WHERE LENGTH(output_text) > 2500")
+            stats.n_too_long = cur.fetchone()["n"]
+
+            # Median output length — pull every length, sort, pick
+            # midpoint. Fast in SQLite up to a few hundred K rows.
+            cur = c.execute(
+                "SELECT LENGTH(output_text) as L FROM rephrases "
+                "WHERE output_text IS NOT NULL")
+            lengths = sorted(row["L"] for row in cur)
+            if lengths:
+                stats.median_output_chars = lengths[len(lengths) // 2]
+
+            cur = c.execute(
+                "SELECT MAX(created_at) as ts FROM rephrases")
+            row = cur.fetchone()
+            if row and row["ts"]:
+                stats.most_recent_ingest = row["ts"]
+
+            # Junk-row estimate. Walking the cleaner over every row
+            # is O(n) Python work — for big corpora we sample.
+            sample_size = min(junk_sample_cap, stats.total_rows)
+            if sample_size <= 0:
+                return stats
+            cur = c.execute(
+                "SELECT output_text FROM rephrases "
+                "ORDER BY RANDOM() LIMIT ?", (sample_size,))
+            junk_in_sample = 0
+            for row in cur:
+                _cleaned, drop_reason = clean_passage(
+                    row["output_text"] or "")
+                if drop_reason:
+                    junk_in_sample += 1
+            # Scale junk rate up to the full corpus.
+            if sample_size:
+                stats.n_likely_junk = int(
+                    junk_in_sample * stats.total_rows / sample_size)
+    except Exception:
+        return stats
+    return stats
+
+
 def _row_text_lengths(rec: Dict[str, Any]) -> Tuple[int, int]:
     """Return ``(user_chars, output_chars)`` for one record."""
     if "messages" in rec and isinstance(rec["messages"], list):
