@@ -37,8 +37,15 @@ protobuf>=4.25.0,<6.0  # Capped for mflux compatibility
 # NOTE: The default "pip install torch" gets CPU-only version on Windows/Linux!
 torch>=2.6.0
 
-# Model Optimization (optional - for quantization)
+# Model Optimization (for quantization + multi-device training)
 accelerate>=1.5.0
+
+# Model Training Studio - LoRA fine-tuning
+# PEFT (Parameter-Efficient Fine-Tuning) provides the LoRA adapters
+# the Training Studio's worker uses to fine-tune base models on
+# consumer hardware. Without this, Step 3's "Start Training" fails at
+# import time with "Missing dependency: peft".
+peft>=0.13.0
 
 # Document Processing
 python-docx>=1.1.0
@@ -69,7 +76,13 @@ requests>=2.32.0
 mlx>=0.31.0; sys_platform == "darwin"
 mlx-lm>=0.31.0; sys_platform == "darwin"
 mlx-vlm>=0.4.3; sys_platform == "darwin"  # Required for Gemma 4 multimodal support
-mlx-audio>=0.4.0; sys_platform == "darwin"  # Chatterbox Turbo TTS (voice cloning, 350M)
+
+# mlx-audio (Chatterbox Turbo TTS, voice cloning) is OPTIONAL — install
+# separately because newer versions pin transformers/protobuf ranges
+# that conflict with the rest of the stack:
+#   pip install mlx-audio
+# Used only by the TTS Export dialog when "Chatterbox" is selected. The
+# code imports it lazily, so the app runs fine without it.
 
 # Image Generation (Optional)
 # Apple Silicon:  pip install mflux

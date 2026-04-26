@@ -20,6 +20,13 @@ class CredentialManager:
     CLAUDE_API_KEY = "claude_api_key"
     OPENAI_API_KEY = "openai_api_key"
     GEMINI_API_KEY = "gemini_api_key"
+    # Modal cloud-training tokens. The SDK reads them from
+    # MODAL_TOKEN_ID + MODAL_TOKEN_SECRET env vars (or ~/.modal.toml);
+    # we mirror the env-var names as keystore keys so the cloud
+    # module can look them up by the same name it'd inject into the
+    # environment on submit.
+    MODAL_TOKEN_ID = "modal_token_id"
+    MODAL_TOKEN_SECRET = "modal_token_secret"
 
     def __init__(self, service_name: str = SERVICE_NAME):
         """Initialize credential manager.

@@ -222,7 +222,8 @@ class WorldbuildingAgent:
         category: str,
         context: str,
         question: str,
-        existing_elements: Optional[List[str]] = None
+        existing_elements: Optional[List[str]] = None,
+        llm_override: Optional['LLMClient'] = None,
     ) -> AgentResponse:
         """Get recommendations for worldbuilding category.
 
@@ -260,9 +261,13 @@ Provide 3-5 concise, creative recommendations. Focus on the most impactful sugge
 Format as a numbered list.
 """
 
-        # Determine complexity and route
-        complexity = self._estimate_complexity(question, len(context))
-        llm = self._get_llm_for_task(complexity)
+        # If AgentSuite passed a per-task LLM, use it directly; otherwise
+        # fall back to the simple/complex routing.
+        if llm_override is not None:
+            llm = llm_override
+        else:
+            complexity = self._estimate_complexity(question, len(context))
+            llm = self._get_llm_for_task(complexity)
 
         # Generate response
         response = llm.generate_text(
@@ -298,13 +303,17 @@ Format as a numbered list.
     def help_create_character(
         self,
         user_description: str,
-        world_context: str
+        world_context: str,
+        llm_override: Optional['LLMClient'] = None,
     ) -> Dict[str, Any]:
         """Help create character from description.
 
         Args:
             user_description: User's description of character
             world_context: Relevant world context
+            llm_override: If provided, bypass the simple/complex routing
+                and use this LLM directly. Used by AgentSuite to route
+                the call to a task-specific trained model.
 
         Returns:
             Structured character data
@@ -331,8 +340,12 @@ Based on this description, suggest character details in this format:
 Keep suggestions brief and leave room for the writer to develop.
 """
 
-        complexity = self._estimate_complexity(user_description, len(world_context))
-        llm = self._get_llm_for_task(complexity)
+        if llm_override is not None:
+            llm = llm_override
+        else:
+            complexity = self._estimate_complexity(
+                user_description, len(world_context))
+            llm = self._get_llm_for_task(complexity)
 
         response = llm.generate_text(
             prompt,
@@ -340,6 +353,12 @@ Keep suggestions brief and leave room for the writer to develop.
             max_tokens=400,
             temperature=0.7
         )
+
+        try:
+            from src.data.learning_capture import capture_character
+            capture_character(prompt=prompt, completion=response)
+        except Exception:
+            pass
 
         # Parse response into structured data
         character_data = {
@@ -366,9 +385,13 @@ Keep suggestions brief and leave room for the writer to develop.
     def help_create_faction(
         self,
         user_description: str,
-        world_context: str
+        world_context: str,
+        llm_override: Optional['LLMClient'] = None,
     ) -> Dict[str, Any]:
-        """Help create faction from description."""
+        """Help create faction from description.
+
+        ``llm_override`` lets AgentSuite force a per-task trained model.
+        """
         encyclopedia = self._get_encyclopedia_context(f"faction government {user_description}")
 
         prompt = f"""
@@ -391,8 +414,12 @@ Suggest faction details:
 Brief suggestions only.
 """
 
-        complexity = self._estimate_complexity(user_description, len(world_context))
-        llm = self._get_llm_for_task(complexity)
+        if llm_override is not None:
+            llm = llm_override
+        else:
+            complexity = self._estimate_complexity(
+                user_description, len(world_context))
+            llm = self._get_llm_for_task(complexity)
 
         response = llm.generate_text(
             prompt,
@@ -400,6 +427,13 @@ Brief suggestions only.
             max_tokens=350,
             temperature=0.7
         )
+
+        try:
+            from src.data.learning_capture import capture_worldbuilding
+            capture_worldbuilding(prompt=prompt, completion=response,
+                                  element_type="faction")
+        except Exception:
+            pass
 
         return {
             "name": "",
@@ -414,9 +448,13 @@ Brief suggestions only.
         self,
         user_description: str,
         world_context: str,
-        available_planets: List[str]
+        available_planets: List[str],
+        llm_override: Optional['LLMClient'] = None,
     ) -> Dict[str, Any]:
-        """Help create place/location from description."""
+        """Help create place/location from description.
+
+        ``llm_override`` lets AgentSuite force a per-task trained model.
+        """
         planets_text = f"Available planets: {', '.join(available_planets)}" if available_planets else ""
         encyclopedia = self._get_encyclopedia_context(f"place geography {user_description}")
 
@@ -443,8 +481,12 @@ Suggest place details:
 Brief, evocative suggestions.
 """
 
-        complexity = self._estimate_complexity(user_description, len(world_context))
-        llm = self._get_llm_for_task(complexity)
+        if llm_override is not None:
+            llm = llm_override
+        else:
+            complexity = self._estimate_complexity(
+                user_description, len(world_context))
+            llm = self._get_llm_for_task(complexity)
 
         response = llm.generate_text(
             prompt,
@@ -452,6 +494,13 @@ Brief, evocative suggestions.
             max_tokens=400,
             temperature=0.75
         )
+
+        try:
+            from src.data.learning_capture import capture_worldbuilding
+            capture_worldbuilding(prompt=prompt, completion=response,
+                                  element_type="place")
+        except Exception:
+            pass
 
         return {
             "name": "",

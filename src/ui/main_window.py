@@ -874,6 +874,27 @@ When asked to continue:
                 self.error.emit("AI features are disabled. Enable them in Settings > AI Settings.")
                 return
 
+            # Per-task model routing. Writer-mode chat (where the model is
+            # producing prose) uses the 'rephrase' task model; everything
+            # else uses 'general'. If the chosen model has been deleted or
+            # the user never picked one, the resolver falls back through
+            # general → global automatically.
+            try:
+                from src.config.creativeos_config import get_creativeos_config
+                _task = "rephrase" if self.mode in ("writer", "chapter_focus") else "general"
+                _ts = get_creativeos_config().task_settings(_task)
+                if _ts.get("__trained_model_name"):
+                    settings = dict(settings)
+                    for k in ("local_model_id", "enable_local_models",
+                              "prefer_local_model"):
+                        settings[k] = _ts[k]
+                    print(f"[chat] Using task model "
+                          f"'{_ts['__trained_model_name']}' "
+                          f"(source={_ts['__task_model_source']}) for "
+                          f"task={_task}")
+            except Exception as e:
+                print(f"[chat] task model lookup failed: {e}")
+
             # Check if local models are preferred and configured
             prefer_local = settings.get("prefer_local_model", False)
             enable_local = settings.get("enable_local_models", False)

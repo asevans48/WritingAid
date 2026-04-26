@@ -87,20 +87,33 @@ class AIConfig:
         self.settings = self._load_settings()
 
     def _load_settings(self) -> Dict[str, Any]:
-        """Load settings from disk or return defaults."""
-        if not self.config_file.exists():
-            return self.DEFAULT_SETTINGS.copy()
+        """Load Writing Tool settings, layering shared CreativeOS LLM
+        defaults underneath so the user can configure their model once at
+        the OS level and have it apply here. Tool-specific keys still
+        override anything inherited from the OS.
+        """
+        # Start with built-in defaults
+        settings = self.DEFAULT_SETTINGS.copy()
 
+        # Layer in shared CreativeOS LLM settings (OS-wide model/keys)
         try:
-            with open(self.config_file, 'r', encoding='utf-8') as f:
-                loaded = json.load(f)
-                # Merge with defaults to ensure all keys exist
-                settings = self.DEFAULT_SETTINGS.copy()
-                settings.update(loaded)
-                return settings
+            from src.config.creativeos_config import (
+                apply_shared_llm_to_tool_settings,
+            )
+            settings = apply_shared_llm_to_tool_settings(settings, override=True)
         except Exception as e:
-            print(f"Error loading AI config: {e}")
-            return self.DEFAULT_SETTINGS.copy()
+            print(f"[AIConfig] Could not pull shared CreativeOS settings: {e}")
+
+        # Layer in this tool's persisted overrides last (highest priority)
+        if self.config_file.exists():
+            try:
+                with open(self.config_file, 'r', encoding='utf-8') as f:
+                    loaded = json.load(f)
+                settings.update(loaded)
+            except Exception as e:
+                print(f"Error loading AI config: {e}")
+
+        return settings
 
     def save_settings(self, settings: Dict[str, Any]) -> bool:
         """Save settings to disk.

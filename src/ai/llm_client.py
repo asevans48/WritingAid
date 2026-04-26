@@ -1,5 +1,7 @@
 """LLM Client for AI integration with Claude, ChatGPT, Gemini, and Hugging Face models."""
 
+import gc
+import weakref
 from typing import Optional, Dict, List, TYPE_CHECKING
 from enum import Enum
 import anthropic
@@ -7,8 +9,93 @@ import openai
 from google import genai
 from src.ai.device_utils import detect_device, can_use_quantization
 
+
+# Sentence-final punctuation set used by the truncation heuristic.
+# Includes English + smart-quote forms + a couple of CJK marks so the
+# heuristic doesn't false-positive on non-English assistant replies.
+_SENTENCE_END_CHARS = '.!?"\'"”’)。！？'
+
+
+def _looks_truncated(text: str) -> bool:
+    """Heuristic: does this assistant reply look cut off mid-thought?
+
+    True when the response is non-trivial (>=1 character of content)
+    AND its last non-whitespace character isn't sentence-final
+    punctuation. The writing-tool chat caller passes
+    ``continue_if_truncated=True`` so a "Yeah, the trick to a strong
+    opening is" reply triggers an automatic follow-up rather than
+    leaving the user stranded.
+    """
+    if not text:
+        return False
+    stripped = text.rstrip()
+    if not stripped:
+        return False
+    return stripped[-1] not in _SENTENCE_END_CHARS
+
 if TYPE_CHECKING:
     from src.ai.conversation_store import ConversationStore
+
+
+# Registry of *local* LLMClient instances currently holding model weights
+# in RAM. Stored as weak refs so a client can still be garbage collected
+# normally — we only use the registry to find live instances when the
+# Training Studio needs to free RAM. Cloud clients (Claude/ChatGPT/etc.)
+# never register here; their "weight" is a network connection.
+_LIVE_LOCAL_CLIENTS: "weakref.WeakSet[LLMClient]" = weakref.WeakSet()
+
+
+def list_loaded_local_clients() -> List["LLMClient"]:
+    """Return live local LLMClient instances that still hold weights."""
+    return [c for c in _LIVE_LOCAL_CLIENTS if c.has_loaded_local_model()]
+
+
+def unload_all_local_clients(clear_cuda: bool = True,
+                             clear_mlx: bool = True) -> int:
+    """Drop every loaded local model from RAM. Returns count unloaded.
+
+    Used by the Training Studio before kicking off a fine-tune so the
+    base model + dataset have room to load. Safe to call when no local
+    clients are loaded — it's a no-op then.
+
+    The clients themselves stay alive (so per-task LLM caches don't
+    need to be invalidated), but their weights are gone. The next call
+    to ``generate_text`` would need to be on a fresh client; callers
+    that still hold a reference should drop it after this call.
+    """
+    n = 0
+    for client in list(_LIVE_LOCAL_CLIENTS):
+        if client.has_loaded_local_model():
+            try:
+                client.unload()
+                n += 1
+            except Exception as e:
+                print(f"[llm_client] unload failed: {e}")
+
+    # Aggressive cache clears so the freed weights actually return
+    # memory to the OS (otherwise PyTorch / MLX may keep large arenas
+    # cached for the next allocation).
+    if clear_cuda:
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+        except Exception:
+            pass
+    if clear_mlx:
+        try:
+            import mlx.core as mx
+            # Newer MLX exposes mx.clear_cache directly; older versions
+            # only had mx.metal.clear_cache. Try the new path first.
+            if hasattr(mx, "clear_cache"):
+                mx.clear_cache()
+            elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
+                mx.metal.clear_cache()
+        except Exception:
+            pass
+    gc.collect()
+    return n
 
 
 class LLMProvider(Enum):
@@ -93,8 +180,57 @@ class LLMClient:
             self._init_huggingface_api()
         elif provider == LLMProvider.HUGGINGFACE_LOCAL:
             self._init_huggingface_local()
+            _LIVE_LOCAL_CLIENTS.add(self)
         elif provider == LLMProvider.MLX_LOCAL:
             self._init_mlx_local()
+            _LIVE_LOCAL_CLIENTS.add(self)
+
+    # ── RAM management for local providers ──
+
+    def has_loaded_local_model(self) -> bool:
+        """True if this client currently holds model weights in RAM.
+
+        Cloud clients always return False. After ``unload()`` this also
+        returns False until something reloads the weights.
+        """
+        if self.provider == LLMProvider.HUGGINGFACE_LOCAL:
+            return self._hf_pipeline is not None
+        if self.provider == LLMProvider.MLX_LOCAL:
+            return self._mlx_model is not None
+        return False
+
+    def loaded_model_label(self) -> str:
+        """Human-readable label for memory-usage dialogs."""
+        if self.has_loaded_local_model():
+            backend = ("MLX" if self.provider == LLMProvider.MLX_LOCAL
+                       else "HuggingFace")
+            return f"{self.model} ({backend})"
+        return ""
+
+    def unload(self) -> None:
+        """Drop this client's model weights from RAM.
+
+        Idempotent — calling on a client that hasn't loaded anything is
+        a no-op. Safe to call from any thread *as long as* nothing else
+        is currently calling ``generate_text`` on the same client. The
+        Training Studio gates this behind a user-facing alert before
+        kicking off a fine-tune.
+
+        After unload, the client object remains valid but
+        ``has_loaded_local_model()`` returns False. Callers that want
+        to use it again should typically construct a fresh client.
+        """
+        if self.provider not in (LLMProvider.HUGGINGFACE_LOCAL,
+                                 LLMProvider.MLX_LOCAL):
+            return
+        # Drop pipeline / tokenizer / model references. The Python GC
+        # then reclaims the underlying tensors when no one else holds
+        # them; the cache-clear in ``unload_all_local_clients`` returns
+        # the freed buffers to the OS.
+        self._hf_pipeline = None
+        self._hf_tokenizer = None
+        self._mlx_model = None
+        self._mlx_tokenizer = None
 
     def _init_huggingface_api(self) -> None:
         """Initialize Hugging Face Inference API client."""
@@ -331,7 +467,9 @@ class LLMClient:
         max_tokens: int = 4096,
         temperature: float = 0.7,
         task_type: str = "general",
-        conversation_history: Optional[List[Dict[str, str]]] = None
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        continue_if_truncated: bool = False,
+        max_continuations: int = 2,
     ) -> str:
         """Generate text using the configured LLM provider.
 
@@ -342,6 +480,17 @@ class LLMClient:
             temperature: Creativity/randomness (0-1)
             task_type: Type of task for conversation logging
             conversation_history: Prior turns as [{"role": "user"|"assistant", "content": str}, ...]
+            continue_if_truncated: when True, after the initial pass
+                we run a "looks truncated" heuristic on the response;
+                if it cut off mid-thought (no sentence-final punct +
+                ran near max_tokens) we feed the partial back as
+                assistant context and ask the model to continue, up
+                to ``max_continuations`` extra rounds. Used by the
+                writing tool's chat path so users don't see partial
+                replies on small local models.
+            max_continuations: hard cap on extra "continue" rounds
+                when ``continue_if_truncated`` is True. Each extra
+                round costs ``max_tokens`` more output budget.
 
         Returns:
             Generated text response
@@ -352,23 +501,53 @@ class LLMClient:
                 self._current_messages.append({"role": "system", "content": system_prompt})
             self._current_messages.append({"role": "user", "content": prompt})
 
-        history = conversation_history or []
+        history = list(conversation_history or [])
+
+        def _one_pass(p, hist):
+            if self.provider == LLMProvider.CLAUDE:
+                return self._generate_claude(p, system_prompt, max_tokens, temperature, hist)
+            elif self.provider == LLMProvider.CHATGPT:
+                return self._generate_chatgpt(p, system_prompt, max_tokens, temperature, hist)
+            elif self.provider == LLMProvider.GEMINI:
+                return self._generate_gemini(p, system_prompt, max_tokens, temperature, hist)
+            elif self.provider == LLMProvider.HUGGINGFACE:
+                return self._generate_huggingface_api(p, system_prompt, max_tokens, temperature, hist)
+            elif self.provider == LLMProvider.HUGGINGFACE_LOCAL:
+                return self._generate_huggingface_local(p, system_prompt, max_tokens, temperature, hist)
+            elif self.provider == LLMProvider.MLX_LOCAL:
+                return self._generate_mlx_local(p, system_prompt, max_tokens, temperature, hist)
+            return f"Error: Unknown provider {self.provider}"
 
         try:
-            if self.provider == LLMProvider.CLAUDE:
-                response = self._generate_claude(prompt, system_prompt, max_tokens, temperature, history)
-            elif self.provider == LLMProvider.CHATGPT:
-                response = self._generate_chatgpt(prompt, system_prompt, max_tokens, temperature, history)
-            elif self.provider == LLMProvider.GEMINI:
-                response = self._generate_gemini(prompt, system_prompt, max_tokens, temperature, history)
-            elif self.provider == LLMProvider.HUGGINGFACE:
-                response = self._generate_huggingface_api(prompt, system_prompt, max_tokens, temperature, history)
-            elif self.provider == LLMProvider.HUGGINGFACE_LOCAL:
-                response = self._generate_huggingface_local(prompt, system_prompt, max_tokens, temperature, history)
-            elif self.provider == LLMProvider.MLX_LOCAL:
-                response = self._generate_mlx_local(prompt, system_prompt, max_tokens, temperature, history)
-            else:
-                response = f"Error: Unknown provider {self.provider}"
+            response = _one_pass(prompt, history)
+
+            # Auto-continuation. Cloud LLMs almost never truncate at
+            # 4k tokens; this is targeted at local models that hit
+            # their max_new_tokens budget mid-sentence. We keep the
+            # heuristic conservative: only continue when the response
+            # is non-empty AND lacks sentence-final punctuation. The
+            # follow-up round uses the partial as the assistant's
+            # most-recent turn so the model literally finishes the
+            # thought rather than restarting.
+            if continue_if_truncated:
+                rounds = 0
+                while (rounds < max_continuations
+                        and _looks_truncated(response)):
+                    rounds += 1
+                    follow_history = history + [
+                        {"role": "user", "content": prompt},
+                        {"role": "assistant", "content": response},
+                    ]
+                    next_chunk = _one_pass(
+                        "Continue exactly from where you left off — "
+                        "do not repeat any text you already produced.",
+                        follow_history)
+                    if not next_chunk or not next_chunk.strip():
+                        break
+                    # Glue with a single space if the partial didn't
+                    # end with whitespace already.
+                    glue = "" if response.endswith((" ", "\n")) else " "
+                    response = (response + glue + next_chunk).strip()
 
             # Log assistant response
             if self.enable_conversation_logging:

@@ -467,6 +467,46 @@ class RephraseDialog(QDialog):
         main_layout.addWidget(scroll_area)
 
         # Bottom buttons (outside scroll area so always visible)
+        # Rating row — feedback on the previewed suggestion. Stored in the
+        # rephrase database for transfer learning (positive samples build
+        # SFT data; negative samples become DPO "rejected" examples).
+        rating_row = QHBoxLayout()
+        rating_row.setContentsMargins(16, 4, 16, 4)
+        rating_label = QLabel("Rate this suggestion:")
+        rating_label.setStyleSheet("color: #6b7280; font-size: 11px;")
+        rating_row.addWidget(rating_label)
+
+        self._selected_rating: str = "neutral"
+
+        def _make_rating_btn(emoji: str, label: str, value: str, color: str):
+            btn = QPushButton(f"{emoji} {label}")
+            btn.setCheckable(True)
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: #f3f4f6; color: #374151;
+                    border: 1px solid #d1d5db; border-radius: 4px;
+                    padding: 3px 10px; font-size: 11px;
+                }}
+                QPushButton:checked {{
+                    background-color: {color}; color: white;
+                    border-color: {color};
+                }}
+                QPushButton:hover {{ background-color: #e5e7eb; }}
+                QPushButton:checked:hover {{ background-color: {color}; }}
+            """)
+            btn.clicked.connect(lambda: self._on_rating_clicked(value))
+            return btn
+
+        self.rate_excellent_btn = _make_rating_btn("⭐", "Excellent", "excellent", "#10b981")
+        self.rate_good_btn = _make_rating_btn("👍", "Good", "good", "#3b82f6")
+        self.rate_poor_btn = _make_rating_btn("👎", "Poor", "poor", "#f59e0b")
+        self.rate_bad_btn = _make_rating_btn("✖", "Bad", "bad", "#ef4444")
+        for b in (self.rate_excellent_btn, self.rate_good_btn,
+                  self.rate_poor_btn, self.rate_bad_btn):
+            rating_row.addWidget(b)
+        rating_row.addStretch()
+        main_layout.addLayout(rating_row)
+
         button_layout = QHBoxLayout()
         button_layout.setContentsMargins(16, 8, 16, 16)
 
@@ -530,6 +570,22 @@ class RephraseDialog(QDialog):
             # MLX model on Apple Silicon, PyTorch model elsewhere
             default_model = "mlx-community/Qwen2.5-7B-Instruct-4bit" if can_use_mlx() else "microsoft/Phi-3-mini-4k-instruct"
             local_model_id = settings.get("local_model_id", default_model)
+
+            # Per-task override: if the user has chosen a 'rephrase'
+            # trained model in CreativeOS settings, use it as the
+            # local_model_id for this dialog. The resolver falls back
+            # through 'general' → empty automatically, and silently
+            # ignores models whose directories were deleted.
+            try:
+                from src.config.creativeos_config import get_creativeos_config
+                _ts = get_creativeos_config().task_settings("rephrase")
+                if _ts.get("__trained_model_name"):
+                    local_model_id = _ts["local_model_id"]
+                    print(f"[rephrase] Using task model "
+                          f"'{_ts['__trained_model_name']}' "
+                          f"(source={_ts['__task_model_source']})")
+            except Exception as e:
+                print(f"[rephrase] task model lookup failed: {e}")
 
             # Get API key
             api_key = config.get_api_key(provider)
@@ -877,10 +933,108 @@ class RephraseDialog(QDialog):
         self.style_label.setText(f"Style: {option.style} | Tone: {option.tone} — {option.explanation}")
         self.use_btn.setEnabled(True)
 
+    def _on_rating_clicked(self, value: str):
+        """Track which rating button is active (radio-button behavior).
+
+        For negative ratings (poor / bad) we ALSO log the currently
+        previewed suggestion as a rejected sample immediately — those
+        are the most valuable kind: rows the user explicitly disliked.
+        DPO/preference training pairs them with the eventual accepted
+        suggestion as the contrastive 'rejected' example.
+        """
+        # Radio behavior — uncheck the others
+        for v, btn in (("excellent", self.rate_excellent_btn),
+                       ("good", self.rate_good_btn),
+                       ("poor", self.rate_poor_btn),
+                       ("bad", self.rate_bad_btn)):
+            btn.setChecked(v == value)
+        self._selected_rating = value
+
+        # Negative ratings are logged immediately so the user can keep
+        # iterating without losing the disliked example.
+        if value in ("poor", "bad"):
+            preview = self.preview_edit.toPlainText().strip()
+            if preview and preview != self.original_text.strip():
+                try:
+                    self._log_to_rephrase_db(
+                        self.original_text, preview,
+                        accepted=False, rating=value)
+                except Exception as e:
+                    print(f"[Rephrase] could not log negative: {e}")
+
     def _use_selected(self):
-        """Use the selected/edited text."""
+        """Use the selected/edited text and (if opted in) log the pair."""
         self.selected_text = self.preview_edit.toPlainText()
+        # Capture for transfer-learning DB before closing — opt-in via OS settings
+        try:
+            # If the user accepted without explicitly rating, treat it as
+            # 'good' — they liked it enough to use it.
+            rating = self._selected_rating
+            if rating in ("neutral", ""):
+                rating = "good"
+            self._log_to_rephrase_db(
+                self.original_text, self.selected_text,
+                accepted=True, rating=rating)
+        except Exception as e:
+            print(f"[Rephrase] could not log to DB: {e}")
         self.accept()
+
+    def _log_to_rephrase_db(self, source: str, output: str,
+                            accepted: bool = True, rating: str = "good"):
+        """Persist this rephrase pair so the user can later fine-tune a
+        model on it. Only runs if collection is enabled in settings.
+
+        Args:
+            accepted: True if the user inserted this back into their text.
+            rating: One of excellent / good / neutral / poor / bad. Negative
+                ratings (poor, bad) become DPO 'rejected' samples.
+        """
+        from src.data.rephrase_database import (
+            get_rephrase_database, is_collection_enabled,
+        )
+        if not is_collection_enabled():
+            return
+        if not source or not output or source.strip() == output.strip():
+            return
+
+        # Pull the selected style/tone if we have a result handy
+        style = ""
+        if self.result and self.result.options:
+            row = self.results_list.currentRow() if hasattr(self, 'results_list') else 0
+            if 0 <= row < len(self.result.options):
+                opt = self.result.options[row]
+                style = f"{opt.style}/{opt.tone}".strip("/")
+
+        # Genre from project prose profile, if present
+        genre = ""
+        try:
+            if self.project and getattr(self.project, 'prose_profile', None):
+                genre = getattr(self.project.prose_profile, 'genre', '') or ""
+        except Exception:
+            pass
+
+        # Best-effort speaker detection (we already do this for prompts)
+        character = ""
+        try:
+            character = getattr(self, '_detected_character', '') or ""
+        except Exception:
+            pass
+
+        db = get_rephrase_database()
+        db.log_rephrase(
+            source_text=source.strip(),
+            output_text=output.strip(),
+            style=style,
+            surrounding_before=self.surrounding_before or "",
+            surrounding_after=self.surrounding_after or "",
+            character_name=character,
+            genre=genre,
+            accepted=accepted,
+            rating=rating,
+            project_path=getattr(getattr(self.project, 'project_path', ''),
+                                 '__str__', lambda: '')()
+                         if self.project else "",
+        )
 
     def _refine_results(self):
         """Refine the current results with a follow-up instruction."""

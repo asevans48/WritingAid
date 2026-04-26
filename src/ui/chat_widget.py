@@ -995,8 +995,70 @@ class ChatWidget(QWidget):
                 f'Failed to save rating: {str(e)}</div>'
             )
 
+        # ALSO mirror to the unified learning database tagged with the
+        # chat mode so the Training Studio can combine rephrase, chat
+        # writing assistance, and general chat data freely.
+        try:
+            self._log_chat_to_learning_db(rating)
+        except Exception as e:
+            print(f"[Chat] Could not mirror to learning DB: {e}")
+
         # Clear current conversation for next exchange
         self._current_conversation = []
+
+    def _log_chat_to_learning_db(self, rating):
+        """Mirror the just-rated chat turn into the unified learning DB.
+
+        The chat already has its own ConversationStore for fully detailed
+        replay. The learning DB stores the same prompt/response pair in
+        the simple shape the Training Studio expects, so the user can
+        combine chat data with rephrase data when fine-tuning.
+
+        Gated by ``enable_chat_data_collection`` in OS settings.
+        """
+        from src.config.creativeos_config import get_creativeos_config
+        if not get_creativeos_config().get(
+                "enable_chat_data_collection", False):
+            return
+
+        # Find the most recent (user, assistant) pair in the conversation
+        msgs = [m for m in self._current_conversation
+                if m.get("role") in ("user", "assistant")]
+        if len(msgs) < 2:
+            return
+        # Walk backwards for the last assistant message and the user
+        # message immediately preceding it
+        assistant_msg = None
+        user_msg = None
+        for i in range(len(msgs) - 1, -1, -1):
+            if msgs[i]["role"] == "assistant" and assistant_msg is None:
+                assistant_msg = msgs[i]
+            elif msgs[i]["role"] == "user" and assistant_msg is not None:
+                user_msg = msgs[i]
+                break
+        if not user_msg or not assistant_msg:
+            return
+
+        from src.data.rephrase_database import get_rephrase_database
+        db = get_rephrase_database()
+        # Map ConversationRating → our unified rating vocabulary
+        rating_map = {
+            "excellent": "excellent", "good": "good",
+            "neutral": "neutral", "poor": "poor", "bad": "bad",
+        }
+        unified = rating_map.get(rating.value, "neutral")
+
+        mode_name = self._current_mode.value if self._current_mode else "general"
+        genre = self._chapter_context.get("genre", "") if self._chapter_context else ""
+        db.log_chat(
+            prompt=user_msg.get("content", ""),
+            response=assistant_msg.get("content", ""),
+            mode=mode_name,
+            rating=unified,
+            accepted=True,
+            genre=genre,
+            project_path=self._project_name or "",
+        )
 
     def clear_conversation(self):
         """Clear the current conversation tracking (start fresh)."""

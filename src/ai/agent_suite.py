@@ -109,6 +109,20 @@ class AgentSuite:
         self._tts_service = None
         self._tts_generator = None
 
+        # Per-task LLM cache. Each task can route to a different trained
+        # model selected in CreativeOS settings; we lazily build the local
+        # LLMClient on first use and reuse it after. The cache enforces
+        # an LRU policy so a writing session that touches several
+        # task-specific models doesn't pile them up in RAM. When the
+        # cap is hit, the least-recently-used client gets ``unload()``
+        # called on it before being dropped, releasing its weights.
+        # Keyed by trained-model path (the registry key), since the
+        # same path may serve multiple tasks via the resolver chain.
+        from collections import OrderedDict
+        self._task_local_llms: "OrderedDict[str, Optional[LLMClient]]" = (
+            OrderedDict())
+        self._task_local_llm_cap = 2
+
         # Initialize primary LLM
         self._init_primary_llm()
 
@@ -144,6 +158,131 @@ class AgentSuite:
             model=model,
             enable_conversation_logging=self.config.enable_conversation_logging
         )
+
+    def reset_task_llm_cache(self) -> None:
+        """Drop cached per-task LLMs.
+
+        Call after the user changes their per-task model selection in
+        CreativeOS settings, OR after an external call to
+        ``unload_all_local_clients`` (e.g. the Training Studio freeing
+        RAM). Cheap — clients are rebuilt lazily on next request.
+        """
+        self._task_local_llms.clear()
+        # If our own local_llm was unloaded, forget it too so the next
+        # call rebuilds fresh weights instead of crashing on an empty
+        # pipeline. Cloud primary_llm is unaffected.
+        try:
+            if (self.local_llm is not None
+                    and not self.local_llm.has_loaded_local_model()):
+                self.local_llm = None
+        except Exception:
+            pass
+
+    def _build_task_local_llm(self, model_path: str) -> Optional[LLMClient]:
+        """Build an LLMClient pointing at a per-task trained model.
+
+        We treat trained-model paths the same as any other local model id
+        — the existing local provider stack handles them, and if the
+        path is a LoRA-adapter directory the underlying loader picks the
+        adapter up via PEFT. Falls back to None if construction fails so
+        callers can degrade to ``primary_llm``.
+        """
+        if not model_path:
+            return None
+        try:
+            local_settings = self.ai_config.get_local_model_settings()
+            quantization = local_settings.get("quantization", "none")
+            if quantization == "none":
+                quantization = None
+            trust = local_settings.get("trust_remote_code", True)
+
+            hf_config = HuggingFaceConfig(
+                model_id=model_path,
+                use_local=True,
+                device="auto",
+                quantization=quantization,
+                trust_remote_code=trust,
+            )
+            is_mlx = "mlx" in model_path.lower()
+            provider = (LLMProvider.MLX_LOCAL if (is_mlx and can_use_mlx())
+                        else LLMProvider.HUGGINGFACE_LOCAL)
+            return LLMClient(provider=provider, hf_config=hf_config)
+        except Exception as e:
+            print(f"[AgentSuite] Could not load task model "
+                  f"'{model_path}': {e}")
+            return None
+
+    def get_llm_for_task(self, task: str) -> 'LLMClient':
+        """Return the LLMClient that should handle the given task.
+
+        Resolution chain:
+            1. Per-task trained model (creativeos_config.resolve_task_model)
+            2. ``model_for_general`` trained model (handled inside the
+               resolver — it falls back automatically)
+            3. The agent suite's ``primary_llm`` (cloud or default local)
+
+        This is what call sites should use instead of ``self.primary_llm``
+        directly. The returned client may be local OR cloud depending on
+        whether a trained model is configured for this task.
+
+        ``task`` should be one of: ``rephrase``, ``plot``, ``worldbuilding``,
+        ``character``, ``general``. Unknown tasks fall through to the
+        primary LLM unchanged.
+        """
+        try:
+            from src.config.creativeos_config import get_creativeos_config
+            cfg = get_creativeos_config()
+            res = cfg.resolve_task_model(task)
+            trained = res.get("trained_model")
+        except Exception:
+            return self.primary_llm
+
+        if not trained or not trained.get("path"):
+            return self.primary_llm
+
+        cache_key = trained.get("path", "")
+        cached = self._task_local_llms.get(cache_key)
+        if cached is not None:
+            # Detect a stale entry whose weights were dropped by the
+            # Training Studio's "Free RAM for training" flow. We rebuild
+            # transparently rather than returning a dead client.
+            try:
+                still_loaded = cached.has_loaded_local_model()
+            except Exception:
+                still_loaded = True
+            if still_loaded:
+                # Mark this entry as most-recently-used so it survives
+                # the next eviction round.
+                self._task_local_llms.move_to_end(cache_key)
+                return cached
+            self._task_local_llms.pop(cache_key, None)
+
+        client = self._build_task_local_llm(cache_key)
+        if client is None:
+            # Cache the miss so we don't keep retrying the failing build
+            self._task_local_llms[cache_key] = None
+            self._task_local_llms.move_to_end(cache_key)
+            return self.primary_llm
+
+        # Evict LRU entries if we're at the cap. Only evict entries
+        # that are actually loaded (have weights in RAM) — None
+        # entries cost nothing and serve as miss-cache markers.
+        loaded_keys = [k for k, v in self._task_local_llms.items()
+                       if v is not None]
+        while len(loaded_keys) >= self._task_local_llm_cap:
+            oldest = loaded_keys[0]
+            evicted = self._task_local_llms.pop(oldest, None)
+            if evicted is not None:
+                try:
+                    evicted.unload()
+                except Exception:
+                    pass
+            loaded_keys = [k for k, v in self._task_local_llms.items()
+                           if v is not None]
+
+        self._task_local_llms[cache_key] = client
+        self._task_local_llms.move_to_end(cache_key)
+        return client
 
     def _init_local_llm(self):
         """Initialize local LLM for cost savings.
@@ -283,6 +422,12 @@ class AgentSuite:
             return self._handle_recommendations(message)
         elif any(word in message_lower for word in ["read aloud", "speak text", "text to speech", "tts", "read this", "generate tts", "convert to speech", "audio", "narrate"]):
             return self._handle_tts_request(message)
+        elif any(word in message_lower for word in [
+                "pacing", "sentence length", "tuldava", "lexical complexity",
+                "lexical density", "compare to genre", "genre baseline",
+                "genre stats", "conlit", "how fast", "how slow",
+                "too long", "too short", "rhythm of"]):
+            return self._handle_pacing_analysis(message)
         elif self.current_mode == AgentMode.WORLDBUILDING:
             return self._handle_worldbuilding_chat(message)
         elif self.current_mode == AgentMode.CHAPTER_ANALYSIS:
@@ -302,10 +447,17 @@ class AgentSuite:
         # Get world context using RAG for relevant character-related info
         world_context = self._get_world_context(message)
 
+        # If the user has chosen a 'character' trained model in CreativeOS
+        # settings, route this call to it; otherwise pass None so the
+        # worldbuilding agent's complexity-based routing kicks in.
+        task_llm = self.get_llm_for_task("character")
+        override = task_llm if task_llm is not self.primary_llm else None
+
         # Use worldbuilding agent
         character_data = self.worldbuilding_agent.help_create_character(
             user_description=message,
-            world_context=world_context
+            world_context=world_context,
+            llm_override=override,
         )
 
         # Format response
@@ -336,9 +488,13 @@ Just let me know what you'd like to do next!
 
         world_context = self._get_world_context(message)
 
+        task_llm = self.get_llm_for_task("worldbuilding")
+        override = task_llm if task_llm is not self.primary_llm else None
+
         faction_data = self.worldbuilding_agent.help_create_faction(
             user_description=message,
-            world_context=world_context
+            world_context=world_context,
+            llm_override=override,
         )
 
         response = f"""Here are some faction ideas based on your description:
@@ -364,10 +520,14 @@ What would you like to do?
         # Get available planets
         planets = [p.name for p in self.project.worldbuilding.planets] if hasattr(self.project.worldbuilding, 'planets') else []
 
+        task_llm = self.get_llm_for_task("worldbuilding")
+        override = task_llm if task_llm is not self.primary_llm else None
+
         place_data = self.worldbuilding_agent.help_create_place(
             user_description=message,
             world_context=world_context,
-            available_planets=planets
+            available_planets=planets,
+            llm_override=override,
         )
 
         response = f"""Here are some ideas for this place:
@@ -488,13 +648,26 @@ Provide planning assistance for this chapter. Be specific and actionable.
 If suggesting todos, format them as a bulleted list that the author can add to their planning.
 """
 
-        llm = self.local_llm if self.local_llm and len(message) < 300 else self.primary_llm
+        # Per-task routing: if the user picked a 'plot' trained model
+        # (or general fallback), get_llm_for_task returns it; otherwise
+        # we fall back to the original local-vs-cloud heuristic.
+        task_llm = self.get_llm_for_task("plot")
+        if task_llm is self.primary_llm:
+            llm = self.local_llm if self.local_llm and len(message) < 300 else self.primary_llm
+        else:
+            llm = task_llm
         response = llm.generate_text(
             prompt,
             system_prompt,
             max_tokens=600,
             temperature=0.7
         )
+
+        try:
+            from src.data.learning_capture import capture_plot
+            capture_plot(prompt=prompt, completion=response)
+        except Exception:
+            pass
 
         return response
 
@@ -632,11 +805,17 @@ If suggesting todos, format them as a bulleted list that the author can add to t
         # Get existing elements
         existing = self._get_existing_elements(category)
 
+        # Route to a worldbuilding-specific trained model if the user
+        # picked one; otherwise fall through to the agent's defaults.
+        task_llm = self.get_llm_for_task("worldbuilding")
+        override = task_llm if task_llm is not self.primary_llm else None
+
         agent_response = self.worldbuilding_agent.get_recommendations(
             category=category,
             context=world_context,
             question=message,
-            existing_elements=existing
+            existing_elements=existing,
+            llm_override=override,
         )
 
         # Update cost tracking
@@ -669,12 +848,18 @@ User Message:
 Provide helpful suggestions or ask clarifying questions.
 """
 
-        llm = self.local_llm if self.local_llm and len(message) < 200 else self.primary_llm
+        task_llm = self.get_llm_for_task("worldbuilding")
+        if task_llm is self.primary_llm:
+            llm = self.local_llm if self.local_llm and len(message) < 200 else self.primary_llm
+        else:
+            llm = task_llm
         response = llm.generate_text(
             prompt,
             system_prompt,
             max_tokens=400,
-            temperature=0.7
+            temperature=0.7,
+            continue_if_truncated=True,
+            max_continuations=2,
         )
 
         return response
@@ -766,7 +951,9 @@ Guidelines:
 
         prompt = "\n".join(prompt_parts)
 
-        llm = self.primary_llm
+        # Route to the user's rephrase model if they picked one, else
+        # use the default cloud LLM.
+        llm = self.get_llm_for_task("rephrase")
         response = llm.generate_text(
             prompt,
             system_prompt,
@@ -777,17 +964,232 @@ Guidelines:
         self.session_cost += 0.003
         return response
 
+    def _handle_pacing_analysis(self, message: str) -> str:
+        """Pacing / structural analysis using CONLIT genre baselines.
+
+        Three sources feed the response:
+
+          1. The current chapter content (from ``self.context``) is
+             measured by ``pacing_analyzer.analyze_text`` — same
+             metrics CONLIT publishes (avg sentence length, avg word
+             length, Tuldava lexical complexity, dialogue ratio).
+          2. The project's genre (``self.project.genre``) determines
+             which CONLIT baseline to compare against. We try fuzzy
+             matching against our genre taxonomy first, then fall back
+             to "literary" as the most generic CONLIT-covered genre.
+          3. The configured LLM is given the raw stats + comparison +
+             the user's actual question, and asked to interpret them
+             into craft advice.
+
+        Graceful fallbacks:
+          - No chapter loaded → tell the user to open a chapter and
+            try again, but still answer general pacing questions
+            from the LLM.
+          - CONLIT not loaded → analyze the draft anyway, tell the
+            user where to load CONLIT for genre comparison.
+          - Genre is one CONLIT doesn't cover (horror, western, …)
+            → analyze + explain that CONLIT only has mystery / scifi /
+            romance / literary, fall back to a related genre.
+        """
+        # 1. Pull text to analyze. Prefer the current chapter; fall
+        # back to the most recently active one if nothing is open.
+        chapter_text = ""
+        chapter_label = ""
+        if self.project:
+            current = (self.context.get("current_chapter_content")
+                       if hasattr(self, "context") and self.context else None)
+            if current:
+                chapter_text = current
+                chapter_label = (
+                    self.context.get("current_chapter_title", "")
+                    or "current chapter")
+            else:
+                # Fall back: most recently-edited chapter
+                chapters = list(self.project.manuscript.chapters or [])
+                if chapters:
+                    ch = sorted(chapters,
+                                key=lambda c: getattr(c, "updated_at", ""),
+                                reverse=True)[0]
+                    chapter_text = (ch.content or "").strip()
+                    chapter_label = ch.title or f"chapter {ch.number}"
+
+        if not chapter_text or len(chapter_text.split()) < 30:
+            return (
+                "I'd love to analyze pacing, but I can't find a chapter "
+                "with at least 30 words. Open a chapter in the manuscript "
+                "editor and ask again. (You can also ask general pacing "
+                "questions — those don't need a chapter — but for the "
+                "CONLIT comparison I need actual prose.)")
+
+        # 2. Run analyzer
+        try:
+            from src.ai.pacing_analyzer import (
+                analyze_text, compare_to_genre,
+            )
+        except Exception as e:
+            return f"Pacing analyzer unavailable: {e}"
+        stats = analyze_text(chapter_text)
+        if not stats:
+            return ("Could not analyze the chapter — it may be empty or "
+                    "non-textual. Try a chapter with at least a few "
+                    "paragraphs of prose.")
+
+        # 3. Resolve target genre. Try project metadata first; fall
+        # back to fuzzy matching the user's message.
+        target_genre = self._resolve_target_genre(message)
+
+        # 4. Pull CONLIT baseline (if loaded) and compare
+        try:
+            from src.data.conlit_loader import (
+                get_genre_stats_cached, summary_lines,
+            )
+            conlit_stats = get_genre_stats_cached() or {}
+        except Exception:
+            conlit_stats = {}
+
+        comparison = {}
+        if target_genre and conlit_stats:
+            comparison = compare_to_genre(stats, target_genre, conlit_stats)
+
+        # 5. Build the LLM context bundle. The LLM gets raw stats,
+        # CONLIT baseline (when available), and the user's original
+        # question — and is asked for craft-level interpretation.
+        ctx_lines = [
+            f"=== Pacing measurement of {chapter_label} ===",
+            f"Word count: {stats['token_count']:,}",
+            f"Sentence count: {stats['sentence_count']:,}",
+            f"Average sentence length: {stats['avg_sentence_length']:.1f} words",
+            f"Average word length: {stats['avg_word_length']:.2f} chars",
+            f"Tuldava lexical complexity: {stats['tuldava_score']:.2f}",
+            f"Dialogue ratio: {stats['dialogue_ratio']:.2%}",
+        ]
+        if comparison:
+            ctx_lines.append("")
+            ctx_lines.append(
+                f"=== Comparison vs CONLIT {comparison['genre']} baseline "
+                f"(n={comparison['baseline_n_books']} contemporary novels) ===")
+            for f, d in comparison.get("deltas", {}).items():
+                flag = " ⚠ outside ±1.5σ" if d["outside_norm"] else ""
+                ctx_lines.append(
+                    f"  {f}: {d['value']} vs baseline {d['baseline']} "
+                    f"(z={d['z_score']:+.1f}, {d['direction']}){flag}")
+            ctx_lines.append(f"Headline: {comparison['summary']}")
+        elif target_genre and not conlit_stats:
+            ctx_lines.append("")
+            ctx_lines.append(
+                "[CONLIT genre baseline not loaded — only the user's "
+                "draft stats are available. The user can load CONLIT "
+                "via Training Studio settings to enable comparison.]")
+        elif target_genre:
+            ctx_lines.append("")
+            ctx_lines.append(
+                f"[CONLIT does not cover '{target_genre}' — its "
+                f"baselines are mystery / scifi / romance / literary. "
+                f"Provide stylistic guidance from your own knowledge "
+                f"of the genre instead.]")
+
+        ctx_block = "\n".join(ctx_lines)
+
+        system_prompt = (
+            "You are a craft-level editor advising a writer about pacing "
+            "and prose rhythm. You have access to measured statistics on "
+            "their current chapter and (when available) CONLIT genre "
+            "baselines computed across thousands of contemporary novels. "
+            "Use the numbers as evidence — quote specific deltas — and "
+            "translate them into concrete craft advice (sentence-length "
+            "variation, paragraph rhythm, dialogue density, vocabulary "
+            "choices). Be specific. Don't write the prose for them; "
+            "diagnose and suggest.")
+
+        prompt = (
+            f"{ctx_block}\n\n"
+            f"=== User's question ===\n{message}\n\n"
+            f"Respond as a craft editor. Cite the numbers above. Keep "
+            f"the response focused and actionable.")
+
+        # 6. Route through the per-task model selection (plot is the
+        # closest existing task; pacing is a structural concern).
+        llm = self.get_llm_for_task("plot")
+        try:
+            response = llm.generate_text(
+                prompt, system_prompt, max_tokens=700, temperature=0.5)
+        except Exception as e:
+            # If the LLM fails, still return the raw measurements —
+            # the numbers themselves are useful even without prose
+            # interpretation.
+            return (f"Could not get LLM interpretation: {e}\n\n"
+                    f"Raw measurements:\n{ctx_block}")
+
+        # Capture for transfer-learning if opted in (same pattern as
+        # capture_plot for chapter planning).
+        try:
+            from src.data.learning_capture import capture_plot
+            capture_plot(prompt=prompt, completion=response)
+        except Exception:
+            pass
+
+        # Return the LLM's interpretation prefixed with a measurement
+        # summary so the user always sees the numbers.
+        return (f"📊 **Pacing measurement** ({chapter_label}, "
+                f"{stats['token_count']:,} words):\n"
+                f"  • avg sentence length: "
+                f"**{stats['avg_sentence_length']:.1f} words**"
+                + (f" (CONLIT {target_genre} baseline: "
+                   f"{comparison['deltas'].get('avg_sentence_length', {}).get('baseline', '?')})"
+                   if comparison.get('deltas', {}).get('avg_sentence_length')
+                   else "")
+                + f"\n  • lexical complexity (Tuldava): "
+                f"**{stats['tuldava_score']:.2f}**\n"
+                f"  • dialogue ratio: "
+                f"**{stats['dialogue_ratio']:.0%}**\n\n"
+                f"{response}")
+
+    def _resolve_target_genre(self, message: str) -> str:
+        """Best-effort: pull a canonical genre key from the project +
+        the message, restricted to genres CONLIT actually covers."""
+        # CONLIT only has mystery / scifi / romance / literary
+        CONLIT_COVERED = {"mystery", "scifi", "romance", "literary"}
+
+        # Try the user's message first (if they explicitly named a genre)
+        try:
+            from src.data.genres import match_genres
+            from_msg = match_genres(message)
+            for g in from_msg:
+                if g in CONLIT_COVERED:
+                    return g
+        except Exception:
+            pass
+        # Fall back to project metadata
+        if self.project and getattr(self.project, "genre", ""):
+            try:
+                from src.data.genres import match_genres
+                for g in match_genres(self.project.genre):
+                    if g in CONLIT_COVERED:
+                        return g
+            except Exception:
+                pass
+        # Final fallback: literary fiction is the most general
+        return "literary"
+
     def _handle_general_chat(self, message: str) -> str:
         """Handle general conversation."""
         system_prompt = """You are a helpful writing assistant. Provide guidance,
         suggestions, and support. Do not write content - help the author develop
         their own ideas. Be encouraging and constructive."""
 
-        response = self.primary_llm.generate_text(
+        # If the user has chosen a 'general' trained model, route through it.
+        # ``continue_if_truncated`` covers the local-model case where a
+        # 300-token budget runs out mid-sentence — same behaviour as the
+        # Hub and Training Studio test runner. Cloud LLMs almost never
+        # truncate at this size, so the heuristic is a no-op for them.
+        llm = self.get_llm_for_task("general")
+        response = llm.generate_text(
             message,
             system_prompt,
             max_tokens=300,
-            temperature=0.7
+            temperature=0.7,
+            continue_if_truncated=True,
+            max_continuations=2,
         )
 
         return response

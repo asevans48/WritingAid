@@ -128,33 +128,76 @@ def qt_message_handler(mode, context, message):
 
 
 def main():
-    """Initialize and run the Writer Platform application."""
+    """Initialize and run CreativeOS — the launcher shell that hosts the
+    Writing Tool today and additional creative/business tools in future.
+
+    Pass ``--writer`` to skip the launcher and open the Writing Tool
+    directly (useful for shortcuts, file associations, and tests).
+    """
     # Install custom message handler to suppress known Qt warnings
     qInstallMessageHandler(qt_message_handler)
 
-    # Enable high DPI scaling for better display on various screens
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
 
     app = QApplication(sys.argv)
-    app.setApplicationName("Writer Platform")
-    app.setOrganizationName("WriterPlatform")
+    app.setApplicationName("CreativeOS")
+    app.setOrganizationName("CreativeOS")
 
-    # Set application icon
     icon_path = Path(__file__).parent / "assets" / "icon.ico"
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
 
-    # Set default application font with valid point size
     default_font = QFont(SYSTEM_FONT, 10)
     if default_font.pointSize() <= 0:
         default_font.setPointSize(10)
     app.setFont(default_font)
 
-    # Create and show main window
-    main_window = MainWindow()
-    main_window.show()
+    # Direct-launch the Writing Tool with --writer (legacy entry point)
+    if "--writer" in sys.argv:
+        main_window = MainWindow()
+        main_window.show()
+        sys.exit(app.exec())
+        return
+
+    # Default: show the CreativeOS launcher shell
+    from src.ui.creative_os_launcher import CreativeOSLauncher
+    launcher = CreativeOSLauncher()
+
+    # Keep references to opened tool windows so they aren't GC'd
+    open_tools: dict[str, object] = {}
+
+    def open_tool(tool_id: str):
+        if tool_id in open_tools and open_tools[tool_id].isVisible():
+            open_tools[tool_id].raise_()
+            open_tools[tool_id].activateWindow()
+            return
+        if tool_id == "writing":
+            window = MainWindow()
+            window.show()
+            open_tools[tool_id] = window
+        elif tool_id == "training":
+            from src.ui.training_tool_window import TrainingToolWindow
+            window = TrainingToolWindow()
+            window.show()
+            open_tools[tool_id] = window
+        elif tool_id == "model_hub":
+            # Local Models Hub — single OS-level surface for browsing,
+            # loading, testing, and deleting every registered model.
+            # Shares the process-wide LRU cache with the Training
+            # Studio test runner and the Writing Tool agent suite.
+            from src.ui.model_hub_window import ModelHubWindow
+            window = ModelHubWindow()
+            window.show()
+            open_tools[tool_id] = window
+        else:
+            # Future tools land here. The launcher already blocks selection
+            # of unavailable tools, so we shouldn't reach this in practice.
+            print(f"[CreativeOS] No launcher registered for '{tool_id}'")
+
+    launcher.tool_selected.connect(open_tool)
+    launcher.show()
 
     sys.exit(app.exec())
 

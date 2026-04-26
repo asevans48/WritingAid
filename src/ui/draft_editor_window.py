@@ -36,6 +36,9 @@ class DraftEditorPanel(QWidget):
 
     draft_saved = pyqtSignal(str)  # draft_id (or MAIN_SOURCE_ID)
     dirty_changed = pyqtSignal(bool)
+    # Emitted when the user wants to route a selection to the main AI chat.
+    # Payload is the selected text; the host resolves which chat to use.
+    ask_ai_requested = pyqtSignal(str)
 
     def __init__(self, project: WriterProject, initial_draft_id: str = "",
                  parent=None, show_close_button: bool = False,
@@ -688,6 +691,13 @@ class DraftEditorPanel(QWidget):
             rephrase_act = menu.addAction("✨ Rephrase with AI…")
             rephrase_act.triggered.connect(self._rephrase_selection)
 
+            ask_ai_act = menu.addAction("💬 Ask AI about this…")
+            ask_ai_act.setToolTip(
+                "Send this selection to the AI assistant, with the current "
+                "draft/chapter as context")
+            ask_ai_act.triggered.connect(
+                lambda: self._ask_ai_about(selected_text))
+
             menu.addSeparator()
 
         # --- Draft actions ---
@@ -769,6 +779,55 @@ class DraftEditorPanel(QWidget):
                     self._set_dirty(True)
         except Exception as ex:
             QMessageBox.warning(self, "Rephrase Error", str(ex))
+
+    def _ask_ai_about(self, selected_text: str):
+        """Route this panel's selection to the main AI chat.
+
+        Emits ``ask_ai_requested`` so the host (main window) can pre-fill
+        the chat input. If no host handler is attached, falls back to
+        walking up the parent chain to find a `chat_widget` and a
+        `_handle_chat_message` method.
+        """
+        if not selected_text or not selected_text.strip():
+            return
+
+        # Build a contextual prompt that names the active source so the
+        # AI knows whether this is Main or a specific draft
+        source_label = ""
+        if self._current_source is not None:
+            if self._is_main_active:
+                source_label = " (Main manuscript"
+            else:
+                source_label = f" (Draft: {self._current_source.name}"
+            if self._current_chapter:
+                source_label += f", Ch {getattr(self._current_chapter, 'number', '?')}: " \
+                                f"{getattr(self._current_chapter, 'title', '')}"
+            source_label += ")"
+
+        prompt = (f"About this passage{source_label}:\n\n"
+                  f"\"{selected_text.strip()}\"\n\n")
+
+        # Primary path: emit the signal — host can choose how to handle it
+        self.ask_ai_requested.emit(prompt)
+
+        # Fallback: walk up the parent chain to find the chat widget and
+        # populate it directly. This lets the feature work even if the
+        # host forgot to wire up the signal.
+        w = self.parent()
+        while w is not None:
+            chat = getattr(w, 'chat_widget', None)
+            if chat is not None:
+                try:
+                    # Populate the input field and show the chat
+                    if hasattr(chat, 'input_field'):
+                        chat.input_field.setText(prompt)
+                        chat.input_field.setFocus()
+                    if hasattr(chat, 'show'):
+                        chat.show()
+                    return
+                except Exception:
+                    break
+            w = w.parent() if hasattr(w, 'parent') else None
 
     def _world_word_selection(self):
         """Open the world-aware thesaurus dialog for this panel's selection."""
@@ -889,6 +948,7 @@ class DraftEditorWindow(QMainWindow):
     """Standalone pop-out window wrapping a DraftEditorPanel."""
 
     draft_saved = pyqtSignal(str)
+    ask_ai_requested = pyqtSignal(str)
 
     def __init__(self, project: WriterProject, initial_draft_id: str = "",
                  parent=None):
@@ -897,6 +957,7 @@ class DraftEditorWindow(QMainWindow):
         self.resize(900, 650)
         self.panel = DraftEditorPanel(project, initial_draft_id, self)
         self.panel.draft_saved.connect(self.draft_saved.emit)
+        self.panel.ask_ai_requested.connect(self.ask_ai_requested.emit)
         self.setCentralWidget(self.panel)
         self.setStatusBar(QStatusBar())
 

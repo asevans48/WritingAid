@@ -4572,6 +4572,7 @@ class ManuscriptEditor(QWidget):
         panel.draft_saved.connect(lambda _id: self._persist_project())
         panel.close_requested.connect(
             lambda: self.compare_drafts_btn.setChecked(False))
+        panel.ask_ai_requested.connect(self._route_prompt_to_chat)
         self._split_draft_panel = panel
 
         # Add the panel as a new pane in the splitter, sized to ~40%
@@ -4637,6 +4638,7 @@ class ManuscriptEditor(QWidget):
         except Exception:
             pass
         win.draft_saved.connect(lambda _id: self._persist_project())
+        win.ask_ai_requested.connect(self._route_prompt_to_chat)
         self._draft_windows.append(win)
         win.show()
 
@@ -4647,6 +4649,29 @@ class ManuscriptEditor(QWidget):
                 self.project.save_project(self.project.project_path)
             except Exception as e:
                 print(f"[Drafts] Save failed: {e}")
+
+    def _route_prompt_to_chat(self, prompt: str):
+        """Forward a prompt from a side/pop-out draft panel into the AI chat.
+
+        Walks up the widget tree to find the main window's chat_widget and
+        populates its input field. This is how the 'Ask AI about this'
+        context-menu action on the draft side panel connects to the
+        project-wide AI assistant.
+        """
+        if not prompt:
+            return
+        host = self.window()  # top-level QMainWindow
+        chat = getattr(host, 'chat_widget', None)
+        if chat is None:
+            return
+        try:
+            if hasattr(chat, 'input_field'):
+                chat.input_field.setText(prompt)
+                chat.input_field.setFocus()
+            if hasattr(chat, 'show'):
+                chat.show()
+        except Exception as e:
+            print(f"[Drafts] Could not route prompt to chat: {e}")
 
     def get_memory_stats(self) -> dict:
         """Get memory manager statistics for debugging/monitoring."""
