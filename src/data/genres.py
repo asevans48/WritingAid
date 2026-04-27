@@ -46,6 +46,8 @@ GENRES: Dict[str, Dict] = {
             "gutenberg-willows", "gutenberg-house-borderland",
             "gutenberg-hauntings", "gutenberg-turn-of-screw",
             "gutenberg-beetle", "gutenberg-wieland",
+            # Whole PG with bookshelf-tagged horror entries.
+            "hf-pg-tagged",
         ],
         "authors": [
             "Edgar Allan Poe", "Mary Shelley", "Bram Stoker",
@@ -92,6 +94,8 @@ GENRES: Dict[str, Dict] = {
             "gutenberg-frankenstein", "gutenberg-dracula",
             "gutenberg-wuthering-heights", "gutenberg-carmilla",
             "gutenberg-jane-eyre",
+            # Whole PG English — bookshelf-tagged Gothic Fiction.
+            "hf-pg-tagged",
         ],
         "authors": [
             "Mary Shelley", "Bram Stoker", "Charlotte Brontë",
@@ -132,6 +136,11 @@ GENRES: Dict[str, Dict] = {
             "gutenberg-middlemarch",
             "gutenberg-age-of-innocence", "gutenberg-house-of-mirth",
             "gutenberg-emma", "gutenberg-anne-green-gables",
+            # Whole PG English with bookshelf-tagged romance entries.
+            "hf-pg-tagged",
+            # Pulp-era romance fills the gap between Austen / Brontë
+            # 1800s and modern still-copyrighted romance.
+            "hf-storytracer-us-pd",
         ],
         "authors": [
             "Jane Austen", "Charlotte Brontë", "Emily Brontë",
@@ -181,6 +190,11 @@ GENRES: Dict[str, Dict] = {
             "gutenberg-father-brown",
             "gutenberg-mysterious-affair-styles",
             "gutenberg-leavenworth-case",
+            # Whole PG English — bookshelf-tagged Mystery + Detective.
+            "hf-pg-tagged",
+            # Pulp-era detective novels (1923-1965ish) that
+            # dominated mid-century American mystery.
+            "hf-storytracer-us-pd",
         ],
         "authors": [
             "Arthur Conan Doyle", "Wilkie Collins", "Edgar Allan Poe",
@@ -219,6 +233,10 @@ GENRES: Dict[str, Dict] = {
             "gutenberg-man-who-was-thursday",
             "gutenberg-moonstone", "gutenberg-heart-of-darkness",
             "gutenberg-invisible-man",
+            # Whole PG English — bookshelf-tagged thriller-adjacent.
+            "hf-pg-tagged",
+            # Pulp-era thriller / spy fiction.
+            "hf-storytracer-us-pd",
         ],
         "authors": [
             "John Buchan", "Wilkie Collins", "G. K. Chesterton",
@@ -256,7 +274,14 @@ GENRES: Dict[str, Dict] = {
             "gutenberg-invisible-man", "gutenberg-20000-leagues",
             "gutenberg-princess-mars", "gutenberg-frankenstein",
             "gutenberg-flatland", "gutenberg-mysterious-island",
-            "hf-sf-corpus-chunks", "hf-sf-corpus-books",
+            # storytracer captures pulp-era SF (1923-1965ish) that
+            # lapsed into PD via copyright non-renewal — fills the
+            # gap between PG (pre-1929) and modern still-copyrighted
+            # SF. Replaces the SF-Corpus EF entries which were
+            # removed (HathiTrust Extracted Features ≠ prose).
+            "hf-storytracer-us-pd",
+            # Whole PG English — bookshelf-tagged Science Fiction.
+            "hf-pg-tagged",
         ],
         "authors": [
             "H. G. Wells", "Jules Verne", "Edgar Rice Burroughs",
@@ -302,6 +327,11 @@ GENRES: Dict[str, Dict] = {
             "gutenberg-luck-roaring-camp", "gutenberg-chip-flying-u",
             "gutenberg-untamed", "gutenberg-bar-20",
             "gutenberg-main-travelled-roads",
+            # Whole PG English — bookshelf-tagged Westerns.
+            "hf-pg-tagged",
+            # Pulp-era westerns (Max Brand and successors had a
+            # productive 1923-1965 run that lapsed into PD).
+            "hf-storytracer-us-pd",
         ],
         "authors": [
             "Owen Wister", "Zane Grey", "Andy Adams",
@@ -351,6 +381,9 @@ GENRES: Dict[str, Dict] = {
             "gutenberg-mohicans", "gutenberg-deerslayer",
             "gutenberg-call-of-wild", "gutenberg-white-fang",
             "gutenberg-my-antonia", "gutenberg-roughing-it",
+            # Whole PG English — bookshelf-tagged "Frontier and
+            # Pioneer Life" entries.
+            "hf-pg-tagged",
         ],
         "authors": [
             "James Fenimore Cooper", "Jack London",
@@ -388,6 +421,8 @@ GENRES: Dict[str, Dict] = {
         "corpora": [
             "gutenberg-grimms", "wikisource-aesop",
             "gutenberg-princess-mars", "gutenberg-oz",
+            # Whole PG English — bookshelf-tagged Fantasy.
+            "hf-pg-tagged",
         ],
         "authors": [
             "Brothers Grimm", "Aesop", "Lord Dunsany",
@@ -425,6 +460,11 @@ GENRES: Dict[str, Dict] = {
             "gutenberg-treasure-island", "gutenberg-kidnapped",
             "gutenberg-king-solomons-mines",
             "gutenberg-mysterious-island",
+            # Whole PG English — bookshelf-tagged Adventure.
+            "hf-pg-tagged",
+            # Pulp-era adventure (Burroughs, Haggard imitators)
+            # well-represented in 1923-1965 PD American books.
+            "hf-storytracer-us-pd",
         ],
         "authors": [
             "Robert Louis Stevenson", "Jules Verne",

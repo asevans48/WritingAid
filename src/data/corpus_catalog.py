@@ -1637,17 +1637,65 @@ CATALOG: List[CorpusEntry] = [
         hf_max_rows=4_000,
     ),
     CorpusEntry(
-        id="hf-pg19",
-        name="PG-19 — Project Gutenberg books (DeepMind, pre-1919)",
-        description="DeepMind's curated long-form benchmark: ~28k full-length "
-                    "books published before 1919, all public domain. The "
-                    "standard 'books corpus' for long-context training.",
-        url="deepmind/pg19",
-        source_page="https://huggingface.co/datasets/deepmind/pg19",
+        id="hf-pg-tagged",
+        name="Project Gutenberg English — bookshelf-tagged (sedthh)",
+        description="The whole English-language Project Gutenberg "
+                    "catalog with PG's official bookshelf taxonomy "
+                    "preserved per book — Science Fiction, Gothic "
+                    "Fiction, Mystery Fiction, Detective Fiction, "
+                    "Adventure, Fantasy, Westerns, Frontier and "
+                    "Pioneer Life, Horror & Supernatural Fiction, "
+                    "and many more. Each row is a full book; the "
+                    "downloader fans it into paragraph pairs and "
+                    "tags every pair with the book's bookshelves "
+                    "mapped through our genre taxonomy. Result: "
+                    "training rows automatically get the right "
+                    "``genre`` column, so a horror fine-tune only "
+                    "trains on horror-tagged passages without you "
+                    "hand-curating which PG entries to download.",
+        url="sedthh/gutenberg_english",
+        source_page="https://huggingface.co/datasets/sedthh/gutenberg_english",
         license="pd-us",
         license_url="https://www.gutenberg.org/policy/license.html",
         format="hf_dataset",
-        author="DeepMind / Project Gutenberg authors (PD)",
+        author="Project Gutenberg authors (PD) / sedthh (mirror + tagging)",
+        tags=["fiction", "books", "varied-genre", "tagged", "classic",
+              "scifi", "horror", "western", "frontier", "mystery",
+              "adventure", "gothic", "fantasy", "romance"],
+        size_hint_kb=20_000_000,        # rough — full English PG
+        purpose="voice",
+        medium="books",
+        narratives=28_000,
+        hf_split="train",
+        # Dotted paths read JSON-encoded sub-fields out of the
+        # METADATA column. The fetcher and downloader both
+        # understand these now.
+        hf_text_field="TEXT",
+        hf_genre_field="METADATA.bookshelves",
+        hf_title_field="METADATA.title",
+        # 2k books × ~80 paragraph pairs each = ~160K training pairs.
+        hf_max_rows=2_000,
+    ),
+    CorpusEntry(
+        id="hf-pg19",
+        name="PG-19 — Project Gutenberg books (pre-1919, parquet mirror)",
+        description="DeepMind's curated long-form benchmark: ~28k full-"
+                    "length books published before 1919, all public "
+                    "domain. The standard 'books corpus' for long-context "
+                    "training. We point at emozilla's parquet mirror "
+                    "rather than the original deepmind/pg19 because the "
+                    "DeepMind release ships with a Python loader script "
+                    "(pg19.py) that the modern `datasets` package "
+                    "(3.x+) refuses to execute as a security measure. "
+                    "Same data, same schema, same license — just "
+                    "packaged in a format that still loads.",
+        url="emozilla/pg19",
+        source_page="https://huggingface.co/datasets/emozilla/pg19",
+        license="pd-us",
+        license_url="https://www.gutenberg.org/policy/license.html",
+        format="hf_dataset",
+        author="DeepMind (original) / emozilla (mirror) / "
+               "Project Gutenberg authors (PD)",
         tags=["fiction", "books", "long-form", "varied-genre", "classic"],
         size_hint_kb=11_000_000,
         purpose="voice",
@@ -1743,51 +1791,19 @@ CATALOG: List[CorpusEntry] = [
         hf_title_field="title",
         hf_max_rows=2_000,
     ),
-    CorpusEntry(
-        id="hf-sf-corpus-chunks",
-        name="SF-Corpus EF: chapters & chunks (science fiction)",
-        description="Science-fiction novels pre-split into chapter-sized "
-                    "chunks — convenient training-ready format. Hosted by "
-                    "the SF-Corpus org on HuggingFace; license varies by "
-                    "source work, so this entry requires attestation "
-                    "before download.",
-        url="SF-Corpus/EF_Chapters_and_Chunks",
-        source_page="https://huggingface.co/datasets/SF-Corpus/EF_Chapters_and_Chunks",
-        license="user-attested",
-        license_url="https://huggingface.co/datasets/SF-Corpus/EF_Chapters_and_Chunks",
-        format="hf_dataset",
-        author="SF-Corpus (HuggingFace community)",
-        tags=["fiction", "scifi", "books", "chapters", "training-ready"],
-        size_hint_kb=2_000_000,
-        purpose="voice",
-        medium="books",
-        narratives=2_000,            # rough — varies by EF release
-        hf_split="train",
-        hf_text_field="text",        # most likely; downloader auto-detects too
-        hf_max_rows=4_000,
-    ),
-    CorpusEntry(
-        id="hf-sf-corpus-books",
-        name="SF-Corpus EF: full books & chapter spans (science fiction)",
-        description="Sibling of the chunks dataset — same SF source works "
-                    "at the full-book / multi-chapter granularity. Better "
-                    "for long-context training; pick chunks for shorter "
-                    "training-row format.",
-        url="SF-Corpus/EF_Books_and_Chapters",
-        source_page="https://huggingface.co/datasets/SF-Corpus/EF_Books_and_Chapters",
-        license="user-attested",
-        license_url="https://huggingface.co/datasets/SF-Corpus/EF_Books_and_Chapters",
-        format="hf_dataset",
-        author="SF-Corpus (HuggingFace community)",
-        tags=["fiction", "scifi", "books", "long-form", "training-ready"],
-        size_hint_kb=3_000_000,
-        purpose="voice",
-        medium="books",
-        narratives=500,
-        hf_split="train",
-        hf_text_field="text",
-        hf_max_rows=1_500,
-    ),
+    # NOTE — SF-Corpus EF entries removed. Both
+    # ``SF-Corpus/EF_Chapters_and_Chunks`` and
+    # ``SF-Corpus/EF_Books_and_Chapters`` publish in HathiTrust
+    # Extracted Features format: each "row" is the *alphabetically
+    # sorted bag of words* of a chunk, with word-frequency repeats
+    # preserved. That's legal to share even for in-copyright SF
+    # works, but it is fundamentally not prose — useless for
+    # language-model training. Recommend Project Gutenberg SF
+    # entries (gutenberg-time-machine, gutenberg-war-of-worlds,
+    # gutenberg-invisible-man, gutenberg-20000-leagues,
+    # gutenberg-princess-mars) and ``hf-storytracer-us-pd`` (which
+    # captures pulp-era SF that lapsed into the public domain) as
+    # legitimate replacements.
     CorpusEntry(
         id="hf-storytracer-us-pd",
         name="Modern PD American books — storytracer (COCA-substitute)",

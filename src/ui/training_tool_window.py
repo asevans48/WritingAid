@@ -2374,6 +2374,23 @@ class TrainingToolWindow(QMainWindow):
             self._open_corpus_quality_check)
         corpus_row.addWidget(self.check_quality_step1_btn)
 
+        # Row scrubber — mutate rows in place to remove inline
+        # garbage (repeated words, mojibake, control chars,
+        # entities, weird whitespace). Different from Clean (drops
+        # rows) and Prune (drops redundant rows): this fixes
+        # garbage *inside* surviving rows.
+        self.scrub_records_btn = QPushButton("🩹 Scrub records…")
+        self.scrub_records_btn.setToolTip(
+            "Per-row content cleanup. Detects repeated-word runs, "
+            "mojibake, undecoded HTML entities, control "
+            "characters, and excess whitespace inside each row "
+            "and lets you approve each category before applying. "
+            "Backs up the original output_text of every mutated "
+            "row.")
+        self.scrub_records_btn.clicked.connect(
+            self._open_row_scrubber_dialog)
+        corpus_row.addWidget(self.scrub_records_btn)
+
         # Variability prune — separate from junk cleaning. Detects
         # exact duplicates, repeated openers, and dominant sources
         # in the existing corpus, shows stats per category, and
@@ -3521,6 +3538,22 @@ class TrainingToolWindow(QMainWindow):
                     f"(net +{rescued_inserted - len(to_rescue):,}).")
         msg += f"\n\nBackup saved to:\n{backup_path}\n\nRefreshing summary…"
         QMessageBox.information(self, "Cleanup complete", msg)
+        self._refresh_db_summary()
+
+    def _open_row_scrubber_dialog(self) -> None:
+        """Open the per-row scrubber dialog.
+
+        Mutates row content (output_text) instead of dropping
+        rows. Shows per-issue checkboxes with before/after
+        examples so the user can preview each fix before applying.
+        Backs up the original text of every modified row to
+        ~/.creativeos/cleanup_backup/ so the operation is
+        reversible by replaying the JSONL.
+        """
+        dlg = _RowScrubberDialog(self.db_path, parent=self)
+        dlg.exec()
+        if hasattr(self, "corpus_dashboard"):
+            self.corpus_dashboard.refresh()
         self._refresh_db_summary()
 
     def _open_variability_prune_dialog(self) -> None:
@@ -8704,10 +8737,14 @@ class _VariabilityAuditWorker(QThread):
 class _TopicAnalysisWorker(QThread):
     """Run the TF-IDF + KMeans topic clustering on demand.
 
-    Slow (~2-3 min on 800K rows) and pulls in scikit-learn, so we
-    only fire this when the user explicitly clicks "Analyze
-    topics" on the corresponding card. Same progress signal shape
-    as the audit worker.
+    Slow (~25–60 s on 800K rows) and memory-hungry (TF-IDF matrix
+    + dense SVD output add up to ~200 MB on top of sklearn's
+    overhead). If a local LLM is currently loaded in the
+    LoadedModelCache it can occupy 5–15 GB of RAM by itself, and
+    running clustering on top can OOM the process. We force-evict
+    the cache before starting; the model will load again on next
+    use (model loading is idempotent and the cache is rebuilt
+    lazily).
     """
     finished_ok = pyqtSignal(object)  # TopicAnalysis
     progress = pyqtSignal(int, int, str)
@@ -8719,6 +8756,44 @@ class _TopicAnalysisWorker(QThread):
 
     def run(self):
         try:
+            # Evict any loaded LLMs before sklearn allocates. The
+            # eviction path is: drop strong refs to the model
+            # tensors → run gc → clear CUDA cache (if available).
+            # We surface it via the progress signal so the user
+            # sees what's happening and isn't surprised when their
+            # next chat call has to reload the model.
+            try:
+                from src.ai.model_cache import get_default_cache
+                cache = get_default_cache()
+                loaded = cache.loaded_summary()
+                if loaded:
+                    ram = cache.current_ram_gb()
+                    self.progress.emit(
+                        0, 0,
+                        f"freeing {len(loaded)} loaded model"
+                        f"{'s' if len(loaded) != 1 else ''} "
+                        f"(~{ram:.1f} GB) for k-means")
+                    cache.clear()
+                    import gc
+                    gc.collect()
+                    try:
+                        import torch
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        if hasattr(torch, "mps") and \
+                                torch.backends.mps.is_available():
+                            torch.mps.empty_cache()
+                    except ImportError:
+                        pass
+            except Exception as ex:
+                # Eviction is best-effort. If the cache module
+                # doesn't import for some reason we still try to
+                # run the analysis — sklearn might fit anyway.
+                self.progress.emit(
+                    0, 0,
+                    f"could not pre-evict model cache ({ex}); "
+                    f"continuing")
+
             from src.ai.corpus_variability import (
                 analyze_topic_distribution,
             )
@@ -9621,6 +9696,501 @@ class _VariabilityPruneDialog(QDialog):
         self.cancel_btn.setEnabled(True)
         QMessageBox.warning(
             self, "Prune failed",
+            f"Apply failed: {msg}")
+
+
+# ── Row scrubber dialog ───────────────────────────────────────
+
+class _RowScrubberAuditWorker(QThread):
+    """Run the per-row scrub audit off the UI thread.
+
+    Iterates every accepted row applying every issue detector,
+    collecting per-issue counts and a few before/after example
+    pairs for the dialog. ~12s on 250K rows on a typical SSD.
+    """
+    finished_ok = pyqtSignal(object)  # ScrubReport
+    progress = pyqtSignal(int, int, str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, db_path: Path):
+        super().__init__()
+        self.db_path = db_path
+
+    def run(self):
+        try:
+            from src.data.row_scrubber import audit_scrub_candidates
+            db = RephraseDatabase(self.db_path)
+            report = audit_scrub_candidates(
+                db,
+                on_progress=lambda c, t, lbl:
+                    self.progress.emit(c, t, lbl))
+            self.finished_ok.emit(report)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.failed.emit(str(e))
+
+
+class _RowScrubberApplyWorker(QThread):
+    """Apply approved scrub flags to the DB on a worker thread."""
+    # (rows_updated, rows_deleted, backup_path)
+    finished_ok = pyqtSignal(int, int, str)
+    progress = pyqtSignal(int, int, str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, db_path: Path, plan, *,
+                 backup_path: Path):
+        super().__init__()
+        self.db_path = db_path
+        self.plan = plan
+        self.backup_path = backup_path
+
+    def run(self):
+        try:
+            from src.data.row_scrubber import apply_scrub
+            db = RephraseDatabase(self.db_path)
+            stats = apply_scrub(
+                db, self.plan,
+                backup_path=self.backup_path,
+                on_progress=lambda c, t, lbl:
+                    self.progress.emit(c, t, lbl))
+            self.finished_ok.emit(
+                stats["rows_updated"],
+                stats["rows_deleted"],
+                str(self.backup_path))
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.failed.emit(str(e))
+
+
+class _RowScrubberDialog(QDialog):
+    """Per-row content scrubber.
+
+    Mutates rows in place to remove inline garbage that the model
+    would otherwise reproduce: repeated-word runs, mojibake,
+    undecoded HTML entities, control characters, weird whitespace.
+    Distinct from Clean (which drops whole rows) and Prune for
+    variability (which drops redundant rows): these rows stay,
+    their content gets fixed.
+
+    Per-issue checkboxes so the user can apply only the fixes
+    they trust on this corpus — e.g. fix mojibake but skip
+    char-repetition collapse if their corpus is poetry-heavy.
+    """
+
+    # (issue_tag, title, description, accent_bg, accent_border,
+    #  accent_text)
+    _ISSUE_CARDS = [
+        ("word_repetition",
+         "Repeated words",
+         "Collapse 4+ consecutive identical words to one. "
+         "Catches \"the the the the\" / \"said said said\" / "
+         "tokenizer-spam without affecting legitimate emphasis "
+         "(\"no, no, no\" — different words, kept).",
+         "#fef3c7", "#fde68a", "#92400e"),
+        ("char_repetition",
+         "Repeated characters",
+         "Cap 7+ consecutive identical chars at 3. Preserves "
+         "emphasis (\"wow!!!\", \"ohhh\") while killing garbage "
+         "(\"aaaaaaaaa\", \"!!!!!!!!!!!!\").",
+         "#fce7f3", "#fbcfe8", "#9d174d"),
+        ("html_entity",
+         "Undecoded HTML entities",
+         "Replace <code>&amp;amp;</code>, <code>&amp;quot;</code>, "
+         "<code>&amp;#39;</code> etc. with their actual characters. "
+         "These leak in from web-scraped corpora and confuse the "
+         "tokenizer.",
+         "#dbeafe", "#bfdbfe", "#1e40af"),
+        ("mojibake",
+         "Mojibake (encoding artifacts)",
+         "Fix UTF-8 bytes round-tripped through Latin-1 — "
+         "<code>â€™</code> → <code>’</code>, "
+         "<code>Ã©</code> → <code>é</code>. Caused by tools that "
+         "guessed the wrong encoding when scraping.",
+         "#fed7aa", "#fdba74", "#9a3412"),
+        ("control_char",
+         "Control characters",
+         "Strip non-printable bytes (\\x00–\\x1f and the C1 "
+         "control range) except tab / newline / carriage "
+         "return. Almost always indicates corruption.",
+         "#fee2e2", "#fecaca", "#991b1b"),
+        ("whitespace",
+         "Excess whitespace",
+         "Collapse runs of multiple spaces to one, runs of 3+ "
+         "blank lines to two, and replace exotic Unicode "
+         "whitespace (NBSP, thin space, ideographic space) "
+         "with regular space.",
+         "#dcfce7", "#bbf7d0", "#14532d"),
+        ("copyright_notice",
+         "Copyright / license notices",
+         "Strip Project Gutenberg markers, license preambles, "
+         "<code>Copyright (c) YYYY</code> lines, "
+         "<code>Produced by …</code> attributions, HathiTrust / "
+         "Internet Archive provenance, and similar legal / "
+         "metadata boilerplate. <b>Rows whose entire content is "
+         "a notice will be DELETED</b> — the audit reports the "
+         "delete count separately from the update count so you "
+         "see exactly what's leaving the DB.",
+         "#e0e7ff", "#c7d2fe", "#3730a3"),
+    ]
+
+    def __init__(self, db_path: Path, *, parent=None):
+        super().__init__(parent)
+        self.db_path = db_path
+        self._report = None
+        self._worker = None
+        self._apply_worker = None
+
+        self.setWindowTitle("Scrub records (per-row content cleanup)")
+        self.setMinimumSize(820, 640)
+        self._build_ui()
+        self._kick_off_audit()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+
+        title = QLabel("<b>Scrub records — fix garbage inside rows</b>")
+        f = title.font(); f.setPointSize(13); title.setFont(f)
+        layout.addWidget(title)
+
+        intro = QLabel(
+            "Mutates rows in place — different from <i>Clean</i> "
+            "(drops whole rows) and <i>Prune for variability</i> "
+            "(drops redundant rows). Each issue category is "
+            "approved separately and shown with before/after "
+            "examples first.")
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color:#374151;font-size:12px;")
+        layout.addWidget(intro)
+
+        self.status_label = QLabel("Scanning DB…")
+        self.status_label.setStyleSheet(
+            "background:#f3f4f6;border-radius:4px;padding:8px;"
+            "font-family:monospace;font-size:11px;")
+        layout.addWidget(self.status_label)
+
+        self.audit_bar = QProgressBar()
+        self.audit_bar.setRange(0, 1)
+        self.audit_bar.setValue(0)
+        self.audit_bar.setFormat("%p%")
+        self.audit_bar.setVisible(True)
+        layout.addWidget(self.audit_bar)
+
+        # Scrollable card list — same pattern as the prune dialog.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setStyleSheet("QScrollArea { border: none; }")
+        scroll_inner = QWidget()
+        cards_layout = QVBoxLayout(scroll_inner)
+        cards_layout.setContentsMargins(0, 0, 4, 0)
+        cards_layout.setSpacing(8)
+
+        self._issue_boxes: Dict[str, Dict[str, Any]] = {}
+        for issue, t, d, bg, br, tx in self._ISSUE_CARDS:
+            box = self._build_issue_card(t, d, bg, br, tx)
+            self._issue_boxes[issue] = box
+            cards_layout.addWidget(box["frame"])
+        cards_layout.addStretch()
+        scroll.setWidget(scroll_inner)
+        layout.addWidget(scroll, 1)
+
+        self.summary_label = QLabel("")
+        self.summary_label.setWordWrap(True)
+        self.summary_label.setStyleSheet(
+            "padding:8px;background:#f9fafb;border-radius:4px;"
+            "color:#111827;")
+        layout.addWidget(self.summary_label)
+
+        actions = QHBoxLayout()
+        self.cancel_btn = QPushButton("Close")
+        self.cancel_btn.clicked.connect(self.reject)
+        actions.addWidget(self.cancel_btn)
+        actions.addStretch()
+        self.apply_btn = QPushButton("✓ Apply approved fixes")
+        self.apply_btn.setStyleSheet(
+            "QPushButton { background:#10b981; color:white; "
+            "padding:6px 14px; border-radius:5px; font-weight:bold; } "
+            "QPushButton:disabled { background:#d1d5db; }")
+        self.apply_btn.setEnabled(False)
+        self.apply_btn.clicked.connect(self._on_apply_clicked)
+        actions.addWidget(self.apply_btn)
+        layout.addLayout(actions)
+
+    def _build_issue_card(self, title: str, desc: str,
+                          bg: str, border: str, text: str) -> Dict[str, Any]:
+        frame = QGroupBox(title)
+        frame.setStyleSheet(
+            f"QGroupBox {{ background:{bg}; border:1px solid {border}; "
+            f"border-radius:6px; padding-top:18px; margin-top:6px; "
+            f"font-weight:bold; color:{text}; }}")
+        v = QVBoxLayout(frame)
+        desc_lbl = QLabel(desc)
+        desc_lbl.setWordWrap(True)
+        desc_lbl.setStyleSheet(
+            f"color:{text}; font-size:11px; font-weight:normal;")
+        v.addWidget(desc_lbl)
+        cb = QCheckBox("Apply this fix")
+        cb.setEnabled(False)
+        cb.toggled.connect(self._update_summary)
+        v.addWidget(cb)
+        stats_lbl = QLabel("")
+        stats_lbl.setWordWrap(True)
+        stats_lbl.setStyleSheet(
+            "color:#111827; font-size:11px; font-weight:normal;")
+        v.addWidget(stats_lbl)
+        diffs_lbl = QLabel("")
+        diffs_lbl.setWordWrap(True)
+        diffs_lbl.setTextFormat(Qt.TextFormat.RichText)
+        diffs_lbl.setStyleSheet(
+            "color:#374151; font-size:10px; font-weight:normal; "
+            "font-family:monospace; padding-top:4px;")
+        v.addWidget(diffs_lbl)
+        return {"frame": frame, "checkbox": cb,
+                "stats": stats_lbl, "diffs": diffs_lbl}
+
+    # ── Audit ─────────────────────────────────────────────
+
+    def _kick_off_audit(self):
+        self._worker = _RowScrubberAuditWorker(self.db_path)
+        self._worker.progress.connect(self._on_audit_progress)
+        self._worker.finished_ok.connect(self._on_audit_done)
+        self._worker.failed.connect(self._on_audit_failed)
+        self._worker.start()
+
+    def _on_audit_progress(self, current: int, total: int, label: str):
+        if total > 0:
+            self.audit_bar.setRange(0, total)
+            self.audit_bar.setValue(current)
+            self.audit_bar.setFormat(f"{label} — %p%")
+        else:
+            self.audit_bar.setRange(0, 0)
+            self.audit_bar.setFormat(label)
+        self.status_label.setText(f"{label}: {current:,} / {total:,}")
+
+    def _on_audit_done(self, report):
+        self._report = report
+        self.audit_bar.setVisible(False)
+        # Mention emptied-rows count separately when nonzero so
+        # users know rows will be deleted, not just updated.
+        empty_clause = (
+            f" — <b>{report.rows_emptied:,}</b> would empty out "
+            f"and be deleted"
+            if report.rows_emptied else "")
+        self.status_label.setText(
+            f"Scanned <b>{report.total_rows:,}</b> rows. "
+            f"<b>{report.rows_changed:,}</b> would change "
+            f"under at least one fix{empty_clause}.")
+        self._render_report(report)
+        self.apply_btn.setEnabled(True)
+        self._update_summary()
+
+    def _on_audit_failed(self, msg: str):
+        self.audit_bar.setVisible(False)
+        self.status_label.setText(
+            f"<span style='color:#b91c1c'>Audit failed: {msg}</span>")
+
+    def _render_report(self, report):
+        for issue, _, _, _, _, _ in self._ISSUE_CARDS:
+            box = self._issue_boxes[issue]
+            n = report.per_issue_rows.get(issue, 0)
+            cb = box["checkbox"]
+            if n == 0:
+                cb.setEnabled(False)
+                box["stats"].setText("No rows would change.")
+                box["diffs"].setText("")
+                continue
+            cb.setEnabled(True)
+            cb.setChecked(True)  # default-on; user opts out per category
+            # Notice category special-cases its stats line to
+            # surface the delete-vs-update split (the audit's
+            # ``rows_emptied`` is global, but in practice the only
+            # source of empty-after-scrub is the notice category).
+            if issue == "copyright_notice" and report.rows_emptied:
+                box["stats"].setText(
+                    f"<b>{n:,}</b> rows match notice patterns. "
+                    f"<b>{report.rows_emptied:,}</b> of them are "
+                    f"<i>pure</i> notice and would be DELETED; "
+                    f"the rest get the notice excised in place.")
+            else:
+                box["stats"].setText(
+                    f"<b>{n:,}</b> rows would change.")
+            examples = report.examples.get(issue, [])
+            lines = []
+            for ex in examples[:4]:
+                # Render before / after pair. Escape HTML so the
+                # actual chars in the row don't break our markup.
+                def esc(s: str) -> str:
+                    return (s.replace("&", "&amp;")
+                             .replace("<", "&lt;")
+                             .replace(">", "&gt;"))
+                before_short = esc(ex.before[:200]).replace(
+                    "\n", "↵")
+                after_short = esc(ex.after[:200]).replace(
+                    "\n", "↵")
+                # If the after text is empty, label it so the user
+                # sees this row would be deleted rather than just
+                # silently rendering an empty "+" line.
+                if not ex.after.strip():
+                    after_short = "<i>(empty — row would be deleted)</i>"
+                lines.append(
+                    f"<i>id={ex.row_id}</i><br>"
+                    f"&nbsp;&nbsp;<span style='color:#b91c1c'>"
+                    f"−</span> {before_short}<br>"
+                    f"&nbsp;&nbsp;<span style='color:#15803d'>"
+                    f"+</span> {after_short}")
+            box["diffs"].setText("<br><br>".join(lines))
+
+    # ── Live summary ──────────────────────────────────────
+
+    def _update_summary(self):
+        if not self._report:
+            return
+        approved = []
+        # We can't simply sum per-issue counts (rows hit by multiple
+        # fixes would be double-counted). Floor: max single-issue
+        # count. Ceiling: sum. Show both as a range.
+        per_issue = self._report.per_issue_rows
+        approved_counts = []
+        for issue, t, _, _, _, _ in self._ISSUE_CARDS:
+            cb = self._issue_boxes[issue]["checkbox"]
+            if cb.isChecked():
+                approved.append(t.lower())
+                approved_counts.append(per_issue.get(issue, 0))
+        if not approved:
+            self.summary_label.setText(
+                "<i>Nothing approved yet — pick at least one "
+                "fix above to enable Apply.</i>")
+            self.apply_btn.setEnabled(False)
+            return
+        floor = max(approved_counts) if approved_counts else 0
+        ceiling = sum(approved_counts)
+        self.summary_label.setText(
+            f"Approved: <b>{', '.join(approved)}</b>.<br>"
+            f"Will mutate between <b>{floor:,}</b> and "
+            f"<b>{ceiling:,}</b> rows (rows hit by multiple "
+            f"fixes count once in the actual update).")
+        self.apply_btn.setEnabled(True)
+
+    # ── Apply ─────────────────────────────────────────────
+
+    def _on_apply_clicked(self):
+        from src.data.row_scrubber import ScrubPlan
+        plan = ScrubPlan(
+            fix_word_rep=self._issue_boxes["word_repetition"]
+                ["checkbox"].isChecked(),
+            fix_char_rep=self._issue_boxes["char_repetition"]
+                ["checkbox"].isChecked(),
+            fix_html_ent=self._issue_boxes["html_entity"]
+                ["checkbox"].isChecked(),
+            fix_mojibake=self._issue_boxes["mojibake"]
+                ["checkbox"].isChecked(),
+            fix_ctrl=self._issue_boxes["control_char"]
+                ["checkbox"].isChecked(),
+            fix_whitespace=self._issue_boxes["whitespace"]
+                ["checkbox"].isChecked(),
+            fix_notices=self._issue_boxes["copyright_notice"]
+                ["checkbox"].isChecked(),
+        )
+        if not plan.has_any:
+            return
+
+        # Confirm before mutation.
+        per_issue = self._report.per_issue_rows
+        approved_lines = []
+        for issue, t, _, _, _, _ in self._ISSUE_CARDS:
+            cb = self._issue_boxes[issue]["checkbox"]
+            if cb.isChecked():
+                approved_lines.append(
+                    f"  • {t}: up to {per_issue.get(issue, 0):,} rows")
+        # Add a delete-warning when notices are approved AND the
+        # audit found any rows that would empty out completely.
+        delete_warning = ""
+        if (plan.fix_notices and self._report.rows_emptied > 0):
+            delete_warning = (
+                f"\n\nIMPORTANT: <b>{self._report.rows_emptied:,}"
+                f"</b> rows are pure notice content and will be "
+                f"DELETED (not just updated) because nothing "
+                f"trainable remains after stripping. Backups "
+                f"include their full original payload.")
+        confirm = QMessageBox(self)
+        confirm.setIcon(QMessageBox.Icon.Warning)
+        confirm.setWindowTitle("Confirm scrub")
+        confirm.setTextFormat(Qt.TextFormat.RichText)
+        confirm.setText(
+            f"Apply approved fixes to every matching row?\n\n"
+            + "\n".join(approved_lines)
+            + delete_warning
+            + "\n\nBackups (with original output_text per "
+            "modified row) go to "
+            "~/.creativeos/cleanup_backup/. Mutation is "
+            "irreversible from inside the app, but you can "
+            "restore from the backup JSONL.")
+        confirm.setStandardButtons(
+            QMessageBox.StandardButton.Cancel
+            | QMessageBox.StandardButton.Yes)
+        confirm.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        if confirm.exec() != QMessageBox.StandardButton.Yes:
+            return
+
+        from datetime import datetime as _dt
+        backup_dir = Path.home() / ".creativeos" / "cleanup_backup"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        ts = _dt.now().strftime("%Y%m%d-%H%M%S")
+        backup_path = backup_dir / f"scrub-{ts}.jsonl"
+
+        self.apply_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(False)
+        self.audit_bar.setVisible(True)
+        self.audit_bar.setRange(0, 0)
+        self.audit_bar.setFormat("starting scrub")
+        self.status_label.setText("Applying scrub…")
+
+        self._apply_worker = _RowScrubberApplyWorker(
+            self.db_path, plan, backup_path=backup_path)
+        self._apply_worker.progress.connect(self._on_apply_progress)
+        self._apply_worker.finished_ok.connect(self._on_apply_done)
+        self._apply_worker.failed.connect(self._on_apply_failed)
+        self._apply_worker.start()
+
+    def _on_apply_progress(self, current: int, total: int, label: str):
+        if total > 0:
+            self.audit_bar.setRange(0, total)
+            self.audit_bar.setValue(current)
+            self.audit_bar.setFormat(f"{label} — %p%")
+        else:
+            self.audit_bar.setRange(0, 0)
+            self.audit_bar.setFormat(label)
+        self.status_label.setText(f"Scrub: <b>{label}</b>")
+
+    def _on_apply_done(self, n_updated: int, n_deleted: int,
+                       backup_path: str):
+        self.audit_bar.setVisible(False)
+        total = n_updated + n_deleted
+        if total == 0:
+            QMessageBox.information(
+                self, "Nothing to scrub",
+                "No rows changed under the approved fixes.")
+            self.apply_btn.setEnabled(True)
+            self.cancel_btn.setEnabled(True)
+            return
+        QMessageBox.information(
+            self, "Scrub complete",
+            f"Updated {n_updated:,} rows · "
+            f"deleted {n_deleted:,} rows.\n"
+            f"Backup saved to:\n{backup_path}")
+        self.accept()
+
+    def _on_apply_failed(self, msg: str):
+        self.audit_bar.setVisible(False)
+        self.apply_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(True)
+        QMessageBox.warning(
+            self, "Scrub failed",
             f"Apply failed: {msg}")
 
 

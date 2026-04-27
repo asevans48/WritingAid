@@ -143,6 +143,119 @@ _MARKDOWN_COMMENT_RE = re.compile(
     r'^\s*<!--\s*(tbd|todo|fixme|placeholder)[^>]*-->\s*$',
     re.IGNORECASE)
 
+# URL / email content. We use this to drop rows where URLs and
+# email addresses dominate the text — leftover PG mirror-pointer
+# pages ("See 14024-h.htm or 14024-h.zip: (http://...)"), email
+# footers, link dumps, etc. Match permissively but not greedily:
+# stops at whitespace and at the next closing paren so we don't
+# slurp surrounding prose into the URL.
+_URL_OR_EMAIL_RE = re.compile(
+    r"https?://[^\s)]+"             # full URLs (http/https)
+    r"|www\.[a-zA-Z0-9_-]+\.[^\s)]+"  # bare www. URLs
+    r"|[\w.+-]+@[\w-]+\.[\w.-]+",   # email addresses
+    re.IGNORECASE)
+
+# Threshold tuned by sampling the user's DB: 40% URL/email chars
+# cleanly catches PG mirror-pointer rows ("See X-h.htm or X-h.zip…"
+# is ~77% URL chars) while leaving normal prose alone — real
+# prose almost never has more than ~10% URL content even when
+# citing many sources.
+_URL_DUMP_THRESHOLD = 0.40
+
+# Pure-attribution prefix: "Written by …", "Edited by …",
+# "Translated by …". The full row check (``_is_attribution_only``
+# below) refuses to drop rows that continue into real prose
+# after the prefix — e.g. "Written by Samuel Hoffenstein, the
+# film is about …" is prose, not attribution.
+_ATTRIBUTION_PREFIX_RE = re.compile(
+    r"^\s*("
+    r"written|edited|translated|illustrated|compiled|annotated|"
+    r"introduction|preface|foreword|afterword|prepared|adapted|"
+    r"selected|arranged"
+    r")\s+by\s+",
+    re.IGNORECASE)
+
+# Lowercase function words allowed inside an attribution tail.
+# Anything else lowercase is a content word — strong signal that
+# the row is real prose continuing past the byline rather than
+# a pure attribution line.
+_ATTRIBUTION_FUNCTION_WORDS = frozenset({
+    "and", "the", "of", "with", "a", "an", "in", "on",
+    "for", "by", "to", "or", "as", "from", "at", "de", "von",
+})
+
+
+def _is_attribution_only(text: str) -> bool:
+    """Decide whether ``text`` is a pure attribution line.
+
+    The simple regex approach ("starts with 'Written by'") false-
+    positives on real prose that opens with the same phrase
+    ("Written by Samuel Hoffenstein, the film is about…"). We
+    instead match the prefix, then walk the remainder word-by-
+    word — every word must either be title-case (a name token,
+    initial, or "M.A."-style abbreviation) or a closed-class
+    function word from the allowlist. A lowercase content word
+    means the row is a sentence and we keep it.
+    """
+    m = _ATTRIBUTION_PREFIX_RE.match(text)
+    if not m:
+        return False
+    tail = text[m.end():].strip().rstrip(".").strip()
+    if not tail or len(tail) > 150:
+        # Empty tail isn't an attribution; very long tails are
+        # almost always prose continuation.
+        return False
+    for word in tail.split():
+        # Trim punctuation but preserve digits + initials.
+        clean = word.strip(".,;:()[]\"'_")
+        if not clean or clean.isdigit():
+            continue
+        if clean.lower() in _ATTRIBUTION_FUNCTION_WORDS:
+            continue
+        if not clean[0].isupper():
+            return False  # lowercase content word → prose
+    return True
+
+# Sentence-shape detector: a substring starting with a capital
+# letter, containing no internal terminator, and ending with a
+# sentence terminator. Used by ``_has_proper_sentence`` below.
+_SENTENCE_SHAPE_RE = re.compile(r"[A-Z][^.!?\n]{2,}[.!?]")
+
+
+def _has_proper_sentence(text: str, *, min_words: int = 3) -> bool:
+    """Return True if ``text`` contains a real sentence.
+
+    Heuristic: at least one substring must satisfy
+      1. starts with a capital letter,
+      2. ends with ``.``, ``!``, or ``?``,
+      3. has ``min_words`` or more words, and
+      4. at least one word AFTER the first starts with a
+         lowercase letter (so "John Smith." and "By Mark Twain."
+         — pure title-case — fail, while "He walked away." and
+         "By the door he paused." pass on "walked" / "the").
+
+    The lowercase-after-first check is what separates real prose
+    from name lists and index entries: prose has function words
+    and verbs, lists are all proper nouns.
+    """
+    for m in _SENTENCE_SHAPE_RE.finditer(text):
+        s = m.group(0)
+        words = s.split()
+        if len(words) < min_words:
+            continue
+        if any(w and w[0].islower() for w in words[1:]):
+            return True
+    return False
+
+
+# Apply ``_has_proper_sentence`` only to rows above this length.
+# Below it the existing ``too_short`` rule already filters them,
+# and short legitimate prose like "Yes." or "I will." would
+# false-positive here despite being valid (they survive on the
+# splitter side because they're typically embedded in a larger
+# multi-sentence row anyway).
+_NO_SENTENCE_MIN_LEN = 80
+
 
 # ── Character-level normalisations (apply BEFORE drop checks) ─
 
@@ -318,6 +431,37 @@ def _is_junk(text: str, *, format_hint: str = "plain",
             return True, "markdown_frontmatter"
         if _MARKDOWN_COMMENT_RE.match(stripped):
             return True, "markdown_todo_comment"
+
+    # URL/email-dump check. Only run when the text actually
+    # contains a URL/email marker — saves the regex sweep on
+    # the ~99% of rows that are pure prose. We measure the
+    # *fraction* of chars that are URLs+emails rather than just
+    # counting matches: a 5000-char article with two URLs is
+    # fine, a 200-char row that's 80% URLs is junk.
+    if "http" in stripped or "@" in stripped or "www." in stripped:
+        url_chars = sum(len(m.group(0))
+                        for m in _URL_OR_EMAIL_RE.finditer(stripped))
+        if (url_chars > 0
+                and url_chars / len(stripped) >= _URL_DUMP_THRESHOLD):
+            return True, "url_email_dump"
+
+    # Pure name-attribution lines: "Edited by John Smith.",
+    # "Translated by Jane Doe". The helper rejects rows that
+    # continue into real prose after the byline prefix.
+    if _is_attribution_only(stripped):
+        return True, "name_attribution"
+
+    # No-proper-sentence check: a row long enough to be
+    # substantive but containing no sentence-shaped substring at
+    # all. Catches TOC entries, index pages, name catalogs,
+    # caption blocks, em-dash-separated bibliography lines —
+    # things that have plenty of capital letters but no actual
+    # prose. The ``len >= 80`` floor guards against false
+    # positives on legitimate short fragments (which the
+    # ``too_short`` rule below catches anyway).
+    if (len(stripped) >= _NO_SENTENCE_MIN_LEN
+            and not _has_proper_sentence(stripped)):
+        return True, "no_proper_sentence"
 
     # ── Length bounds (last resort fallback) ─────────────────
 

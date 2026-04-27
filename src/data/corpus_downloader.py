@@ -37,6 +37,40 @@ from src.data.rephrase_database import RephraseDatabase, get_rephrase_database
 CORPUS_DIR = Path.home() / ".creativeos" / "corpus_downloads"
 
 
+def _resolve_meta_path(meta: dict, path: str):
+    """Read ``path`` from ``meta`` with dotted JSON-string support.
+
+    A path like ``METADATA.bookshelves`` means "parse
+    ``meta['METADATA']`` as JSON, then look up 'bookshelves' in
+    the result." Mirrors ``_read_field`` in ``corpus_adapters``;
+    we duplicate it here because the downloader sees the
+    already-streamed row dict (the adapter has its own copy in
+    its hot loop).
+    """
+    if not path:
+        return None
+    if "." not in path:
+        return meta.get(path)
+    col, key = path.split(".", 1)
+    raw = meta.get(col)
+    if isinstance(raw, str):
+        import json as _json
+        try:
+            parsed = _json.loads(raw)
+        except (ValueError, TypeError):
+            return None
+    elif isinstance(raw, dict):
+        parsed = raw
+    else:
+        return None
+    for part in key.split("."):
+        if isinstance(parsed, dict):
+            parsed = parsed.get(part)
+        else:
+            return None
+    return parsed
+
+
 @dataclass
 class IngestResult:
     entry: CorpusEntry
@@ -188,9 +222,14 @@ def ingest(entry: CorpusEntry, *,
             # comma-joined so a "gothic horror" row passes both filters.
             # Unmatched labels fall through verbatim — better to keep
             # the dataset's own label than drop the signal entirely.
+            # Field paths may be dotted (``METADATA.bookshelves``) for
+            # datasets that JSON-encode metadata into one column;
+            # ``_resolve_meta_path`` parses that the same way the
+            # adapter does. Plain field names work as before.
             row_genre = default_genre
             if entry.hf_genre_field:
-                raw = (meta.get(entry.hf_genre_field) or "")
+                raw = (_resolve_meta_path(meta, entry.hf_genre_field)
+                       or "")
                 raw = str(raw).strip()
                 if raw:
                     canonical = match_genres(raw)
@@ -204,7 +243,7 @@ def ingest(entry: CorpusEntry, *,
 
             row_title = entry.name
             if entry.hf_title_field:
-                t = meta.get(entry.hf_title_field)
+                t = _resolve_meta_path(meta, entry.hf_title_field)
                 if t and str(t).strip():
                     row_title = str(t).strip()
 

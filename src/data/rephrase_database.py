@@ -1228,14 +1228,21 @@ class RephraseDatabase:
         # Vary instruction phrasing across rows so the model doesn't
         # memorise one stock template (which then leaks into outputs
         # at inference time as boilerplate like "USER: Continue this
-        # passage…"). The variant is deterministic per row — derived
-        # from the row id — so every row always exports the same way
-        # but the dataset as a whole shows healthy variety.
+        # passage…"). The variant index is deterministic per row —
+        # derived from the row id — so every row always exports the
+        # same way but the dataset as a whole shows healthy variety.
+        # Each ``templates`` list reduces this index modulo its
+        # own length, so different source types can have different
+        # pool sizes (corpus has 16, plot variants have 8, etc.).
+        # Pools mix register on purpose: formal imperatives, casual
+        # lowercase, questions, fragments, and direct one-liners —
+        # the realistic distribution of how a user might actually
+        # word the same request.
         row_id = row.get("id") or 0
         try:
-            variant = int(row_id) % 4
+            variant_seed = int(row_id)
         except (TypeError, ValueError):
-            variant = 0
+            variant_seed = 0
 
         # Source-aware instruction shaping. Rephrase rows pose a
         # rephrasing task; chat rows are conversational; corpus rows
@@ -1270,17 +1277,42 @@ class RephraseDatabase:
             elif voice:
                 attribution = f" of {voice}"
             genre_tail = f" ({genre} genre)" if genre else ""
+            attr_or = attribution or ""
+            attr_voice = (
+                f", staying in the style{attribution}"
+                if attribution else "")
             templates = [
-                f"Continue this passage in the prose style{attribution}"
-                f"{genre_tail}.",
-                f"Write the next paragraphs as the author{attribution} "
-                f"would{genre_tail}.",
-                f"Pick up where this passage leaves off, matching the "
-                f"voice and rhythm{attribution}{genre_tail}.",
-                f"Continue this passage. Match the diction, pacing, "
-                f"and sentence shape{attribution}{genre_tail}.",
+                # Formal imperatives — the original 4
+                f"Continue this passage in the prose style"
+                f"{attribution}{genre_tail}.",
+                f"Write the next paragraphs as the author"
+                f"{attribution} would{genre_tail}.",
+                f"Pick up where this passage leaves off, matching "
+                f"the voice and rhythm{attribution}{genre_tail}.",
+                f"Continue this passage. Match the diction, "
+                f"pacing, and sentence shape{attribution}{genre_tail}.",
+                # Casual / lowercase
+                f"keep going in the same voice{attr_or}",
+                f"more like this{attr_or}",
+                f"same voice — keep going",
+                # Questions
+                f"What comes next{attr_voice}?",
+                f"How would this passage continue{attr_or}?",
+                # Short fragments
+                f"Continue.",
+                f"More.",
+                f"Next paragraph{attr_or}.",
+                # Polite / spoken-style
+                f"Could you continue this passage"
+                f"{attribution}{genre_tail}?",
+                f"Please pick up from here"
+                f"{attribution}{genre_tail}.",
+                # Direct
+                f"Extend this excerpt{attribution}{genre_tail}.",
+                f"Finish the paragraph in the same authorial "
+                f"register{attribution}{genre_tail}.",
             ]
-            instruction = templates[variant]
+            instruction = templates[variant_seed % len(templates)]
             input_block = src
             system = ("You imitate the prose style of the source text "
                       "you are given — diction, sentence rhythm, and "
@@ -1296,14 +1328,29 @@ class RephraseDatabase:
             elif meta.get("setting"):
                 setting = f" for the {meta['setting']} setting"
             templates = [
-                f"Design a worldbuilding {etype}{setting} from the brief.",
+                # Formal imperatives
+                f"Design a worldbuilding {etype}{setting} from "
+                f"the brief.",
                 f"Expand this brief into a complete worldbuilding "
                 f"{etype}{setting}.",
                 f"Generate a rich, internally-consistent {etype}"
                 f"{setting} from the seed below.",
                 f"Build out a {etype}{setting} that fits the brief.",
+                f"Develop the {etype}{setting} from this seed.",
+                # Casual / fragment
+                f"flesh out this {etype}{setting}",
+                f"make me a {etype}{setting}",
+                f"full {etype}{setting}, please",
+                # Questions
+                f"What does this {etype} look like{setting}?",
+                f"How does this {etype} work{setting}?",
+                # Direct
+                f"Worldbuild this {etype}{setting}.",
+                f"Render the {etype}{setting} described here.",
+                f"Take this brief and design a {etype}{setting}.",
+                f"Sketch out the {etype}{setting}.",
             ]
-            instruction = templates[variant]
+            instruction = templates[variant_seed % len(templates)]
             input_block = src  # The brief / seed text
             system = ("You are a worldbuilding assistant. You take a "
                       "brief and expand it into a coherent, vivid "
@@ -1315,6 +1362,7 @@ class RephraseDatabase:
             who = f" for {char}" if char else ""
             genre_tail = f" in a {genre} story" if genre else ""
             templates = [
+                # Formal imperatives
                 f"Write a complete character profile{who}{genre_tail} "
                 f"from the brief below.",
                 f"Expand this brief into a vivid character profile"
@@ -1323,8 +1371,25 @@ class RephraseDatabase:
                 f"appearance, voice, motivations, contradictions.",
                 f"Generate a fully-realised character{who}{genre_tail} "
                 f"from the seed below.",
+                f"Develop the character{who}{genre_tail} from this brief.",
+                # Casual / fragment
+                f"make me a character{who}{genre_tail}",
+                f"sketch out{who}{genre_tail} from this brief",
+                f"give me the full character{who}{genre_tail}",
+                # Questions
+                f"Who is this person{(' — ' + char) if char else ''}"
+                f"{genre_tail}?",
+                f"How would you describe{who}{genre_tail}?",
+                # Direct
+                f"Profile{who}{genre_tail}, full detail.",
+                f"Flesh out{who}{genre_tail}: appearance, voice, "
+                f"motivation, flaws.",
+                f"Take this brief and turn it into a character"
+                f"{who}{genre_tail}.",
+                f"From this seed, write the character"
+                f"{who}{genre_tail}.",
             ]
-            instruction = templates[variant]
+            instruction = templates[variant_seed % len(templates)]
             input_block = src  # Brief / traits / archetype
             system = ("You are a character designer. You take a brief "
                       "and expand it into a vivid character with "
@@ -1346,9 +1411,9 @@ class RephraseDatabase:
             voice_tail = f" in {voice}'s voice" if voice else ""
             if kind == "pacing":
                 templates = [
-                    f"Rewrite this passage to match the pacing of"
-                    f" {genre or 'the target'} fiction"
-                    f"{voice_tail}.",
+                    # Formal
+                    f"Rewrite this passage to match the pacing of "
+                    f"{genre or 'the target'} fiction{voice_tail}.",
                     f"Adjust the sentence length and beat rhythm of "
                     f"this passage{genre_tail}{voice_tail}.",
                     f"Pace this passage like a "
@@ -1356,30 +1421,56 @@ class RephraseDatabase:
                     f"{voice_tail}.",
                     f"Tighten or loosen this passage so its pacing "
                     f"fits{genre_tail}{voice_tail}.",
+                    # Casual / fragment
+                    f"make this read like {genre or 'the target'} "
+                    f"fiction{voice_tail}",
+                    f"same content, {genre or 'genre'} pacing"
+                    f"{voice_tail}",
+                    # Questions / polite
+                    f"Could you re-pace this{genre_tail}{voice_tail}?",
+                    f"Rework the rhythm of this passage"
+                    f"{genre_tail}{voice_tail}.",
                 ]
             elif kind == "event":
                 templates = [
+                    # Formal
                     f"Develop this story-event seed into a full beat"
                     f"{genre_tail}{voice_tail}.",
-                    f"Expand this plot event into the scene it implies"
-                    f"{genre_tail}{voice_tail}.",
+                    f"Expand this plot event into the scene it "
+                    f"implies{genre_tail}{voice_tail}.",
                     f"Write the beat that this event seed describes"
                     f"{genre_tail}{voice_tail}.",
                     f"Turn this seed into a story event with stakes "
                     f"and outcome{genre_tail}{voice_tail}.",
+                    # Casual / fragment
+                    f"build out the event{genre_tail}{voice_tail}",
+                    f"flesh out this beat{genre_tail}{voice_tail}",
+                    # Questions
+                    f"What happens in this event{genre_tail}"
+                    f"{voice_tail}?",
+                    f"How does this beat play out{genre_tail}"
+                    f"{voice_tail}?",
                 ]
             else:
                 templates = [
-                    f"Generate a story outline{genre_tail}{voice_tail} "
-                    f"from the premise below.",
+                    # Formal
+                    f"Generate a story outline{genre_tail}{voice_tail}"
+                    f" from the premise below.",
                     f"Expand this premise into an outline with clear "
                     f"beats{genre_tail}{voice_tail}.",
                     f"Build an act-structured outline{genre_tail}"
                     f"{voice_tail} from the brief.",
                     f"Outline the story implied by the premise below"
                     f"{genre_tail}{voice_tail}.",
+                    # Casual / fragment
+                    f"plot it out{genre_tail}{voice_tail}",
+                    f"map out this story{genre_tail}{voice_tail}",
+                    f"give me the outline{genre_tail}{voice_tail}",
+                    # Questions
+                    f"Where does this premise go{genre_tail}"
+                    f"{voice_tail}?",
                 ]
-            instruction = templates[variant]
+            instruction = templates[variant_seed % len(templates)]
             input_block = src
             system = ("You are a plot-structure assistant. You take "
                       "a premise and produce coherent, well-paced "
@@ -1396,13 +1487,28 @@ class RephraseDatabase:
                 tone_clauses.append(f"({genre} genre)")
             tone_tail = (" " + " ".join(tone_clauses)) if tone_clauses else ""
             templates = [
+                # Formal imperatives
                 f"Rephrase the following passage{tone_tail}.",
-                f"Rewrite this passage{tone_tail}, preserving meaning.",
+                f"Rewrite this passage{tone_tail}, preserving "
+                f"meaning.",
                 f"Revise the passage below{tone_tail}.",
                 f"Reword the passage{tone_tail} while keeping the "
                 f"meaning intact.",
+                f"Restate the passage below{tone_tail}.",
+                # Casual / fragment
+                f"same meaning, different words{tone_tail}",
+                f"polish this{tone_tail}",
+                f"tighten this{tone_tail}",
+                f"same idea, fresh phrasing{tone_tail}",
+                # Questions / polite
+                f"Could you rewrite this{tone_tail}?",
+                f"Could you say this another way{tone_tail}?",
+                # Direct
+                f"Try this passage another way{tone_tail}.",
+                f"Edit for clarity{tone_tail}.",
+                f"Find a different way to say this{tone_tail}.",
             ]
-            instruction = templates[variant]
+            instruction = templates[variant_seed % len(templates)]
             ctx = ""
             if ctx_before or ctx_after:
                 ctx = (f"Context:\n[before] {ctx_before}\n"

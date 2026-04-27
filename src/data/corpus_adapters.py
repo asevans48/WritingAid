@@ -374,6 +374,38 @@ def fetch_hf_dataset(
     except Exception as e:
         return [], f"load-failed: {e}"
 
+    # JSON-path field reader. Some datasets (notably
+    # ``sedthh/gutenberg_english``) keep useful metadata —
+    # bookshelves, subjects, title — JSON-encoded inside one
+    # column. A field name with a dot ``column.key`` means
+    # "parse ``record[column]`` as JSON, then look up ``key`` in
+    # the result." Plain (no-dot) field names work as before.
+    import json as _json
+
+    def _read_field(record: dict, path: str) -> Any:
+        if not path:
+            return None
+        if "." not in path:
+            return record.get(path)
+        col, key = path.split(".", 1)
+        raw = record.get(col)
+        if isinstance(raw, str):
+            try:
+                parsed = _json.loads(raw)
+            except (ValueError, TypeError):
+                return None
+        elif isinstance(raw, dict):
+            parsed = raw
+        else:
+            return None
+        # Allow further nesting via repeated dotting in ``key``.
+        for part in key.split("."):
+            if isinstance(parsed, dict):
+                parsed = parsed.get(part)
+            else:
+                return None
+        return parsed
+
     rows: list = []
     cols_seen: list = []
     n = 0
@@ -395,9 +427,9 @@ def fetch_hf_dataset(
         # Row-filter — drop records where ``filter_field != filter_value``.
         # Used by paraphrase datasets like PAWS to keep only label=1
         # (true paraphrase pairs) and skip label=0.
-        if filter_target is not None and filter_field in record:
-            row_val = record.get(filter_field)
-            if str(row_val).strip() != filter_target:
+        if filter_target is not None and filter_field:
+            row_val = _read_field(record, filter_field)
+            if row_val is None or str(row_val).strip() != filter_target:
                 continue
 
         if prompt_field and completion_field:
@@ -406,8 +438,8 @@ def fetch_hf_dataset(
             # not full passages, so the chat path's normalisation is
             # the right fit (HTML entities, ligatures, JSON-shape
             # rejection). Drop if either side becomes junk.
-            p_raw = (record.get(prompt_field) or "").strip()
-            c_raw = (record.get(completion_field) or "").strip()
+            p_raw = (str(_read_field(record, prompt_field) or "")).strip()
+            c_raw = (str(_read_field(record, completion_field) or "")).strip()
             if not p_raw or not c_raw or len(c_raw) < 30:
                 continue
             p, p_drop = _cleanup_chat(p_raw)
@@ -417,8 +449,8 @@ def fetch_hf_dataset(
             rows.append((p, c, dict(record)))
         else:
             # Voice/narrative corpus — text-only
-            if text_field and text_field in record:
-                text = record.get(text_field)
+            if text_field:
+                text = _read_field(record, text_field)
             else:
                 # Auto-detect the first text-like column
                 text = None
