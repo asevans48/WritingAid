@@ -16,6 +16,21 @@ from typing import Callable, Optional
 
 from src.data.corpus_catalog import CorpusEntry, is_license_safe
 from src.data.corpus_adapters import parse as adapter_parse, fetch_hf_dataset
+
+
+# Splitter helper lives in ``corpus_adapters`` so both the local-
+# folder ingestion path here and the HF fetcher there can use it
+# without a circular import. Re-export for the existing callers
+# that import it from this module (the upload / project-import
+# helpers in the training tool window).
+from src.data.corpus_adapters import (  # noqa: F401
+    _PREFERRED_OPENER_CHARS,
+    _MIN_OPENER_CHARS,
+    _MIN_REST_CHARS,
+    _MIN_PARAGRAPH_CHARS,
+    _split_paragraph_for_training,
+    split_text_into_pairs,
+)
 from src.data.rephrase_database import RephraseDatabase, get_rephrase_database
 
 
@@ -35,25 +50,41 @@ class CorpusLicenseError(RuntimeError):
     """Raised when we refuse to download because the license isn't safe."""
 
 
-def _download(url: str, dest: Path, on_progress: Optional[Callable[[int], None]] = None
+def _download(url: str, dest: Path,
+              on_progress: Optional[Callable[[int, int, str], None]] = None
               ) -> int:
-    """Stream the URL to disk. Returns bytes downloaded."""
+    """Stream the URL to disk. Returns bytes downloaded.
+
+    ``on_progress(current, total, label)`` is invoked every chunk so
+    the UI can render a real progress bar. ``total`` is read from the
+    server's ``Content-Length`` header when present (the common case
+    on Project Gutenberg + S3) and is ``0`` otherwise — UI should
+    fall back to an indeterminate bar when total is 0.
+    """
     import urllib.request
     dest.parent.mkdir(parents=True, exist_ok=True)
     req = urllib.request.Request(
         url, headers={"User-Agent": "CreativeOS/1.0 (corpus downloader)"})
-    total = 0
+    bytes_done = 0
     with urllib.request.urlopen(req, timeout=60) as resp, \
          open(dest, 'wb') as f:
+        # ``Content-Length`` is the canonical pre-flight size header.
+        # Some servers (rare for static files) omit it; we treat
+        # ``0`` as "unknown" downstream so the UI uses a busy bar.
+        try:
+            total_size = int(resp.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            total_size = 0
+        label = f"downloading {dest.name}"
         while True:
             chunk = resp.read(64 * 1024)
             if not chunk:
                 break
             f.write(chunk)
-            total += len(chunk)
+            bytes_done += len(chunk)
             if on_progress:
-                on_progress(total)
-    return total
+                on_progress(bytes_done, total_size, label)
+    return bytes_done
 
 
 def _read_text(path: Path) -> str:
@@ -68,7 +99,7 @@ def _read_text(path: Path) -> str:
 def ingest(entry: CorpusEntry, *,
            db: Optional[RephraseDatabase] = None,
            force: bool = False,
-           on_progress: Optional[Callable[[int], None]] = None,
+           on_progress: Optional[Callable[[int, int, str], None]] = None,
            on_log: Optional[Callable[[str], None]] = None,
            ) -> IngestResult:
     """Download (if needed) → adapter-parse → log to learning DB.
@@ -77,7 +108,12 @@ def ingest(entry: CorpusEntry, *,
         entry: The corpus entry to fetch.
         db: Override target database (default: unified rephrase DB).
         force: True to re-download even if a cached file exists.
-        on_progress: Called with cumulative bytes during download.
+        on_progress: ``(current, total, label)`` callback. ``total``
+            is ``0`` when indeterminate (HF datasets without a
+            row-count cap, HTTP servers without ``Content-Length``).
+            Called repeatedly across phases — download/streaming,
+            then again during DB insertion — so the UI bar should
+            reset its scale every time the label changes.
         on_log: Optional log sink for status lines (UI uses this).
 
     Raises:
@@ -87,6 +123,7 @@ def ingest(entry: CorpusEntry, *,
             entry to ``user-attested``.
     """
     log = on_log or (lambda *_: None)
+    progress = on_progress or (lambda *_: None)
 
     # License gate — never download copyrighted material on the user's behalf.
     if not is_license_safe(entry.license) and entry.license != "user-attested":
@@ -104,12 +141,17 @@ def ingest(entry: CorpusEntry, *,
         rows, status = fetch_hf_dataset(
             entry.url,
             split=entry.hf_split or "train",
+            # Optional dataset configuration name. Required for
+            # datasets like PAWS that expose multiple configs;
+            # empty string for single-config datasets.
+            config=getattr(entry, "hf_config", "") or "",
             text_field=entry.hf_text_field,
             prompt_field=entry.hf_prompt_field,
             completion_field=entry.hf_completion_field,
             max_rows=entry.hf_max_rows or 5000,
             filter_field=getattr(entry, "hf_filter_field", "") or "",
             filter_value=getattr(entry, "hf_filter_value", "") or "",
+            on_progress=progress,
         )
         if status == "missing-datasets-library":
             raise RuntimeError(
@@ -135,6 +177,10 @@ def ingest(entry: CorpusEntry, *,
             match_genres = lambda _t: []  # noqa: E731
 
         n_logged = 0
+        # Switch the progress bar from "streaming" to "writing" — the
+        # DB insert phase is also non-trivial when we just expanded
+        # 4000 book rows into 320,000 paragraph pairs.
+        progress(0, len(rows), f"writing {len(rows):,} pairs to DB")
         for prompt, completion, meta in rows:
             # Per-row genre: fuzzy-match the dataset's free-text label
             # (e.g. "Sci-Fi", "Psychological Horror", "Cyberpunk")
@@ -170,6 +216,13 @@ def ingest(entry: CorpusEntry, *,
                 notes=f"{notes_base} purpose={entry.purpose} medium={entry.medium}",
             )
             n_logged += 1
+            # Update the bar every 200 inserts. SQLite inserts run
+            # ~30k/s on a typical SSD; 200 keeps the progress bar
+            # smooth without flooding the signal queue.
+            if n_logged % 200 == 0:
+                progress(n_logged, len(rows),
+                         f"writing pairs to DB")
+        progress(n_logged, len(rows), "writing pairs to DB")
         log(f"  logged {n_logged} corpus pairs to learning DB")
         return IngestResult(
             entry=entry,
@@ -259,21 +312,19 @@ def ingest(entry: CorpusEntry, *,
                       f"local_path={local_path}")
         genre_tag = ",".join(entry.tags[:3])
         n_logged = 0
-        for label, text in text_blobs:
+        progress(0, len(text_blobs), "ingesting local files")
+        for fi, (label, text) in enumerate(text_blobs, 1):
             if not text or len(text) < 80:
                 continue
             paragraphs = [p.strip()
                           for p in re.split(r'\n\s*\n+', text) if p.strip()]
             for para in paragraphs:
-                if len(para) < 80 or len(para) > 2500:
+                if len(para) < 100 or len(para) > 2500:
                     continue
                 if para.lstrip()[:1] in '#-*•':
                     continue
-                m = re.match(r'(.+?[.!?])\s+(.+)$', para, re.DOTALL)
-                if not m:
-                    continue
-                opener, rest = m.group(1).strip(), m.group(2).strip()
-                if len(rest) < 60:
+                opener, rest = _split_paragraph_for_training(para)
+                if not opener or not rest:
                     continue
                 db.log_corpus_pair(
                     prompt=opener, completion=rest,
@@ -283,6 +334,7 @@ def ingest(entry: CorpusEntry, *,
                     character_name=entry.author or "",
                     notes=f"{notes_base} file={label}")
                 n_logged += 1
+            progress(fi, len(text_blobs), "ingesting local files")
         log(f"  logged {n_logged} corpus pairs to learning DB")
         return IngestResult(
             entry=entry, bytes_downloaded=0,
@@ -298,25 +350,23 @@ def ingest(entry: CorpusEntry, *,
         downloaded = dest.stat().st_size
     else:
         log(f"Downloading {entry.url}…")
-        downloaded = _download(entry.url, dest, on_progress=on_progress)
+        downloaded = _download(entry.url, dest, on_progress=progress)
         log(f"  saved {downloaded:,} bytes to {dest}")
 
     log("Parsing with adapter: " + entry.format)
+    progress(0, 0, f"parsing {entry.name}")
     raw = _read_text(dest)
     passages = adapter_parse(entry.format, raw, title=entry.name)
     log(f"  extracted {len(passages)} passages")
 
-    # Log corpus pairs (first sentence as prompt, rest as completion).
-    # This teaches the model to continue prose in the source's voice.
-    import re
+    # Log corpus pairs. Multi-sentence opener (≥80 chars) so the
+    # model has enough context to pick up voice / cadence rather
+    # than learning to extend a single short sentence.
+    progress(0, len(passages), "writing pairs to DB")
     n_logged = 0
-    for para in passages:
-        m = re.match(r'(.+?[.!?])\s+(.+)$', para, re.DOTALL)
-        if not m:
-            continue
-        opener = m.group(1).strip()
-        rest = m.group(2).strip()
-        if len(rest) < 60:
+    for i, para in enumerate(passages, 1):
+        opener, rest = _split_paragraph_for_training(para)
+        if not opener or not rest:
             continue
         notes = (f"corpus_id={entry.id} license={entry.license} "
                  f"author={entry.author}").strip()
@@ -326,6 +376,9 @@ def ingest(entry: CorpusEntry, *,
                            character_name=entry.author,
                            notes=notes)
         n_logged += 1
+        if i % 200 == 0:
+            progress(i, len(passages), "writing pairs to DB")
+    progress(len(passages), len(passages), "writing pairs to DB")
     log(f"  logged {n_logged} corpus pairs to learning DB")
 
     return IngestResult(

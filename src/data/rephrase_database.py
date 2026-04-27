@@ -264,6 +264,43 @@ class RephraseDatabase:
             cur = c.execute("DELETE FROM rephrases")
             return cur.rowcount
 
+    def catalog_rows_summary(self) -> Dict[str, Any]:
+        """Summarize rows ingested via the catalog downloader.
+
+        Catalog-downloaded rows have ``corpus_id=<id>`` in their notes
+        (set by ``corpus_downloader._download_one``). User uploads,
+        characters, worldbuilding and plot rows do not, so this is a
+        clean way to identify the catalog subset for the rebuild flow.
+
+        Returns ``{"total": int, "by_id": {corpus_id: count, ...}}``.
+        """
+        import re
+        with self._conn() as c:
+            cur = c.execute(
+                "SELECT notes, COUNT(*) AS n FROM rephrases "
+                "WHERE notes LIKE '%corpus_id=%' GROUP BY notes")
+            by_id: Dict[str, int] = {}
+            total = 0
+            for row in cur.fetchall():
+                m = re.search(r'corpus_id=(\S+)', row["notes"] or "")
+                if not m:
+                    continue
+                cid = m.group(1)
+                by_id[cid] = by_id.get(cid, 0) + int(row["n"])
+                total += int(row["n"])
+        return {"total": total, "by_id": by_id}
+
+    def delete_catalog_rows(self) -> int:
+        """Delete every row whose notes contain ``corpus_id=`` — i.e.
+        every row inserted by the catalog downloader. User uploads,
+        manually-ingested project text, and character/worldbuilding/
+        plot rows are preserved.
+        """
+        with self._conn() as c:
+            cur = c.execute(
+                "DELETE FROM rephrases WHERE notes LIKE '%corpus_id=%'")
+            return cur.rowcount
+
     def delete_one(self, row_id: int) -> bool:
         with self._conn() as c:
             cur = c.execute("DELETE FROM rephrases WHERE id = ?", (row_id,))
@@ -412,6 +449,502 @@ class RephraseDatabase:
         return sorted(out.values(),
                       key=lambda d: (kind_order.get(d["kind"], 9),
                                      d["label"]))
+
+    def available_sources(self) -> List[Dict[str, Any]]:
+        """Every distinct training source the user has ingested.
+
+        Wider than ``list_corpus_collections`` in two ways:
+
+          1. Includes non-corpus sources (character/worldbuilding/
+             plot generations, chat history, etc.) so a corpus can
+             pull from them too — the user said "everything we
+             upload or any project we import has to make it."
+          2. Returns a normalized ``key`` shape (``catalog:<id>``,
+             ``project:<name>``, ``upload:<title>``, ``other:<src>``)
+             that ``corpus_collection.parse_source_key`` understands.
+
+        Each result is ``{"key", "label", "kind", "row_count",
+        "source_type", "median_output_chars", "bytes_estimate"}``.
+        ``bytes_estimate`` sums ``LEN(source_text) + LEN(output_text)``
+        across all rows in the source — a UTF-8 byte count is
+        ~ ``bytes_estimate`` for ASCII-dominant prose and a small
+        constant factor higher for accented text, so it's a good
+        approximation for "how big is this dataset" without paying
+        the cost of an exact byte tally.
+        """
+        out: Dict[str, Dict[str, Any]] = {}
+        with self._conn() as c:
+            cur = c.execute(
+                "SELECT source_type, notes, source_text, output_text "
+                "FROM rephrases WHERE accepted = 1")
+            for row in cur:
+                st = row["source_type"] or "unknown"
+                notes = row["notes"] or ""
+                if st == "corpus":
+                    key, label, kind = self._parse_collection_id(notes)
+                else:
+                    # Non-corpus source_types are their own buckets
+                    # (e.g. ``other:character`` for character rows).
+                    # The label is the source_type spelled prettily.
+                    key = f"other:{st}"
+                    label = st.replace("_", " ").title()
+                    kind = "other"
+                bucket = out.setdefault(key, {
+                    "key": key,
+                    "label": label,
+                    "kind": kind,
+                    "source_type": st,
+                    "row_count": 0,
+                    "bytes_estimate": 0,
+                    "_output_lens": [],
+                })
+                bucket["row_count"] += 1
+                src_len = len(row["source_text"] or "")
+                out_len = len(row["output_text"] or "")
+                bucket["bytes_estimate"] += src_len + out_len
+                bucket["_output_lens"].append(out_len)
+        # Compute medians and drop the temp list before returning.
+        result = []
+        for b in out.values():
+            lens = sorted(b.pop("_output_lens"))
+            n = len(lens)
+            b["median_output_chars"] = int(lens[n // 2]) if n else 0
+            result.append(b)
+        kind_order = {"catalog": 0, "upload": 1, "project": 2,
+                      "other": 3, "unknown": 4}
+        return sorted(result,
+                      key=lambda d: (kind_order.get(d["kind"], 9),
+                                     -d["row_count"], d["label"]))
+
+    def rows_for_corpus(self,
+                        source_keys: Iterable[str],
+                        *,
+                        only_accepted: bool = True,
+                        limit: Optional[int] = None,
+                        offset: int = 0
+                        ) -> List[Dict[str, Any]]:
+        """Fetch every row that belongs to any of ``source_keys``.
+
+        Reuses the same ``notes LIKE '%marker%'`` pattern that the
+        ``corpus_collection`` module documents — one OR clause per
+        key. ``other:<source_type>`` keys are matched against the
+        ``source_type`` column instead of ``notes``.
+
+        If ``source_keys`` is empty the result is also empty (so an
+        empty corpus reasonably has zero rows rather than "all").
+        """
+        from src.data.corpus_collection import parse_source_key
+        keys = list(source_keys or [])
+        if not keys:
+            return []
+
+        clauses: List[str] = []
+        params: List[Any] = []
+        for key in keys:
+            parsed = parse_source_key(key)
+            if not parsed:
+                continue
+            kind = parsed["kind"]
+            value = parsed["value"]
+            if kind == "catalog":
+                clauses.append("notes LIKE ?")
+                params.append(f"%corpus_id={value}%")
+            elif kind == "project":
+                clauses.append("notes LIKE ?")
+                params.append(f"%project_source={value}%")
+            elif kind == "upload":
+                clauses.append("notes LIKE ?")
+                params.append(f"%corpus_title={value}%")
+            elif kind == "other":
+                clauses.append("source_type = ?")
+                params.append(value)
+
+        if not clauses:
+            return []
+
+        sql = f"SELECT * FROM rephrases WHERE ({' OR '.join(clauses)})"
+        if only_accepted:
+            sql += " AND accepted = 1"
+        sql += " ORDER BY id DESC"
+        if limit:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([int(limit), int(offset)])
+
+        with self._conn() as c:
+            cur = c.execute(sql, params)
+            return [dict(r) for r in cur.fetchall()]
+
+    def size_estimate_for_corpus(self,
+                                 source_keys: Iterable[str],
+                                 *,
+                                 only_accepted: bool = True
+                                 ) -> Dict[str, int]:
+        """Row count + byte estimate for a corpus's source list.
+
+        Returns ``{"rows": N, "bytes": B}`` — ``B`` is
+        ``SUM(LENGTH(source_text) + LENGTH(output_text))`` over the
+        matching rows. For UI: format with ``format_bytes(B)`` to
+        get "3.2 MB" / "847 KB" etc.
+
+        One SQL pass instead of iterating Python rows; on the user's
+        800K-row DB this runs in well under a second even when the
+        corpus pulls from many sources.
+        """
+        from src.data.corpus_collection import parse_source_key
+        keys = list(source_keys or [])
+        if not keys:
+            return {"rows": 0, "bytes": 0}
+
+        clauses: List[str] = []
+        params: List[Any] = []
+        for key in keys:
+            parsed = parse_source_key(key)
+            if not parsed:
+                continue
+            kind = parsed["kind"]
+            value = parsed["value"]
+            if kind == "catalog":
+                clauses.append("notes LIKE ?")
+                params.append(f"%corpus_id={value}%")
+            elif kind == "project":
+                clauses.append("notes LIKE ?")
+                params.append(f"%project_source={value}%")
+            elif kind == "upload":
+                clauses.append("notes LIKE ?")
+                params.append(f"%corpus_title={value}%")
+            elif kind == "other":
+                clauses.append("source_type = ?")
+                params.append(value)
+
+        if not clauses:
+            return {"rows": 0, "bytes": 0}
+
+        sql = (
+            "SELECT COUNT(*) AS rows, "
+            "COALESCE(SUM(LENGTH(source_text) + LENGTH(output_text)), 0) "
+            "AS bytes "
+            f"FROM rephrases WHERE ({' OR '.join(clauses)})")
+        if only_accepted:
+            sql += " AND accepted = 1"
+        with self._conn() as c:
+            row = c.execute(sql, params).fetchone()
+            return {"rows": int(row["rows"]),
+                    "bytes": int(row["bytes"])}
+
+    def count_rows_for_corpus(self,
+                              source_keys: Iterable[str],
+                              *,
+                              only_accepted: bool = True) -> int:
+        """Total row count across the given source keys.
+
+        Cheaper than ``len(rows_for_corpus(...))`` because it doesn't
+        materialize rows. Used by the manager dialog to render
+        "<corpus> contains 12,438 rows" without paying the IO cost.
+        """
+        from src.data.corpus_collection import parse_source_key
+        keys = list(source_keys or [])
+        if not keys:
+            return 0
+
+        clauses: List[str] = []
+        params: List[Any] = []
+        for key in keys:
+            parsed = parse_source_key(key)
+            if not parsed:
+                continue
+            kind = parsed["kind"]
+            value = parsed["value"]
+            if kind == "catalog":
+                clauses.append("notes LIKE ?")
+                params.append(f"%corpus_id={value}%")
+            elif kind == "project":
+                clauses.append("notes LIKE ?")
+                params.append(f"%project_source={value}%")
+            elif kind == "upload":
+                clauses.append("notes LIKE ?")
+                params.append(f"%corpus_title={value}%")
+            elif kind == "other":
+                clauses.append("source_type = ?")
+                params.append(value)
+
+        if not clauses:
+            return 0
+
+        sql = f"SELECT COUNT(*) FROM rephrases WHERE ({' OR '.join(clauses)})"
+        if only_accepted:
+            sql += " AND accepted = 1"
+        with self._conn() as c:
+            return int(c.execute(sql, params).fetchone()[0])
+
+    def delete_source(self, source_key: str) -> int:
+        """Drop every row belonging to one source.
+
+        Powers the "delete download" button in the corpus manager.
+        ``other:<source_type>`` is intentionally NOT supported here
+        because it would nuke whole categories (every character
+        generation ever) and that's almost certainly a mistake; the
+        UI hides the button for those.
+
+        Returns the number of rows deleted.
+        """
+        from src.data.corpus_collection import parse_source_key
+        parsed = parse_source_key(source_key)
+        if not parsed:
+            return 0
+        kind = parsed["kind"]
+        value = parsed["value"]
+        if kind == "catalog":
+            marker = f"%corpus_id={value}%"
+        elif kind == "project":
+            marker = f"%project_source={value}%"
+        elif kind == "upload":
+            marker = f"%corpus_title={value}%"
+        else:
+            return 0
+        with self._conn() as c:
+            cur = c.execute(
+                "DELETE FROM rephrases WHERE notes LIKE ?",
+                (marker,))
+            return cur.rowcount
+
+    def search_rows(self,
+                    query: str = "",
+                    *,
+                    source_types: Optional[Iterable[str]] = None,
+                    genre: str = "",
+                    corpus_id: str = "",
+                    min_rating: Optional[str] = None,
+                    only_accepted: bool = True,
+                    limit: int = 200,
+                    offset: int = 0) -> List[Dict[str, Any]]:
+        """Browse the DB with filters + a free-text query.
+
+        Powers the corpus-browser window. The query matches in
+        ``source_text`` OR ``output_text`` OR title (the
+        ``corpus_title=…`` value extracted from notes via a LIKE
+        match). All other arguments are AND-combined with the
+        query. ``corpus_id`` filters to one ingested catalog corpus
+        (matches notes containing ``corpus_id=<value>``).
+
+        Args:
+            query: free-text search across source/output/title; empty
+                string means "no text filter".
+            source_types: restrict to these source_type values
+                (rephrase, corpus, character, …).
+            genre: substring-match the (free-text, comma-separated)
+                ``genre`` column.
+            corpus_id: substring-match a ``corpus_id=<id>`` token in
+                the notes column.
+            min_rating: rating threshold (same scale as
+                ``export_jsonl``); rows below the threshold are
+                dropped.
+            only_accepted: when True, hides rows with accepted=0.
+            limit: max rows to return (default 200; UI pages by 200).
+            offset: page offset for paging.
+        """
+        clauses: List[str] = []
+        params: List[Any] = []
+
+        if only_accepted:
+            clauses.append("accepted = 1")
+        if source_types:
+            sts = list(source_types)
+            placeholders = ",".join("?" * len(sts))
+            clauses.append(f"source_type IN ({placeholders})")
+            params.extend(sts)
+        if genre:
+            clauses.append("genre LIKE ?")
+            params.append(f"%{genre}%")
+        if corpus_id:
+            clauses.append("notes LIKE ?")
+            params.append(f"%corpus_id={corpus_id}%")
+        if min_rating:
+            # Same ranking as ``export_jsonl``: excellent > good >
+            # neutral > poor > bad. The trick: SQLite has no enum
+            # ordering, so we filter via an IN list of allowed
+            # values rather than a numeric comparison.
+            order = ["excellent", "good", "neutral", "poor", "bad"]
+            try:
+                cutoff = order.index(min_rating)
+                allowed = order[:cutoff + 1]
+            except ValueError:
+                allowed = ["excellent", "good"]
+            placeholders = ",".join("?" * len(allowed))
+            clauses.append(f"(rating IN ({placeholders}) OR rating IS NULL)")
+            params.extend(allowed)
+        if query:
+            # Three-way OR: text match OR title match (notes-encoded).
+            clauses.append(
+                "(source_text LIKE ? OR output_text LIKE ? "
+                "OR notes LIKE ?)")
+            like = f"%{query}%"
+            params.extend([like, like, like])
+
+        sql = "SELECT * FROM rephrases"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
+        params.extend([int(limit), int(offset)])
+
+        with self._conn() as c:
+            cur = c.execute(sql, params)
+            return [dict(r) for r in cur.fetchall()]
+
+    def count_search_rows(self,
+                          query: str = "",
+                          *,
+                          source_types: Optional[Iterable[str]] = None,
+                          genre: str = "",
+                          corpus_id: str = "",
+                          min_rating: Optional[str] = None,
+                          only_accepted: bool = True) -> int:
+        """Total row count for the same filters as ``search_rows``.
+
+        Used by the browser window to render "showing 200 of 12,438
+        matches" — without this, paging is confusing because the
+        user can't see whether they've reached the end.
+        """
+        clauses: List[str] = []
+        params: List[Any] = []
+        if only_accepted:
+            clauses.append("accepted = 1")
+        if source_types:
+            sts = list(source_types)
+            placeholders = ",".join("?" * len(sts))
+            clauses.append(f"source_type IN ({placeholders})")
+            params.extend(sts)
+        if genre:
+            clauses.append("genre LIKE ?")
+            params.append(f"%{genre}%")
+        if corpus_id:
+            clauses.append("notes LIKE ?")
+            params.append(f"%corpus_id={corpus_id}%")
+        if min_rating:
+            order = ["excellent", "good", "neutral", "poor", "bad"]
+            try:
+                cutoff = order.index(min_rating)
+                allowed = order[:cutoff + 1]
+            except ValueError:
+                allowed = ["excellent", "good"]
+            placeholders = ",".join("?" * len(allowed))
+            clauses.append(f"(rating IN ({placeholders}) OR rating IS NULL)")
+            params.extend(allowed)
+        if query:
+            clauses.append(
+                "(source_text LIKE ? OR output_text LIKE ? "
+                "OR notes LIKE ?)")
+            like = f"%{query}%"
+            params.extend([like, like, like])
+        sql = "SELECT COUNT(*) FROM rephrases"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        with self._conn() as c:
+            return int(c.execute(sql, params).fetchone()[0])
+
+    def per_genre_metrics(self,
+                          *,
+                          only_accepted: bool = True
+                          ) -> List[Dict[str, Any]]:
+        """Per-genre row count and median output length.
+
+        ``genre`` is free-text comma-separated; we split each row's
+        value and tally each tag separately so a row tagged
+        ``"horror,gothic"`` shows up under both buckets. Rows with
+        no genre are bucketed under ``"(untagged)"``.
+
+        Returns ``[{"genre", "rows", "median_output_chars",
+        "voice_tagged"}]`` sorted by row count descending. Median is
+        computed in Python; the row count per genre dominates so
+        the cost is O(N log N) for the sort, not the median.
+        """
+        with self._conn() as c:
+            sql = ("SELECT genre, voice, output_text FROM rephrases")
+            if only_accepted:
+                sql += " WHERE accepted = 1"
+            cur = c.execute(sql)
+            buckets: Dict[str, Dict[str, Any]] = {}
+            for row in cur:
+                raw = (row["genre"] or "").strip()
+                tags = [t.strip().lower() for t in raw.split(",") if t.strip()]
+                if not tags:
+                    tags = ["(untagged)"]
+                out_len = len(row["output_text"] or "")
+                voiced = bool((row["voice"] or "").strip())
+                for tag in tags:
+                    b = buckets.setdefault(tag, {
+                        "genre": tag,
+                        "rows": 0,
+                        "voice_tagged": 0,
+                        "_output_lens": [],
+                    })
+                    b["rows"] += 1
+                    if voiced:
+                        b["voice_tagged"] += 1
+                    b["_output_lens"].append(out_len)
+        out = []
+        for b in buckets.values():
+            lens = sorted(b.pop("_output_lens"))
+            n = len(lens)
+            median = lens[n // 2] if n else 0
+            b["median_output_chars"] = int(median)
+            out.append(b)
+        out.sort(key=lambda d: -d["rows"])
+        return out
+
+    def per_corpus_metrics(self,
+                           *,
+                           only_accepted: bool = True
+                           ) -> List[Dict[str, Any]]:
+        """Per-corpus row count, median output length, short-source rate.
+
+        Identifies a "corpus" the same way ``list_corpus_collections``
+        does — parsing the ``notes`` column for ``corpus_id`` /
+        ``project_source`` / ``corpus_title``. Restricted to
+        ``source_type='corpus'`` (the only place these tags appear).
+
+        Returns ``[{"key", "label", "kind", "rows",
+        "median_output_chars", "short_source_pct"}]`` sorted by
+        row count descending. ``short_source_pct`` is the % of rows
+        whose ``source_text`` is below 60 chars — a leading
+        indicator that the splitter ran on bad data and the corpus
+        should be re-ingested.
+        """
+        with self._conn() as c:
+            sql = ("SELECT notes, source_text, output_text "
+                   "FROM rephrases WHERE source_type = 'corpus'")
+            if only_accepted:
+                sql += " AND accepted = 1"
+            cur = c.execute(sql)
+            buckets: Dict[str, Dict[str, Any]] = {}
+            for row in cur:
+                key, label, kind = self._parse_collection_id(
+                    row["notes"] or "")
+                src_len = len(row["source_text"] or "")
+                out_len = len(row["output_text"] or "")
+                b = buckets.setdefault(key, {
+                    "key": key,
+                    "label": label,
+                    "kind": kind,
+                    "rows": 0,
+                    "_output_lens": [],
+                    "_short_source": 0,
+                })
+                b["rows"] += 1
+                b["_output_lens"].append(out_len)
+                if src_len < 60:
+                    b["_short_source"] += 1
+        out = []
+        for b in buckets.values():
+            lens = sorted(b.pop("_output_lens"))
+            n = len(lens)
+            median = lens[n // 2] if n else 0
+            short = b.pop("_short_source")
+            b["median_output_chars"] = int(median)
+            b["short_source_pct"] = (
+                short / b["rows"] * 100.0 if b["rows"] else 0.0)
+            out.append(b)
+        out.sort(key=lambda d: -d["rows"])
+        return out
 
     @staticmethod
     def _parse_collection_id(notes: str) -> tuple:
@@ -661,6 +1194,21 @@ class RephraseDatabase:
         return n
 
     @staticmethod
+    def _parse_notes_kv(notes: str) -> Dict[str, str]:
+        """Pull every ``key=value`` pair out of the ``notes`` column.
+
+        Values can contain spaces (e.g. ``corpus_title=The Iron Fen``);
+        the regex stops at the next ``word=`` boundary or end of string.
+        """
+        import re
+        kv: Dict[str, str] = {}
+        if notes:
+            for m in re.finditer(r'(\w+)=(.+?)(?=\s+\w+=|$)', notes,
+                                 flags=re.DOTALL):
+                kv.setdefault(m.group(1), m.group(2).strip())
+        return kv
+
+    @staticmethod
     def _format_row(row: Dict[str, Any], fmt: str) -> Optional[Dict[str, Any]]:
         src = row.get("source_text", "")
         out = row.get("output_text", "")
@@ -675,6 +1223,19 @@ class RephraseDatabase:
         char = row.get("character_name", "")
         genre = row.get("genre", "")
         notes = row.get("notes", "") or ""
+        meta = RephraseDatabase._parse_notes_kv(notes)
+
+        # Vary instruction phrasing across rows so the model doesn't
+        # memorise one stock template (which then leaks into outputs
+        # at inference time as boilerplate like "USER: Continue this
+        # passage…"). The variant is deterministic per row — derived
+        # from the row id — so every row always exports the same way
+        # but the dataset as a whole shows healthy variety.
+        row_id = row.get("id") or 0
+        try:
+            variant = int(row_id) % 4
+        except (TypeError, ValueError):
+            variant = 0
 
         # Source-aware instruction shaping. Rephrase rows pose a
         # rephrasing task; chat rows are conversational; corpus rows
@@ -687,57 +1248,161 @@ class RephraseDatabase:
                       if st == SOURCE_CHAT_WRITING
                       else "You are a helpful assistant.")
         elif st == SOURCE_CORPUS:
-            extras = []
-            if voice:
-                extras.append(f"in {voice}'s voice")
-            if genre:
-                extras.append(f"({genre} genre)")
-            tail = (" " + " ".join(extras)) if extras else ""
-            instruction = (f"Continue this passage in the same voice "
-                           f"and style as the author{tail}.")
+            # Anchor the instruction in the actual source when we
+            # know what it is. The downloader records corpus_title
+            # (human-readable) and author for every catalog row.
+            title = meta.get("corpus_title", "")
+            author = meta.get("author", "") if meta.get("author", "") not in (
+                "", "PD", "Public Domain") else ""
+            # Catalog titles often already embed the author (e.g.
+            # "Frankenstein — Mary Shelley (1818)"). When they do,
+            # drop the redundant "by <author>" so the instruction
+            # reads naturally instead of doubling the attribution.
+            if author and title and author.lower() in title.lower():
+                author = ""
+            attribution = ""
+            if title and author:
+                attribution = f" of *{title}* by {author}"
+            elif title:
+                attribution = f" of *{title}*"
+            elif author:
+                attribution = f" of {author}"
+            elif voice:
+                attribution = f" of {voice}"
+            genre_tail = f" ({genre} genre)" if genre else ""
+            templates = [
+                f"Continue this passage in the prose style{attribution}"
+                f"{genre_tail}.",
+                f"Write the next paragraphs as the author{attribution} "
+                f"would{genre_tail}.",
+                f"Pick up where this passage leaves off, matching the "
+                f"voice and rhythm{attribution}{genre_tail}.",
+                f"Continue this passage. Match the diction, pacing, "
+                f"and sentence shape{attribution}{genre_tail}.",
+            ]
+            instruction = templates[variant]
             input_block = src
-            system = ("You write in the voice of the user's chosen "
-                      "author corpus.")
+            system = ("You imitate the prose style of the source text "
+                      "you are given — diction, sentence rhythm, and "
+                      "voice — without breaking out into commentary.")
         elif st == SOURCE_WORLDBUILDING:
-            # Pull element type out of notes if present
-            element = ""
-            for tok in notes.split():
-                if tok.startswith("element="):
-                    element = tok.split("=", 1)[1]
-                    break
-            etype = element or "element"
-            instruction = (f"Generate a worldbuilding {etype}"
-                           + (f" for a {genre} setting" if genre else "")
-                           + ".")
-            input_block = src  # The brief / seed text
-            system = ("You are a worldbuilding assistant. Generate rich, "
-                      "internally-consistent fictional worlds.")
-        elif st == SOURCE_CHARACTER:
-            instruction = (f"Generate a complete character profile"
-                           + (f" for a {genre} story" if genre else "")
-                           + ".")
-            input_block = src  # Brief / traits / archetype
-            system = ("You are a character designer. Create vivid, "
-                      "internally-consistent characters with depth.")
-        elif st == SOURCE_PLOT:
-            instruction = (f"Generate a story outline"
-                           + (f" in the {genre} genre" if genre else "")
-                           + (f" in {voice}'s voice" if voice else "")
-                           + ".")
-            input_block = src
-            system = ("You are a plot-structure assistant. Generate "
-                      "compelling narratives with clear beats.")
-        else:  # rephrase / agent / default
-            instr_parts = ["Rephrase the following passage"]
-            if style:
-                instr_parts.append(f"in a {style} tone")
-            if voice:
-                instr_parts.append(f"in {voice}'s voice")
-            elif char:
-                instr_parts.append(f"in {char}'s voice")
+            element = meta.get("element", "") or "element"
+            # Pretty-print the element name (e.g. "magic_system"
+            # → "magic system") so the prompt reads naturally.
+            etype = element.replace("_", " ")
+            setting = ""
             if genre:
-                instr_parts.append(f"({genre} genre)")
-            instruction = " ".join(instr_parts) + "."
+                setting = f" for a {genre} setting"
+            elif meta.get("setting"):
+                setting = f" for the {meta['setting']} setting"
+            templates = [
+                f"Design a worldbuilding {etype}{setting} from the brief.",
+                f"Expand this brief into a complete worldbuilding "
+                f"{etype}{setting}.",
+                f"Generate a rich, internally-consistent {etype}"
+                f"{setting} from the seed below.",
+                f"Build out a {etype}{setting} that fits the brief.",
+            ]
+            instruction = templates[variant]
+            input_block = src  # The brief / seed text
+            system = ("You are a worldbuilding assistant. You take a "
+                      "brief and expand it into a coherent, vivid "
+                      "element that fits the setting it is for.")
+        elif st == SOURCE_CHARACTER:
+            # When the row has a character name we name them in the
+            # instruction — the model is being shown a brief→profile
+            # mapping for that specific character.
+            who = f" for {char}" if char else ""
+            genre_tail = f" in a {genre} story" if genre else ""
+            templates = [
+                f"Write a complete character profile{who}{genre_tail} "
+                f"from the brief below.",
+                f"Expand this brief into a vivid character profile"
+                f"{who}{genre_tail}.",
+                f"Build out a character profile{who}{genre_tail} — "
+                f"appearance, voice, motivations, contradictions.",
+                f"Generate a fully-realised character{who}{genre_tail} "
+                f"from the seed below.",
+            ]
+            instruction = templates[variant]
+            input_block = src  # Brief / traits / archetype
+            system = ("You are a character designer. You take a brief "
+                      "and expand it into a vivid character with "
+                      "internal consistency, contradictions, and a "
+                      "clear voice.")
+        elif st == SOURCE_PLOT:
+            # Different sub-shapes of plot row: pacing pairs, full
+            # outlines, story-event seeds. We sniff the notes for a
+            # hint and pick a phrasing that matches.
+            kind = meta.get("plot_kind", "")
+            if not kind:
+                if "pacing" in notes.lower():
+                    kind = "pacing"
+                elif "event" in notes.lower():
+                    kind = "event"
+                else:
+                    kind = "outline"
+            genre_tail = f" in the {genre} genre" if genre else ""
+            voice_tail = f" in {voice}'s voice" if voice else ""
+            if kind == "pacing":
+                templates = [
+                    f"Rewrite this passage to match the pacing of"
+                    f" {genre or 'the target'} fiction"
+                    f"{voice_tail}.",
+                    f"Adjust the sentence length and beat rhythm of "
+                    f"this passage{genre_tail}{voice_tail}.",
+                    f"Pace this passage like a "
+                    f"{genre or 'genre-appropriate'} scene"
+                    f"{voice_tail}.",
+                    f"Tighten or loosen this passage so its pacing "
+                    f"fits{genre_tail}{voice_tail}.",
+                ]
+            elif kind == "event":
+                templates = [
+                    f"Develop this story-event seed into a full beat"
+                    f"{genre_tail}{voice_tail}.",
+                    f"Expand this plot event into the scene it implies"
+                    f"{genre_tail}{voice_tail}.",
+                    f"Write the beat that this event seed describes"
+                    f"{genre_tail}{voice_tail}.",
+                    f"Turn this seed into a story event with stakes "
+                    f"and outcome{genre_tail}{voice_tail}.",
+                ]
+            else:
+                templates = [
+                    f"Generate a story outline{genre_tail}{voice_tail} "
+                    f"from the premise below.",
+                    f"Expand this premise into an outline with clear "
+                    f"beats{genre_tail}{voice_tail}.",
+                    f"Build an act-structured outline{genre_tail}"
+                    f"{voice_tail} from the brief.",
+                    f"Outline the story implied by the premise below"
+                    f"{genre_tail}{voice_tail}.",
+                ]
+            instruction = templates[variant]
+            input_block = src
+            system = ("You are a plot-structure assistant. You take "
+                      "a premise and produce coherent, well-paced "
+                      "narrative beats.")
+        else:  # rephrase / agent / default
+            tone_clauses = []
+            if style:
+                tone_clauses.append(f"in a {style} tone")
+            if voice:
+                tone_clauses.append(f"in {voice}'s voice")
+            elif char:
+                tone_clauses.append(f"in {char}'s voice")
+            if genre:
+                tone_clauses.append(f"({genre} genre)")
+            tone_tail = (" " + " ".join(tone_clauses)) if tone_clauses else ""
+            templates = [
+                f"Rephrase the following passage{tone_tail}.",
+                f"Rewrite this passage{tone_tail}, preserving meaning.",
+                f"Revise the passage below{tone_tail}.",
+                f"Reword the passage{tone_tail} while keeping the "
+                f"meaning intact.",
+            ]
+            instruction = templates[variant]
             ctx = ""
             if ctx_before or ctx_after:
                 ctx = (f"Context:\n[before] {ctx_before}\n"

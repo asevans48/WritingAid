@@ -42,6 +42,97 @@ def _split_paragraphs(text: str) -> List[str]:
     return paras
 
 
+# Splitter targets for one (opener, rest) training pair. The old
+# splitter used the FIRST sentence as opener, producing things like
+# ``src="I trembled."`` (11 chars) — far too short for the model to
+# pick up voice / cadence. This rewrite finds the earliest sentence
+# boundary where both halves meet a minimum length.
+_PREFERRED_OPENER_CHARS = 80
+_MIN_OPENER_CHARS = 60
+_MIN_REST_CHARS = 60
+_MIN_PARAGRAPH_CHARS = _PREFERRED_OPENER_CHARS + _MIN_REST_CHARS
+
+# Per-row cap on training pairs we extract from one source row.
+# Without this, a single full-length book row in datasets like
+# ``manu/project_gutenberg`` (avg ≈ 400k chars, ~1500 paragraphs)
+# would produce thousands of pairs per book and starve the rest of
+# the corpus pull — and the corpus downloader buffers everything in
+# memory before inserting, so unbounded fan-out also risks OOM. 80
+# pairs ≈ one long-short-story's worth of voice signal per source
+# row, balanced against memory pressure across a 4000-row pull.
+_MAX_PAIRS_PER_ROW = 80
+
+
+def _split_paragraph_for_training(paragraph: str):
+    """Split one paragraph into ``(opener, rest)`` for corpus training.
+
+    Returns ``(None, None)`` if the paragraph is too short or has no
+    usable sentence break. See module-level constants for the length
+    thresholds.
+
+    Why this matters: the model's input is the opener; its target is
+    the completion. With 11-char openers the model has no signal
+    about the author's voice / register / sentence rhythm and reverts
+    to the base model's generic style.
+    """
+    if not paragraph or len(paragraph) < _MIN_PARAGRAPH_CHARS:
+        return None, None
+    sentences = re.split(r'(?<=[.!?])\s+', paragraph.strip())
+    if len(sentences) < 2:
+        return None, None
+
+    def _try(opener_min: int):
+        for split_at in range(1, len(sentences)):
+            opener = " ".join(sentences[:split_at]).strip()
+            rest = " ".join(sentences[split_at:]).strip()
+            if (len(opener) >= opener_min
+                    and len(rest) >= _MIN_REST_CHARS):
+                return opener, rest
+        return None, None
+
+    pair = _try(_PREFERRED_OPENER_CHARS)
+    if pair[0] is None:
+        pair = _try(_MIN_OPENER_CHARS)
+    return pair
+
+
+def split_text_into_pairs(text: str,
+                          max_pairs: int = _MAX_PAIRS_PER_ROW
+                          ) -> List[tuple]:
+    """Split a chunk of prose into multiple (opener, rest) pairs.
+
+    Walks paragraph boundaries and emits one pair per qualifying
+    paragraph. Used for HF rows that are full books / chapters where
+    treating the whole row as a single training example wastes 99%
+    of the prose. ``max_pairs`` caps fan-out so one mega-row doesn't
+    dominate the dataset.
+
+    A paragraph that's longer than ``2 * _MIN_PARAGRAPH_CHARS`` but
+    has no sentence boundary that satisfies the splitter (one giant
+    run-on, dialogue blob with no period) is skipped quietly — the
+    splitter would reject it anyway, and trying to force-split would
+    cut mid-sentence.
+    """
+    if not text:
+        return []
+    pairs: List[tuple] = []
+    paragraphs = _split_paragraphs(text)
+    for para in paragraphs:
+        if _looks_like_heading(para):
+            continue
+        if len(para) > 4000:
+            # Long ones we let through unchanged — the splitter
+            # works on sentence boundaries inside the paragraph.
+            pass
+        opener, rest = _split_paragraph_for_training(para)
+        if opener is None:
+            continue
+        pairs.append((opener, rest))
+        if len(pairs) >= max_pairs:
+            break
+    return pairs
+
+
 def _looks_like_heading(p: str) -> bool:
     """Filter out chapter headers / bare numbers / ALL-CAPS lines."""
     if len(p) < 60:
@@ -238,15 +329,27 @@ def fetch_hf_dataset(
     dataset_id: str,
     *,
     split: str = "train",
+    config: str = "",
     text_field: str = "",
     prompt_field: str = "",
     completion_field: str = "",
     max_rows: int = 5000,
     filter_field: str = "",
     filter_value: str = "",
+    on_progress: Optional[Callable[[int, int, str], None]] = None,
 ):
     """Stream rows from a HuggingFace dataset and return them as
     (prompt, completion, row_metadata) tuples.
+
+    Args:
+        config: dataset configuration name. Required for any HF
+            dataset that exposes ``BUILDER_CONFIGS`` — e.g. PAWS,
+            which has ``labeled_final`` / ``labeled_swap`` /
+            ``unlabeled_final``. Recent versions of the
+            ``datasets`` package raise *"Config name is missing"*
+            when you call ``load_dataset`` on such a dataset
+            without specifying one. Empty string means "dataset
+            has only one default config".
 
     The caller (corpus_downloader) decides how to log them — narrative
     voice corpora typically use the "first sentence → rest" pattern,
@@ -262,7 +365,12 @@ def fetch_hf_dataset(
         return [], "missing-datasets-library"
 
     try:
-        ds = load_dataset(dataset_id, split=split, streaming=True)
+        if config:
+            ds = load_dataset(
+                dataset_id, config, split=split, streaming=True)
+        else:
+            ds = load_dataset(
+                dataset_id, split=split, streaming=True)
     except Exception as e:
         return [], f"load-failed: {e}"
 
@@ -274,6 +382,12 @@ def fetch_hf_dataset(
     # pass "1" or 1 either way).
     filter_target = (str(filter_value).strip()
                      if filter_field and filter_value != "" else None)
+    # Progress reporting cadence: every N records polled. Reporting
+    # per-row would flood the UI thread; every 50 keeps the bar
+    # responsive without spamming signals.
+    progress_every = 50
+    if on_progress:
+        on_progress(0, max_rows, f"streaming {dataset_id}")
     for record in ds:
         if not cols_seen:
             cols_seen = list(record.keys())
@@ -323,33 +437,39 @@ def fetch_hf_dataset(
                     text = " ".join(parts) if parts else None
             if not text or len(text) < 80:
                 continue
-            # Voice/narrative path: the dataset row is one chunk of
-            # prose. Run it through the passage cleaner first so junk
-            # (PG remnants, refusal templates that ended up in
-            # scraped data, tool-call JSON, …) gets dropped before we
-            # split prompt/completion. Use the chat cleaner here
-            # rather than the full passage pipeline because we
-            # already have a single coherent chunk — no paragraph
-            # splitting needed.
+            # Voice/narrative path. Most rows in datasets like
+            # ``manu/project_gutenberg`` or ``deepmind/pg19`` are
+            # full books or chapters — one row = many paragraphs.
+            # The old code took the first sentence of the row and
+            # threw the rest into one completion, wasting 99% of
+            # the prose. Now we split into paragraph-aligned
+            # ``(opener, rest)`` pairs so a 100k-char book yields
+            # ~hundreds of training pairs instead of one.
             text_clean, drop_reason = _cleanup_chat(text)
             if drop_reason or len(text_clean) < 80:
                 continue
-            # Use first sentence as prompt, rest as completion (corpus
-            # continuation pattern — same shape as local-file uploads)
-            import re as _re
-            m = _re.match(r'(.+?[.!?])\s+(.+)$', text_clean, _re.DOTALL)
-            if m:
-                p, c = m.group(1).strip(), m.group(2).strip()
-            else:
+            row_meta = dict(record)
+            pairs = split_text_into_pairs(text_clean)
+            if not pairs:
+                # Single-paragraph or no-sentence-boundary rows: fall
+                # back to the old half-and-half split so short stories
+                # / sentence-level datasets (TinyStories, etc.) still
+                # produce one pair instead of being silently dropped.
                 half = len(text_clean) // 2
-                p, c = (text_clean[:half].strip(),
-                        text_clean[half:].strip())
-            if len(c) < 60:
-                continue
-            rows.append((p, c, dict(record)))
+                p_text = text_clean[:half].strip()
+                c_text = text_clean[half:].strip()
+                if len(c_text) >= 60 and len(p_text) >= 30:
+                    rows.append((p_text, c_text, row_meta))
+            else:
+                for p_text, c_text in pairs:
+                    rows.append((p_text, c_text, row_meta))
 
         n += 1
+        if on_progress and n % progress_every == 0:
+            on_progress(n, max_rows, f"streaming {dataset_id}")
         if n >= max_rows:
             break
 
+    if on_progress:
+        on_progress(n, max_rows, f"streaming {dataset_id}")
     return rows, "ok"

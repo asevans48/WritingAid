@@ -64,6 +64,20 @@ spacy>=3.8.0
 # After installing, download the English model:
 #   python -m spacy download en_core_web_sm
 
+# Numerical computing
+# Used directly by the MinHash near-duplicate detector (vectorized
+# universal hashing) and the semantic-search index. Pulled in
+# transitively by torch / transformers, declared explicitly here
+# because we import it directly.
+numpy>=1.26.0
+
+# System utilities
+# psutil is used to size the model cache against available RAM and
+# to gate large training runs against system memory. Lazy-imported
+# at the call sites so the app still launches if it's missing, but
+# pinning it makes the gating actually work.
+psutil>=5.9.0
+
 # Image Processing & Generation
 Pillow>=11.1.0
 requests>=2.32.0
@@ -125,3 +139,22 @@ PyAudio>=0.2.14
 # Knowledge Base (optional - for downloading external reference datasets)
 wikipedia>=1.4.0  # Wikipedia article downloads for knowledge base
 datasets>=3.3.0   # HuggingFace datasets for bulk Wikipedia import (optional, large)
+
+# Corpus variability audit — language detection category
+# Used by the prune-for-variability dialog to flag non-target-language
+# rows (HF datasets sometimes ship multilingual content under
+# supposedly-English splits). Optional — the audit gracefully skips
+# the language category when this isn't installed.
+langdetect>=1.0.9
+
+# Corpus variability audit — topic-clustering category
+# TF-IDF + TruncatedSVD + MiniBatchKMeans for finding subject-matter
+# over-representation. The audit treats this category as opt-in and
+# only fires it when the user clicks "Analyze topics" in the prune
+# dialog. The dialog gracefully reports "scikit-learn not installed"
+# if you skip this dep, so the rest of the audit still works.
+scikit-learn>=1.3.0
+
+
+# IAS for AI
+modal

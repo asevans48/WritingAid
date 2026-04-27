@@ -48,7 +48,17 @@ from typing import Any, Callable, Dict, List, Optional, Set
 
 @dataclass
 class DownloadSuggestion:
-    """One catalog entry the recommender thinks is worth downloading."""
+    """One catalog entry the recommender thinks is worth using
+    for the next training run.
+
+    The name is historical — Smart Pick *also* recommends entries
+    that are already ingested (no download needed) so the user
+    can curate which of their ~100 ingested corpora to actually
+    train on. ``requires_download`` distinguishes the two:
+    ``True`` means "download then include for training",
+    ``False`` means "already in the DB, just include in the
+    training filter".
+    """
     corpus_id: str
     name: str
     description: str
@@ -56,8 +66,29 @@ class DownloadSuggestion:
     size_kb: int
     reason: str               # why we recommend it (user-facing)
     priority: int             # 1 = highest, 5 = lowest
-    catalog_entry: Any = None  # the underlying CorpusEntry, for the
-                               # downloader to consume
+    catalog_entry: Any = None  # the underlying CorpusEntry
+    requires_download: bool = True  # True = not yet ingested
+
+
+@dataclass
+class RecommendationResult:
+    """Diagnostic-rich result of one recommendation pass.
+
+    The UI uses this to render *useful* empty states. When the
+    suggestions list is empty, the diagnostic fields explain why —
+    "you've already ingested all 24 horror entries" beats a
+    generic "nothing to pick" message every time.
+    """
+    suggestions: List[DownloadSuggestion]
+    candidate_pool_size: int = 0
+    n_already_ingested: int = 0
+    n_license_filtered: int = 0
+    expanded_to_related: List[str] = field(default_factory=list)
+    notes: List[str] = field(default_factory=list)
+    # The user-friendly summary the UI should show. Computed in
+    # ``_compose_summary`` so the dialog doesn't have to format
+    # diagnostic text inline.
+    summary: str = ""
 
 
 def _ingested_corpus_ids(db_path: Path) -> Set[str]:
@@ -135,6 +166,26 @@ def _candidate_pool(*,
                 seen.add(cid); pool.append(cid)
 
     return pool
+
+
+# Adjacent-genre map for the fallback pool. When all entries for
+# the user's selected genre are already ingested, we widen the net
+# to closely-related genres so Smart Pick still has *something* to
+# offer rather than going silent. Each value is sorted from most
+# to least adjacent.
+_ADJACENT_GENRES = {
+    "horror":      ["gothic", "thriller", "weird"],
+    "gothic":      ["horror", "romance"],
+    "scifi":       ["fantasy", "adventure"],
+    "fantasy":     ["scifi", "adventure"],
+    "western":     ["frontier", "adventure"],
+    "frontier":    ["western", "adventure", "literary"],
+    "romance":     ["literary", "gothic"],
+    "literary":    ["romance", "frontier"],
+    "mystery":     ["thriller"],
+    "thriller":    ["mystery", "horror"],
+    "adventure":   ["scifi", "western", "fantasy"],
+}
 
 
 # Per-intent weight on craft documents. Voice intents care less
@@ -246,6 +297,183 @@ def _rationale(entry,
     return "; ".join(bits)
 
 
+def recommend_downloads_with_diagnosis(
+        *,
+        intent: str,
+        genres: List[str],
+        tones: List[str],
+        db_path: Path,
+        max_suggestions: int = 5,
+        llm_generate: Optional[Callable[[str, str], str]] = None,
+        allow_adjacent: bool = True,
+        include_ingested: bool = True,
+) -> RecommendationResult:
+    """Curate the training-relevant subset of catalog entries.
+
+    Despite the name, this isn't only about downloads. With
+    ``include_ingested=True`` (default), already-downloaded
+    catalog entries are scored alongside un-downloaded ones —
+    Smart Pick uses this to drive the *training filter* on a DB
+    that's already comprehensive. Each suggestion's
+    ``requires_download`` flag tells the UI whether picking it
+    triggers a download or just a filter toggle.
+
+    Adjacent-genre fallback still applies when the primary pool
+    has no candidates after filtering.
+    """
+    from src.data.corpus_catalog import find_entry, is_license_safe
+
+    ingested = _ingested_corpus_ids(db_path)
+    ingested_size_kb = sum(
+        (find_entry(cid).size_hint_kb or 0)
+        for cid in ingested if find_entry(cid) is not None)
+
+    primary_pool = _candidate_pool(
+        intent=intent, genres=genres, tones=tones)
+    n_pool = len(primary_pool)
+    n_already_ingested = sum(1 for c in primary_pool if c in ingested)
+    n_license_filtered = 0
+
+    # Score every candidate; mark whether it's already ingested so
+    # the UI can render "include for training" vs "download then
+    # include" actions. ``include_ingested=False`` reverts to the
+    # download-only legacy behaviour for callers that need it.
+    candidates: List[Tuple[float, Any, bool]] = []
+    for cid in primary_pool:
+        is_ingested = cid in ingested
+        if is_ingested and not include_ingested:
+            continue
+        e = find_entry(cid)
+        if e is None:
+            continue
+        if not is_license_safe(e.license or ""):
+            n_license_filtered += 1
+            continue
+        score = _score_entry(
+            e, intent=intent, genres=genres, tones=tones,
+            ingested=ingested, ingested_size_kb=ingested_size_kb)
+        candidates.append((score, e, is_ingested))
+
+    expanded_to: List[str] = []
+    notes: List[str] = []
+
+    # Adjacent-genre fallback when the primary pool is empty.
+    if not candidates and allow_adjacent and genres:
+        for g in genres:
+            for adj in _ADJACENT_GENRES.get(g.lower(), []):
+                adj_pool = _candidate_pool(
+                    intent=intent, genres=[adj], tones=[])
+                for cid in adj_pool:
+                    is_ingested = cid in ingested
+                    if is_ingested and not include_ingested:
+                        continue
+                    e = find_entry(cid)
+                    if e is None:
+                        continue
+                    if not is_license_safe(e.license or ""):
+                        continue
+                    score = _score_entry(
+                        e, intent=intent, genres=[adj], tones=tones,
+                        ingested=ingested,
+                        ingested_size_kb=ingested_size_kb)
+                    # Slight discount — adjacent genre is less
+                    # relevant than the user's actual pick.
+                    score *= 0.85
+                    candidates.append((score, e, is_ingested))
+                    expanded_to.append(adj)
+        expanded_to = sorted(set(expanded_to))
+
+    # Compose the diagnostic summary so the UI can render it.
+    if not candidates:
+        if n_pool == 0:
+            summary = (
+                "No catalog entries map to your selection. The "
+                "genre/tone taxonomies cover the major fiction "
+                "categories — pick at least one of those on Step 1.")
+        else:
+            summary = (
+                f"Couldn't find any candidates "
+                f"(pool size {n_pool}, "
+                f"{n_license_filtered} filtered for license).")
+        return RecommendationResult(
+            suggestions=[],
+            candidate_pool_size=n_pool,
+            n_already_ingested=n_already_ingested,
+            n_license_filtered=n_license_filtered,
+            expanded_to_related=expanded_to,
+            notes=notes,
+            summary=summary,
+        )
+
+    # Rank + LLM-refine + truncate.
+    candidates.sort(key=lambda x: -x[0])
+    shortlist_pairs = [(e, ing) for _score, e, ing in candidates[
+                        :max_suggestions * 2]]
+
+    suggestions: List[DownloadSuggestion] = []
+    if llm_generate is not None:
+        # The LLM refiner only sees the entries; we re-attach the
+        # ingested flag after picking so the UI knows whether each
+        # pick needs downloading.
+        shortlist = [e for e, _ing in shortlist_pairs]
+        ing_lookup = {e.id: ing for e, ing in shortlist_pairs}
+        suggestions = _llm_refine(
+            shortlist=shortlist,
+            intent=intent, genres=genres, tones=tones,
+            ingested=ingested, ingested_size_kb=ingested_size_kb,
+            max_suggestions=max_suggestions,
+            llm_generate=llm_generate)
+        for s in suggestions:
+            s.requires_download = not ing_lookup.get(s.corpus_id, False)
+    if not suggestions:
+        for i, (e, is_ingested) in enumerate(
+                shortlist_pairs[:max_suggestions]):
+            suggestions.append(DownloadSuggestion(
+                corpus_id=e.id,
+                name=e.name,
+                description=e.description or "",
+                license=e.license or "",
+                size_kb=e.size_hint_kb or 0,
+                reason=_rationale(
+                    e, intent=intent, genres=genres, tones=tones),
+                priority=i + 1,
+                catalog_entry=e,
+                requires_download=not is_ingested,
+            ))
+
+    n_ingested_in_picks = sum(
+        1 for s in suggestions if not s.requires_download)
+    n_to_download = sum(
+        1 for s in suggestions if s.requires_download)
+
+    if expanded_to:
+        notes.append(
+            f"Smart Pick expanded into adjacent genres "
+            f"({', '.join(expanded_to)}) since the primary genre "
+            f"pool was thin.")
+
+    parts = []
+    if n_to_download:
+        parts.append(f"{n_to_download} to download")
+    if n_ingested_in_picks:
+        parts.append(f"{n_ingested_in_picks} already in your DB")
+    summary = (
+        f"{len(suggestions)} pick(s) — "
+        + ", ".join(parts)
+        + (f". Expanded to: {', '.join(expanded_to)}."
+           if expanded_to else "."))
+
+    return RecommendationResult(
+        suggestions=suggestions,
+        candidate_pool_size=n_pool,
+        n_already_ingested=n_already_ingested,
+        n_license_filtered=n_license_filtered,
+        expanded_to_related=expanded_to,
+        notes=notes,
+        summary=summary,
+    )
+
+
 def recommend_downloads(*,
                         intent: str,
                         genres: List[str],
@@ -265,62 +493,15 @@ def recommend_downloads(*,
     fails, or returns unparseable output.
 
     Returns the suggestions ordered by priority (1 = highest).
+    Thin wrapper around :func:`recommend_downloads_with_diagnosis`
+    — call that directly to also get the human-readable summary
+    explaining empty results.
     """
-    from src.data.corpus_catalog import find_entry, is_license_safe
-
-    ingested = _ingested_corpus_ids(db_path)
-    ingested_size_kb = sum(
-        (find_entry(cid).size_hint_kb or 0)
-        for cid in ingested if find_entry(cid) is not None)
-
-    candidate_ids = _candidate_pool(
-        intent=intent, genres=genres, tones=tones)
-    candidates = []
-    for cid in candidate_ids:
-        if cid in ingested:
-            continue
-        e = find_entry(cid)
-        if e is None:
-            continue
-        if not is_license_safe(e.license or ""):
-            continue
-        score = _score_entry(
-            e, intent=intent, genres=genres, tones=tones,
-            ingested=ingested, ingested_size_kb=ingested_size_kb)
-        candidates.append((score, e))
-
-    if not candidates:
-        return []
-
-    candidates.sort(key=lambda x: -x[0])
-    shortlist = [e for _score, e in candidates[:max_suggestions * 2]]
-
-    # Try the LLM refinement.
-    if llm_generate is not None:
-        refined = _llm_refine(
-            shortlist=shortlist,
-            intent=intent, genres=genres, tones=tones,
-            ingested=ingested, ingested_size_kb=ingested_size_kb,
-            max_suggestions=max_suggestions,
-            llm_generate=llm_generate)
-        if refined:
-            return refined
-
-    # Deterministic fallback — top N from the shortlist.
-    out: List[DownloadSuggestion] = []
-    for i, e in enumerate(shortlist[:max_suggestions]):
-        out.append(DownloadSuggestion(
-            corpus_id=e.id,
-            name=e.name,
-            description=e.description or "",
-            license=e.license or "",
-            size_kb=e.size_hint_kb or 0,
-            reason=_rationale(e, intent=intent,
-                               genres=genres, tones=tones),
-            priority=i + 1,
-            catalog_entry=e,
-        ))
-    return out
+    return recommend_downloads_with_diagnosis(
+        intent=intent, genres=genres, tones=tones,
+        db_path=db_path, max_suggestions=max_suggestions,
+        llm_generate=llm_generate,
+    ).suggestions
 
 
 def _llm_refine(*,

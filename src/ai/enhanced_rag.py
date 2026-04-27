@@ -87,6 +87,13 @@ class EnhancedRAGSystem:
             self._index_characters,
             self._index_plot,
             self._index_promises,
+            # Manuscript drafts and per-chapter planning — the
+            # writer's actual prose plus their intent for each
+            # chapter. Without these, RAG can answer questions about
+            # the encyclopedia + worldbuilding but is blind to the
+            # text the user is actually writing.
+            self._index_chapter_content,
+            self._index_chapter_planning,
         ]
 
         for indexer in indexers:
@@ -843,6 +850,159 @@ Related Characters: {', '.join(chars) if chars else 'All'}
                     "point_type": kp.point_type,
                     "importance": kp.importance,
                     "chapter_id": kp.chapter_id
+                }
+            )
+            self.search_engine.index_document(chunk)
+
+    def _split_chapter_for_index(self, content: str,
+                                 target_chars: int = 2400,
+                                 min_chars: int = 600) -> List[str]:
+        """Split a chapter's prose into paragraph-aligned chunks.
+
+        Each chunk targets ~2400 chars (~600 tokens) so a retrieved
+        chunk is small enough to fit alongside other RAG context but
+        big enough to convey scene + voice. We pack whole paragraphs
+        until the next one would push us over the target, which
+        avoids splitting mid-paragraph and keeps the prose coherent.
+        """
+        if not content or not content.strip():
+            return []
+        import re
+        paragraphs = [p.strip() for p in re.split(r'\n\s*\n+', content)
+                      if p.strip()]
+        chunks: List[str] = []
+        buf = ""
+        for para in paragraphs:
+            if not buf:
+                buf = para
+                continue
+            if len(buf) + len(para) + 2 > target_chars:
+                chunks.append(buf)
+                buf = para
+            else:
+                buf += "\n\n" + para
+        if buf and len(buf) >= min_chars:
+            chunks.append(buf)
+        elif buf and chunks:
+            # Fold a too-small trailing buffer into the previous chunk
+            # rather than creating a stub that won't retrieve well.
+            chunks[-1] = chunks[-1] + "\n\n" + buf
+        elif buf:
+            chunks.append(buf)
+        return chunks
+
+    def _index_chapter_content(self):
+        """Index manuscript chapter prose so RAG can retrieve actual
+        draft text — not just key points — when answering questions
+        about chat / characters / worldbuilding / plot.
+
+        Each chapter's prose is split into paragraph-aligned chunks
+        (~600 tokens each). Source type is ``chapter_content`` so
+        downstream consumers can filter or weight differently from
+        encyclopedia / planning entries if they want.
+        """
+        manuscript = getattr(self.project, 'manuscript', None)
+        chapters = getattr(manuscript, 'chapters', None) if manuscript else None
+        if not chapters:
+            return
+
+        for ch in chapters:
+            content = getattr(ch, 'content', '') or ''
+            if not content.strip():
+                continue
+            number = getattr(ch, 'number', 0)
+            title = getattr(ch, 'title', '') or f"Chapter {number}"
+            display = f"Ch. {number}: {title}" if number else title
+            for i, chunk_text in enumerate(
+                    self._split_chapter_for_index(content)):
+                chunk = self._make_chunk(
+                    content=f"From {display} (excerpt):\n{chunk_text}",
+                    source_type="chapter_content",
+                    source_name=display,
+                    source_id=f"chcontent_{getattr(ch, 'id', number)}_{i}",
+                    metadata={
+                        "chapter_id": getattr(ch, 'id', ''),
+                        "chapter_number": number,
+                        "chunk_index": i,
+                    }
+                )
+                self.search_engine.index_document(chunk)
+
+    def _index_chapter_planning(self):
+        """Index per-chapter planning blocks: description, outline,
+        scenes, POV, tone, voice, style, pacing, themes, featured
+        characters, locations, organized notes, and subplot notes.
+
+        These planning blocks usually carry the writer's *intent* for
+        a chapter — exactly the kind of context the character /
+        worldbuilding / plot agents should see when the user asks
+        about elements that appear in or near a chapter.
+        """
+        manuscript = getattr(self.project, 'manuscript', None)
+        chapters = getattr(manuscript, 'chapters', None) if manuscript else None
+        if not chapters:
+            return
+
+        for ch in chapters:
+            planning = getattr(ch, 'planning', None)
+            if not planning:
+                continue
+            number = getattr(ch, 'number', 0)
+            title = getattr(ch, 'title', '') or f"Chapter {number}"
+            display = f"Ch. {number}: {title}" if number else title
+
+            parts: List[str] = [f"Chapter Planning — {display}"]
+
+            def _add(label: str, value: str) -> None:
+                if value and str(value).strip():
+                    parts.append(f"{label}: {str(value).strip()}")
+
+            _add("Description", getattr(planning, 'description', ''))
+            _add("Outline", getattr(planning, 'outline', ''))
+            _add("POV character", getattr(planning, 'pov_character', ''))
+            _add("Timeline", getattr(planning, 'timeline_position', ''))
+            _add("Tone", getattr(planning, 'tone', ''))
+            _add("Voice", getattr(planning, 'voice', ''))
+            _add("Style", getattr(planning, 'style', ''))
+            _add("Pacing", getattr(planning, 'pacing', ''))
+
+            scenes = getattr(planning, 'scene_list', []) or []
+            if scenes:
+                parts.append("Scenes:\n" + "\n".join(
+                    f"  - {s}" for s in scenes))
+            featured = getattr(planning, 'characters_featured', []) or []
+            if featured:
+                parts.append("Featured characters: " + ", ".join(featured))
+            locations = getattr(planning, 'locations', []) or []
+            if locations:
+                parts.append("Locations: " + ", ".join(locations))
+            themes = getattr(planning, 'themes', []) or []
+            if themes:
+                parts.append("Themes: " + ", ".join(themes))
+
+            # ``notes_as_text`` and ``subplots_as_text`` already
+            # flatten nested structures into prompt-ready prose.
+            notes_text = getattr(planning, 'notes_as_text', "")
+            if notes_text and notes_text.strip():
+                parts.append(f"Notes:\n{notes_text.strip()}")
+            subplots_text = getattr(planning, 'subplots_as_text', "")
+            if subplots_text and subplots_text.strip():
+                parts.append(f"Subplot threads:\n{subplots_text.strip()}")
+
+            # If nothing beyond the header was added we skip — a
+            # planning block with only the title carries no signal.
+            if len(parts) <= 1:
+                continue
+
+            chunk = self._make_chunk(
+                content="\n\n".join(parts),
+                source_type="chapter_planning",
+                source_name=f"Planning: {display}",
+                source_id=f"chplan_{getattr(ch, 'id', number)}",
+                metadata={
+                    "chapter_id": getattr(ch, 'id', ''),
+                    "chapter_number": number,
+                    "pov_character": getattr(planning, 'pov_character', ''),
                 }
             )
             self.search_engine.index_document(chunk)

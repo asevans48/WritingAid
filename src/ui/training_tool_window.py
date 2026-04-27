@@ -31,7 +31,7 @@ from PyQt6.QtWidgets import (
     QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QProgressBar,
     QPlainTextEdit, QCheckBox, QListWidget, QListWidgetItem, QDialog,
     QDialogButtonBox, QGroupBox, QAbstractItemView, QScrollArea,
-    QTabWidget,
+    QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QSplitter,
 )
 
 from src.config.creativeos_config import (
@@ -775,6 +775,15 @@ class _CorpusDashboardWidget(QWidget):
         self._junk_hint.setVisible(False)
         layout.addWidget(self._junk_hint)
 
+        # Short-source disclosure — informational, not a warning.
+        # Hidden by default; rendered when there are short-source
+        # rows in the DB so users understand they're expected for
+        # certain corpus types.
+        self._short_source_hint = QLabel("")
+        self._short_source_hint.setWordWrap(True)
+        self._short_source_hint.setVisible(False)
+        layout.addWidget(self._short_source_hint)
+
         # Action row — quick shortcuts that share existing dialogs.
         actions = QHBoxLayout()
         self._check_btn = QPushButton("🔍 Detailed quality check")
@@ -838,6 +847,7 @@ class _CorpusDashboardWidget(QWidget):
             0, 0, 1, 4)
         self._source_label.setText("")
         self._junk_hint.setVisible(False)
+        self._short_source_hint.setVisible(False)
 
     def _render_empty(self):
         self._clear_grid()
@@ -849,6 +859,7 @@ class _CorpusDashboardWidget(QWidget):
             0, 0, 1, 4)
         self._source_label.setText("")
         self._junk_hint.setVisible(False)
+        self._short_source_hint.setVisible(False)
 
     def _render_error(self, msg: str):
         self._clear_grid()
@@ -858,42 +869,51 @@ class _CorpusDashboardWidget(QWidget):
             0, 0, 1, 4)
         self._source_label.setText("")
         self._junk_hint.setVisible(False)
+        self._short_source_hint.setVisible(False)
 
     def _render_stats(self, stats):
         self._clear_grid()
 
-        # Row 0: total rows + db size.
+        # The dashboard now shows ONLY the metrics that drive a
+        # decision: row count (do I have enough data?), median
+        # output length (is this the right length for my intent?),
+        # voice-tagged % (will the model learn voice?). DB size and
+        # other diagnostics moved to the footer hint below — useful
+        # but not load-bearing.
+        voice_pct = (stats.n_voice_tagged / stats.total_rows * 100.0
+                     if stats.total_rows else 0)
+        size_str = (f"{stats.db_size_kb / 1024:.1f} MB"
+                    if stats.db_size_kb >= 1024
+                    else f"{stats.db_size_kb} KB")
+
         self._stats_grid.addWidget(
             QLabel("<span style='color:#6b7280;font-size:11px;'>"
                    "Rows</span>"), 0, 0)
         self._stats_grid.addWidget(
-            QLabel(f"<b>{stats.total_rows:,}</b>"), 1, 0)
+            QLabel(f"<b style='font-size:16px;'>"
+                   f"{stats.total_rows:,}</b>"
+                   f" <span style='color:#9ca3af;font-size:11px;'>"
+                   f"in {size_str}</span>"),
+            1, 0)
 
         self._stats_grid.addWidget(
             QLabel("<span style='color:#6b7280;font-size:11px;'>"
-                   "DB size</span>"), 0, 1)
-        size_str = (f"{stats.db_size_kb / 1024:.1f} MB"
-                    if stats.db_size_kb >= 1024
-                    else f"{stats.db_size_kb} KB")
-        self._stats_grid.addWidget(QLabel(f"<b>{size_str}</b>"), 1, 1)
+                   "Median output</span>"), 0, 1)
+        self._stats_grid.addWidget(
+            QLabel(f"<b style='font-size:16px;'>"
+                   f"{stats.median_output_chars}</b>"
+                   f" <span style='color:#9ca3af;font-size:11px;'>"
+                   f"chars</span>"),
+            1, 1)
 
         self._stats_grid.addWidget(
             QLabel("<span style='color:#6b7280;font-size:11px;'>"
-                   "Median output</span>"), 0, 2)
+                   "Voice-tagged</span>"), 0, 2)
         self._stats_grid.addWidget(
-            QLabel(f"<b>{stats.median_output_chars} chars</b>"),
+            QLabel(f"<b style='font-size:16px;'>{voice_pct:.0f}%</b>"
+                   f" <span style='color:#9ca3af;font-size:11px;'>"
+                   f"({stats.n_voice_tagged:,} rows)</span>"),
             1, 2)
-
-        self._stats_grid.addWidget(
-            QLabel("<span style='color:#6b7280;font-size:11px;'>"
-                   "Voice-tagged</span>"), 0, 3)
-        voice_pct = (stats.n_voice_tagged / stats.total_rows * 100.0
-                     if stats.total_rows else 0)
-        self._stats_grid.addWidget(
-            QLabel(f"<b>{stats.n_voice_tagged:,}</b> "
-                   f"<span style='color:#6b7280;font-size:11px;'>"
-                   f"({voice_pct:.0f}%)</span>"),
-            1, 3)
 
         # Source breakdown.
         if stats.by_source:
@@ -935,6 +955,34 @@ class _CorpusDashboardWidget(QWidget):
             self._junk_hint.setVisible(True)
         else:
             self._junk_hint.setVisible(False)
+
+        # Short-source disclosure. Many ingestion paths legitimately
+        # produce short source_text — Wikipedia movie plots use
+        # title→plot pairs, sentence-level splits use a one-sentence
+        # opener. Surface the count + an explanation so users don't
+        # mistake it for a bug.
+        if stats.n_short_source > 0:
+            short_pct = stats.n_short_source / stats.total_rows * 100.0
+            corpus_rows = stats.by_source.get("corpus", 0)
+            short_pct_of_corpus = (
+                stats.n_short_source / corpus_rows * 100.0
+                if corpus_rows else 0)
+            self._short_source_hint.setText(
+                f"<span style='color:#374151;'>"
+                f"<b>ℹ {stats.n_short_source:,}</b> corpus rows have "
+                f"a short source ({short_pct_of_corpus:.0f}% of "
+                f"corpus) — typical for title→plot datasets and "
+                f"opener-sentence splits. The trainer wraps these "
+                f"in the right prompt template at training time."
+                f"</span>")
+            self._short_source_hint.setStyleSheet(
+                "background: #eff6ff; "
+                "border-left: 3px solid #3b82f6; "
+                "border-radius: 3px; padding: 4px 8px; "
+                "font-size: 11px; margin-top: 2px;")
+            self._short_source_hint.setVisible(True)
+        else:
+            self._short_source_hint.setVisible(False)
 
     # ── Action handlers (delegate to parent window) ───────
 
@@ -1045,7 +1093,23 @@ class _CorpusQualityDialog(QDialog):
         intro.setStyleSheet("color: #6b7280;")
         layout.addWidget(intro)
 
-        # Stats panel.
+        # Tabs: overview (verdict + samples for the SELECTED corpus
+        # mix) vs. By genre / By corpus (whole-DB breakdowns the
+        # user can use to spot lopsided distributions). The
+        # breakdowns lazy-load on first tab click — they iterate
+        # the full DB so we avoid the cost when the user doesn't
+        # open the tab.
+        self.tabs = QTabWidget()
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+        self._loaded_genre_tab = False
+        self._loaded_corpus_tab = False
+        layout.addWidget(self.tabs, 1)
+
+        # ── Tab 1: Overview ──
+        overview = QWidget()
+        ov_layout = QVBoxLayout(overview)
+        ov_layout.setSpacing(8)
+
         self.stats_label = QLabel("Scanning…")
         self.stats_label.setWordWrap(True)
         self.stats_label.setStyleSheet(
@@ -1053,17 +1117,15 @@ class _CorpusQualityDialog(QDialog):
             "padding: 10px; font-family: monospace; font-size: 11px;")
         self.stats_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse)
-        layout.addWidget(self.stats_label)
+        ov_layout.addWidget(self.stats_label)
 
-        # Deterministic verdict.
         self.det_label = QLabel("")
         self.det_label.setWordWrap(True)
-        layout.addWidget(self.det_label)
+        ov_layout.addWidget(self.det_label)
 
-        # LLM verdict panel — collapsed initially.
         self.llm_label = QLabel("")
         self.llm_label.setWordWrap(True)
-        layout.addWidget(self.llm_label)
+        ov_layout.addWidget(self.llm_label)
 
         self.llm_btn = QPushButton("🤖 Get AI opinion")
         self.llm_btn.setToolTip(
@@ -1071,19 +1133,39 @@ class _CorpusQualityDialog(QDialog):
             "an honest assessment. Falls back gracefully if no LLM "
             "is configured.")
         self.llm_btn.clicked.connect(self._on_request_llm_opinion)
-        layout.addWidget(self.llm_btn)
+        ov_layout.addWidget(self.llm_btn)
 
-        # Sample passages — collapsible.
-        layout.addWidget(QLabel("<b>Sample passages</b>"))
+        ov_layout.addWidget(QLabel("<b>Sample passages</b>"))
         self.samples_view = QPlainTextEdit()
         self.samples_view.setReadOnly(True)
         self.samples_view.setStyleSheet(
             "font-family: monospace; font-size: 10px; "
             "background: #f9fafb; color: #111827;")
         self.samples_view.setMaximumHeight(180)
-        layout.addWidget(self.samples_view)
+        ov_layout.addWidget(self.samples_view)
+        ov_layout.addStretch()
+        self.tabs.addTab(overview, "Overview")
 
-        layout.addStretch()
+        # ── Tab 2: By genre ──
+        self.genre_tab = self._build_breakdown_tab(
+            placeholder="Click to compute per-genre metrics for "
+                        "the whole DB. Iterates every row so it "
+                        "may take a few seconds on a big corpus.",
+            columns=["Genre", "Rows", "Median output (chars)",
+                     "Voice-tagged"])
+        self.tabs.addTab(self.genre_tab["widget"], "By genre")
+
+        # ── Tab 3: By corpus ──
+        self.corpus_tab = self._build_breakdown_tab(
+            placeholder="Click to compute per-corpus metrics. "
+                        "Identifies each ingested catalog corpus, "
+                        "upload, or project import and reports row "
+                        "count, median output length, and "
+                        "short-source % (a leading indicator of a "
+                        "bad ingest).",
+            columns=["Corpus", "Kind", "Rows",
+                     "Median output (chars)", "Short source %"])
+        self.tabs.addTab(self.corpus_tab["widget"], "By corpus")
 
         # Action row.
         actions = QHBoxLayout()
@@ -1113,6 +1195,150 @@ class _CorpusQualityDialog(QDialog):
         self.continue_btn.clicked.connect(self.accept)
         actions.addWidget(self.continue_btn)
         layout.addLayout(actions)
+
+    def _build_breakdown_tab(self, *, placeholder: str,
+                             columns: List[str]) -> Dict[str, Any]:
+        """Build a "By genre" / "By corpus" tab — placeholder + table.
+
+        Returns a dict with the wrapper widget, the inner table, and
+        the placeholder label so the load callback can swap them.
+        """
+        wrap = QWidget()
+        wrap_layout = QVBoxLayout(wrap)
+
+        ph = QLabel(placeholder)
+        ph.setWordWrap(True)
+        ph.setStyleSheet(
+            "color:#374151;background:#f3f4f6;border-radius:6px;"
+            "padding:12px;")
+        wrap_layout.addWidget(ph)
+
+        table = QTableWidget(0, len(columns))
+        table.setHorizontalHeaderLabels(columns)
+        table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Interactive)
+        table.setSortingEnabled(True)
+        table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setVisible(False)
+        wrap_layout.addWidget(table, 1)
+
+        return {"widget": wrap, "table": table, "placeholder": ph}
+
+    def _on_tab_changed(self, idx: int):
+        # Lazy-load per-genre / per-corpus metrics on first view.
+        # ``compute_stats`` / quality scan run on the JSONL we
+        # already exported; the breakdown helpers iterate the full
+        # SQLite DB and take a second or two on a big corpus, so we
+        # only pay that cost when the user opens the tab.
+        text = self.tabs.tabText(idx)
+        if text == "By genre" and not self._loaded_genre_tab:
+            self._load_genre_tab()
+            self._loaded_genre_tab = True
+        elif text == "By corpus" and not self._loaded_corpus_tab:
+            self._load_corpus_tab()
+            self._loaded_corpus_tab = True
+
+    def _resolve_db_path(self) -> Optional[Path]:
+        """Find the parent window's DB path.
+
+        The dialog is opened from TrainingToolWindow which exposes
+        ``db_path``; we walk up the parent chain to find it. Returns
+        None if unreachable (defensive — shouldn't happen in normal
+        flow but the dialog can in theory be opened headless).
+        """
+        p = self.parent()
+        while p is not None:
+            if hasattr(p, "db_path"):
+                return p.db_path
+            p = p.parent() if hasattr(p, "parent") else None
+        return None
+
+    def _load_genre_tab(self):
+        from PyQt6.QtWidgets import QApplication
+        db_path = self._resolve_db_path()
+        if db_path is None:
+            self.genre_tab["placeholder"].setText(
+                "Could not locate training DB.")
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            db = RephraseDatabase(db_path)
+            metrics = db.per_genre_metrics()
+        except Exception as e:
+            self.genre_tab["placeholder"].setText(
+                f"Failed: {e}")
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        table = self.genre_tab["table"]
+        table.setRowCount(len(metrics))
+        # Sorting is enabled — we set numeric items via setData so
+        # column sorts are correct rather than lexicographic.
+        from PyQt6.QtCore import Qt as _Qt
+        table.setSortingEnabled(False)
+        for i, m in enumerate(metrics):
+            table.setItem(i, 0, QTableWidgetItem(m["genre"]))
+            it = QTableWidgetItem()
+            it.setData(_Qt.ItemDataRole.DisplayRole, m["rows"])
+            table.setItem(i, 1, it)
+            it = QTableWidgetItem()
+            it.setData(_Qt.ItemDataRole.DisplayRole,
+                       m["median_output_chars"])
+            table.setItem(i, 2, it)
+            it = QTableWidgetItem()
+            it.setData(_Qt.ItemDataRole.DisplayRole, m["voice_tagged"])
+            table.setItem(i, 3, it)
+        table.setSortingEnabled(True)
+        # Sort by row count descending — the most-populated genres
+        # are the most actionable.
+        table.sortItems(1, _Qt.SortOrder.DescendingOrder)
+        self.genre_tab["placeholder"].setVisible(False)
+        table.setVisible(True)
+
+    def _load_corpus_tab(self):
+        from PyQt6.QtWidgets import QApplication
+        db_path = self._resolve_db_path()
+        if db_path is None:
+            self.corpus_tab["placeholder"].setText(
+                "Could not locate training DB.")
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            db = RephraseDatabase(db_path)
+            metrics = db.per_corpus_metrics()
+        except Exception as e:
+            self.corpus_tab["placeholder"].setText(
+                f"Failed: {e}")
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        table = self.corpus_tab["table"]
+        table.setRowCount(len(metrics))
+        from PyQt6.QtCore import Qt as _Qt
+        table.setSortingEnabled(False)
+        for i, m in enumerate(metrics):
+            table.setItem(i, 0, QTableWidgetItem(m["label"]))
+            table.setItem(i, 1, QTableWidgetItem(m["kind"]))
+            it = QTableWidgetItem()
+            it.setData(_Qt.ItemDataRole.DisplayRole, m["rows"])
+            table.setItem(i, 2, it)
+            it = QTableWidgetItem()
+            it.setData(_Qt.ItemDataRole.DisplayRole,
+                       m["median_output_chars"])
+            table.setItem(i, 3, it)
+            it = QTableWidgetItem()
+            # Format short-source as an int 0-100 so the column
+            # sorts numerically, with the % suffix in the display.
+            it.setData(_Qt.ItemDataRole.DisplayRole,
+                       round(m["short_source_pct"], 1))
+            table.setItem(i, 4, it)
+        table.setSortingEnabled(True)
+        table.sortItems(2, _Qt.SortOrder.DescendingOrder)
+        self.corpus_tab["placeholder"].setVisible(False)
+        table.setVisible(True)
 
     # ── Behaviour ────────────────────────────────────────
 
@@ -1161,12 +1387,23 @@ class _CorpusQualityDialog(QDialog):
             self.samples_view.setPlainText(
                 "(no samples — corpus is empty)")
         else:
+            # Render with clear, framed sections so users don't
+            # mistake the prompt template ("Continue this passage…")
+            # for actual corpus content. The instruction text is
+            # what the trainer wraps around your data; the model's
+            # target is the assistant block.
             blocks = []
             for i, s in enumerate(samples):
                 blocks.append(
-                    f"--- Sample {i+1} ---\n"
-                    f"USER:\n{s['user'][:300]}\n\n"
-                    f"ASSISTANT:\n{s['assistant'][:400]}")
+                    f"╔═══ Sample {i+1} of {len(samples)} ═══\n"
+                    f"║ ↓ what the trainer SHOWS the model "
+                    f"(prompt template + your text)\n"
+                    f"╠══════════════════════════════════\n"
+                    f"{s['user'][:300]}\n"
+                    f"╠══ ↓ what the model LEARNS to produce "
+                    f"(your prose)\n╠══════════════════════════════════\n"
+                    f"{s['assistant'][:400]}\n"
+                    f"╚══════════════════════════════════")
             self.samples_view.setPlainText("\n\n".join(blocks))
 
     def _render_stats(self, stats) -> str:
@@ -1713,11 +1950,47 @@ class TrainingToolWindow(QMainWindow):
 
     # ── Step 1: dataset ──
 
+    @staticmethod
+    def _section_header(layout: QVBoxLayout, number: str, title: str,
+                        description: str = "") -> None:
+        """Insert a labelled section divider into the Step 1 layout.
+
+        Step 1 is dense — preset bar, recipe description, source
+        picker, corpus actions, synthesis, export — and used to be
+        an unlabelled scroll of widgets. Section headers give the
+        user a frame for "where am I in the flow" and a one-line
+        cue for "what does this group of controls do".
+        """
+        header = QLabel(
+            f"<div style='margin-top:14px;'>"
+            f"<span style='font-size:13px;font-weight:bold;color:#1f2937;'>"
+            f"{number} · {title}</span></div>")
+        layout.addWidget(header)
+        if description:
+            sub = QLabel(description)
+            sub.setWordWrap(True)
+            sub.setStyleSheet(
+                "color:#6b7280;font-size:11px;"
+                "padding:0 0 4px 0;border-bottom:1px solid #e5e7eb;"
+                "margin-bottom:6px;")
+            layout.addWidget(sub)
+
     def _build_step_dataset(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.addWidget(QLabel("<b>Step 1 — Describe & assemble your dataset</b>"))
+        layout.addWidget(QLabel(
+            "<div style='font-size:15px;font-weight:bold;color:#111827;'>"
+            "Step 1 — Describe &amp; assemble your dataset</div>"
+            "<div style='color:#6b7280;font-size:12px;margin-top:2px;'>"
+            "Tell the studio what you want to build, then bring in the "
+            "writing the model will learn from. The numbered sections "
+            "below walk top-to-bottom.</div>"))
 
+        self._section_header(
+            layout, "1", "Start from a preset (optional)",
+            "Reload a previous recipe — last 3 training runs plus "
+            "any presets you saved — or skip ahead to describe a new "
+            "model below.")
         # ── Preset bar ──
         # Lets the user load a previous recipe (last 3 trainings + any
         # user-named presets) or save the current wizard state for
@@ -1747,6 +2020,14 @@ class TrainingToolWindow(QMainWindow):
         self.manage_presets_btn.clicked.connect(self._open_manage_presets)
         preset_row.addWidget(self.manage_presets_btn)
         layout.addLayout(preset_row)
+
+        self._section_header(
+            layout, "2", "What are you building?",
+            "Describe the model in plain language and pick the genres "
+            "and tones you care about. ✨ Build Training Recipe turns "
+            "this into a full plan — source mix, recommended corpora, "
+            "format, base model, hyperparameters — that you can apply "
+            "with one click.")
 
         # ── Describe your model ──
         describe_label = QLabel(
@@ -1898,6 +2179,13 @@ class TrainingToolWindow(QMainWindow):
         layout.addWidget(self.recommendation_label)
         self._current_recipe = None
 
+        self._section_header(
+            layout, "3", "Training data mix",
+            "All your training rows live in one SQLite database "
+            "(below). Tick the source types this run should pull "
+            "from — different runs can use different subsets without "
+            "re-ingesting anything.")
+
         form = QFormLayout()
         self.db_path_edit = QLineEdit(str(self.db_path))
         browse_btn = QPushButton("Browse…")
@@ -1966,6 +2254,12 @@ class TrainingToolWindow(QMainWindow):
         tag_row.addStretch()
         layout.addLayout(tag_row)
 
+        self._section_header(
+            layout, "4", "What's in your training DB right now",
+            "Live stats for the database above. Use 🔍 Detailed "
+            "quality check for sample passages and a verdict; "
+            "🧹 Clean junk rows for retroactive cleanup.")
+
         # ── Corpus dashboard ──
         # Live at-a-glance panel showing what's in the training DB:
         # row counts, source breakdown, voice-tag rate, junk-row
@@ -1975,6 +2269,14 @@ class TrainingToolWindow(QMainWindow):
         self.corpus_dashboard = _CorpusDashboardWidget(
             self.db_path, parent_window=self)
         layout.addWidget(self.corpus_dashboard)
+
+        self._section_header(
+            layout, "5", "Bring corpora in & maintain them",
+            "Add writing the model will learn from. 📚 Upload Local / "
+            "📖 Import from Project pull from your own files; 🌐 Open "
+            "Library and 🎯 Smart Pick pull from curated public-domain "
+            "catalogs. Other buttons here filter, clean, rebuild, or "
+            "audit what's already in the DB.")
 
         # ── Corpus upload (local files) ──
         corpus_row = QHBoxLayout()
@@ -2007,6 +2309,15 @@ class TrainingToolWindow(QMainWindow):
         # Per-run corpus picker. Lets the user fine-tune which
         # ingested collections feed *this* training run without
         # touching the underlying data. Defaults to all-checked.
+        self.browse_db_btn = QPushButton("🔎 Browse rows…")
+        self.browse_db_btn.setToolTip(
+            "Open a searchable view of every row in the training "
+            "DB. Filter by source type, genre, or corpus; type a "
+            "title or phrase to find specific rows; click a row to "
+            "see its full source / output / notes.")
+        self.browse_db_btn.clicked.connect(self._open_corpus_browser)
+        corpus_row.addWidget(self.browse_db_btn)
+
         self.corpus_filter_btn = QPushButton("✓ All corpora")
         self.corpus_filter_btn.setToolTip(
             "Choose which ingested corpus collections feed the next "
@@ -2032,6 +2343,21 @@ class TrainingToolWindow(QMainWindow):
         self.clean_corpus_btn.clicked.connect(self._open_clean_corpus_dialog)
         corpus_row.addWidget(self.clean_corpus_btn)
 
+        # Rebuild button: drops every row that came through the catalog
+        # downloader (notes match ``corpus_id=…``), preserving user
+        # uploads, project imports, and character/worldbuilding/plot
+        # rows. Use after a splitter/cleaner upgrade to re-ingest with
+        # the new logic.
+        self.rebuild_corpus_btn = QPushButton("♻ Rebuild downloads…")
+        self.rebuild_corpus_btn.setToolTip(
+            "Drop every row that came through the catalog downloader "
+            "so you can re-download with the current splitter. Manual "
+            "uploads, project imports, and character/worldbuilding/"
+            "plot rows are preserved. A backup JSONL is written first.")
+        self.rebuild_corpus_btn.clicked.connect(
+            self._open_rebuild_corpus_dialog)
+        corpus_row.addWidget(self.rebuild_corpus_btn)
+
         # Quality preview from Step 1 — runs the same dialog that
         # gates Start Training, but as a standalone tool so the
         # user can iterate on corpus picks before committing to
@@ -2048,28 +2374,34 @@ class TrainingToolWindow(QMainWindow):
             self._open_corpus_quality_check)
         corpus_row.addWidget(self.check_quality_step1_btn)
 
-        # Smart-pick downloader — runs the recommender against
-        # the user's current intent / genres / tones and shows a
-        # short list of catalog entries worth downloading. The
-        # default Library dialog is still there for users who
-        # want manual control over every checkbox; this is the
-        # one-click "give me what I need" alternative.
-        self.smart_pick_btn = QPushButton("🎯 Smart Pick…")
-        self.smart_pick_btn.setStyleSheet(
-            "QPushButton { padding: 6px 12px; border-radius: 5px; "
-            "background-color: #ddd6fe; color: #5b21b6; }"
-            "QPushButton:hover { background-color: #c4b5fd; }")
-        self.smart_pick_btn.setToolTip(
-            "Recommend a small set of catalog entries to download "
-            "based on your current selection. Skips already-"
-            "ingested corpora and (when an LLM is configured) "
-            "uses agentic refinement to pick complementary picks. "
-            "Beats walking the full Library dialog when you just "
-            "want sensible defaults.")
-        self.smart_pick_btn.clicked.connect(self._open_smart_pick)
-        corpus_row.addWidget(self.smart_pick_btn)
+        # Variability prune — separate from junk cleaning. Detects
+        # exact duplicates, repeated openers, and dominant sources
+        # in the existing corpus, shows stats per category, and
+        # drops only what the user approves.
+        self.prune_corpus_btn = QPushButton("📊 Prune for variability…")
+        self.prune_corpus_btn.setToolTip(
+            "Audit the corpus for redundancy: exact duplicates, "
+            "oversampled openers, dominant sources. Each category "
+            "is shown with stats and approved separately. Different "
+            "from Clean (which removes junk) — this removes "
+            "redundancy.")
+        self.prune_corpus_btn.clicked.connect(
+            self._open_variability_prune_dialog)
+        corpus_row.addWidget(self.prune_corpus_btn)
         corpus_row.addStretch()
         layout.addLayout(corpus_row)
+        # NOTE: Smart Pick used to live here; it's now reachable
+        # from inside the Corpus Library dialog (download flow)
+        # since smart-picking only makes sense when you're picking
+        # what to download.
+
+        self._section_header(
+            layout, "6", "Synthesize new training pairs",
+            "Use a configured LLM to manufacture supervision data "
+            "from what you already have. Pacing pairs teach genre-"
+            "appropriate rhythm; rephrase pairs teach the model to "
+            "rewrite in YOUR voice. Each rewrite is verified — only "
+            "kept if it actually moved toward the target.")
 
         # Pacing-pair synthesis: walk corpus rows, ask the configured
         # LLM to rewrite each toward a target genre's CONLIT baseline,
@@ -2110,6 +2442,14 @@ class TrainingToolWindow(QMainWindow):
         pacing_row.addWidget(self.rephrase_pairs_btn)
         pacing_row.addStretch()
         layout.addLayout(pacing_row)
+
+        self._section_header(
+            layout, "7", "Export dataset (optional)",
+            "Most users skip this and just click Start Training on "
+            "Step 3 — the trainer reads from the DB directly. Export "
+            "is for fine-tuning elsewhere (Axolotl, TRL, an external "
+            "GPU box) and produces a JSONL file the standard "
+            "HuggingFace pipelines accept.")
 
         self.db_summary = QLabel("")
         self.db_summary.setStyleSheet(
@@ -2965,15 +3305,22 @@ class TrainingToolWindow(QMainWindow):
         the loss).
         """
         from src.data.text_cleaner import clean_passage
+        from src.data.corpus_adapters import split_text_into_pairs
         from PyQt6.QtWidgets import QMessageBox, QProgressDialog
         from PyQt6.QtCore import Qt as _Qt
 
-        # Dry run — gather the IDs that would be dropped + reasons.
+        # Dry run — gather the IDs that would be dropped, plus the
+        # subset that we can RESCUE by re-chunking. The previous
+        # version dropped any row whose output was >2500 chars on
+        # the assumption it was junk; in practice that often
+        # discards real prose. Now: re-run the splitter on those
+        # rows and turn each into many paragraph-pairs.
         try:
             db = RephraseDatabase(self.db_path)
             with db._conn() as c:
                 cur = c.execute(
-                    "SELECT id, source_type, source_text, output_text "
+                    "SELECT id, source_type, source_text, output_text, "
+                    "voice, genre, character_name, notes, rating "
                     "FROM rephrases")
                 rows = cur.fetchall()
         except Exception as e:
@@ -2996,6 +3343,10 @@ class TrainingToolWindow(QMainWindow):
             "Scanning training rows…", "Cancel", 0, len(rows), self)
         progress.setWindowModality(_Qt.WindowModality.WindowModal)
         to_drop: list = []
+        # ``to_rescue`` mirrors ``to_drop`` but also carries the
+        # split pairs so we can re-insert them at apply time.
+        to_rescue: list = []
+        rescued_pair_count = 0
         for i, row in enumerate(rows):
             if i % 50 == 0:
                 progress.setValue(i)
@@ -3010,33 +3361,73 @@ class TrainingToolWindow(QMainWindow):
             # prompt junk doesn't reach the loss.
             _cleaned, drop_reason = clean_passage(
                 row["output_text"] or "", format_hint=fmt_hint)
-            if drop_reason:
-                to_drop.append((row["id"], drop_reason,
-                                (row["output_text"] or "")[:100]))
+            if not drop_reason:
+                continue
+
+            # Rescue path: too-long corpus rows often contain real
+            # prose that just needs re-chunking. Run the splitter on
+            # the output_text; if it returns ≥1 valid pair, queue
+            # the rescue. Other drop_reasons (boilerplate, page
+            # numbers, JSON blobs, etc.) are real junk — drop them.
+            if (drop_reason == "too_long"
+                    and row["source_type"] == SOURCE_CORPUS):
+                pairs = split_text_into_pairs(row["output_text"] or "")
+                if pairs:
+                    to_rescue.append({
+                        "id": row["id"],
+                        "pairs": pairs,
+                        "voice": row["voice"] or "",
+                        "genre": row["genre"] or "",
+                        "character_name": row["character_name"] or "",
+                        "notes": row["notes"] or "",
+                        "rating": row["rating"] or "",
+                    })
+                    rescued_pair_count += len(pairs)
+                    continue
+
+            to_drop.append((row["id"], drop_reason,
+                            (row["output_text"] or "")[:100]))
         progress.setValue(len(rows))
 
-        if not to_drop:
+        if not to_drop and not to_rescue:
             QMessageBox.information(
                 self, "No junk found",
                 f"Scanned {len(rows)} rows. Nothing matched the junk "
                 f"signatures — your data is clean.")
             return
 
-        # Summarise drops by reason for the confirm dialog.
+        # Summarise drops by reason + rescue plan for the confirm dialog.
         from collections import Counter
         reason_counts = Counter(r for _, r, _ in to_drop)
-        breakdown = "\n".join(
-            f"  • {n} rows: {reason}"
+        drop_breakdown = "\n".join(
+            f"  • {n:,} rows: {reason}"
             for reason, n in reason_counts.most_common())
+        rescue_text = ""
+        if to_rescue:
+            rescue_text = (
+                f"\n\n<b>Rescue plan:</b> {len(to_rescue):,} too-long "
+                f"corpus rows will be split into "
+                f"<b>{rescued_pair_count:,}</b> shorter paragraph "
+                f"pairs (and the originals removed) instead of being "
+                f"dropped wholesale. Net: "
+                f"<b>+{rescued_pair_count - len(to_rescue):,}</b> rows "
+                f"after this operation.")
         confirm = QMessageBox(self)
         confirm.setIcon(QMessageBox.Icon.Question)
         confirm.setWindowTitle("Confirm cleanup")
+        confirm.setTextFormat(_Qt.TextFormat.RichText)
+        if to_drop:
+            drop_block = (
+                f"<b>{len(to_drop):,}</b> rows match junk signatures "
+                f"and will be deleted:<br><pre>{drop_breakdown}</pre>")
+        else:
+            drop_block = (
+                f"<b>0</b> rows match junk signatures (besides the "
+                f"rescue plan below).")
         confirm.setText(
-            f"Scanned {len(rows)} rows. Found {len(to_drop)} that "
-            f"match junk signatures and would be deleted:\n\n"
-            f"{breakdown}\n\n"
-            f"This is irreversible (backups go to "
-            f"~/.creativeos/cleanup_backup/). Proceed?")
+            f"Scanned {len(rows):,} rows.<br><br>"
+            f"{drop_block}{rescue_text}<br><br>"
+            f"Backups go to <code>~/.creativeos/cleanup_backup/</code>.")
         confirm.setStandardButtons(
             QMessageBox.StandardButton.Cancel
             | QMessageBox.StandardButton.Yes)
@@ -3044,7 +3435,7 @@ class TrainingToolWindow(QMainWindow):
         if confirm.exec() != QMessageBox.StandardButton.Yes:
             return
 
-        # Backup + delete.
+        # Backup + delete + rescue.
         from datetime import datetime as _dt
         backup_dir = Path.home() / ".creativeos" / "cleanup_backup"
         backup_dir.mkdir(parents=True, exist_ok=True)
@@ -3056,7 +3447,13 @@ class TrainingToolWindow(QMainWindow):
                 for rid, reason, snippet in to_drop:
                     f.write(_json.dumps({
                         "id": rid, "reason": reason,
-                        "output_snippet": snippet}) + "\n")
+                        "output_snippet": snippet,
+                        "action": "delete"}) + "\n")
+                for r in to_rescue:
+                    f.write(_json.dumps({
+                        "id": r["id"], "reason": "too_long_rescued",
+                        "n_pairs": len(r["pairs"]),
+                        "action": "rechunk"}) + "\n")
         except Exception as e:
             QMessageBox.warning(
                 self, "Backup failed",
@@ -3064,8 +3461,42 @@ class TrainingToolWindow(QMainWindow):
                 f"cleanup so nothing is lost.")
             return
 
+        # Apply rescues first (insert new pairs), then drop originals
+        # + the regular junk rows. Doing rescues first means we never
+        # delete a row before its replacement pairs are committed — if
+        # something fails mid-flight, the user keeps the original data.
+        rescued_inserted = 0
         try:
-            ids = [rid for rid, _, _ in to_drop]
+            for r in to_rescue:
+                title = r["notes"]  # parsed by log_corpus_pair
+                # Use log_corpus_pair so the new rows go in via the
+                # same code path as a fresh ingest — keeping notes,
+                # voice, genre, rating, character_name aligned.
+                for opener, rest in r["pairs"]:
+                    db.log_corpus_pair(
+                        prompt=opener,
+                        completion=rest,
+                        voice=r["voice"],
+                        genre=r["genre"],
+                        character_name=r["character_name"],
+                        notes=r["notes"],
+                        rating=r["rating"] or "good",
+                    )
+                    rescued_inserted += 1
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Rescue partially applied",
+                f"Re-chunking failed mid-flight: {e}\n\n"
+                f"{rescued_inserted:,} new pairs were inserted. The "
+                f"originals were NOT deleted, so nothing is lost. "
+                f"Re-run when ready.")
+            return
+
+        try:
+            # Delete: regular junk rows + the originals of every
+            # rescued row (their replacements are already inserted).
+            ids = ([rid for rid, _, _ in to_drop]
+                   + [r["id"] for r in to_rescue])
             with db._conn() as c:
                 # Use parameter chunks of 500 to stay under any SQLite
                 # query-length limits on huge corpora.
@@ -3083,11 +3514,138 @@ class TrainingToolWindow(QMainWindow):
                 f"{backup_path}")
             return
 
-        QMessageBox.information(
-            self, "Cleanup complete",
-            f"Deleted {len(to_drop)} junk rows. Backup saved to:\n"
-            f"{backup_path}\n\nRefreshing summary…")
+        msg = (f"Deleted {len(to_drop):,} junk rows.")
+        if to_rescue:
+            msg += (f"\nRescued {len(to_rescue):,} too-long rows into "
+                    f"{rescued_inserted:,} paragraph pairs "
+                    f"(net +{rescued_inserted - len(to_rescue):,}).")
+        msg += f"\n\nBackup saved to:\n{backup_path}\n\nRefreshing summary…"
+        QMessageBox.information(self, "Cleanup complete", msg)
         self._refresh_db_summary()
+
+    def _open_variability_prune_dialog(self) -> None:
+        """Open the variability audit + prune dialog.
+
+        Different from the junk cleaner: this looks at distribution
+        (duplicates, oversampling) rather than per-row junk
+        signatures. Shows stats per category and drops only what
+        the user approves.
+        """
+        dlg = _VariabilityPruneDialog(self.db_path, parent=self)
+        dlg.exec()
+        # Refresh dashboard / summary since rows may have been
+        # dropped.
+        if hasattr(self, "corpus_dashboard"):
+            self.corpus_dashboard.refresh()
+        self._refresh_db_summary()
+
+    def _open_corpus_browser(self) -> None:
+        """Open the searchable DB browser. Read-only — no edits.
+
+        Routed through :class:`_CorpusBrowserDialog` which handles
+        free-text search + filters and pages through results 200 at
+        a time so a 1.4M-row DB stays responsive.
+        """
+        dlg = _CorpusBrowserDialog(self.db_path, parent=self)
+        dlg.exec()
+
+    def _open_rebuild_corpus_dialog(self) -> None:
+        """Drop every row that came from the catalog downloader so the
+        user can re-run downloads with the current splitter / cleaner.
+
+        User uploads, project imports, character / worldbuilding / plot
+        rows are preserved (they don't carry a ``corpus_id=`` note).
+        """
+        from PyQt6.QtWidgets import QMessageBox
+        try:
+            db = RephraseDatabase(self.db_path)
+            summary = db.catalog_rows_summary()
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Could not read DB",
+                f"Could not read training DB:\n{e}")
+            return
+
+        catalog_total = summary.get("total", 0)
+        if catalog_total == 0:
+            QMessageBox.information(
+                self, "Nothing to rebuild",
+                "No catalog-downloaded rows found in your training DB. "
+                "Manual uploads and project imports are not affected by "
+                "this action — only rows that came through the corpus "
+                "downloader.")
+            return
+
+        by_id = summary.get("by_id", {})
+        top = sorted(by_id.items(), key=lambda kv: -kv[1])[:8]
+        breakdown = "\n".join(
+            f"  • {cid}: {n:,} rows" for cid, n in top)
+        if len(by_id) > len(top):
+            breakdown += f"\n  • … and {len(by_id) - len(top)} more"
+
+        confirm = QMessageBox(self)
+        confirm.setIcon(QMessageBox.Icon.Warning)
+        confirm.setWindowTitle("Rebuild downloaded corpus")
+        confirm.setText(
+            f"Drop <b>{catalog_total:,}</b> rows that came through the "
+            f"catalog downloader across <b>{len(by_id)}</b> corpora?<br><br>"
+            f"<b>Preserved:</b> manual uploads, project imports, "
+            f"character / worldbuilding / plot rows, and any test history."
+            f"<br><br>"
+            f"<b>Top corpora that will be dropped:</b><pre>{breakdown}</pre>"
+            f"A backup JSONL is written to "
+            f"<code>~/.creativeos/cleanup_backup/</code> first. After this "
+            f"finishes you can re-download the same corpora from the "
+            f"Library to pick up the splitter fix.")
+        confirm.setStandardButtons(
+            QMessageBox.StandardButton.Cancel
+            | QMessageBox.StandardButton.Yes)
+        confirm.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        if confirm.exec() != QMessageBox.StandardButton.Yes:
+            return
+
+        # Backup before delete: dump the rows-to-be-deleted as JSONL
+        # so the user can recover if they change their mind. Same
+        # backup directory the cleaner uses.
+        from datetime import datetime as _dt
+        import json as _json
+        backup_dir = Path.home() / ".creativeos" / "cleanup_backup"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        ts = _dt.now().strftime("%Y%m%d-%H%M%S")
+        backup_path = backup_dir / f"rebuild-{ts}.jsonl"
+        try:
+            with db._conn() as c:
+                cur = c.execute(
+                    "SELECT * FROM rephrases "
+                    "WHERE notes LIKE '%corpus_id=%'")
+                with open(backup_path, "w", encoding="utf-8") as f:
+                    for row in cur:
+                        f.write(_json.dumps(dict(row),
+                                            default=str) + "\n")
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Backup failed",
+                f"Could not write backup file ({e}). Aborting "
+                f"rebuild so nothing is lost.")
+            return
+
+        try:
+            n = db.delete_catalog_rows()
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Rebuild failed",
+                f"Delete failed: {e}\n\nBackup is at:\n{backup_path}")
+            return
+
+        QMessageBox.information(
+            self, "Downloads cleared",
+            f"Deleted {n:,} catalog-downloaded rows. Backup saved to:\n"
+            f"{backup_path}\n\n"
+            f"Open the Corpus Library to re-download. New rows will use "
+            f"the current splitter (longer openers, balanced rest).")
+        self._refresh_db_summary()
+        if hasattr(self, "corpus_dashboard"):
+            self.corpus_dashboard.refresh()
 
     def _refresh_corpus_filter_button_label(self) -> None:
         """Reflect the current per-corpus selection in the button text."""
@@ -3112,31 +3670,25 @@ class TrainingToolWindow(QMainWindow):
                             genre: str = "") -> int:
         """Split text into passages and store them as corpus pairs.
 
-        Strategy: each non-trivial paragraph becomes one example where
-        the prompt is the first sentence of the passage and the
-        completion is the rest. This teaches the model to continue
-        prose in the source's voice. We skip very short / very long
-        paragraphs to keep the data clean.
-
-        ``voice`` and ``genre`` tag every row so the user can later
-        train selectively on rows that match a specific voice/genre.
+        Each paragraph becomes one (opener, rest) example where the
+        opener is one or more leading sentences (long enough to give
+        the model real context) and the rest is the continuation.
+        Splitting is delegated to the same helper the downloader uses
+        so manual uploads and downloaded corpora produce the same
+        shape of training pair.
         """
         import re
+        from src.data.corpus_downloader import _split_paragraph_for_training
         paragraphs = [p.strip() for p in re.split(r'\n\s*\n+', text)
                       if p.strip()]
         n = 0
         for para in paragraphs:
-            # Skip headings, bullet lines, and tiny snippets
-            if len(para) < 80 or len(para) > 2500:
+            if len(para) > 2500:
                 continue
             if para.lstrip()[:1] in '#-*•':
                 continue
-            # Split on first sentence-end
-            m = re.match(r'(.+?[.!?])\s+(.+)$', para, re.DOTALL)
-            if not m:
-                continue
-            opener, rest = m.group(1).strip(), m.group(2).strip()
-            if len(rest) < 60:
+            opener, rest = _split_paragraph_for_training(para)
+            if opener is None:
                 continue
             db.log_corpus_pair(prompt=opener, completion=rest, title=title,
                                voice=voice, genre=genre)
@@ -4645,7 +5197,12 @@ class TrainingToolWindow(QMainWindow):
             return None
         try:
             db = RephraseDatabase(self.db_path)
-            breakdown = db.eligible_row_count_per_source(
+            # Per-source eligible row counts at the user's current
+            # rating threshold. ``counts_by_source`` is the actual
+            # API name on RephraseDatabase — an earlier extraction
+            # of _prepare_training_dataset accidentally called a
+            # method that didn't exist (eligible_row_count_per_source).
+            breakdown = db.counts_by_source(
                 min_rating=min_rating, only_accepted=True)
             per_source = [(st, breakdown.get(st, 0)) for st in sources]
             non_empty_total = sum(n for _, n in per_source)
@@ -5831,10 +6388,18 @@ class TrainingToolWindow(QMainWindow):
 # ── Corpus Library dialog ──────────────────────────────────────
 
 class _CorpusDownloadWorker(QThread):
-    """Runs the corpus download + adapter pipeline off the UI thread."""
+    """Runs the corpus download + adapter pipeline off the UI thread.
+
+    The ``progress`` signal carries a ``(current, total, label)``
+    triple — total is ``0`` when indeterminate (HF datasets without
+    a known total, HTTP servers without ``Content-Length``). The
+    label changes when the worker switches phases (downloading →
+    streaming → writing) so the receiving widget can reset its
+    bar's scale at phase boundaries.
+    """
 
     log = pyqtSignal(str)
-    progress = pyqtSignal(int)  # bytes
+    progress = pyqtSignal(int, int, str)  # current, total, label
     finished_ok = pyqtSignal(int)  # passages logged
     failed = pyqtSignal(str)
 
@@ -5852,7 +6417,7 @@ class _CorpusDownloadWorker(QThread):
             db = RephraseDatabase(self.db_path)
             result = ingest(
                 self.entry, db=db,
-                on_progress=lambda n: self.progress.emit(n),
+                on_progress=lambda c, t, lbl: self.progress.emit(c, t, lbl),
                 on_log=lambda s: self.log.emit(s),
             )
             self.finished_ok.emit(result.passages_logged)
@@ -6116,6 +6681,14 @@ class _CorpusLibraryDialog(QDialog):
         self._smart_genres = list(genres or [])
         self._smart_tones = list(tones or [])
         self._smart_llm = llm_generate
+        # Persistent checked-state set. Survives across filter
+        # changes — the search / kind dropdown both rebuild the
+        # visible list, but a row that gets filtered out keeps its
+        # check state in this set so it returns checked when the
+        # filter changes back. The previous implementation read
+        # check state from the visible list_widget alone, so
+        # filtered-out items lost their ticks.
+        self._checked_ids: set = set()
         self.setWindowTitle("Corpus Library")
         self.resize(820, 600)
         self.setMinimumSize(640, 460)
@@ -6194,6 +6767,12 @@ class _CorpusLibraryDialog(QDialog):
         # the per-row checkboxes that drive bulk download.
         self.list_widget.setSelectionMode(
             QAbstractItemView.SelectionMode.SingleSelection)
+        # Two slots on itemChanged:
+        #   1. Mirror the visible row's check state into
+        #      ``self._checked_ids`` so a subsequent filter change
+        #      can restore it.
+        #   2. Refresh the status line summary.
+        self.list_widget.itemChanged.connect(self._on_item_check_changed)
         self.list_widget.itemChanged.connect(self._update_status)
         layout.addWidget(self.list_widget, 1)
 
@@ -6205,9 +6784,29 @@ class _CorpusLibraryDialog(QDialog):
         layout.addWidget(self.status_label)
 
         # ── Progress + log ──
+        # Two-tier progress: top label says which entry of N is
+        # currently being processed; the QProgressBar shows the
+        # *current* entry's bytes-or-rows-or-pairs progress so the
+        # user gets motion even for huge HF streams that don't
+        # increment the entry counter for many minutes.
         self.progress_label = QLabel("")
         self.progress_label.setStyleSheet("font-size: 11px; color: #6b7280;")
         layout.addWidget(self.progress_label)
+
+        self.aggregate_bar = QProgressBar()
+        self.aggregate_bar.setRange(0, 1)
+        self.aggregate_bar.setValue(0)
+        self.aggregate_bar.setFormat("%p% — %v of %m corpora")
+        self.aggregate_bar.setVisible(False)
+        layout.addWidget(self.aggregate_bar)
+
+        self.entry_bar = QProgressBar()
+        self.entry_bar.setRange(0, 1)
+        self.entry_bar.setValue(0)
+        self.entry_bar.setFormat("%p%")
+        self.entry_bar.setVisible(False)
+        layout.addWidget(self.entry_bar)
+
         self.log_box = QPlainTextEdit()
         self.log_box.setReadOnly(True)
         self.log_box.setMaximumHeight(110)
@@ -6223,8 +6822,54 @@ class _CorpusLibraryDialog(QDialog):
             "QPushButton { background-color: #10b981; color: white; "
             "padding: 6px 14px; border-radius: 6px; font-weight: bold; }"
             "QPushButton:disabled { background-color: #d1d5db; }")
+        self.download_btn.setToolTip(
+            "Download every checked entry that isn't already "
+            "ingested. Already-downloaded entries are skipped.")
         self.download_btn.clicked.connect(self._download_checked)
         btn_row.addWidget(self.download_btn)
+
+        # The "use for training" path closes the loop the user
+        # cares about: take this curated subset, make sure
+        # everything's downloaded, then set it as the active
+        # training filter so the next training run uses ONLY
+        # these corpora.
+        self.use_for_training_btn = QPushButton(
+            "🎯 Use checked for training")
+        self.use_for_training_btn.setStyleSheet(
+            "QPushButton { background-color: #6366f1; color: white; "
+            "padding: 6px 14px; border-radius: 6px; "
+            "font-weight: bold; }"
+            "QPushButton:hover { background-color: #4f46e5; }"
+            "QPushButton:disabled { background-color: #d1d5db; }")
+        self.use_for_training_btn.setToolTip(
+            "Build a training-ready subset from what's checked: "
+            "downloads anything not yet ingested, then sets this "
+            "selection as the active corpus filter so the next "
+            "training run uses ONLY these corpora. Optionally "
+            "runs the cleaner first.")
+        self.use_for_training_btn.clicked.connect(
+            self._on_use_for_training_clicked)
+        btn_row.addWidget(self.use_for_training_btn)
+
+        # Smart Pick lives inside the library — the user is here to
+        # pick what to download, and Smart Pick is "do that for me
+        # based on my current intent / genres." Was previously on
+        # Step 1 of the training wizard but that's the wrong place
+        # for it (a recommend-and-download action belongs next to
+        # the catalog list, not the trainer recipe).
+        self.smart_pick_btn = QPushButton("🎯 Smart Pick…")
+        self.smart_pick_btn.setStyleSheet(
+            "QPushButton { padding: 6px 12px; border-radius: 5px; "
+            "background-color: #ddd6fe; color: #5b21b6; }"
+            "QPushButton:hover { background-color: #c4b5fd; }")
+        self.smart_pick_btn.setToolTip(
+            "Recommend a small set of catalog entries to download "
+            "based on the wizard's current intent / genres / "
+            "tones. Skips already-ingested corpora and (when an "
+            "LLM is configured) uses agentic refinement to pick "
+            "complementary picks.")
+        self.smart_pick_btn.clicked.connect(self._on_smart_pick_clicked)
+        btn_row.addWidget(self.smart_pick_btn)
 
         self.add_btn = QPushButton("➕ Add Custom URL…")
         self.add_btn.setToolTip(
@@ -6289,9 +6934,12 @@ class _CorpusLibraryDialog(QDialog):
         kind = self.kind_combo.currentData() or "all"
         q = (self.filter_edit.text() or "").strip().lower()
 
-        # Preserve the user's check state across refreshes (filter
-        # changes shouldn't clear ticks).
-        previously_checked = self._currently_checked_ids()
+        # Preserve the user's check state across refreshes — read
+        # from the persistent ``_checked_ids`` set rather than the
+        # visible list, so rows filtered out by the current search
+        # / kind combo keep their ticks for when the filter
+        # changes back.
+        previously_checked = set(self._checked_ids)
 
         self.list_widget.blockSignals(True)
         try:
@@ -6368,15 +7016,23 @@ class _CorpusLibraryDialog(QDialog):
     # ── Multi-check helpers ──
 
     def _currently_checked_ids(self) -> set:
-        ids = set()
-        for i in range(self.list_widget.count()):
-            item = self.list_widget.item(i)
-            if (item.flags() & Qt.ItemFlag.ItemIsUserCheckable
-                    and item.checkState() == Qt.CheckState.Checked):
-                cid = item.data(Qt.ItemDataRole.UserRole)
-                if cid:
-                    ids.add(cid)
-        return ids
+        """Return every checked id, including ones filtered out of
+        the visible list. Reads from the persistent set."""
+        return set(self._checked_ids)
+
+    def _on_item_check_changed(self, item):
+        """Mirror the visible row's check state into
+        ``self._checked_ids``. Fires for every itemChanged signal
+        — including the ones our own _refresh_list emits — so we
+        only listen to user-initiated changes (the refresh-time
+        ones happen while signals are blocked)."""
+        cid = item.data(Qt.ItemDataRole.UserRole)
+        if not cid:
+            return
+        if item.checkState() == Qt.CheckState.Checked:
+            self._checked_ids.add(cid)
+        else:
+            self._checked_ids.discard(cid)
 
     def _checked_entries(self) -> List:
         from src.data.corpus_registry import all_entries
@@ -6384,15 +7040,42 @@ class _CorpusLibraryDialog(QDialog):
         return [e for e in all_entries() if e.id in ids]
 
     def _set_check(self, item: QListWidgetItem, checked: bool) -> None:
+        """Set the visible row's check state. The itemChanged signal
+        fires and ``_on_item_check_changed`` updates the persistent
+        set, so a single ``_set_check`` call keeps both the row and
+        the persistent set in sync."""
         if item.flags() & Qt.ItemFlag.ItemIsUserCheckable:
             item.setCheckState(Qt.CheckState.Checked if checked
                                else Qt.CheckState.Unchecked)
 
+    def _set_check_by_id(self, cid: str, checked: bool) -> None:
+        """Set the persistent check state for a corpus id, whether
+        or not its row is currently visible. If the row IS visible
+        the visible row updates too via ``_set_check``."""
+        if not cid:
+            return
+        if checked:
+            self._checked_ids.add(cid)
+        else:
+            self._checked_ids.discard(cid)
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            if item.data(Qt.ItemDataRole.UserRole) == cid:
+                self._set_check(item, checked)
+                return
+
     def _check_all_visible(self) -> None:
+        """Tick every row currently rendered (filter-aware)."""
         for i in range(self.list_widget.count()):
             self._set_check(self.list_widget.item(i), True)
 
     def _uncheck_all(self) -> None:
+        """Clear EVERY check, including filtered-out rows. The
+        button label says "Uncheck all" without qualification, so
+        users expect a clean slate — not a "clear visible only"
+        action. Wipes the persistent set first, then mirrors that
+        to the visible list."""
+        self._checked_ids.clear()
         for i in range(self.list_widget.count()):
             self._set_check(self.list_widget.item(i), False)
 
@@ -6418,13 +7101,15 @@ class _CorpusLibraryDialog(QDialog):
                 and entry.id not in ingested)
 
     def _on_smart_pick_clicked(self) -> None:
-        """Run the recommender and tick the suggested rows in this list.
+        """Run the recommender against the user's ENTIRE corpus pool
+        (ingested + downloadable) and tick the suggested rows.
 
-        Works inline rather than opening another dialog — the user
-        sees their existing list update with checkmarks. If the
-        intent / genres / tones haven't been set on Step 1 yet
-        (the dialog was opened from a context that didn't pass them
-        in), surface a clear instruction to go back and pick first.
+        The user's mental model: each checkbox in this list says
+        "include this corpus in training". Smart Pick fills those
+        checkboxes with the most-relevant entries for the active
+        intent / genres / tones — whether or not they've been
+        downloaded yet. The Download-checked / Use-checked-for-
+        training buttons turn that selection into action.
         """
         if not self._smart_genres and not self._smart_tones:
             QMessageBox.information(
@@ -6433,65 +7118,75 @@ class _CorpusLibraryDialog(QDialog):
                 "on Step 1 to choose complementary catalog entries. "
                 "Tick at least one and re-open this dialog.")
             return
-        from src.data.corpus_recommender import recommend_downloads
+        from src.data.corpus_recommender import (
+            recommend_downloads_with_diagnosis,
+        )
         try:
-            suggs = recommend_downloads(
+            result = recommend_downloads_with_diagnosis(
                 intent=self._smart_intent or "general",
                 genres=self._smart_genres,
                 tones=self._smart_tones,
                 db_path=self.db_path,
-                max_suggestions=5,
-                llm_generate=self._smart_llm)
+                max_suggestions=8,
+                llm_generate=self._smart_llm,
+                include_ingested=True)
         except Exception as e:
             QMessageBox.warning(
                 self, "Smart Pick failed",
                 f"Couldn't run recommender:\n{e}")
             return
 
+        suggs = result.suggestions
         if not suggs:
             QMessageBox.information(
-                self, "Nothing to pick",
-                "The recommender didn't find any new corpora to "
-                "suggest — either everything relevant is already "
-                "ingested, or the genre/tone selection has no "
-                "catalog entries yet.")
+                self, "Smart Pick", result.summary or
+                "Couldn't find any candidates for this selection.")
             return
 
         target_ids = {s.corpus_id for s in suggs}
 
-        # Tick suggested rows; clear visible non-suggested rows so
-        # the user sees the picks cleanly rather than mixed with
-        # whatever they had ticked before. Rows hidden by the
-        # current filter are left alone.
-        ticked = 0
-        unticked = 0
-        for i in range(self.list_widget.count()):
-            item = self.list_widget.item(i)
-            cid = item.data(Qt.ItemDataRole.UserRole)
-            if cid in target_ids:
-                self._set_check(item, True)
-                ticked += 1
-            else:
-                if item.checkState() == Qt.CheckState.Checked:
-                    self._set_check(item, False)
-                    unticked += 1
+        # Tick suggested rows + clear everything else, including
+        # filtered-out rows. Using the by-id variant ensures rows
+        # the recommender suggests but the current search hides
+        # still get ticked — useful when the adjacent-genre
+        # fallback surfaces entries that don't match the current
+        # filter text.
+        previously = set(self._checked_ids)
+        for cid in target_ids:
+            self._set_check_by_id(cid, True)
+        for cid in previously - target_ids:
+            self._set_check_by_id(cid, False)
+        ticked = len(target_ids)
+        unticked = len(previously - target_ids)
 
-        # Build a compact summary so the user can see what got
-        # picked and why before they click Download.
-        lines = [f"<b>{s.name}</b> "
-                 f"<span style='color:#6b7280'>({s.size_kb} KB)</span><br>"
-                 f"&nbsp;&nbsp;<i>{s.reason}</i>"
-                 for s in suggs]
+        # Build the summary from the diagnostic result.
+        n_to_dl = sum(1 for s in suggs if s.requires_download)
+        n_in_db = sum(1 for s in suggs if not s.requires_download)
+        lines = []
+        for s in suggs:
+            tag = ("⬇ download" if s.requires_download
+                   else "✓ already in DB")
+            lines.append(
+                f"<b>{s.name}</b> <span style='color:#6b7280'>"
+                f"({s.size_kb} KB · {tag})</span><br>"
+                f"&nbsp;&nbsp;<i>{s.reason}</i>")
+        notes_html = ""
+        if result.notes:
+            notes_html = ("<br><br>"
+                          + "<br>".join(f"<i>{n}</i>"
+                                         for n in result.notes))
         body = (f"Smart Pick selected {ticked} entries "
-                f"({unticked} previously-ticked entries cleared):"
-                f"<br><br>" + "<br><br>".join(lines)
-                + "<br><br><i>Hit Download checked when you're "
-                "ready.</i>")
+                f"({n_in_db} already in your DB, "
+                f"{n_to_dl} to download):<br><br>"
+                + "<br><br>".join(lines)
+                + notes_html
+                + "<br><br><i>Click <b>📥 Download missing &amp; "
+                "use for training</b> below to download the "
+                "{n_to_dl} missing entries (if any) and set this "
+                "subset as the active training filter.</i>".format(
+                    n_to_dl=n_to_dl))
         QMessageBox.information(self, "Smart Pick", body)
 
-        # If the filter is hiding suggested rows, surface that —
-        # the user might think nothing got picked because the
-        # checkmarks are off-screen.
         hidden = sum(
             1 for i in range(self.list_widget.count())
             if self.list_widget.item(i).isHidden()
@@ -6536,7 +7231,164 @@ class _CorpusLibraryDialog(QDialog):
         cid = item.data(Qt.ItemDataRole.UserRole)
         return next((e for e in all_entries() if e.id == cid), None)
 
+    def _on_smart_pick_clicked(self):
+        """Open the smart-pick dialog. Delegates to the parent
+        window because the dialog needs the wizard's current
+        intent / genres / tones / LLM config to make suggestions —
+        the library dialog itself doesn't know any of that.
+
+        After Smart Pick finishes, refresh our list so any newly-
+        downloaded entries show their ✓ marker.
+        """
+        parent = self.parent()
+        if parent is None or not hasattr(parent, "_open_smart_pick"):
+            QMessageBox.warning(
+                self, "Smart Pick unavailable",
+                "Smart Pick requires the training wizard to be "
+                "open — couldn't reach it from here.")
+            return
+        parent._open_smart_pick()
+        self._refresh_list()
+
     # ── Bulk download ──
+
+    def _on_use_for_training_clicked(self):
+        """Take the currently-checked corpora and set them up as
+        the active training subset.
+
+        Steps, all driven from the user's check state:
+          1. Download anything checked that's not yet ingested.
+          2. Set the parent window's corpus filter to the checked
+             collection keys (so only those rows feed the next
+             training run).
+          3. Offer to run the cleaner before training.
+
+        At the end the user is one Start-Training click from a
+        run on the curated subset.
+        """
+        entries = self._checked_entries()
+        if not entries:
+            QMessageBox.information(
+                self, "Nothing checked",
+                "Tick the corpora you want to train on first. "
+                "Smart Pick can do this automatically based on "
+                "your intent / genres / tones.")
+            return
+
+        ingested = self._ingested_ids()
+        to_download = [e for e in entries if e.id not in ingested]
+        already_in = [e for e in entries if e.id in ingested]
+
+        # Confirm the plan before doing anything.
+        clean_question = (
+            "<br><br>Run the corpus cleaner over the selected "
+            "subset before training? <i>(Recommended for "
+            "newly-downloaded entries; safe to skip if you've "
+            "cleaned recently.)</i>")
+        plan_lines = []
+        if to_download:
+            plan_lines.append(
+                f"⬇ Download {len(to_download)} entry/entries: "
+                f"{', '.join(e.name[:30] for e in to_download[:4])}"
+                f"{'…' if len(to_download) > 4 else ''}")
+        if already_in:
+            plan_lines.append(
+                f"✓ Use {len(already_in)} already-ingested "
+                f"entry/entries directly")
+        plan_lines.append(
+            "🎯 Set the active training filter to this subset "
+            "(only these corpora feed the next training run)")
+        plan_html = "<br>&nbsp;&nbsp;• " + "<br>&nbsp;&nbsp;• ".join(
+            plan_lines)
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Question)
+        msg.setWindowTitle("Use checked for training")
+        msg.setText(
+            f"<b>Set up training subset?</b>"
+            f"<br><br>Plan:{plan_html}"
+            f"{clean_question}")
+        msg.setStandardButtons(
+            QMessageBox.StandardButton.Cancel |
+            QMessageBox.StandardButton.No |   # No-clean
+            QMessageBox.StandardButton.Yes)   # Yes-clean
+        msg.button(QMessageBox.StandardButton.No).setText(
+            "Skip cleaning")
+        msg.button(QMessageBox.StandardButton.Yes).setText(
+            "Clean then continue")
+        msg.setDefaultButton(QMessageBox.StandardButton.No)
+        choice = msg.exec()
+        if choice == QMessageBox.StandardButton.Cancel:
+            return
+        run_cleaner = choice == QMessageBox.StandardButton.Yes
+
+        # Phase 1: download anything missing. Reuse the same
+        # batched flow Download-checked uses.
+        self._pending_post_download = {
+            "checked_entries": entries,
+            "run_cleaner": run_cleaner,
+        }
+        if to_download:
+            # _download_checked reads the current checkbox state,
+            # so we don't need to pass anything explicitly.
+            self._download_checked()
+            # The download worker will trigger _all_downloads_done
+            # which checks _pending_post_download to continue.
+        else:
+            # Nothing to download — go straight to filter set.
+            self._finish_use_for_training()
+
+    def _finish_use_for_training(self):
+        """Phase 2 of _on_use_for_training_clicked: set the parent
+        window's corpus filter and optionally open the cleaner.
+        Called after any pending downloads complete."""
+        if not getattr(self, '_pending_post_download', None):
+            return
+        info = self._pending_post_download
+        self._pending_post_download = None
+
+        entries = info.get("checked_entries", [])
+        run_cleaner = info.get("run_cleaner", False)
+
+        # Set the parent's corpus filter to the checked collection
+        # keys. The Training Studio uses _selected_collection_keys
+        # to narrow which corpus rows feed export_jsonl. The keys
+        # are catalog-prefixed.
+        parent = self.parent()
+        if parent is not None and hasattr(
+                parent, '_selected_collection_keys'):
+            keys = {f"catalog:{e.id}" for e in entries}
+            parent._selected_collection_keys = keys
+            try:
+                parent._refresh_corpus_filter_button_label()
+            except Exception:
+                pass
+            try:
+                parent._refresh_db_summary()
+            except Exception:
+                pass
+
+        names_html = "<br>&nbsp;&nbsp;• " + "<br>&nbsp;&nbsp;• ".join(
+            f"<b>{e.name[:50]}</b>" for e in entries[:8])
+        if len(entries) > 8:
+            names_html += (
+                f"<br>&nbsp;&nbsp;… and {len(entries) - 8} more")
+        msg = (f"Training subset ready: <b>{len(entries)} "
+               f"corpora</b>.<br><br>{names_html}<br><br>"
+               f"The corpus filter is set on Step 1 — Start "
+               f"Training will use ONLY these corpora.")
+        QMessageBox.information(
+            self, "Training subset set", msg)
+
+        if run_cleaner and parent is not None and hasattr(
+                parent, '_open_clean_corpus_dialog'):
+            try:
+                parent._open_clean_corpus_dialog()
+            except Exception:
+                pass
+
+        # Close the library dialog so the user lands back on
+        # Step 1 ready to train.
+        self.accept()
 
     def _download_checked(self):
         entries = self._checked_entries()
@@ -6570,39 +7422,100 @@ class _CorpusLibraryDialog(QDialog):
                 if not entries:
                     return
 
-        from src.data.corpus_downloader import ingest, CorpusLicenseError
-        from PyQt6.QtWidgets import QApplication
+        from src.data.corpus_downloader import CorpusLicenseError
+        from PyQt6.QtCore import QEventLoop
         self.log_box.clear()
         self.download_btn.setEnabled(False)
-        db = RephraseDatabase(self.db_path)
+        self.use_for_training_btn.setEnabled(False)
+
+        # Set up the aggregate bar across all entries; entry bar is
+        # reset per-entry as each worker emits progress signals.
+        total_entries = len(entries)
+        self.aggregate_bar.setRange(0, total_entries)
+        self.aggregate_bar.setValue(0)
+        self.aggregate_bar.setVisible(True)
+        self.entry_bar.setRange(0, 0)  # busy by default until first signal
+        self.entry_bar.setValue(0)
+        self.entry_bar.setVisible(True)
+
         ok = 0
         skipped = []
         failed = []
         try:
             for i, entry in enumerate(entries, 1):
                 self.progress_label.setText(
-                    f"[{i}/{len(entries)}] {entry.name}")
+                    f"[{i}/{total_entries}] {entry.name}")
                 self.log_box.appendPlainText(
-                    f"\n[{i}/{len(entries)}] downloading {entry.name}…")
-                QApplication.processEvents()
-                try:
-                    ingest(entry, db=db,
-                           on_log=lambda s: (
-                               self.log_box.appendPlainText(f"  {s}"),
-                               QApplication.processEvents()))
+                    f"\n[{i}/{total_entries}] downloading {entry.name}…")
+
+                # Run one worker per entry, blocking the loop on a
+                # local QEventLoop. This gives us a real off-thread
+                # download (the UI stays responsive during multi-
+                # minute HF streams) while keeping the sequential
+                # semantics the previous code had.
+                worker = _CorpusDownloadWorker(entry, self.db_path)
+                worker_loop = QEventLoop()
+
+                outcome = {"status": "ok", "msg": ""}
+
+                def _on_log(s: str):
+                    self.log_box.appendPlainText(f"  {s}")
+
+                def _on_progress(current: int, total: int, label: str):
+                    if total > 0:
+                        self.entry_bar.setRange(0, total)
+                        self.entry_bar.setValue(current)
+                        # Format hint: include label so the user
+                        # can see whether we're streaming, writing,
+                        # parsing, etc.
+                        self.entry_bar.setFormat(f"{label} — %p%")
+                    else:
+                        # Indeterminate: spin the busy bar and put
+                        # the label + counter in the format.
+                        self.entry_bar.setRange(0, 0)
+                        self.entry_bar.setFormat(
+                            f"{label} — {current:,}"
+                            if current else label)
+
+                def _on_ok(_n_passages: int):
+                    outcome["status"] = "ok"
+                    worker_loop.quit()
+
+                def _on_failed(msg: str):
+                    outcome["status"] = "failed"
+                    outcome["msg"] = msg
+                    worker_loop.quit()
+
+                worker.log.connect(_on_log)
+                worker.progress.connect(_on_progress)
+                worker.finished_ok.connect(_on_ok)
+                worker.failed.connect(_on_failed)
+                worker.start()
+                worker_loop.exec()
+                worker.wait()
+
+                if outcome["status"] == "ok":
                     ok += 1
-                except CorpusLicenseError as e:
-                    skipped.append(entry.name)
-                    self.log_box.appendPlainText(
-                        f"  needs attestation, skipped: {e}")
-                except Exception as e:
-                    failed.append((entry.name, str(e)))
-                    self.log_box.appendPlainText(
-                        f"  failed: {e}")
+                else:
+                    msg = outcome["msg"]
+                    if "license" in msg.lower() or "attest" in msg.lower():
+                        skipped.append(entry.name)
+                        self.log_box.appendPlainText(
+                            f"  needs attestation, skipped: {msg}")
+                    else:
+                        failed.append((entry.name, msg))
+                        self.log_box.appendPlainText(
+                            f"  failed: {msg}")
+
+                self.aggregate_bar.setValue(i)
         finally:
             self.download_btn.setEnabled(True)
+            self.use_for_training_btn.setEnabled(True)
             self.progress_label.setText(
-                f"Done — {ok}/{len(entries)} ingested")
+                f"Done — {ok}/{total_entries} ingested")
+            self.entry_bar.setVisible(False)
+            # Leave the aggregate bar visible at its final value so
+            # the user can see the completion state at a glance.
 
         # Refresh so the ✓ markers update for everything just downloaded.
         self._refresh_list()
@@ -6621,6 +7534,11 @@ class _CorpusLibraryDialog(QDialog):
                 + ("…" if len(failed) > 3 else ""))
         QMessageBox.information(self, "Bulk download complete",
                                 "".join(msg_parts))
+
+        # If "Use checked for training" is in flight, continue
+        # into phase 2 now that the downloads have settled.
+        if getattr(self, '_pending_post_download', None):
+            self._finish_use_for_training()
 
     # ── Add/Remove (act on highlighted row, not checked) ──
 
@@ -7552,6 +8470,7 @@ class _ProjectImportDialog(QDialog):
         """
         import re
         from src.data.text_cleaner import clean_passages
+        from src.data.corpus_downloader import _split_paragraph_for_training
         paragraphs = [p.strip()
                       for p in re.split(r'\n\s*\n+', text)
                       if p.strip()]
@@ -7565,11 +8484,8 @@ class _ProjectImportDialog(QDialog):
         notes_extra = (f"project_source={project_source}"
                        if project_source else "")
         for para in cleaned:
-            m = re.match(r'(.+?[.!?])\s+(.+)$', para, re.DOTALL)
-            if not m:
-                continue
-            opener, rest = m.group(1).strip(), m.group(2).strip()
-            if len(rest) < 60:
+            opener, rest = _split_paragraph_for_training(para)
+            if opener is None:
                 continue
             db.log_corpus_pair(
                 prompt=opener, completion=rest, title=title,
@@ -7749,6 +8665,1281 @@ class _TrainedModelsDialog(QDialog):
         self.references_label.setVisible(False)
         self.delete_btn.setEnabled(False)
         self.unregister_btn.setEnabled(False)
+
+
+# ── Variability prune dialog ──────────────────────────────────
+
+class _VariabilityAuditWorker(QThread):
+    """Run the audit off the UI thread.
+
+    The SQL-only phase finishes in ~4s on a typical 800K-row DB,
+    but the per-row compression + TTR pass adds another ~15s. The
+    ``progress`` signal carries ``(current, total, label)`` —
+    same shape as the corpus downloader — so the dialog can show
+    a real progress bar instead of a spinner.
+    """
+    finished_ok = pyqtSignal(object)  # VariabilityReport
+    progress = pyqtSignal(int, int, str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, db_path: Path):
+        super().__init__()
+        self.db_path = db_path
+
+    def run(self):
+        try:
+            from src.ai.corpus_variability import audit_variability
+            db = RephraseDatabase(self.db_path)
+            report = audit_variability(
+                db,
+                on_progress=lambda c, t, lbl:
+                    self.progress.emit(c, t, lbl))
+            self.finished_ok.emit(report)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.failed.emit(str(e))
+
+
+class _TopicAnalysisWorker(QThread):
+    """Run the TF-IDF + KMeans topic clustering on demand.
+
+    Slow (~2-3 min on 800K rows) and pulls in scikit-learn, so we
+    only fire this when the user explicitly clicks "Analyze
+    topics" on the corresponding card. Same progress signal shape
+    as the audit worker.
+    """
+    finished_ok = pyqtSignal(object)  # TopicAnalysis
+    progress = pyqtSignal(int, int, str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, db_path: Path):
+        super().__init__()
+        self.db_path = db_path
+
+    def run(self):
+        try:
+            from src.ai.corpus_variability import (
+                analyze_topic_distribution,
+            )
+            db = RephraseDatabase(self.db_path)
+            analysis = analyze_topic_distribution(
+                db,
+                on_progress=lambda c, t, lbl:
+                    self.progress.emit(c, t, lbl))
+            self.finished_ok.emit(analysis)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.failed.emit(str(e))
+
+
+class _PruneApplyWorker(QThread):
+    """Run ``collect_ids_to_drop`` + ``apply_pruning`` off the UI
+    thread so the dialog stays responsive during the multi-second
+    delete phase. Backup-write happens inline on the worker too;
+    we hand the result back to the UI for a single confirmation.
+    """
+    finished_ok = pyqtSignal(int, str)  # (n_deleted, backup_path)
+    progress = pyqtSignal(int, int, str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, db_path: Path, plan, *,
+                 backup_path: Path):
+        super().__init__()
+        self.db_path = db_path
+        self.plan = plan
+        self.backup_path = backup_path
+
+    def run(self):
+        try:
+            from src.ai.corpus_variability import (
+                collect_ids_to_drop, apply_pruning,
+            )
+            db = RephraseDatabase(self.db_path)
+            self.progress.emit(0, 0, "computing IDs to drop")
+            ids = collect_ids_to_drop(db, self.plan)
+            total = sum(len(v) for v in ids.values())
+            if total == 0:
+                self.finished_ok.emit(0, "")
+                return
+            # Backup phase — write rows-to-be-deleted as JSONL with
+            # the category they're being dropped under.
+            import json as _json
+            self.progress.emit(0, total, "writing backup")
+            wrote = 0
+            with open(self.backup_path, "w", encoding="utf-8") as f:
+                for category, id_list in ids.items():
+                    if not id_list:
+                        continue
+                    CHUNK = 500
+                    for i in range(0, len(id_list), CHUNK):
+                        chunk = id_list[i:i + CHUNK]
+                        placeholders = ",".join("?" * len(chunk))
+                        cur = db._conn().execute(
+                            f"SELECT * FROM rephrases "
+                            f"WHERE id IN ({placeholders})",
+                            chunk)
+                        rid_to_cat = {rid: category for rid in chunk}
+                        for row in cur:
+                            d = dict(row)
+                            d["_prune_category"] = rid_to_cat.get(
+                                int(d["id"]), category)
+                            f.write(_json.dumps(d, default=str) + "\n")
+                            wrote += 1
+                            if wrote % 1000 == 0:
+                                self.progress.emit(
+                                    wrote, total, "writing backup")
+            self.progress.emit(total, total, "writing backup")
+            # Delete phase.
+            self.progress.emit(0, total, "deleting rows")
+            n_deleted = apply_pruning(db, ids)
+            self.progress.emit(total, total, "deleting rows")
+            self.finished_ok.emit(n_deleted, str(self.backup_path))
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.failed.emit(str(e))
+
+
+class _VariabilityPruneDialog(QDialog):
+    """Audit + prune the corpus for variability.
+
+    Three categories the user toggles independently:
+
+      * **Exact duplicates** — rows whose ``output_text`` is byte-
+        for-byte identical to another row. Drops all but the
+        oldest copy. Always safe; the model learned nothing from
+        the duplicates.
+      * **Repeated openers** — rows whose first 80 chars match
+        another row's, capped at 5 distinct outputs per opener.
+        Catches templated boilerplate that escaped exact-dedup.
+      * **Source dominance** — any source with more than 40% of
+        rows is randomly sampled down to 40%. Prevents one corpus
+        from drowning out the others.
+
+    Shown stats include per-category drop counts (computed as if
+    each category were applied alone) and a few example groups so
+    the user can sanity-check what's being removed before
+    approving. Approving multiple categories applies them in order
+    — exact → opener → source-dominance — with later categories
+    only acting on rows the earlier ones haven't already marked.
+    """
+
+    def __init__(self, db_path: Path, *, parent=None):
+        super().__init__(parent)
+        self.db_path = db_path
+        self._report = None  # set by worker
+        self._worker: Optional[_VariabilityAuditWorker] = None
+
+        self.setWindowTitle("Prune corpus for variability")
+        self.setMinimumSize(720, 600)
+        self._build_ui()
+        self._kick_off_audit()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+
+        title = QLabel("<b>Prune corpus for variability</b>")
+        f = title.font(); f.setPointSize(13); title.setFont(f)
+        layout.addWidget(title)
+
+        intro = QLabel(
+            "Looks for rows that hurt corpus diversity — exact "
+            "duplicates, oversampled openers, and dominant "
+            "sources — and lets you approve each category before "
+            "anything is dropped. Separate from <i>Clean junk "
+            "rows</i>: this drops <b>redundant</b> rows, not "
+            "<b>bad</b> ones.")
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color:#374151;font-size:12px;")
+        layout.addWidget(intro)
+
+        # Status / scanning indicator.
+        self.status_label = QLabel("Scanning DB…")
+        self.status_label.setStyleSheet(
+            "background:#f3f4f6;border-radius:4px;padding:8px;"
+            "font-family:monospace;font-size:11px;")
+        layout.addWidget(self.status_label)
+
+        # Progress bar shown during the per-row compression + TTR
+        # pass (~15s on 800K rows). Hidden once the audit completes.
+        self.audit_bar = QProgressBar()
+        self.audit_bar.setRange(0, 1)
+        self.audit_bar.setValue(0)
+        self.audit_bar.setFormat("%p%")
+        self.audit_bar.setVisible(False)
+        layout.addWidget(self.audit_bar)
+
+        # ── Per-category checkbox blocks. Built once, rendered
+        # empty until the audit completes.
+        # Wrapped in a QScrollArea because the five cards together
+        # — each with a wrapped description, a stats line, and up
+        # to six wrapped example lines — easily exceed any
+        # reasonable dialog height. Without scrolling, the bottom
+        # cards (and the summary + Apply button below them) get
+        # pushed off-screen on a typical laptop display.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setStyleSheet("QScrollArea { border: none; }")
+        scroll_inner = QWidget()
+        cards_layout = QVBoxLayout(scroll_inner)
+        cards_layout.setContentsMargins(0, 0, 4, 0)
+        cards_layout.setSpacing(8)
+
+        self.exact_box = self._build_category_box(
+            title="Exact duplicates",
+            desc=("Same output_text as another row, byte-for-"
+                  "byte. Always safe to drop — keeps the oldest "
+                  "copy of each."),
+            color_bg="#fef2f2", color_border="#fecaca",
+            color_text="#991b1b")
+        cards_layout.addWidget(self.exact_box["frame"])
+
+        self.opener_box = self._build_category_box(
+            title="Repeated openers",
+            desc=("Different bodies but identical first 80 "
+                  "characters of output. Caps each opener at 5 "
+                  "rows — beyond that we're oversampling the "
+                  "same starting cadence."),
+            color_bg="#fefce8", color_border="#fde68a",
+            color_text="#854d0e")
+        cards_layout.addWidget(self.opener_box["frame"])
+
+        self.source_box = self._build_category_box(
+            title="Source dominance",
+            desc=("Sources with more than 40% of total rows get "
+                  "randomly sampled down to 40%. Prevents one "
+                  "corpus from drowning out the others. Applied "
+                  "AFTER dedup — recomputed on what survives."),
+            color_bg="#eff6ff", color_border="#bfdbfe",
+            color_text="#1e40af")
+        cards_layout.addWidget(self.source_box["frame"])
+
+        self.repetitive_box = self._build_category_box(
+            title="Repetitive rows (compression ratio)",
+            desc=("Long rows whose output_text compresses to < 25% "
+                  "of its size. Catches dialogue-tag spam, list "
+                  "outputs, and repeated tokens that surface-byte "
+                  "dedup misses. Lower compression = more "
+                  "repetitive."),
+            color_bg="#fdf2f8", color_border="#fbcfe8",
+            color_text="#9d174d")
+        cards_layout.addWidget(self.repetitive_box["frame"])
+
+        self.low_div_box = self._build_category_box(
+            title="Low-diversity rows (type-token ratio)",
+            desc=("Rows with a unique-words ratio below 0.35 over "
+                  "≥50 words. Flags shallow content even when "
+                  "compression looks fine — e.g. \"Alice said. "
+                  "Bob said. Carol said.\" has decent compression "
+                  "but very low TTR."),
+            color_bg="#f0fdf4", color_border="#bbf7d0",
+            color_text="#14532d")
+        cards_layout.addWidget(self.low_div_box["frame"])
+
+        self.near_dup_box = self._build_category_box(
+            title="Near-duplicates (MinHash + LSH)",
+            desc=("Rows whose 5-word shingles have ≥85% Jaccard "
+                  "overlap with another row. Catches paraphrased "
+                  "/ lightly-edited duplicates exact-dedup misses. "
+                  "Drops all but the oldest in each cluster."),
+            color_bg="#fff7ed", color_border="#fed7aa",
+            color_text="#9a3412")
+        cards_layout.addWidget(self.near_dup_box["frame"])
+
+        self.lang_box = self._build_category_box(
+            title="Non-English rows (language detection)",
+            desc=("Rows whose detected language is not English. "
+                  "HuggingFace datasets sometimes include "
+                  "non-English content in supposedly-English "
+                  "splits. Requires the `langdetect` package — "
+                  "the audit notes when it's missing."),
+            color_bg="#f5f3ff", color_border="#ddd6fe",
+            color_text="#5b21b6")
+        cards_layout.addWidget(self.lang_box["frame"])
+
+        # Topic-clustering card has an extra "Analyze topics" button
+        # because the analysis is slow (2-3 min) and pulls in
+        # scikit-learn — we only run it when the user opts in. Until
+        # they click, the checkbox stays disabled.
+        self.topic_box = self._build_topic_card()
+        cards_layout.addWidget(self.topic_box["frame"])
+
+        # Trailing stretch keeps the cards anchored at the top of
+        # the scroll viewport so empty space (when there's only
+        # one populated category) appears below the cards rather
+        # than expanding them.
+        cards_layout.addStretch()
+        scroll.setWidget(scroll_inner)
+        # ``stretch=1`` makes the scroll area absorb the dialog's
+        # spare vertical space; the header above and footer below
+        # stay at their natural heights.
+        layout.addWidget(scroll, 1)
+
+        # Footer summary + actions.
+        self.summary_label = QLabel("")
+        self.summary_label.setWordWrap(True)
+        self.summary_label.setStyleSheet(
+            "padding:8px;background:#f9fafb;border-radius:4px;"
+            "color:#111827;")
+        layout.addWidget(self.summary_label)
+
+        actions = QHBoxLayout()
+        self.cancel_btn = QPushButton("Close")
+        self.cancel_btn.clicked.connect(self.reject)
+        actions.addWidget(self.cancel_btn)
+        actions.addStretch()
+        self.apply_btn = QPushButton("✓ Apply approved categories")
+        self.apply_btn.setStyleSheet(
+            "QPushButton { background:#10b981; color:white; "
+            "padding:6px 14px; border-radius:5px; font-weight:bold; } "
+            "QPushButton:disabled { background:#d1d5db; }")
+        self.apply_btn.setEnabled(False)
+        self.apply_btn.clicked.connect(self._on_apply_clicked)
+        actions.addWidget(self.apply_btn)
+        layout.addLayout(actions)
+
+    def _build_category_box(self, *, title: str, desc: str,
+                            color_bg: str, color_border: str,
+                            color_text: str) -> Dict[str, Any]:
+        """Build a labelled bordered group with a checkbox + text.
+
+        Returns the widgets the audit-render step will populate
+        with concrete numbers + sample groups once the report
+        comes back.
+        """
+        frame = QGroupBox(title)
+        frame.setStyleSheet(
+            f"QGroupBox {{ background:{color_bg}; "
+            f"border:1px solid {color_border}; "
+            f"border-radius:6px; padding-top:18px; margin-top:6px; "
+            f"font-weight:bold; color:{color_text}; }}")
+        v = QVBoxLayout(frame)
+
+        desc_lbl = QLabel(desc)
+        desc_lbl.setWordWrap(True)
+        desc_lbl.setStyleSheet(
+            f"color:{color_text}; font-size:11px; font-weight:normal;")
+        v.addWidget(desc_lbl)
+
+        cb = QCheckBox("Drop these rows")
+        cb.setEnabled(False)
+        cb.toggled.connect(self._update_summary)
+        v.addWidget(cb)
+
+        stats_lbl = QLabel("")
+        stats_lbl.setWordWrap(True)
+        stats_lbl.setStyleSheet(
+            "color:#111827; font-size:11px; font-weight:normal;")
+        v.addWidget(stats_lbl)
+
+        examples_lbl = QLabel("")
+        examples_lbl.setWordWrap(True)
+        examples_lbl.setTextFormat(Qt.TextFormat.RichText)
+        examples_lbl.setStyleSheet(
+            "color:#374151; font-size:10px; font-weight:normal; "
+            "font-family:monospace; padding-top:4px;")
+        v.addWidget(examples_lbl)
+
+        return {
+            "frame": frame, "checkbox": cb,
+            "stats": stats_lbl, "examples": examples_lbl,
+        }
+
+    def _build_topic_card(self) -> Dict[str, Any]:
+        """Special card for the topic-clustering category.
+
+        Differs from the standard cards because clustering is slow
+        and opt-in: we don't fire it during the initial audit.
+        Instead the card shows an "Analyze topics" button up front;
+        the rest of the card (checkbox, stats, examples) stays
+        empty until the user clicks the button and the analysis
+        finishes.
+        """
+        frame = QGroupBox("Topic over-representation (TF-IDF + KMeans)")
+        frame.setStyleSheet(
+            "QGroupBox { background:#ecfeff; border:1px solid #a5f3fc; "
+            "border-radius:6px; padding-top:18px; margin-top:6px; "
+            "font-weight:bold; color:#155e75; }")
+        v = QVBoxLayout(frame)
+
+        desc_lbl = QLabel(
+            "Clusters rows by content similarity (50 topics) and "
+            "caps any cluster bigger than 5% of the corpus. Catches "
+            "subject-matter over-representation that surface "
+            "measures miss — e.g. lots of \"swords and dragons\" "
+            "rows that all read differently. Slow (~2-3 min on a "
+            "large DB) and requires <code>scikit-learn</code>, so "
+            "it runs only when you click the button below.")
+        desc_lbl.setWordWrap(True)
+        desc_lbl.setStyleSheet(
+            "color:#155e75; font-size:11px; font-weight:normal;")
+        v.addWidget(desc_lbl)
+
+        # The "compute" button itself + a status-on-click line.
+        btn_row = QHBoxLayout()
+        analyze_btn = QPushButton("🔬 Analyze topics")
+        analyze_btn.setStyleSheet(
+            "QPushButton { background:#0891b2; color:white; "
+            "padding:5px 12px; border-radius:5px; }"
+            "QPushButton:disabled { background:#cbd5e1; color:#64748b; }")
+        analyze_btn.clicked.connect(self._on_analyze_topics_clicked)
+        btn_row.addWidget(analyze_btn)
+        btn_row.addStretch()
+        v.addLayout(btn_row)
+
+        cb = QCheckBox("Drop these rows")
+        cb.setEnabled(False)
+        cb.toggled.connect(self._update_summary)
+        v.addWidget(cb)
+
+        stats_lbl = QLabel(
+            "<i>Click <b>Analyze topics</b> to run TF-IDF + "
+            "KMeans clustering. This typically takes 2-3 minutes "
+            "on a large corpus.</i>")
+        stats_lbl.setWordWrap(True)
+        stats_lbl.setStyleSheet(
+            "color:#155e75; font-size:11px; font-weight:normal;")
+        v.addWidget(stats_lbl)
+
+        examples_lbl = QLabel("")
+        examples_lbl.setWordWrap(True)
+        examples_lbl.setTextFormat(Qt.TextFormat.RichText)
+        examples_lbl.setStyleSheet(
+            "color:#374151; font-size:10px; font-weight:normal; "
+            "font-family:monospace; padding-top:4px;")
+        v.addWidget(examples_lbl)
+
+        return {
+            "frame": frame, "checkbox": cb,
+            "stats": stats_lbl, "examples": examples_lbl,
+            "analyze_btn": analyze_btn,
+            "analysis": None,  # holds the TopicAnalysis once done
+        }
+
+    # ── Topic clustering — on-demand ──────────────────────
+
+    def _on_analyze_topics_clicked(self):
+        """Kick off TF-IDF + KMeans on a worker thread.
+
+        Reuses the dialog's existing ``audit_bar`` so the user
+        gets a unified progress experience whether the bar is
+        showing the initial audit, the topic compute, or the
+        apply-phase. Disables the Apply button while we work so
+        the user can't fire two operations against the same DB.
+        """
+        self.topic_box["analyze_btn"].setEnabled(False)
+        self.topic_box["analyze_btn"].setText("Analyzing…")
+        self.audit_bar.setVisible(True)
+        self.audit_bar.setRange(0, 0)
+        self.audit_bar.setFormat("starting topic analysis")
+        self.apply_btn.setEnabled(False)
+        self._topic_worker = _TopicAnalysisWorker(self.db_path)
+        self._topic_worker.progress.connect(self._on_topic_progress)
+        self._topic_worker.finished_ok.connect(self._on_topics_done)
+        self._topic_worker.failed.connect(self._on_topics_failed)
+        self._topic_worker.start()
+
+    def _on_topic_progress(self, current: int, total: int, label: str):
+        # Same shape as ``_on_audit_progress`` but updates the
+        # status line to mention k-means / TF-IDF specifically so
+        # the user knows what's running.
+        if total > 0:
+            self.audit_bar.setRange(0, total)
+            self.audit_bar.setValue(current)
+            self.audit_bar.setFormat(f"{label} — %p%")
+        else:
+            self.audit_bar.setRange(0, 0)
+            self.audit_bar.setFormat(label)
+        self.status_label.setText(
+            f"Topic analysis: <b>{label}</b>")
+
+    def _on_topics_done(self, analysis):
+        self.topic_box["analysis"] = analysis
+        self.topic_box["analyze_btn"].setEnabled(True)
+        self.topic_box["analyze_btn"].setText("🔬 Re-analyze")
+        self.audit_bar.setVisible(False)
+        self.apply_btn.setEnabled(True)
+        if not analysis.available:
+            self.topic_box["stats"].setText(
+                f"<span style='color:#b91c1c;'>"
+                f"{analysis.error}</span>")
+            return
+        if analysis.error:
+            self.topic_box["stats"].setText(
+                f"<span style='color:#b91c1c;'>"
+                f"{analysis.error}</span>")
+            return
+        if analysis.total_drops == 0:
+            self.topic_box["stats"].setText(
+                f"Clustered {analysis.total_rows:,} rows into "
+                f"{analysis.n_clusters} topics. None exceeds the "
+                f"5% cap — no over-representation detected.")
+            return
+        cb = self.topic_box["checkbox"]
+        cb.setEnabled(True)
+        cb.setChecked(False)
+        self.topic_box["stats"].setText(
+            f"Clustered {analysis.total_rows:,} rows into "
+            f"{analysis.n_clusters} topics. "
+            f"<b>{len(analysis.over_cap_clusters):,}</b> "
+            f"exceed the 5% cap · would drop "
+            f"<b>{analysis.total_drops:,}</b> rows.")
+        lines = ["<i>Largest over-cap clusters:</i><br>"]
+        for c in analysis.over_cap_clusters[:6]:
+            terms = ", ".join(c.top_terms[:6]) if c.top_terms else "—"
+            preview = (c.sample_text[:90].replace("<", "&lt;")
+                       .replace(">", "&gt;"))
+            lines.append(
+                f"&nbsp;&nbsp;<b>cluster {c.cluster_id}</b>: "
+                f"{c.rows:,} rows ({c.pct_of_total:.1f}%) → "
+                f"cap {c.target_rows:,} (drop {c.drops:,})<br>"
+                f"&nbsp;&nbsp;&nbsp;&nbsp;<i>terms:</i> {terms}<br>"
+                f"&nbsp;&nbsp;&nbsp;&nbsp;<i>sample:</i> "
+                f"{preview}…")
+        self.topic_box["examples"].setText("<br>".join(lines))
+        self._update_summary()
+
+    def _on_topics_failed(self, msg: str):
+        self.topic_box["analyze_btn"].setEnabled(True)
+        self.topic_box["analyze_btn"].setText("🔬 Analyze topics")
+        self.audit_bar.setVisible(False)
+        self.apply_btn.setEnabled(True)
+        self.topic_box["stats"].setText(
+            f"<span style='color:#b91c1c;'>"
+            f"Topic analysis failed: {msg}</span>")
+
+    # ── Audit ─────────────────────────────────────────────
+
+    def _kick_off_audit(self):
+        self.audit_bar.setVisible(True)
+        self._worker = _VariabilityAuditWorker(self.db_path)
+        self._worker.progress.connect(self._on_audit_progress)
+        self._worker.finished_ok.connect(self._on_audit_done)
+        self._worker.failed.connect(self._on_audit_failed)
+        self._worker.start()
+
+    def _on_audit_progress(self, current: int, total: int, label: str):
+        if total > 0:
+            self.audit_bar.setRange(0, total)
+            self.audit_bar.setValue(current)
+            self.audit_bar.setFormat(f"{label} — %p%")
+        else:
+            self.audit_bar.setRange(0, 0)
+            self.audit_bar.setFormat(label)
+        self.status_label.setText(
+            f"{label}: {current:,} of {total:,}")
+
+    def _on_audit_done(self, report):
+        self._report = report
+        self.audit_bar.setVisible(False)
+        self.status_label.setText(
+            f"Scanned <b>{report.total_rows:,}</b> accepted rows.")
+        self._render_report(report)
+        self.apply_btn.setEnabled(True)
+        self._update_summary()
+
+    def _on_audit_failed(self, msg: str):
+        self.status_label.setText(
+            f"<span style='color:#b91c1c'>Audit failed: {msg}</span>")
+
+    def _render_report(self, report):
+        # Exact dupes
+        cb = self.exact_box["checkbox"]
+        if report.exact_drops > 0:
+            cb.setEnabled(True)
+            cb.setChecked(True)
+            self.exact_box["stats"].setText(
+                f"<b>{report.exact_groups:,}</b> duplicate groups · "
+                f"would drop <b>{report.exact_drops:,}</b> rows.")
+            self.exact_box["examples"].setText(
+                self._examples_block(report.exact_examples,
+                                     "× duplicates"))
+        else:
+            self.exact_box["stats"].setText(
+                "No exact duplicates found.")
+
+        # Opener dupes
+        cb = self.opener_box["checkbox"]
+        if report.opener_drops > 0:
+            cb.setEnabled(True)
+            cb.setChecked(False)  # less aggressive default
+            self.opener_box["stats"].setText(
+                f"<b>{report.opener_groups:,}</b> over-cap opener "
+                f"groups · would drop <b>{report.opener_drops:,}"
+                f"</b> rows.")
+            self.opener_box["examples"].setText(
+                self._examples_block(report.opener_examples,
+                                     " distinct outputs"))
+        else:
+            self.opener_box["stats"].setText(
+                "No oversampled openers detected.")
+
+        # Source dominance
+        cb = self.source_box["checkbox"]
+        if report.source_dominance:
+            cb.setEnabled(True)
+            cb.setChecked(False)
+            self.source_box["stats"].setText(
+                f"<b>{len(report.source_dominance):,}</b> source(s) "
+                f"over the 40% cap · "
+                f"would drop up to <b>"
+                f"{report.source_dominance_drops:,}</b> rows "
+                f"(recomputed against post-dedup state).")
+            lines = []
+            for s in report.source_dominance:
+                lines.append(
+                    f"&nbsp;&nbsp;{s.label}: <b>{s.rows:,}</b> rows "
+                    f"({s.pct_of_total:.1f}%) → cap "
+                    f"{s.target_rows:,} (drop {s.drops:,})")
+            self.source_box["examples"].setText("<br>".join(lines))
+        else:
+            self.source_box["stats"].setText(
+                "No source exceeds the 40% cap.")
+
+        # Repetitive rows
+        cb = self.repetitive_box["checkbox"]
+        if report.repetitive_drops > 0:
+            cb.setEnabled(True)
+            cb.setChecked(False)
+            self.repetitive_box["stats"].setText(
+                f"<b>{report.repetitive_drops:,}</b> rows compress "
+                f"to < 25% of their size (≥200 chars).")
+            lines = ["<i>Most repetitive examples (lowest "
+                     "compression ratio first):</i><br>"]
+            for ex in report.repetitive_examples[:6]:
+                preview = (ex.sample_text[:90].replace("<", "&lt;")
+                           .replace(">", "&gt;"))
+                lines.append(
+                    f"&nbsp;&nbsp;ratio={ex.n_dupes / 100:.2f}: "
+                    f"{preview}…")
+            self.repetitive_box["examples"].setText(
+                "<br>".join(lines))
+        else:
+            self.repetitive_box["stats"].setText(
+                "No highly-repetitive rows detected.")
+
+        # Low-diversity rows
+        cb = self.low_div_box["checkbox"]
+        if report.low_diversity_drops > 0:
+            cb.setEnabled(True)
+            cb.setChecked(False)
+            self.low_div_box["stats"].setText(
+                f"<b>{report.low_diversity_drops:,}</b> rows have "
+                f"TTR below 0.35 (≥50 words).")
+            lines = ["<i>Lowest-TTR examples first:</i><br>"]
+            for ex in report.low_diversity_examples[:6]:
+                preview = (ex.sample_text[:90].replace("<", "&lt;")
+                           .replace(">", "&gt;"))
+                lines.append(
+                    f"&nbsp;&nbsp;TTR={ex.n_dupes / 100:.2f}: "
+                    f"{preview}…")
+            self.low_div_box["examples"].setText(
+                "<br>".join(lines))
+        else:
+            self.low_div_box["stats"].setText(
+                "No low-diversity rows detected.")
+
+        # Near-duplicates (MinHash + LSH)
+        cb = self.near_dup_box["checkbox"]
+        if report.near_dup_drops > 0:
+            cb.setEnabled(True)
+            cb.setChecked(False)
+            self.near_dup_box["stats"].setText(
+                f"<b>{report.near_dup_clusters:,}</b> near-duplicate "
+                f"clusters · would drop <b>{report.near_dup_drops:,}"
+                f"</b> rows (keeping the oldest in each cluster).")
+            lines = ["<i>Largest clusters first:</i><br>"]
+            for ex in report.near_dup_examples[:6]:
+                preview = (ex.sample_text[:90].replace("<", "&lt;")
+                           .replace(">", "&gt;"))
+                lines.append(
+                    f"&nbsp;&nbsp;{ex.n_dupes} similar rows: "
+                    f"{preview}…")
+            self.near_dup_box["examples"].setText(
+                "<br>".join(lines))
+        else:
+            self.near_dup_box["stats"].setText(
+                "No near-duplicate clusters detected.")
+
+        # Language detection
+        cb = self.lang_box["checkbox"]
+        if not report.langdetect_available:
+            cb.setEnabled(False)
+            self.lang_box["stats"].setText(
+                "<i>langdetect not installed — run "
+                "<code>pip install langdetect</code> to enable "
+                "this category.</i>")
+        elif report.non_target_lang_drops > 0:
+            cb.setEnabled(True)
+            cb.setChecked(False)
+            # Render the breakdown (top 6 by count) so the user can
+            # see which languages are actually showing up.
+            top_langs = sorted(
+                report.lang_breakdown.items(),
+                key=lambda kv: -kv[1])[:6]
+            breakdown = " · ".join(
+                f"<b>{lang}</b>: {n:,}" for lang, n in top_langs)
+            self.lang_box["stats"].setText(
+                f"<b>{report.non_target_lang_drops:,}</b> rows "
+                f"detected as non-English.<br>"
+                f"<span style='color:#374151;font-size:11px;'>"
+                f"Detected languages: {breakdown}</span>")
+            lines = ["<i>Examples:</i><br>"]
+            for ex in report.non_target_lang_examples[:6]:
+                preview = (ex.sample_text[:120].replace("<", "&lt;")
+                           .replace(">", "&gt;"))
+                lines.append(f"&nbsp;&nbsp;{preview}…")
+            self.lang_box["examples"].setText(
+                "<br>".join(lines))
+        else:
+            self.lang_box["stats"].setText(
+                "All accepted rows detected as English.")
+
+    @staticmethod
+    def _examples_block(examples, count_label: str) -> str:
+        if not examples:
+            return ""
+        lines = ["<i>Examples:</i><br>"]
+        for ex in examples[:6]:
+            preview = (ex.sample_text[:90].replace("<", "&lt;")
+                       .replace(">", "&gt;"))
+            lines.append(
+                f"&nbsp;&nbsp;{ex.n_dupes}{count_label}: "
+                f"{preview}…")
+        return "<br>".join(lines)
+
+    # ── Live summary ──────────────────────────────────────
+
+    def _update_summary(self):
+        if not self._report:
+            return
+        # Worst-case drop count (each category counted as if applied
+        # alone). Actual joint apply will be lower because the
+        # categories overlap; we say so in the label.
+        approved = []
+        upper = 0
+        if self.exact_box["checkbox"].isChecked():
+            approved.append("exact dupes")
+            upper += self._report.exact_drops
+        if self.opener_box["checkbox"].isChecked():
+            approved.append("repeated openers")
+            upper += self._report.opener_drops
+        if self.source_box["checkbox"].isChecked():
+            approved.append("source dominance")
+            upper += self._report.source_dominance_drops
+        if self.repetitive_box["checkbox"].isChecked():
+            approved.append("repetitive rows")
+            upper += self._report.repetitive_drops
+        if self.low_div_box["checkbox"].isChecked():
+            approved.append("low-diversity rows")
+            upper += self._report.low_diversity_drops
+        if self.near_dup_box["checkbox"].isChecked():
+            approved.append("near-duplicates")
+            upper += self._report.near_dup_drops
+        if self.lang_box["checkbox"].isChecked():
+            approved.append("non-English rows")
+            upper += self._report.non_target_lang_drops
+        analysis = self.topic_box.get("analysis")
+        if (analysis is not None and analysis.available
+                and self.topic_box["checkbox"].isChecked()):
+            approved.append("topic over-representation")
+            upper += analysis.total_drops
+
+        if not approved:
+            self.summary_label.setText(
+                "<i>Nothing approved yet — pick at least one "
+                "category above to enable Apply.</i>")
+            return
+        worst_remaining = self._report.total_rows - upper
+        self.summary_label.setText(
+            f"Approved: <b>{', '.join(approved)}</b>.<br>"
+            f"Up to <b>{upper:,}</b> rows would be dropped — "
+            f"remaining ≥ <b>{worst_remaining:,}</b> rows. "
+            f"Joint apply de-duplicates overlap, so the actual "
+            f"drop count is usually lower.")
+
+    # ── Apply ─────────────────────────────────────────────
+
+    def _on_apply_clicked(self):
+        if not self._report:
+            return
+        from src.ai.corpus_variability import PruningPlan
+        analysis = self.topic_box.get("analysis")
+        plan = PruningPlan(
+            apply_exact=self.exact_box["checkbox"].isChecked(),
+            apply_opener=self.opener_box["checkbox"].isChecked(),
+            apply_source_dominance=(
+                self.source_box["checkbox"].isChecked()),
+            apply_repetitive=(
+                self.repetitive_box["checkbox"].isChecked()),
+            apply_low_diversity=(
+                self.low_div_box["checkbox"].isChecked()),
+            apply_near_dup=(
+                self.near_dup_box["checkbox"].isChecked()),
+            apply_non_target_lang=(
+                self.lang_box["checkbox"].isChecked()),
+            apply_topic_clustering=(
+                analysis is not None
+                and analysis.available
+                and self.topic_box["checkbox"].isChecked()),
+            topic_ids_override=(
+                analysis.ids_to_drop
+                if (analysis is not None and analysis.available
+                    and self.topic_box["checkbox"].isChecked())
+                else None),
+        )
+        if not any([plan.apply_exact, plan.apply_opener,
+                    plan.apply_source_dominance,
+                    plan.apply_repetitive,
+                    plan.apply_low_diversity,
+                    plan.apply_near_dup,
+                    plan.apply_non_target_lang,
+                    plan.apply_topic_clustering]):
+            return
+
+        # Best-effort estimate up-front so the user can see what
+        # they're about to delete *before* the apply worker
+        # finalises the per-category disjoint ID list. Joint
+        # apply numbers shrink because of overlap, so we surface
+        # the audit's worst-case category counts in the prompt.
+        upper = 0
+        breakdown_lines = []
+        if plan.apply_exact:
+            upper += self._report.exact_drops
+            breakdown_lines.append(
+                f"  • exact: up to {self._report.exact_drops:,}")
+        if plan.apply_opener:
+            upper += self._report.opener_drops
+            breakdown_lines.append(
+                f"  • opener: up to {self._report.opener_drops:,}")
+        if plan.apply_source_dominance:
+            upper += self._report.source_dominance_drops
+            breakdown_lines.append(
+                f"  • source dominance: up to "
+                f"{self._report.source_dominance_drops:,}")
+        if plan.apply_repetitive:
+            upper += self._report.repetitive_drops
+            breakdown_lines.append(
+                f"  • repetitive: {self._report.repetitive_drops:,}")
+        if plan.apply_low_diversity:
+            upper += self._report.low_diversity_drops
+            breakdown_lines.append(
+                f"  • low diversity: "
+                f"{self._report.low_diversity_drops:,}")
+        if plan.apply_near_dup:
+            upper += self._report.near_dup_drops
+            breakdown_lines.append(
+                f"  • near-dup: {self._report.near_dup_drops:,}")
+        if plan.apply_non_target_lang:
+            upper += self._report.non_target_lang_drops
+            breakdown_lines.append(
+                f"  • non-English: "
+                f"{self._report.non_target_lang_drops:,}")
+        if plan.apply_topic_clustering and analysis:
+            upper += analysis.total_drops
+            breakdown_lines.append(
+                f"  • topic over-rep: {analysis.total_drops:,}")
+        breakdown = "\n".join(breakdown_lines)
+        confirm = QMessageBox(self)
+        confirm.setIcon(QMessageBox.Icon.Warning)
+        confirm.setWindowTitle("Confirm prune")
+        confirm.setText(
+            f"Drop up to <b>{upper:,}</b> rows? "
+            f"(Joint apply de-duplicates across categories so the "
+            f"actual count will be ≤ this.)\n\n{breakdown}\n\n"
+            f"Backups go to ~/.creativeos/cleanup_backup/. "
+            f"Irreversible from inside the app, but you can restore "
+            f"from the backup JSONL.")
+        confirm.setStandardButtons(
+            QMessageBox.StandardButton.Cancel
+            | QMessageBox.StandardButton.Yes)
+        confirm.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        if confirm.exec() != QMessageBox.StandardButton.Yes:
+            return
+
+        # Pre-compute backup path so we can show it in the failure
+        # dialog if the worker dies mid-flight.
+        from datetime import datetime as _dt
+        backup_dir = Path.home() / ".creativeos" / "cleanup_backup"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        ts = _dt.now().strftime("%Y%m%d-%H%M%S")
+        backup_path = backup_dir / f"prune-{ts}.jsonl"
+
+        # Disable the dialog buttons + show the bar. The worker
+        # emits progress for ``computing IDs to drop`` (15s+),
+        # ``writing backup`` (proportional to row count), and
+        # ``deleting rows`` (chunked DELETEs).
+        self.apply_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(False)
+        self.audit_bar.setVisible(True)
+        self.audit_bar.setRange(0, 0)
+        self.audit_bar.setFormat("starting prune")
+        self.status_label.setText("Applying prune…")
+
+        self._apply_worker = _PruneApplyWorker(
+            self.db_path, plan, backup_path=backup_path)
+        self._apply_worker.progress.connect(self._on_apply_progress)
+        self._apply_worker.finished_ok.connect(self._on_apply_done)
+        self._apply_worker.failed.connect(self._on_apply_failed)
+        self._apply_worker.start()
+
+    def _on_apply_progress(self, current: int, total: int, label: str):
+        if total > 0:
+            self.audit_bar.setRange(0, total)
+            self.audit_bar.setValue(current)
+            self.audit_bar.setFormat(f"{label} — %p%")
+        else:
+            self.audit_bar.setRange(0, 0)
+            self.audit_bar.setFormat(label)
+        self.status_label.setText(f"Prune: <b>{label}</b>")
+
+    def _on_apply_done(self, n_deleted: int, backup_path: str):
+        self.audit_bar.setVisible(False)
+        if n_deleted == 0:
+            QMessageBox.information(
+                self, "Nothing to drop",
+                "After de-duplicating across categories, no rows "
+                "would be removed.")
+            self.apply_btn.setEnabled(True)
+            self.cancel_btn.setEnabled(True)
+            return
+        QMessageBox.information(
+            self, "Prune complete",
+            f"Deleted {n_deleted:,} rows. Backup saved to:\n"
+            f"{backup_path}")
+        self.accept()
+
+    def _on_apply_failed(self, msg: str):
+        self.audit_bar.setVisible(False)
+        self.apply_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(True)
+        QMessageBox.warning(
+            self, "Prune failed",
+            f"Apply failed: {msg}")
+
+
+# ── Corpus browser dialog ─────────────────────────────────────
+
+class _CorpusBrowserDialog(QDialog):
+    """Search + browse rows in the training DB.
+
+    Until this dialog existed, users could only see aggregate counts
+    or a 5-row sample from the quality check. With ~377K rows in a
+    real DB, that's not enough to answer "is *Frankenstein* actually
+    in there?" or "what does my Aubrigale character data look like?".
+
+    The dialog is a thin wrapper over ``RephraseDatabase.search_rows``:
+    a search box, source/genre/corpus filters, a paged table of
+    matches, and a detail panel showing the full source/output of
+    the selected row. Results page in 200 at a time so a query that
+    matches 12,000 rows doesn't blow up the UI.
+    """
+
+    PAGE_SIZE = 200
+
+    def __init__(self, db_path: Path, *,
+                 initial_query: str = "",
+                 initial_corpus_id: str = "",
+                 parent=None):
+        super().__init__(parent)
+        self.db_path = db_path
+        self._offset = 0
+        self._total_matches = 0
+        self._rows: List[Dict[str, Any]] = []
+
+        self.setWindowTitle("Browse training DB")
+        self.setMinimumSize(1000, 640)
+        self._build_ui()
+        if initial_query:
+            self.query_edit.setText(initial_query)
+        if initial_corpus_id:
+            # Set the corpus filter combo to a matching entry if it
+            # exists in the populated list; otherwise type into the
+            # query box. The combo is editable so a free-text fallback
+            # always works.
+            idx = self.corpus_combo.findData(initial_corpus_id)
+            if idx >= 0:
+                self.corpus_combo.setCurrentIndex(idx)
+        self._refresh()
+
+    # ── UI ────────────────────────────────────────────────
+
+    def _build_ui(self):
+        outer = QVBoxLayout(self)
+
+        # Title + intro
+        outer.addWidget(QLabel(
+            "<b>Browse training DB</b> "
+            "<span style='color:#6b7280;font-size:11px;'>"
+            "— search by title, free text, or filter by source / "
+            "genre / corpus.</span>"))
+
+        # Search row
+        search_row = QHBoxLayout()
+        search_row.addWidget(QLabel("Search:"))
+        self.query_edit = QLineEdit()
+        self.query_edit.setPlaceholderText(
+            "type a title, character name, phrase… "
+            "matches source / output / corpus tag")
+        self.query_edit.returnPressed.connect(self._on_query_changed)
+        search_row.addWidget(self.query_edit, 1)
+        self.search_btn = QPushButton("🔎 Search")
+        self.search_btn.clicked.connect(self._on_query_changed)
+        search_row.addWidget(self.search_btn)
+        outer.addLayout(search_row)
+
+        # Filter row
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel("Source:"))
+        self.source_combo = QComboBox()
+        self.source_combo.addItem("All", "")
+        for st in ("corpus", "rephrase", "chat_writing", "chat_general",
+                   "agent", "worldbuilding", "character", "plot"):
+            self.source_combo.addItem(st, st)
+        self.source_combo.currentIndexChanged.connect(self._on_filter_changed)
+        filter_row.addWidget(self.source_combo)
+
+        filter_row.addWidget(QLabel("Genre:"))
+        self.genre_edit = QLineEdit()
+        self.genre_edit.setPlaceholderText("any")
+        self.genre_edit.setMaximumWidth(120)
+        self.genre_edit.editingFinished.connect(self._on_filter_changed)
+        filter_row.addWidget(self.genre_edit)
+
+        filter_row.addWidget(QLabel("Corpus:"))
+        self.corpus_combo = QComboBox()
+        self.corpus_combo.setEditable(False)
+        self.corpus_combo.setMinimumWidth(280)
+        self.corpus_combo.addItem("All", "")
+        # Populate from list_corpus_collections so the user picks
+        # from real ingested corpora rather than typing IDs by hand.
+        try:
+            db = RephraseDatabase(self.db_path)
+            for c in db.list_corpus_collections():
+                # Only catalog-style entries have a corpus_id we can
+                # filter on directly. Project / upload entries get
+                # a label-only display item that we'll handle by
+                # forwarding to the query box instead.
+                if c["kind"] == "catalog":
+                    cid = c["key"].split(":", 1)[1]
+                    self.corpus_combo.addItem(
+                        f"{cid} ({c['row_count']:,} rows)", cid)
+        except Exception:
+            pass
+        self.corpus_combo.currentIndexChanged.connect(self._on_filter_changed)
+        filter_row.addWidget(self.corpus_combo)
+
+        filter_row.addStretch()
+        outer.addLayout(filter_row)
+
+        # Status / paging row
+        status_row = QHBoxLayout()
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("color:#374151;font-size:12px;")
+        status_row.addWidget(self.status_label, 1)
+
+        self.prev_btn = QPushButton("◀ Prev")
+        self.prev_btn.clicked.connect(self._on_prev)
+        status_row.addWidget(self.prev_btn)
+        self.next_btn = QPushButton("Next ▶")
+        self.next_btn.clicked.connect(self._on_next)
+        status_row.addWidget(self.next_btn)
+        outer.addLayout(status_row)
+
+        # Splitter: results table on top, detail panel on bottom.
+        # The user picks a row, the panel shows full source/output.
+        splitter = QSplitter()
+        splitter.setOrientation(Qt.Orientation.Vertical)
+
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(
+            ["id", "type", "source / title", "output (preview)",
+             "genre", "rating"])
+        self.table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Interactive)
+        self.table.horizontalHeader().setStretchLastSection(False)
+        self.table.setColumnWidth(0, 60)
+        self.table.setColumnWidth(1, 90)
+        self.table.setColumnWidth(2, 320)
+        self.table.setColumnWidth(3, 380)
+        self.table.setColumnWidth(4, 110)
+        self.table.setColumnWidth(5, 70)
+        self.table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.itemSelectionChanged.connect(self._on_row_selected)
+        splitter.addWidget(self.table)
+
+        # Detail panel
+        detail_wrap = QWidget()
+        detail_layout = QVBoxLayout(detail_wrap)
+        detail_layout.setContentsMargins(0, 4, 0, 0)
+        detail_layout.addWidget(QLabel(
+            "<b>Selected row</b> "
+            "<span style='color:#6b7280;font-size:11px;'>"
+            "— full source (prompt) + output (completion)"
+            "</span>"))
+        self.detail_meta = QLabel("Pick a row to see its full text.")
+        self.detail_meta.setStyleSheet("color:#6b7280;font-size:11px;")
+        detail_layout.addWidget(self.detail_meta)
+        self.detail_text = QPlainTextEdit()
+        self.detail_text.setReadOnly(True)
+        self.detail_text.setStyleSheet(
+            "font-family: monospace; font-size: 11px; "
+            "background-color: #1f2937; color: #d1d5db;")
+        detail_layout.addWidget(self.detail_text)
+        splitter.addWidget(detail_wrap)
+
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        outer.addWidget(splitter, 1)
+
+        # Footer
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(close_btn)
+        outer.addLayout(btn_row)
+
+    # ── Search / paging ───────────────────────────────────
+
+    def _filters(self) -> Dict[str, Any]:
+        sources = []
+        st = self.source_combo.currentData()
+        if st:
+            sources = [st]
+        return {
+            "query": self.query_edit.text().strip(),
+            "source_types": sources or None,
+            "genre": self.genre_edit.text().strip(),
+            "corpus_id": self.corpus_combo.currentData() or "",
+        }
+
+    def _refresh(self):
+        from PyQt6.QtWidgets import QApplication
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            db = RephraseDatabase(self.db_path)
+            f = self._filters()
+            self._total_matches = db.count_search_rows(**f)
+            self._rows = db.search_rows(
+                **f, limit=self.PAGE_SIZE, offset=self._offset)
+            self._render_rows()
+            self._render_status()
+        except Exception as e:
+            self.status_label.setText(
+                f"<span style='color:#b91c1c;'>Search failed: "
+                f"{e}</span>")
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def _render_rows(self):
+        self.table.setRowCount(len(self._rows))
+        for i, row in enumerate(self._rows):
+            src = row.get("source_text", "") or ""
+            out = row.get("output_text", "") or ""
+            # Pull title from notes if present so the most useful
+            # column shows the actual book / corpus name rather
+            # than the (often short, truncated) source_text.
+            title = self._extract_title(row.get("notes", "") or "")
+            display_src = title or src
+            self.table.setItem(i, 0, QTableWidgetItem(str(row.get("id", ""))))
+            self.table.setItem(i, 1, QTableWidgetItem(
+                row.get("source_type", "") or ""))
+            self.table.setItem(i, 2, QTableWidgetItem(display_src[:200]))
+            self.table.setItem(i, 3, QTableWidgetItem(out[:300]))
+            self.table.setItem(i, 4, QTableWidgetItem(
+                (row.get("genre", "") or "")[:60]))
+            self.table.setItem(i, 5, QTableWidgetItem(
+                row.get("rating", "") or ""))
+        if self._rows:
+            self.table.selectRow(0)
+        else:
+            self.detail_text.clear()
+            self.detail_meta.setText(
+                "No rows match these filters. "
+                "Try broadening the search.")
+
+    def _render_status(self):
+        end = min(self._offset + len(self._rows), self._total_matches)
+        if self._total_matches == 0:
+            text = "No matches."
+        else:
+            text = (f"Showing rows <b>{self._offset + 1:,}–"
+                    f"{end:,}</b> of <b>{self._total_matches:,}</b> "
+                    f"matches.")
+        self.status_label.setText(text)
+        self.prev_btn.setEnabled(self._offset > 0)
+        self.next_btn.setEnabled(end < self._total_matches)
+
+    def _on_query_changed(self):
+        self._offset = 0
+        self._refresh()
+
+    def _on_filter_changed(self):
+        self._offset = 0
+        self._refresh()
+
+    def _on_prev(self):
+        self._offset = max(0, self._offset - self.PAGE_SIZE)
+        self._refresh()
+
+    def _on_next(self):
+        if self._offset + self.PAGE_SIZE < self._total_matches:
+            self._offset += self.PAGE_SIZE
+            self._refresh()
+
+    def _on_row_selected(self):
+        rows = self.table.selectionModel().selectedRows()
+        if not rows:
+            return
+        i = rows[0].row()
+        if i < 0 or i >= len(self._rows):
+            return
+        row = self._rows[i]
+        notes = row.get("notes", "") or ""
+        title = self._extract_title(notes)
+        meta_parts = [
+            f"id={row.get('id', '')}",
+            f"type={row.get('source_type', '')}",
+        ]
+        if title:
+            meta_parts.append(f"title={title}")
+        if row.get("genre"):
+            meta_parts.append(f"genre={row['genre']}")
+        if row.get("voice"):
+            meta_parts.append(f"voice={row['voice']}")
+        if row.get("character_name"):
+            meta_parts.append(f"character={row['character_name']}")
+        if row.get("rating"):
+            meta_parts.append(f"rating={row['rating']}")
+        self.detail_meta.setText(" · ".join(meta_parts))
+        src = row.get("source_text", "") or ""
+        out = row.get("output_text", "") or ""
+        self.detail_text.setPlainText(
+            f"── PROMPT (source_text) ───────────\n{src}\n\n"
+            f"── COMPLETION (output_text) ──────\n{out}\n\n"
+            f"── NOTES ──────────────────────────\n{notes}")
+
+    @staticmethod
+    def _extract_title(notes: str) -> str:
+        """Pull ``corpus_title=...`` value out of a row's notes."""
+        import re
+        m = re.search(r'corpus_title=(.+?)(?=\s+\w+=|$)',
+                      notes, flags=re.DOTALL)
+        if m:
+            return m.group(1).strip()
+        return ""
 
 
 # ── Per-corpus filter dialog ───────────────────────────────────
@@ -8249,6 +10440,7 @@ class _UploadCorpusDialog(QDialog):
         """
         import re
         from src.data.text_cleaner import clean_passages
+        from src.data.corpus_downloader import _split_paragraph_for_training
         paragraphs = [p.strip()
                       for p in re.split(r'\n\s*\n+', text)
                       if p.strip()]
@@ -8258,11 +10450,8 @@ class _UploadCorpusDialog(QDialog):
             prose_paragraphs, format_hint="plain")
         n = 0
         for para in cleaned:
-            m = re.match(r'(.+?[.!?])\s+(.+)$', para, re.DOTALL)
-            if not m:
-                continue
-            opener, rest = m.group(1).strip(), m.group(2).strip()
-            if len(rest) < 60:
+            opener, rest = _split_paragraph_for_training(para)
+            if opener is None:
                 continue
             # Route by purpose to the right log_* helper so the
             # source_type column gets the right value AND the

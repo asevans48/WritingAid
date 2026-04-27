@@ -304,6 +304,7 @@ class DBStats:
     n_too_short: int = 0       # output < 80 chars
     n_too_long: int = 0        # output > 2500 chars
     n_likely_junk: int = 0     # rows whose output matches a cleaner signature
+    n_short_source: int = 0    # source_text < 60 chars (likely title-only)
     db_size_kb: int = 0
     most_recent_ingest: str = ""  # ISO timestamp or ""
 
@@ -381,6 +382,18 @@ def compute_db_stats(db_path: Path,
                 "SELECT COUNT(*) as n FROM rephrases "
                 "WHERE LENGTH(output_text) > 2500")
             stats.n_too_long = cur.fetchone()["n"]
+
+            # Short-source rows are common when the corpus is
+            # title→plot pairs (Wikipedia movie plots) or when
+            # sentence-level splits use a one-sentence opener.
+            # Surface the count so users can spot ingestion bugs
+            # where source_text is just a chapter heading or
+            # placeholder.
+            cur = c.execute(
+                "SELECT COUNT(*) as n FROM rephrases "
+                "WHERE source_type = 'corpus' "
+                "AND LENGTH(source_text) < 60")
+            stats.n_short_source = cur.fetchone()["n"]
 
             # Median output length — pull every length, sort, pick
             # midpoint. Fast in SQLite up to a few hundred K rows.

@@ -57,6 +57,11 @@ class CorpusEntry:
                                 # large for multi-story corpora)
     # HF-only knobs
     hf_split: str = "train"     # which split to load
+    hf_config: str = ""         # config name when the dataset has
+                                # multiple configurations (PAWS,
+                                # GLUE-style suites, etc.). HF requires
+                                # this for any dataset that exposes
+                                # ``DatasetBuilder.BUILDER_CONFIGS``.
     hf_text_field: str = ""     # which column holds the text (auto-detected if blank)
     hf_prompt_field: str = ""   # for plot datasets: prompt column
     hf_completion_field: str = ""  # for plot datasets: completion/story column
@@ -1523,28 +1528,14 @@ CATALOG: List[CorpusEntry] = [
         hf_text_field="text",
         hf_max_rows=8000,
     ),
-    CorpusEntry(
-        id="hf-rocstories",
-        name="ROCStories — five-sentence commonsense narratives",
-        description="Plot-structure dataset: 50K hand-crafted 5-sentence "
-                    "stories. Excellent for teaching beat-by-beat plot.",
-        url="Ximing/ROCStories",
-        source_page="https://huggingface.co/datasets/Ximing/ROCStories",
-        license="cc-by",
-        license_url="https://creativecommons.org/licenses/by/4.0/",
-        format="hf_dataset",
-        author="Mostafazadeh et al. (Univ. of Rochester)",
-        tags=["fiction", "plot", "structure", "short-story"],
-        size_hint_kb=12_000,
-        purpose="plot",
-        medium="short",
-        narratives=50_000,
-        hf_split="train",
-        hf_text_field="",  # auto-stitch the sentence columns
-        hf_prompt_field="sentence1",
-        hf_completion_field="",
-        hf_max_rows=10_000,
-    ),
+    # ROCStories is intentionally omitted: the dataset's HF
+    # mirrors are all either (a) gated, (b) script-based and
+    # broken on modern ``datasets`` versions which removed
+    # script-loading support, or (c) just .txt files that
+    # ``load_dataset`` can't auto-detect. Plot-structure training
+    # is covered by ``hf-writingprompts`` below. If a stable
+    # script-free mirror appears, re-add this entry with the new
+    # url / hf_config / hf_split fields.
     CorpusEntry(
         id="hf-writingprompts",
         name="Reddit r/WritingPrompts — prompt → story",
@@ -1621,10 +1612,10 @@ CATALOG: List[CorpusEntry] = [
     ),
     CorpusEntry(
         id="hf-gutenberg-multi",
-        name="Project Gutenberg multi-author corpus (HF)",
+        name="Project Gutenberg multi-author corpus (HF, English)",
         description="Multi-narrative pull from Project Gutenberg via "
                     "HuggingFace, spanning hundreds of public-domain "
-                    "novels and authors.",
+                    "novels and authors. English subset only.",
         url="manu/project_gutenberg",
         source_page="https://huggingface.co/datasets/manu/project_gutenberg",
         license="pd-us",
@@ -1636,7 +1627,12 @@ CATALOG: List[CorpusEntry] = [
         purpose="voice",
         medium="books",
         narratives=10_000,
-        hf_split="train",
+        # This dataset uses language codes as split names rather
+        # than train/test/val. Available: de, en, es, fr, it, nl,
+        # pl, pt, ru, sv, zh — we pick English. Picking a different
+        # language is one catalog edit away (clone the entry, swap
+        # the hf_split, retag the language).
+        hf_split="en",
         hf_text_field="text",
         hf_max_rows=4_000,
     ),
@@ -1709,8 +1705,11 @@ CATALOG: List[CorpusEntry] = [
         medium="mixed",
         narratives=50_000,
         hf_split="train",
-        # 'paws' has multiple configurations; the labeled_final config
-        # has structured (sentence1, sentence2, label) columns.
+        # 'paws' exposes three configs — pick labeled_final, which has
+        # the structured (sentence1, sentence2, label) columns we want.
+        # Without this, recent versions of `datasets` raise
+        # "Config name is missing" before we can fetch anything.
+        hf_config="labeled_final",
         hf_prompt_field="sentence1",
         hf_completion_field="sentence2",
         hf_filter_field="label",
@@ -1788,6 +1787,65 @@ CATALOG: List[CorpusEntry] = [
         hf_split="train",
         hf_text_field="text",
         hf_max_rows=1_500,
+    ),
+    CorpusEntry(
+        id="hf-storytracer-us-pd",
+        name="Modern PD American books — storytracer (COCA-substitute)",
+        description="650k+ public-domain books from US sources, with broader "
+                    "post-1923 coverage than PG (it includes works that "
+                    "lapsed into the public domain via non-renewal) — the "
+                    "closest free stand-in for COCA's fiction subset, since "
+                    "COCA itself is paid (BYU) and not on HF. Skews 20th-"
+                    "century American voice. Westerns, mysteries, romances, "
+                    "and pulp era genre fiction are all represented; useful "
+                    "as a modern-American-prose tutor on top of PG / "
+                    "institutional-books which lean older.",
+        url="storytracer/US-PD-Books",
+        source_page="https://huggingface.co/datasets/storytracer/US-PD-Books",
+        license="pd-us",
+        license_url="https://huggingface.co/datasets/storytracer/US-PD-Books",
+        format="hf_dataset",
+        author="storytracer / US public-domain authors",
+        tags=["fiction", "books", "varied-genre", "modern", "american",
+              "western", "mystery", "romance", "pulp"],
+        size_hint_kb=80_000_000,
+        purpose="voice",
+        medium="books",
+        narratives=650_000,
+        hf_split="train",
+        hf_text_field="text",
+        hf_max_rows=1_500,
+    ),
+    CorpusEntry(
+        id="hf-cnn-dailymail",
+        name="CNN/DailyMail — modern American news prose (Apache-2.0)",
+        description="287k news articles paired with multi-sentence "
+                    "highlights. Contemporary American journalistic "
+                    "English at scale — different register from fiction, "
+                    "but the closest free substitute for COCA's "
+                    "newspaper / magazine slice. Use it to teach modern "
+                    "diction, idioms, and event-reporting cadence; train "
+                    "the highlights field for tight summary voice. CCWL "
+                    "(Contemporary Corpus of Written Language) is paid; "
+                    "this is the best free analogue for modern English.",
+        url="cnn_dailymail",
+        source_page="https://huggingface.co/datasets/cnn_dailymail",
+        license="apache-2.0",
+        license_url="https://www.apache.org/licenses/LICENSE-2.0",
+        format="hf_dataset",
+        author="See, Liu, Manning (CNN/DailyMail)",
+        tags=["nonfiction", "news", "modern", "american", "journalism",
+              "varied-topic"],
+        size_hint_kb=1_400_000,
+        purpose="voice",
+        medium="articles",
+        narratives=287_000,
+        # CNN/DM uses configs ("1.0.0", "2.0.0", "3.0.0"); 3.0.0 is
+        # the canonical full split.
+        hf_config="3.0.0",
+        hf_split="train",
+        hf_text_field="article",
+        hf_max_rows=4_000,
     ),
     CorpusEntry(
         id="hf-institutional-books",
