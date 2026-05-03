@@ -465,6 +465,13 @@ class SettingsDialog(QDialog):
         hf_tab = self._create_huggingface_tab()
         tabs.addTab(hf_tab, "🤗 Local Models")
 
+        # Per-Task Trained Models tab — picks which trained model
+        # (from the Training Studio) each writing-tool task uses.
+        # Reads + writes directly to ``creativeos_config`` so the
+        # AgentSuite ``resolve_task_model`` lookup sees the picks.
+        per_task_tab = self._create_per_task_models_tab()
+        tabs.addTab(per_task_tab, "🎯 Per-Task Models")
+
         # GenAI / Image Generation Tab
         genai_tab = self._create_genai_tab()
         tabs.addTab(genai_tab, "🎨 Image Generation")
@@ -3034,10 +3041,288 @@ class SettingsDialog(QDialog):
         dialog = ConnectionTestDialog(providers, self)
         dialog.exec()
 
+    def _create_per_task_models_tab(self) -> QWidget:
+        """Build the Per-Task Models tab.
+
+        Lets the user route each writing-tool task to ANY model — a
+        Training-Studio trained model, a built-in local pretrained
+        (MLX or HuggingFace), a pinned HF id, OR a cloud provider
+        (Claude / ChatGPT / Gemini). Picks save directly to
+        ``creativeos_config`` (NOT this dialog's settings dict)
+        because that's where the resolver reads them.
+
+        Also exposes the multi-model RAM controls (max_loaded_models
+        + RAM cap percentage) so the user has one place to govern
+        cross-task memory behaviour.
+        """
+        from PyQt6.QtWidgets import (
+            QWidget, QVBoxLayout, QFormLayout, QComboBox, QLabel,
+            QGroupBox, QSpinBox, QPushButton, QHBoxLayout,
+            QScrollArea,
+        )
+        from PyQt6.QtCore import Qt
+        try:
+            from src.config.creativeos_config import (
+                get_creativeos_config, load_trained_models,
+                TASK_MODEL_KEYS, TASK_MODEL_LABELS,
+            )
+            from src.ui.per_task_model_picker import (
+                populate_task_combo, attach_custom_handler,
+            )
+            cfg = get_creativeos_config()
+            trained = load_trained_models()
+        except Exception as e:
+            tab = QWidget()
+            lay = QVBoxLayout(tab)
+            lay.addWidget(QLabel(
+                f"<b>Could not load CreativeOS config:</b><br>{e}"))
+            return tab
+
+        # Pull the unified registry so the count line tells the user
+        # how many local pretrained + cloud options are also
+        # available — not just trained models.
+        try:
+            from src.data.model_registry import (
+                list_models, KIND_TRAINED, KIND_PRETRAINED_BUILTIN,
+                KIND_PRETRAINED_PINNED,
+            )
+            registry_entries = list_models()
+            n_trained = sum(1 for e in registry_entries
+                            if e.kind == KIND_TRAINED)
+            n_local_pretrained = sum(
+                1 for e in registry_entries
+                if e.kind in (KIND_PRETRAINED_BUILTIN,
+                              KIND_PRETRAINED_PINNED))
+        except Exception:
+            n_trained = len(trained)
+            n_local_pretrained = 0
+
+        # Two-layer layout: outer holds a QScrollArea so the tab
+        # content (intro + 5 task dropdowns + memory controls +
+        # refresh button) doesn't smash together on a 768-tall
+        # laptop display. The actual widgets live in ``inner_w``
+        # which the scroll area wraps.
+        tab = QWidget()
+        tab_layout = QVBoxLayout(tab)
+        tab_layout.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        inner_w = QWidget()
+        outer = QVBoxLayout(inner_w)
+        outer.setContentsMargins(8, 8, 12, 8)
+
+        intro = QLabel(
+            "Pick a model for each writing-tool task. You can choose "
+            "from your <b>Trained models</b> (Training Studio), any "
+            "of your <b>Local pretrained models</b> (MLX or "
+            "HuggingFace), or a <b>Cloud provider</b> (Claude / "
+            "ChatGPT / Gemini). Leave a row on <b>(default)</b> to "
+            "fall back to the global Local Model ID or your cloud "
+            "default.")
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color:#374151;font-size:12px;padding:6px;")
+        outer.addWidget(intro)
+
+        # Count line — answers "what's available to pick?" up front.
+        bits = []
+        if n_trained:
+            bits.append(
+                f"<b>{n_trained}</b> trained "
+                f"model{'s' if n_trained != 1 else ''}")
+        if n_local_pretrained:
+            bits.append(
+                f"<b>{n_local_pretrained}</b> local pretrained")
+        bits.append("<b>4</b> cloud providers")
+        count_html = (
+            "<span style='color:#065f46;'>"
+            "✓ Available: " + " · ".join(bits) + "."
+            "</span>")
+        count_label = QLabel(count_html)
+        count_label.setWordWrap(True)
+        count_label.setStyleSheet(
+            "padding:6px 8px;background:#f9fafb;border-radius:4px;")
+        outer.addWidget(count_label)
+
+        # Per-task picker form. Each task gets one combo populated by
+        # the shared per_task_model_picker helper, which enumerates
+        # trained + local pretrained + cloud + Custom in one list.
+        picker_box = QGroupBox("Task → model")
+        picker_form = QFormLayout(picker_box)
+        self._per_task_states: dict = {}
+        for key in TASK_MODEL_KEYS:
+            combo = QComboBox()
+            state = populate_task_combo(combo, cfg.get(key, ""))
+            combo.currentIndexChanged.connect(
+                attach_custom_handler(state, self))
+            picker_form.addRow(
+                TASK_MODEL_LABELS.get(key, key) + ":", combo)
+            self._per_task_states[key] = state
+        outer.addWidget(picker_box)
+
+        # Memory & multi-model controls.
+        mem_box = QGroupBox("Memory & multi-model")
+        mem_form = QFormLayout(mem_box)
+        avail_gb = 0.0
+        try:
+            import psutil
+            avail_gb = (
+                psutil.virtual_memory().available / (1024 ** 3))
+        except Exception:
+            pass
+        mem_intro = QLabel(
+            f"<span style='color:#6b7280;font-size:11px;'>"
+            f"Detected available RAM: <b>{avail_gb:.1f} GB</b>. "
+            f"Both the writing tool's per-task LLM cache AND the "
+            f"global model cache honour these limits — LRU "
+            f"eviction drops the least-recently-used model when "
+            f"either cap is hit."
+            f"</span>")
+        mem_intro.setWordWrap(True)
+        mem_form.addRow(mem_intro)
+
+        self._max_models_spin = QSpinBox()
+        self._max_models_spin.setRange(1, 8)
+        self._max_models_spin.setValue(int(
+            cfg.get("max_loaded_models", 2) or 2))
+        self._max_models_spin.setToolTip(
+            "Hard cap on simultaneously-loaded local models. "
+            "Higher = faster task switching at the cost of more "
+            "RAM. Defaults to 2.")
+        mem_form.addRow(
+            "Max loaded models:", self._max_models_spin)
+
+        self._ram_pct_spin = QSpinBox()
+        self._ram_pct_spin.setRange(10, 95)
+        self._ram_pct_spin.setSuffix(" %")
+        self._ram_pct_spin.setValue(int(
+            cfg.get("model_cache_ram_pct", 60) or 60))
+        self._ram_pct_spin.setToolTip(
+            "Soft cap on aggregate model RAM as a percentage of "
+            "available RAM. When estimated usage exceeds this, "
+            "LRU evicts even if max_loaded_models hasn't been "
+            "hit. 60% leaves headroom for the OS and other apps.")
+        mem_form.addRow(
+            "RAM cap (% of available):", self._ram_pct_spin)
+
+        self._ram_preview_label = QLabel("")
+        self._ram_preview_label.setStyleSheet(
+            "color:#6b7280;font-size:11px;padding:0 0 0 4px;")
+
+        def _refresh_preview():
+            if avail_gb <= 0:
+                self._ram_preview_label.setText(
+                    "(psutil unavailable — RAM cap will use 16 GB "
+                    "fallback)")
+                return
+            cap_gb = avail_gb * (
+                self._ram_pct_spin.value() / 100.0)
+            self._ram_preview_label.setText(
+                f"~{cap_gb:.1f} GB cap on this machine")
+        self._ram_pct_spin.valueChanged.connect(
+            lambda _v: _refresh_preview())
+        _refresh_preview()
+        mem_form.addRow("", self._ram_preview_label)
+        outer.addWidget(mem_box)
+
+        # Refresh button — re-reads the registry without
+        # reopening the whole dialog. Useful if the user trained a
+        # new model in another window while this dialog was open.
+        refresh_row = QHBoxLayout()
+        refresh_row.addStretch()
+        self._refresh_trained_btn = QPushButton(
+            "⟳ Refresh trained models list")
+        self._refresh_trained_btn.setToolTip(
+            "Re-read the trained models registry. Use this if you "
+            "trained a new model while this dialog was open.")
+        self._refresh_trained_btn.clicked.connect(
+            self._on_refresh_per_task_models)
+        refresh_row.addWidget(self._refresh_trained_btn)
+        outer.addLayout(refresh_row)
+
+        outer.addStretch()
+        # Close out the scroll wrap.
+        scroll.setWidget(inner_w)
+        tab_layout.addWidget(scroll)
+        return tab
+
+    def _on_refresh_per_task_models(self):
+        """Re-read the model registry and rebuild each combo's items
+        in place. Preserves the user's current pick if it still
+        resolves; otherwise falls back to default."""
+        try:
+            from src.ui.per_task_model_picker import (
+                populate_task_combo, attach_custom_handler,
+                read_task_combo_spec,
+            )
+        except Exception:
+            return
+        for key, state in getattr(
+                self, "_per_task_states", {}).items():
+            combo = state["combo"]
+            # Preserve the currently-selected spec across the rebuild
+            # — anything custom the user pasted survives.
+            current = read_task_combo_spec(state)
+            try:
+                combo.currentIndexChanged.disconnect()
+            except Exception:
+                pass
+            new_state = populate_task_combo(combo, current)
+            # Replace the state in place so the save path sees the
+            # refreshed combo + saved_spec.
+            state.update(new_state)
+            combo.currentIndexChanged.connect(
+                attach_custom_handler(state, self))
+
+    def _save_per_task_models(self):
+        """Persist per-task picks + memory controls to creativeos_config.
+
+        Called from ``accept`` so the user's choices flow into the
+        same config the writing tool's AgentSuite reads. If the
+        memory caps changed, also rebuilds the global model cache
+        so the new bounds take effect immediately.
+        """
+        try:
+            from src.config.creativeos_config import (
+                get_creativeos_config,
+            )
+            from src.ui.per_task_model_picker import read_task_combo_spec
+            cfg = get_creativeos_config()
+        except Exception:
+            return
+        if not hasattr(self, "_per_task_states"):
+            return
+        updates: dict = {}
+        for key, state in self._per_task_states.items():
+            updates[key] = read_task_combo_spec(state)
+        old_max = int(cfg.get("max_loaded_models", 2) or 2)
+        old_pct = int(cfg.get("model_cache_ram_pct", 60) or 60)
+        new_max = int(self._max_models_spin.value())
+        new_pct = int(self._ram_pct_spin.value())
+        updates["max_loaded_models"] = new_max
+        updates["model_cache_ram_pct"] = new_pct
+        cfg.update(**updates)
+        if new_max != old_max or new_pct != old_pct:
+            try:
+                from src.ai.model_cache import (
+                    reload_default_cache_from_settings,
+                )
+                reload_default_cache_from_settings()
+            except Exception:
+                pass
+
     def accept(self):
         """Save settings and close dialog."""
         # Save GenAI settings separately
         self._save_genai_settings()
+        # Save per-task model picks to CreativeOS config (where
+        # AgentSuite reads them). Distinct from this dialog's
+        # ``settings`` dict, which holds ai_config keys.
+        self._save_per_task_models()
         # Call parent accept to close dialog
         super().accept()
 

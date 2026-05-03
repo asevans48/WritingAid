@@ -343,13 +343,56 @@ _DEFAULT_LOCK = threading.Lock()
 
 
 def get_default_cache() -> LoadedModelCache:
-    """Return the process-wide default cache instance."""
+    """Return the process-wide default cache instance.
+
+    On first construction, reads the user's CreativeOS settings to
+    pick up ``max_loaded_models`` and ``model_cache_ram_pct``.
+    Failures during config import fall back to the constructor
+    defaults so the cache is always usable even if config layer
+    isn't reachable (e.g. headless tests, repl).
+    """
     global _DEFAULT_CACHE
     if _DEFAULT_CACHE is None:
         with _DEFAULT_LOCK:
             if _DEFAULT_CACHE is None:
-                _DEFAULT_CACHE = LoadedModelCache()
+                max_models = 2
+                ram_cap_gb: Optional[float] = None
+                try:
+                    from src.config.creativeos_config import (
+                        get_creativeos_config,
+                    )
+                    cfg = get_creativeos_config()
+                    max_models = max(
+                        1, int(cfg.get("max_loaded_models", 2) or 2))
+                    pct = float(
+                        cfg.get("model_cache_ram_pct", 60) or 60)
+                    pct = max(10.0, min(95.0, pct))
+                    avail = _available_ram_gb()
+                    if avail > 0:
+                        ram_cap_gb = round(avail * (pct / 100.0), 1)
+                except Exception:
+                    # Fall through to constructor defaults.
+                    pass
+                _DEFAULT_CACHE = LoadedModelCache(
+                    max_models=max_models, max_ram_gb=ram_cap_gb)
     return _DEFAULT_CACHE
+
+
+def reload_default_cache_from_settings() -> None:
+    """Drop and rebuild the default cache from current settings.
+
+    Called by the settings dialog after the user changes
+    ``max_loaded_models`` or ``model_cache_ram_pct`` so the new
+    bounds take effect immediately. Any currently-loaded models
+    are evicted (we can't safely transfer them to the new cache
+    instance with different bounds without potentially exceeding
+    the new RAM cap).
+    """
+    global _DEFAULT_CACHE
+    with _DEFAULT_LOCK:
+        if _DEFAULT_CACHE is not None:
+            _DEFAULT_CACHE.clear()
+        _DEFAULT_CACHE = None
 
 
 def reset_default_cache() -> None:

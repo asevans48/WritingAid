@@ -189,6 +189,58 @@ class RephraseDialog(QDialog):
             self.context_display.setVisible(False)
             layout.addWidget(self.context_display)
 
+        # Genre dropdown — gives the LLM a register cue and tags the
+        # logged rephrase pair with a canonical genre key. Pulled from
+        # ``src.data.genres`` so the same taxonomy that drives the
+        # Training Studio's filters drives this picker too. The first
+        # entry "(use project default)" inherits from the active
+        # project's prose_profile.genre (filled in below); selecting
+        # a specific genre overrides for this single rephrase.
+        genre_row = QHBoxLayout()
+        genre_row.setContentsMargins(0, 0, 0, 0)
+        genre_label = QLabel("Genre:")
+        genre_label.setStyleSheet("font-size: 10px; color: #6b7280;")
+        genre_row.addWidget(genre_label)
+        self.genre_combo = QComboBox()
+        self.genre_combo.addItem("(use project default)", "")
+        try:
+            from src.data.genres import GENRES, display_name as _gname
+            for key in sorted(GENRES.keys()):
+                self.genre_combo.addItem(_gname(key), key)
+        except Exception:
+            pass
+        self.genre_combo.setToolTip(
+            "Tell the AI which genre to lean into when rephrasing. "
+            "Pre-filled from your project's prose profile if set; "
+            "pick a specific genre to override for just this "
+            "rephrase. Logged with the rephrase pair so future "
+            "trained models can route by genre.")
+        self.genre_combo.setStyleSheet("font-size: 10px; padding: 2px;")
+        # Pre-select from project.prose_profile.genre if available.
+        try:
+            if (self.project
+                    and getattr(self.project, "prose_profile", None)):
+                proj_genre = (getattr(
+                    self.project.prose_profile, "genre", "")
+                    or "").strip().lower()
+                if proj_genre:
+                    # Try canonical match first, then fuzzy via match_genres.
+                    idx = self.genre_combo.findData(proj_genre)
+                    if idx < 0:
+                        try:
+                            from src.data.genres import match_genres
+                            matched = match_genres(proj_genre)
+                            if matched:
+                                idx = self.genre_combo.findData(matched[0])
+                        except Exception:
+                            pass
+                    if idx >= 0:
+                        self.genre_combo.setCurrentIndex(idx)
+        except Exception:
+            pass
+        genre_row.addWidget(self.genre_combo, 1)
+        layout.addLayout(genre_row)
+
         # Scene description (optional, user-provided)
         self.scene_desc_edit = QLineEdit()
         self.scene_desc_edit.setPlaceholderText(
@@ -696,6 +748,16 @@ class RephraseDialog(QDialog):
             return ""
         return self.pov_combo.currentText()
 
+    def _get_selected_genre(self) -> str:
+        """Return the canonical genre key the user picked, or empty
+        when "(use project default)" is selected. The DB-log path
+        falls back to project.prose_profile.genre when this returns
+        empty so the existing behaviour is preserved."""
+        try:
+            return self.genre_combo.currentData() or ""
+        except Exception:
+            return ""
+
     def _toggle_surrounding_context(self):
         """Toggle visibility of surrounding context display."""
         visible = not self.context_display.isVisible()
@@ -813,6 +875,25 @@ class RephraseDialog(QDialog):
         pov = self._get_selected_pov()
         character_context = self._get_selected_characters_context()
         scene_description = self.scene_desc_edit.text().strip()
+
+        # Genre cue prepended to scene description so the LLM sees
+        # it without changing the agent's signature. Only fires
+        # when the user picked a specific genre — "(use project
+        # default)" leaves the project's prose_profile.genre alone
+        # (the agent already pulls that from the project).
+        genre_choice = self._get_selected_genre()
+        if genre_choice:
+            try:
+                from src.data.genres import display_name as _gn
+                genre_label = _gn(genre_choice)
+            except Exception:
+                genre_label = genre_choice
+            genre_clause = (
+                f"Target genre: {genre_label}. Lean into the prose "
+                f"register, vocabulary, and conventions of this genre.")
+            scene_description = (
+                f"{genre_clause} {scene_description}"
+                if scene_description else genre_clause)
         print(f"🎭 Tones: {[t.value for t in tones]}")
         if custom_tone:
             print(f"✏️  Custom tone: {custom_tone}")
@@ -1005,13 +1086,25 @@ class RephraseDialog(QDialog):
                 opt = self.result.options[row]
                 style = f"{opt.style}/{opt.tone}".strip("/")
 
-        # Genre from project prose profile, if present
+        # Genre — the user's explicit dropdown pick wins. Falls back
+        # to the project's prose_profile genre if the dropdown is on
+        # "(use project default)". Logged into the rephrase DB so
+        # future training runs can route by genre with the same
+        # canonical key the Training Studio uses.
         genre = ""
         try:
-            if self.project and getattr(self.project, 'prose_profile', None):
-                genre = getattr(self.project.prose_profile, 'genre', '') or ""
+            genre = self._get_selected_genre()
         except Exception:
             pass
+        if not genre:
+            try:
+                if (self.project
+                        and getattr(self.project, 'prose_profile',
+                                    None)):
+                    genre = getattr(
+                        self.project.prose_profile, 'genre', '') or ""
+            except Exception:
+                pass
 
         # Best-effort speaker detection (we already do this for prompts)
         character = ""

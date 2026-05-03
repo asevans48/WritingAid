@@ -2,9 +2,10 @@
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QLineEdit,
-    QPushButton, QLabel, QFrame, QComboBox, QToolButton
+    QPlainTextEdit, QPushButton, QLabel, QFrame, QComboBox, QToolButton,
+    QSizePolicy
 )
-from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtCore import pyqtSignal, Qt, QSettings
 from PyQt6.QtGui import QIcon
 from enum import Enum
 from typing import List, Dict, Optional
@@ -17,10 +18,124 @@ from src.ai.conversation_store import (
 from src.config import get_ai_config
 
 
+# Visible-row bounds for the prompt box. The user can grow/shrink
+# the prompt area via the −/+ buttons in the chat panel; persisted
+# preference is kept across sessions in QSettings.
+_INPUT_ROWS_MIN = 1
+_INPUT_ROWS_MAX = 16
+_INPUT_ROWS_DEFAULT = 2
+_INPUT_ROWS_STEP = 2
+_INPUT_FONT_PX = 13  # Constant text size — only the height varies now.
+
+
+class _ChatInput(QPlainTextEdit):
+    """Drop-in replacement for the chat's old QLineEdit prompt box.
+
+    Three departures from QPlainTextEdit:
+      1. ``submit_requested`` fires on bare Enter, mirroring the old
+         line-edit's ``returnPressed``. Shift+Enter and Ctrl/⌘+Enter
+         insert a newline so users can compose multi-line prompts.
+      2. ``setText`` / ``text`` aliases keep external callers
+         (main_window, manuscript_editor, draft_editor_window) working
+         without each having to learn the QPlainTextEdit API.
+      3. ``set_visible_rows`` controls how tall the prompt is. The
+         field always *can* hold more text than visible — the
+         vertical scrollbar handles overflow. The row count just
+         decides how many lines the user sees at a glance before
+         needing to scroll inside the prompt.
+    """
+    submit_requested = pyqtSignal()
+    rows_changed = pyqtSignal(int)  # Emits new row count for UI sync.
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # Always show the scrollbar — that's the whole point of the
+        # resizable prompt: the user can scroll up to see earlier
+        # lines they typed without having to enlarge the field.
+        self.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding,
+                            QSizePolicy.Policy.Fixed)
+        self.setStyleSheet(
+            f"QPlainTextEdit {{"
+            f" padding: 8px 12px;"
+            f" font-size: {_INPUT_FONT_PX}px;"
+            f" border-radius: 8px;"
+            f" border: 1px solid #e5e7eb;"
+            f" background-color: white;"
+            f" }}"
+            f"QPlainTextEdit:focus {{ border: 2px solid #6366f1; }}")
+        self._rows = _INPUT_ROWS_DEFAULT
+        self._apply_height()
+
+    # — line-edit-compat shims —
+    def setText(self, text: str) -> None:
+        self.setPlainText(text)
+
+    def text(self) -> str:
+        return self.toPlainText()
+
+    # — visible-row handling —
+    def visible_rows(self) -> int:
+        return self._rows
+
+    def set_visible_rows(self, rows: int) -> None:
+        rows = max(_INPUT_ROWS_MIN,
+                    min(_INPUT_ROWS_MAX, int(rows)))
+        if rows == self._rows:
+            return
+        self._rows = rows
+        self._apply_height()
+        self.rows_changed.emit(rows)
+
+    def _apply_height(self) -> None:
+        # Use the actual font metrics of the widget so the height
+        # tracks the real line spacing (theme/HiDPI aware) rather
+        # than guessing line_h = font_px * 1.5.
+        fm = self.fontMetrics()
+        line_h = fm.lineSpacing()
+        # Padding (8 top + 8 bottom) + a touch of slack for the
+        # cursor + frame so the last line isn't clipped against the
+        # bottom border.
+        chrome = 8 + 8 + 6
+        self.setFixedHeight(line_h * self._rows + chrome)
+
+    # — keyboard shortcuts —
+    def keyPressEvent(self, event):
+        key = event.key()
+        mods = event.modifiers()
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            # Shift / Ctrl / ⌘+Enter inserts a newline; bare Enter sends.
+            if (mods & (Qt.KeyboardModifier.ShiftModifier
+                         | Qt.KeyboardModifier.ControlModifier
+                         | Qt.KeyboardModifier.MetaModifier)):
+                super().keyPressEvent(event)
+            else:
+                self.submit_requested.emit()
+            return
+        # Ctrl/⌘ +/- and Ctrl+0 grow / shrink / reset the prompt height.
+        if mods & (Qt.KeyboardModifier.ControlModifier
+                    | Qt.KeyboardModifier.MetaModifier):
+            if key in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
+                self.set_visible_rows(self._rows + _INPUT_ROWS_STEP)
+                return
+            if key == Qt.Key.Key_Minus:
+                self.set_visible_rows(self._rows - _INPUT_ROWS_STEP)
+                return
+            if key == Qt.Key.Key_0:
+                self.set_visible_rows(_INPUT_ROWS_DEFAULT)
+                return
+        super().keyPressEvent(event)
+
+
 class ChatMode(Enum):
     """Available chat assistant modes."""
     GENERAL = "general"
     CHAPTER_FOCUS = "chapter_focus"
+    PLOT = "plot"
     WRITER = "writer"
 
 
@@ -73,6 +188,14 @@ CHAT_MODE_INFO = {
         "subtitle": "Focused on current chapter",
         "placeholder": "Ask about this chapter...",
         "description": "Discuss, analyze, and improve the current chapter"
+    },
+    ChatMode.PLOT: {
+        "name": "Discuss Plot",
+        "subtitle": "Plot, structure, pacing, arcs",
+        "placeholder": "Ask about plot, structure, pacing, character arcs...",
+        "description": "Discuss the story's arc — plot beats, pacing, "
+                       "promises, character arcs — with full manuscript "
+                       "and worldbuilding context"
     },
     ChatMode.WRITER: {
         "name": "Writer Mode",
@@ -386,22 +509,81 @@ class ChatWidget(QWidget):
         """)
         content_layout.addWidget(self.chat_history)
 
-        # Input area with modern styling
-        self.input_field = QLineEdit()
+        # Prompt-height controls. Lets the user grow the prompt area
+        # so they can see (and scroll through) more of a long prompt
+        # without it getting clipped to one or two visible lines.
+        # Internal scrollbar handles overflow within the prompt box.
+        size_row = QHBoxLayout()
+        size_row.setContentsMargins(0, 0, 0, 0)
+        size_row.setSpacing(4)
+
+        size_hint = QLabel("Prompt height:")
+        size_hint.setStyleSheet("font-size: 10px; color: #9ca3af;")
+        size_row.addWidget(size_hint)
+
+        size_btn_style = (
+            "QPushButton { padding: 1px 8px; font-size: 11px;"
+            "  border: 1px solid #d1d5db; border-radius: 4px;"
+            "  background: white; color: #374151; }"
+            "QPushButton:hover { border-color: #6366f1; "
+            "  color: #6366f1; }"
+            "QPushButton:disabled { color: #d1d5db;"
+            "  border-color: #f3f4f6; }")
+
+        self.input_shrink_btn = QPushButton("−")
+        self.input_shrink_btn.setStyleSheet(size_btn_style)
+        self.input_shrink_btn.setToolTip(
+            "Show fewer prompt lines at once (Ctrl+−). "
+            "Long prompts still scroll inside the field.")
+        self.input_shrink_btn.clicked.connect(
+            lambda: self._step_input_rows(-_INPUT_ROWS_STEP))
+        size_row.addWidget(self.input_shrink_btn)
+
+        self.input_size_label = QLabel(
+            f"{_INPUT_ROWS_DEFAULT} lines")
+        self.input_size_label.setStyleSheet(
+            "font-size: 10px; color: #6b7280; min-width: 50px;")
+        self.input_size_label.setAlignment(
+            Qt.AlignmentFlag.AlignCenter)
+        size_row.addWidget(self.input_size_label)
+
+        self.input_grow_btn = QPushButton("+")
+        self.input_grow_btn.setStyleSheet(size_btn_style)
+        self.input_grow_btn.setToolTip(
+            "Show more prompt lines at once (Ctrl++). "
+            "Useful when composing a long prompt.")
+        self.input_grow_btn.clicked.connect(
+            lambda: self._step_input_rows(_INPUT_ROWS_STEP))
+        size_row.addWidget(self.input_grow_btn)
+
+        self.input_size_reset_btn = QPushButton("Reset")
+        self.input_size_reset_btn.setStyleSheet(size_btn_style)
+        self.input_size_reset_btn.setToolTip(
+            "Reset prompt to default height (Ctrl+0)")
+        self.input_size_reset_btn.clicked.connect(
+            lambda: self._set_input_rows(_INPUT_ROWS_DEFAULT))
+        size_row.addWidget(self.input_size_reset_btn)
+        size_row.addStretch()
+
+        content_layout.addLayout(size_row)
+
+        # Input area — multi-line. Enter sends, Shift/Ctrl+Enter for
+        # newline. Resizable via the buttons above or Ctrl++/−/0.
+        # Long prompts scroll vertically inside the field.
+        self.input_field = _ChatInput()
         self.input_field.setPlaceholderText("Ask me anything...")
-        self.input_field.returnPressed.connect(self._send_message)
-        self.input_field.setStyleSheet("""
-            QLineEdit {
-                padding: 10px 12px;
-                font-size: 13px;
-                border-radius: 8px;
-                border: 1px solid #e5e7eb;
-                background-color: white;
-            }
-            QLineEdit:focus {
-                border: 2px solid #6366f1;
-            }
-        """)
+        self.input_field.submit_requested.connect(self._send_message)
+        self.input_field.rows_changed.connect(
+            self._on_input_rows_changed)
+        # Restore the user's preferred prompt height from prior session.
+        self._input_settings = QSettings("WritingAid", "ChatWidget")
+        saved_rows = int(self._input_settings.value(
+            "inputRows", _INPUT_ROWS_DEFAULT))
+        self.input_field.set_visible_rows(saved_rows)
+        # set_visible_rows is a no-op when the value matches what was
+        # set in the constructor, so push the label state once for the
+        # default-restore case.
+        self._on_input_rows_changed(self.input_field.visible_rows())
         content_layout.addWidget(self.input_field)
 
         # Rating widget (hidden by default, shown after AI responses)
@@ -619,6 +801,27 @@ class ChatWidget(QWidget):
             self.input_field.clear()
             insert_mode = self.get_insert_mode() if self._current_mode == ChatMode.WRITER else ""
             self.message_sent.emit(message, self._current_mode.value, insert_mode)
+
+    # — prompt-height helpers —
+    def _step_input_rows(self, delta: int) -> None:
+        """Grow / shrink the prompt by ``delta`` visible lines."""
+        self._set_input_rows(self.input_field.visible_rows() + delta)
+
+    def _set_input_rows(self, rows: int) -> None:
+        """Apply a specific visible-row count to the prompt."""
+        self.input_field.set_visible_rows(rows)
+
+    def _on_input_rows_changed(self, rows: int) -> None:
+        """Sync the row label, button enabled state, and saved pref."""
+        self.input_size_label.setText(
+            f"{rows} line{'' if rows == 1 else 's'}")
+        # Disable the at-bound buttons so the user sees they're capped.
+        self.input_shrink_btn.setEnabled(rows > _INPUT_ROWS_MIN)
+        self.input_grow_btn.setEnabled(rows < _INPUT_ROWS_MAX)
+        try:
+            self._input_settings.setValue("inputRows", rows)
+        except Exception:
+            pass
 
     def add_message(self, sender: str, message: str, system_prompt: Optional[str] = None, original_response: Optional[str] = None):
         """Add message to chat history with modern bubble styling.

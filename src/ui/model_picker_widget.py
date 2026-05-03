@@ -158,6 +158,36 @@ MLX_MODELS: List[LocalModelInfo] = [
         best_for="Maximum quality, nuanced dialogue, worldbuilding",
         requires_trust_remote_code=False,
     ),
+    # Cydonia 24B v3.1 — TheDrummer's creative-writing fine-tune
+    # of Mistral Small 24B. Tuned hard for fiction / RP / longform
+    # storytelling; ranks well on creative-writing leaderboards.
+    # 4-bit MLX weights: ~13 GB on disk, ~16-20 GB peak RAM during
+    # generation depending on context length.
+    LocalModelInfo(
+        model_id="mlx-community/Cydonia-24B-v3.1-4bit",
+        display_name="Cydonia 24B v3.1 - MLX [Creative]",
+        size_gb=13.0,
+        description="Drummer's creative-writing tune of Mistral "
+                    "Small 24B — strong fiction / RP voice",
+        ram_required="24GB+",
+        best_for="Long-form fiction, character voice, dialogue",
+        requires_trust_remote_code=False,
+    ),
+    # Qwen 3.6 35B-A3B — newer Qwen MoE; 35B total params with
+    # only ~3B active per token, so wall-clock generation speed is
+    # closer to a 7B model while quality tracks the full weight
+    # set. 4-bit MLX weights ~18 GB on disk; all weights still
+    # load into RAM, MoE only saves compute not memory.
+    LocalModelInfo(
+        model_id="mlx-community/Qwen3.6-35B-A3B-4bit",
+        display_name="Qwen 3.6 35B-A3B - MLX [MoE, Fast]",
+        size_gb=18.0,
+        description="Qwen 3.6 MoE — 35B total / 3B active, fast "
+                    "generation with frontier-tier quality",
+        ram_required="32GB+",
+        best_for="Highest quality with fast wall-clock inference",
+        requires_trust_remote_code=False,
+    ),
 ]
 
 

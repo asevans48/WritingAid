@@ -133,6 +133,62 @@ class RephraseDatabase:
                 c.execute(
                     "ALTER TABLE rephrases ADD COLUMN voice TEXT DEFAULT ''")
 
+            # Backfill: pacing-synth rows used to bake "Rewrite the
+            # following passage to match X pacing… Keep the meaning
+            # intact:\n\n<passage>" into ``source_text``, then the
+            # trainer's plot/pacing template wrapped that AGAIN
+            # with another instruction at render time → doubled
+            # prompts. New rows skip the framing; existing rows
+            # are repaired here. The match is anchored on the
+            # exact prefix the old synthesiser emitted, so
+            # legitimate user content isn't at risk. Idempotent:
+            # subsequent runs find no rows whose source_text
+            # still starts with the legacy prefix.
+            cur = c.execute(
+                "SELECT id, source_text FROM rephrases "
+                "WHERE source_type = ? "
+                "AND notes LIKE '%pacing_target=%' "
+                "AND source_text LIKE 'Rewrite the following passage to match%Keep the meaning intact:__%'",
+                (SOURCE_PLOT,))
+            to_fix = cur.fetchall()
+            if to_fix:
+                import re as _re
+                # The framing ends with "Keep the meaning intact:\n\n"
+                # — the passage starts after the double newline.
+                # Use re.split with the exact suffix so we don't
+                # accidentally lop off legitimate prose that
+                # contains the same words elsewhere.
+                splitter = _re.compile(
+                    r"^Rewrite the following passage to match "
+                    r".*?Keep the meaning intact:\n\n",
+                    flags=_re.DOTALL)
+                for rid, st in to_fix:
+                    stripped = splitter.sub("", st or "", count=1)
+                    if stripped and stripped != st:
+                        c.execute(
+                            "UPDATE rephrases SET source_text = ? "
+                            "WHERE id = ?",
+                            (stripped, int(rid)))
+
+            # Backfill: catalog corpora used to land as source_type
+            # 'corpus' regardless of their declared purpose, because
+            # corpus_downloader always called ``log_corpus_pair``.
+            # That meant a BookSum download (purpose='plot') wouldn't
+            # appear in the "plot" filter / source-type bucket. The
+            # downloader is now purpose-aware, but rows ingested
+            # before that fix retain the wrong source_type. The notes
+            # column carries ``purpose=<x>`` so we can repair them in
+            # place without re-downloading anything. Idempotent — a
+            # second run finds zero candidates because the first run
+            # cleared them.
+            for purpose, sst in (("plot", SOURCE_PLOT),
+                                  ("character", SOURCE_CHARACTER),
+                                  ("worldbuilding", SOURCE_WORLDBUILDING)):
+                c.execute(
+                    "UPDATE rephrases SET source_type = ? "
+                    "WHERE source_type = ? AND notes LIKE ?",
+                    (sst, SOURCE_CORPUS, f"%purpose={purpose}%"))
+
     # ── Writes ──
 
     def log(
@@ -707,6 +763,76 @@ class RephraseDatabase:
                 (marker,))
             return cur.rowcount
 
+    def search_row_ids(self,
+                       query: str = "",
+                       *,
+                       source_types: Optional[Iterable[str]] = None,
+                       genre: str = "",
+                       corpus_id: str = "",
+                       min_rating: Optional[str] = None,
+                       only_accepted: bool = True) -> List[int]:
+        """Return every row id matching the same filters as
+        :meth:`search_rows`, with no paging cap.
+
+        Used by the Browse Rows dialog's "Drop matching" action so
+        the deletion covers the full result set, not just the
+        visible page. Returns a list of integers; deletion goes
+        through :func:`prompt_fit_audit.delete_rows_by_id` or
+        :func:`genre_scope_apply.apply_drops`.
+        """
+        clauses, params = self._search_clauses(
+            query=query, source_types=source_types, genre=genre,
+            corpus_id=corpus_id, min_rating=min_rating,
+            only_accepted=only_accepted)
+        sql = "SELECT id FROM rephrases"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY id DESC"
+        with self._conn() as c:
+            cur = c.execute(sql, params)
+            return [int(r["id"]) for r in cur]
+
+    def _search_clauses(self, *, query, source_types, genre,
+                         corpus_id, min_rating,
+                         only_accepted) -> Tuple[List[str], List[Any]]:
+        """Build the WHERE clause + params shared by ``search_rows``
+        and ``search_row_ids``. Extracted so the two callers stay
+        in lockstep — adding a new filter means changing one place,
+        not both."""
+        clauses: List[str] = []
+        params: List[Any] = []
+        if only_accepted:
+            clauses.append("accepted = 1")
+        if source_types:
+            sts = list(source_types)
+            placeholders = ",".join("?" * len(sts))
+            clauses.append(f"source_type IN ({placeholders})")
+            params.extend(sts)
+        if genre:
+            clauses.append("genre LIKE ?")
+            params.append(f"%{genre}%")
+        if corpus_id:
+            clauses.append("notes LIKE ?")
+            params.append(f"%corpus_id={corpus_id}%")
+        if min_rating:
+            order = ["excellent", "good", "neutral", "poor", "bad"]
+            try:
+                cutoff = order.index(min_rating)
+                allowed = order[:cutoff + 1]
+            except ValueError:
+                allowed = ["excellent", "good"]
+            placeholders = ",".join("?" * len(allowed))
+            clauses.append(
+                f"(rating IN ({placeholders}) OR rating IS NULL)")
+            params.extend(allowed)
+        if query:
+            clauses.append(
+                "(source_text LIKE ? OR output_text LIKE ? "
+                "OR notes LIKE ?)")
+            like = f"%{query}%"
+            params.extend([like, like, like])
+        return clauses, params
+
     def search_rows(self,
                     query: str = "",
                     *,
@@ -742,44 +868,10 @@ class RephraseDatabase:
             limit: max rows to return (default 200; UI pages by 200).
             offset: page offset for paging.
         """
-        clauses: List[str] = []
-        params: List[Any] = []
-
-        if only_accepted:
-            clauses.append("accepted = 1")
-        if source_types:
-            sts = list(source_types)
-            placeholders = ",".join("?" * len(sts))
-            clauses.append(f"source_type IN ({placeholders})")
-            params.extend(sts)
-        if genre:
-            clauses.append("genre LIKE ?")
-            params.append(f"%{genre}%")
-        if corpus_id:
-            clauses.append("notes LIKE ?")
-            params.append(f"%corpus_id={corpus_id}%")
-        if min_rating:
-            # Same ranking as ``export_jsonl``: excellent > good >
-            # neutral > poor > bad. The trick: SQLite has no enum
-            # ordering, so we filter via an IN list of allowed
-            # values rather than a numeric comparison.
-            order = ["excellent", "good", "neutral", "poor", "bad"]
-            try:
-                cutoff = order.index(min_rating)
-                allowed = order[:cutoff + 1]
-            except ValueError:
-                allowed = ["excellent", "good"]
-            placeholders = ",".join("?" * len(allowed))
-            clauses.append(f"(rating IN ({placeholders}) OR rating IS NULL)")
-            params.extend(allowed)
-        if query:
-            # Three-way OR: text match OR title match (notes-encoded).
-            clauses.append(
-                "(source_text LIKE ? OR output_text LIKE ? "
-                "OR notes LIKE ?)")
-            like = f"%{query}%"
-            params.extend([like, like, like])
-
+        clauses, params = self._search_clauses(
+            query=query, source_types=source_types, genre=genre,
+            corpus_id=corpus_id, min_rating=min_rating,
+            only_accepted=only_accepted)
         sql = "SELECT * FROM rephrases"
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
@@ -1054,7 +1146,9 @@ class RephraseDatabase:
                      source_types: Optional[Iterable[str]] = None,
                      user_voice_oversample: int = 1,
                      genre_filter: Optional[Iterable[str]] = None,
-                     corpus_collection_keys: Optional[Iterable[str]] = None
+                     corpus_collection_keys: Optional[Iterable[str]] = None,
+                     expand_corpus_windows: bool = False,
+                     enforce_purpose_fit: bool = False,
                      ) -> int:
         """Write the database to a JSONL file in the chosen training format.
 
@@ -1095,6 +1189,19 @@ class RephraseDatabase:
         repeat = max(1, int(user_voice_oversample))
         wanted_genres = (set(g.lower().strip() for g in genre_filter)
                          if genre_filter else None)
+        # Expand the wanted set with sibling/ancillary genres
+        # (western↔frontier, horror↔gothic) so filtering for one
+        # automatically pulls in the other. Declared in
+        # :mod:`src.data.genres`. Symmetric — re-expanding is a
+        # no-op. Skipped silently if the genres module isn't
+        # importable for some reason.
+        if wanted_genres:
+            try:
+                from src.data.genres import expand_with_ancillaries
+                wanted_genres = (expand_with_ancillaries(wanted_genres)
+                                 | wanted_genres)
+            except Exception:
+                pass
         # Per-corpus collection filter — applies only to corpus rows.
         # Each row's collection key is derived from its notes via
         # ``_parse_collection_id``. Default ``None`` = include every
@@ -1102,26 +1209,92 @@ class RephraseDatabase:
         collection_filter = (set(corpus_collection_keys)
                              if corpus_collection_keys is not None
                              else None)
+        # Per-pair heuristic gate. Drops obvious mis-fits before
+        # they reach the JSONL — refusal templates, raw tool-call
+        # JSON, trivially short outputs, and shape-aware content
+        # checks (summarisation pairs with no source overlap, etc.).
+        # Counts are aggregated and stashed on ``self`` so the UI
+        # / training worker can report what was dropped without
+        # changing the function's return signature.
+        from src.data.prompt_fit_gate import evaluate_pair, GateReport
+        gate_report = GateReport()
         n = 0
         with open(output_path, 'w', encoding='utf-8') as f:
             for r in rows:
+                # ``src`` here is the row's *native* source_type — the
+                # bucket it was ingested into. Genre + collection
+                # filters apply to the underlying data, so they fire
+                # against this value. The decision of whether to
+                # *emit* the row (and which template family to pick)
+                # is now deferred to ``_format_row``: it consults the
+                # row's actual data shape and the user's checked set
+                # so a row whose native type isn't ticked can still
+                # be emitted under a checked alternative when the
+                # shape supports it (e.g. a corpus row repurposed
+                # into the plot bucket because only "plot" is on).
                 src = r.get("source_type") or SOURCE_REPHRASE
-                if st_filter and src not in st_filter:
-                    continue
                 row_rating = r.get("rating", "neutral") or "neutral"
                 if rating_order.get(row_rating, 2) < threshold:
                     continue
-                # Genre filter: only restrict CORPUS rows. Untagged
-                # corpus rows (genre=="") are universal context and
-                # always pass; tagged ones must overlap the wanted set.
-                if wanted_genres and src == SOURCE_CORPUS:
-                    row_genre_raw = (r.get("genre") or "").lower().strip()
-                    if row_genre_raw:
-                        row_genres = {g.strip() for g in row_genre_raw
-                                      .replace(";", ",").split(",")
-                                      if g.strip()}
-                        if not (row_genres & wanted_genres):
-                            continue
+                # Genre filter (hard + fuzzy compose):
+                #   * Default behaviour — restrict CORPUS rows only.
+                #     Untagged corpus rows (genre=="") are universal
+                #     context and always pass; tagged ones must
+                #     overlap the wanted set.
+                #   * With ``enforce_purpose_fit=True`` — same rule
+                #     extended to plot/character/worldbuilding rows
+                #     so a horror corpus doesn't bleed into a romance
+                #     plot training run. Chat / rephrase / agent rows
+                #     are still exempt (they're either user voice
+                #     data, which is genre-agnostic, or tool traces).
+                #   * **Fuzzy keep-craft escape** — when the hard
+                #     genre check would drop a row, run the kind
+                #     classifier; rows confidently identified as
+                #     ``craft`` (essays / criticism / how-to /
+                #     theory) are kept regardless of their tagged
+                #     genre. A craft essay on plotting is broadly
+                #     useful for plot/character/worldbuilding
+                #     training even when its tag doesn't match the
+                #     target genre. Voice training (corpus bucket)
+                #     still drops these via the per-bucket craft
+                #     filter further down — the escape composes
+                #     correctly with the bucket rules.
+                if wanted_genres:
+                    genre_filtered_buckets = (
+                        {SOURCE_CORPUS, SOURCE_PLOT, SOURCE_CHARACTER,
+                         SOURCE_WORLDBUILDING}
+                        if enforce_purpose_fit
+                        else {SOURCE_CORPUS})
+                    if src in genre_filtered_buckets:
+                        row_genre_raw = (r.get("genre")
+                                         or "").lower().strip()
+                        if row_genre_raw:
+                            # Contains + fuzzy match so composite
+                            # tags ("gothic horror" → "horror"),
+                            # hyphenated variants ("sci-fi" →
+                            # "scifi"), and typos ("horor" →
+                            # "horror") all match. See
+                            # :func:`src.data.genres.genres_overlap`.
+                            from src.data.genres import genres_overlap
+                            if not genres_overlap(
+                                    row_genre_raw, wanted_genres):
+                                # Hard filter says drop. Fuzzy
+                                # escape: keep if confidently craft.
+                                from src.data.text_kind import (
+                                    classify_kind)
+                                kind = classify_kind(
+                                    r.get("source_text", "") or "",
+                                    r.get("output_text", "") or "")
+                                if kind != "craft":
+                                    continue
+                                # Stamp the kind hint so the
+                                # resolver in ``_format_row`` knows
+                                # this is a craft row and can
+                                # repurpose it into a checked plot/
+                                # character/world bucket regardless
+                                # of physical shape. The hint also
+                                # avoids a second classify_kind call.
+                                r = {**r, "_kind_hint": "craft"}
                 # Per-collection filter: corpus rows whose collection
                 # key isn't in the user's selection get skipped. User-
                 # voice rows (rephrase / chat) and other source types
@@ -1131,18 +1304,117 @@ class RephraseDatabase:
                         r.get("notes") or "")
                     if key not in collection_filter:
                         continue
-                obj = self._format_row(r, fmt)
-                if obj is None:
-                    continue
-                # Oversample user-voice rows by repeating them in the
-                # output. The trainer sees identical-looking but
-                # repeated examples, which is exactly what shifts the
-                # loss toward those rows.
-                copies = repeat if src in self.USER_VOICE_SOURCES else 1
-                for _ in range(copies):
-                    f.write(json.dumps(obj, ensure_ascii=False))
-                    f.write("\n")
-                    n += 1
+                # Build the (src, out) windows we'll format under.
+                # Sliding-window expansion (opt-in) multiplies a
+                # multi-paragraph corpus row into 2-4 (context, next)
+                # pairs so the trainer sees more supervision per row
+                # at varying context lengths. Only fires for native
+                # corpus rows — repurposed rows (shape != continuation)
+                # wouldn't make sense to window.
+                if (expand_corpus_windows
+                        and src == SOURCE_CORPUS):
+                    windows = self._expand_corpus_windows(
+                        r.get("source_text", "") or "",
+                        r.get("output_text", "") or "")
+                else:
+                    windows = [(r.get("source_text", "") or "",
+                                r.get("output_text", "") or "")]
+
+                for win_src, win_out in windows:
+                    # Synthesise a per-window row dict. We force the
+                    # shape to ``continuation`` for windowed pairs:
+                    # the parent row was a corpus continuation and
+                    # every window IS a continuation pair — but as
+                    # context grows the per-window length ratio
+                    # drifts and the auto-classifier would flip
+                    # later windows to "summarisation", which doesn't
+                    # fit the corpus bucket and would drop the row.
+                    if len(windows) > 1:
+                        row_for_format = {**r,
+                                          "source_text": win_src,
+                                          "output_text": win_out,
+                                          "_force_shape": "continuation"}
+                    else:
+                        row_for_format = r
+                    obj = self._format_row(
+                        row_for_format, fmt, checked_types=st_filter)
+                    if obj is None:
+                        continue
+                    # Purpose-fit kind filter. Voice training (corpus
+                    # bucket) wants narrative prose, not "How to Write
+                    # a Thriller" — even a well-shaped craft passage
+                    # mis-trains voice. Plot / character / worldbuilding
+                    # buckets KEEP craft passages because they teach
+                    # structure explicitly. Classifier returns
+                    # "narrative" / "craft" / "unknown"; we only DROP
+                    # on a confident "craft" verdict so unknown rows
+                    # still feed voice training.
+                    if enforce_purpose_fit:
+                        eff_st_for_kind = (
+                            (obj.get("metadata") or {}).get("source_type")
+                            if isinstance(obj, dict) else src) or src
+                        if eff_st_for_kind == SOURCE_CORPUS:
+                            from src.data.text_kind import classify_kind
+                            kind = classify_kind(win_src, win_out)
+                            if kind == "craft":
+                                gate_report.record(
+                                    "voice-bucket-craft-text")
+                                continue
+                    # Heuristic fit gate. Operates on the *emitted*
+                    # pair's input/output and the effective family's
+                    # shape so a row repurposed into a different bucket
+                    # is judged against the bucket's expectations.
+                    emit_meta = (obj.get("metadata") or {}
+                                 if isinstance(obj, dict) else {})
+                    gate_input = (obj.get("input")
+                                  if isinstance(obj, dict)
+                                  else "") or ""
+                    gate_output = (obj.get("output")
+                                   if isinstance(obj, dict)
+                                   else "") or ""
+                    # In chat-format we don't have an "input" key —
+                    # use the user message as the input proxy. The
+                    # gate is mainly looking at the *output* anyway
+                    # (refusals, tool-calls, length); the input only
+                    # matters for the shape-overlap checks.
+                    if not gate_input and isinstance(obj, dict) \
+                            and obj.get("messages"):
+                        for m in obj["messages"]:
+                            if m.get("role") == "user":
+                                gate_input = m.get("content", "") or ""
+                                break
+                        for m in obj["messages"]:
+                            if m.get("role") == "assistant":
+                                gate_output = m.get("content", "") or ""
+                                break
+                    drop_reason = evaluate_pair(
+                        src=gate_input, out=gate_output,
+                        source_type=emit_meta.get("source_type", src),
+                        shape=emit_meta.get("shape", "other"))
+                    gate_report.record(drop_reason)
+                    if drop_reason is not None:
+                        continue
+                    # Oversample user-voice rows by repeating them.
+                    # The check uses the *effective* source_type
+                    # (post-repurposing) so a corpus row promoted
+                    # into the plot bucket doesn't accidentally
+                    # inherit voice-oversampling and a rephrase row
+                    # repurposed into corpus loses it as you'd expect.
+                    eff_src = (obj.get("metadata", {}).get("source_type")
+                               if isinstance(obj, dict)
+                               else None) or src
+                    copies = (repeat
+                              if eff_src in self.USER_VOICE_SOURCES
+                              else 1)
+                    for _ in range(copies):
+                        f.write(json.dumps(obj, ensure_ascii=False))
+                        f.write("\n")
+                        n += 1
+        # Stash the gate report on self so callers (training UI,
+        # corpus quality dialog) can pull it without changing this
+        # method's return signature. Always overwritten — only the
+        # most recent export's report is kept.
+        self.last_gate_report = gate_report
         return n
 
     def _export_dpo(self, output_path: Path,
@@ -1208,14 +1480,262 @@ class RephraseDatabase:
                 kv.setdefault(m.group(1), m.group(2).strip())
         return kv
 
+    # ── Shape-aware repurposing ───────────────────────────────
+    #
+    # A training row's *stored* source_type only tells us which
+    # bucket the data was ingested into — it doesn't tell us what
+    # shape the (source_text, output_text) pair actually is. BookSum
+    # is the canonical mismatch: stored as ``plot``, but the data is
+    # ``(chapter, summary)`` — a summarisation pair. Asking the
+    # model to "Generate a story outline from the premise below"
+    # against (chapter, summary) trains it to confuse outline
+    # generation with chapter summarisation.
+    #
+    # ``_classify_row_shape`` looks at length ratios + source_type
+    # to label what the pair physically is. ``_SHAPE_FITS`` then
+    # maps each shape to the source_types whose template families
+    # can faithfully serve it. The picker (`_resolve_effective_source_type`)
+    # combines those with the user's checked source_types so a row
+    # gets emitted under whichever checked type its shape can serve
+    # well — repurposing where it makes sense, skipping where it
+    # doesn't.
+
+    # Per-shape: source_types whose templates can faithfully serve a
+    # row of that shape, in priority order. Used both to pick a
+    # better-fitting template under the row's native source_type and
+    # to repurpose a row under a different (checked) source_type
+    # when the native one isn't selected.
+    #
+    # The lists are *strict* — only source_types whose template
+    # family makes sense for that data direction appear. E.g.
+    # ``rephrase_like`` lists only SOURCE_REPHRASE because the
+    # corpus templates are continuation/style-imitation prompts that
+    # would mis-train on a (passage, paraphrase) pair. A row whose
+    # shape doesn't match any checked source_type's family is dropped
+    # — better to skip than to emit a mis-shaped pair.
+    _SHAPE_FITS: Dict[str, List[str]] = {
+        "summarization": [SOURCE_PLOT],
+        # ``expansion`` (short→long) is intentionally empty: the
+        # shape is shared by plot outline, character profile, and
+        # worldbuilding element generation — but the *content
+        # direction* differs (a character profile is not a story
+        # outline). Length alone isn't enough to repurpose across
+        # them safely. Expansion-shape rows still get their full
+        # native template family; they just can't be cross-emitted.
+        "expansion":     [],
+        "rephrase_like": [SOURCE_REPHRASE],
+        "continuation":  [SOURCE_CORPUS],
+        "chat":          [SOURCE_CHAT_WRITING, SOURCE_CHAT_GENERAL],
+        "agent":         [SOURCE_AGENT],
+        "other":         [],  # unclassified — fall back to native source_type
+    }
+
     @staticmethod
-    def _format_row(row: Dict[str, Any], fmt: str) -> Optional[Dict[str, Any]]:
+    def _expand_corpus_windows(src: str, out: str,
+                                *, max_windows: int = 4,
+                                min_para_chars: int = 80
+                                ) -> List[Tuple[str, str]]:
+        """Split one corpus row into N sliding (context, next) pairs.
+
+        Many corpus passages span 4+ paragraphs — the ingest pipeline
+        stores them as a single (opener, rest_of_passage) row, so the
+        trainer sees one supervision pair per row. Reconstructing the
+        full passage and slicing it into sliding windows turns each
+        row into 2-4 pairs:
+
+            (p1, p2)
+            (p1+p2, p3)
+            (p1+p2+p3, p4)
+            …
+
+        Each window teaches "given this much context, what comes
+        next?" — same content, more training signal, and the model
+        learns to handle varying context lengths.
+
+        Returns ``[(src, out)]`` unchanged when the passage is too
+        short to slice (fewer than 2 substantial paragraphs).
+        Capped at ``max_windows`` so a 50-paragraph passage doesn't
+        produce 49 pairs; we want the multiplier bounded.
+
+        Paragraphs are split on blank lines (the standard Markdown/
+        novel convention); short fragments (< ``min_para_chars``)
+        are dropped so chapter-heading lines and stray newlines
+        don't fragment the windowing.
+        """
+        import re as _re
+        full = ((src or "").rstrip() + "\n\n"
+                + (out or "").lstrip())
+        paras = [p.strip() for p in _re.split(r"\n{2,}", full)
+                 if p.strip() and len(p.strip()) >= min_para_chars]
+        if len(paras) < 2:
+            # Nothing to slice — emit the original pair so the row
+            # still trains. Equivalent to "expansion off" for this row.
+            return [(src or "", out or "")]
+        pairs: List[Tuple[str, str]] = []
+        for i in range(1, len(paras)):
+            context = "\n\n".join(paras[:i])
+            nxt = paras[i]
+            pairs.append((context, nxt))
+            if len(pairs) >= max_windows:
+                break
+        return pairs
+
+    @staticmethod
+    def _classify_row_shape(src: str, out: str, st: str) -> str:
+        """Return a shape label describing what the pair physically is.
+
+        Cheap heuristics based on lengths + source_type. Categories:
+
+          * ``summarization`` — long input → much shorter output.
+            BookSum-style (chapter → summary) lands here.
+          * ``expansion`` — short input → much longer output. Brief
+            → profile / element / outline / scene-from-event.
+          * ``rephrase_like`` — both ≈ same length. Paraphrase pair.
+          * ``continuation`` — opener → continuation, mid-range
+            length variation but content is plausibly contiguous
+            prose.
+          * ``chat`` — chat source_type, regardless of lengths.
+          * ``agent`` — agent source_type, regardless of lengths.
+          * ``other`` — doesn't fit the heuristics; emit only under
+            native source_type with the default template family.
+        """
+        if st == SOURCE_AGENT:
+            return "agent"
+        if st in (SOURCE_CHAT_WRITING, SOURCE_CHAT_GENERAL):
+            return "chat"
+        s_len = len(src or "")
+        o_len = len(out or "")
+        if s_len < 1 or o_len < 1:
+            return "other"
+        ratio = o_len / s_len
+        if s_len > 400 and ratio < 0.4:
+            return "summarization"
+        if s_len < 800 and ratio > 2.5:
+            return "expansion"
+        if s_len >= 30 and 0.7 <= ratio <= 1.4:
+            return "rephrase_like"
+        if s_len >= 200 and 0.4 <= ratio <= 2.5:
+            return "continuation"
+        return "other"
+
+    # When the row has been confidently classified as ``craft``
+    # (essay / criticism / how-to / theory), it can be repurposed
+    # into any of these target buckets regardless of physical shape.
+    # The data is *about* writing, which is exactly what these
+    # buckets train against — even a (long_excerpt, longer_analysis)
+    # pair (rephrase_like shape) is valid plot/structure training.
+    _CRAFT_REPURPOSE_TARGETS: List[str] = [
+        SOURCE_PLOT, SOURCE_CHARACTER, SOURCE_WORLDBUILDING,
+    ]
+
+    @classmethod
+    def _resolve_effective_source_type(
+            cls, native_st: str, shape: str,
+            checked_types: Optional[set],
+            *, kind: Optional[str] = None
+            ) -> Optional[str]:
+        """Pick the source_type whose templates we'll format this row under.
+
+        Rules — in order:
+
+          1. **Legacy callers** (no checked filter) → keep ``native_st``
+             so behaviour matches the old "format under whatever
+             source_type the row stores" path. No drops.
+          2. **Craft repurposing escape** — if the row is confidently
+             ``kind="craft"`` AND any of plot/character/worldbuilding
+             is checked, emit under the first such checked target.
+             Craft texts (essays / criticism / theory) carry their
+             value through *content*, not data shape, so the shape
+             constraint shouldn't drop them. Native bucket still
+             wins if it's checked AND it's one of the craft targets.
+          3. **Shape "other"** (couldn't be classified) or shapes
+             with no fits table entry: defer to native — emit if
+             checked, drop if not.
+          4. **Shape *can* be classified**: walk
+             :attr:`_SHAPE_FITS` ``[shape]`` in priority order. Prefer
+             native when native is among the fits AND in checked_types
+             (keeps stable behaviour and respects the user's bucket);
+             otherwise pick the first checked alternative.
+          5. **Nothing fits any checked type** → return None; caller
+             drops the row. Better to skip than emit a mis-shaped pair
+             (the whole point of repurposing is to give the model
+             *good* training examples, not just any examples).
+        """
+        if not checked_types:
+            return native_st
+        # Craft escape — runs before the shape-fit check because a
+        # craft pair's value is in its content, not its length ratio.
+        if kind == "craft":
+            # Prefer native if native is one of the craft targets
+            # AND checked (so a plot row stays plot, etc.).
+            if (native_st in cls._CRAFT_REPURPOSE_TARGETS
+                    and native_st in checked_types):
+                return native_st
+            for craft_target in cls._CRAFT_REPURPOSE_TARGETS:
+                if craft_target in checked_types:
+                    return craft_target
+            # No craft target checked — fall through to standard
+            # shape-fit logic. Voice/corpus is intentionally NOT a
+            # craft target; if only voice is checked, the craft row
+            # gets dropped (voice training shouldn't learn from
+            # craft essays — that's what the purpose-fit filter
+            # already enforces).
+        fits = cls._SHAPE_FITS.get(shape, [])
+        # When the shape table has no opinion (``other``, or shapes
+        # like ``expansion`` that are too ambiguous to safely re-
+        # purpose across buckets), defer to native — emit if checked,
+        # drop if not.
+        if not fits:
+            return native_st if native_st in checked_types else None
+        # Prefer native when it's a confirmed shape-fit AND checked.
+        if native_st in fits and native_st in checked_types:
+            return native_st
+        # Otherwise take the first checked source_type whose family
+        # the shape can faithfully serve.
+        for alt in fits:
+            if alt in checked_types:
+                return alt
+        return None
+
+    @staticmethod
+    def _format_row(row: Dict[str, Any], fmt: str,
+                     *, checked_types: Optional[set] = None
+                     ) -> Optional[Dict[str, Any]]:
         src = row.get("source_text", "")
         out = row.get("output_text", "")
         if not src or not out:
             return None
 
-        st = row.get("source_type", SOURCE_REPHRASE) or SOURCE_REPHRASE
+        native_st = row.get("source_type",
+                            SOURCE_REPHRASE) or SOURCE_REPHRASE
+        # Classify the pair's actual shape, then pick which
+        # source_type's templates to render under. ``effective_st``
+        # may differ from ``native_st`` when the user's checked set
+        # excludes the native bucket but the shape supports a checked
+        # one — e.g. a corpus row with summarisation-shape data
+        # repurposed into the plot bucket because only "plot" was
+        # ticked. Returns None when no checked type can serve the
+        # shape, in which case the caller drops the row rather than
+        # emit a mis-shaped training pair.
+        #
+        # Caller can stamp ``_force_shape`` on the row dict to skip
+        # classification — used by the sliding-window expander in
+        # ``export_jsonl`` so a windowed corpus row stays classified
+        # as ``continuation`` even when the growing context makes
+        # the per-window ratio drift toward summarisation territory.
+        shape = (row.get("_force_shape")
+                 or RephraseDatabase._classify_row_shape(
+                     src, out, native_st))
+        # Optional content-kind hint (``craft`` / ``narrative`` /
+        # ``unknown``) — supplied by the export pipeline when it has
+        # already classified the row (e.g. for the genre filter's
+        # fuzzy keep-craft escape) so we avoid re-classifying. When
+        # absent, the resolver falls back to shape-only logic.
+        text_kind = row.get("_kind_hint")
+        st = RephraseDatabase._resolve_effective_source_type(
+            native_st, shape, checked_types, kind=text_kind)
+        if st is None:
+            return None
         style = row.get("style", "")
         voice = row.get("voice", "")
         ctx_before = row.get("surrounding_before", "")
@@ -1397,19 +1917,60 @@ class RephraseDatabase:
                       "clear voice.")
         elif st == SOURCE_PLOT:
             # Different sub-shapes of plot row: pacing pairs, full
-            # outlines, story-event seeds. We sniff the notes for a
-            # hint and pick a phrasing that matches.
-            kind = meta.get("plot_kind", "")
-            if not kind:
-                if "pacing" in notes.lower():
-                    kind = "pacing"
-                elif "event" in notes.lower():
-                    kind = "event"
-                else:
-                    kind = "outline"
+            # outlines, story-event seeds, and (new) chapter-summary
+            # pairs from corpora like BookSum. We pick a sub-family
+            # by data shape first (cheaper, more reliable) and fall
+            # back to notes-based hints for the synthesis-pipeline
+            # variants. ``shape == "summarization"`` is the BookSum
+            # case: long input → short output, where the right task
+            # is plot extraction, not "expand this premise".
+            if shape == "summarization":
+                kind = "summarize"
+            else:
+                kind = meta.get("plot_kind", "")
+                if not kind:
+                    if "pacing" in notes.lower():
+                        kind = "pacing"
+                    elif "event" in notes.lower():
+                        kind = "event"
+                    else:
+                        kind = "outline"
             genre_tail = f" in the {genre} genre" if genre else ""
             voice_tail = f" in {voice}'s voice" if voice else ""
-            if kind == "pacing":
+            if kind == "summarize":
+                # New family for (long_text, short_summary) pairs.
+                # The instruction asks the model to PRODUCE a plot
+                # summary FROM the chapter — matching the actual
+                # data direction. Repurposing-friendly: a corpus row
+                # with summarisation shape gets these templates when
+                # the user has plot checked but not corpus.
+                templates = [
+                    # Formal imperatives
+                    f"Summarise this chapter into its key plot beats"
+                    f"{genre_tail}{voice_tail}.",
+                    f"Extract the plot from this chapter as an "
+                    f"ordered beat list{genre_tail}{voice_tail}.",
+                    f"Write a tight plot summary of the chapter "
+                    f"below{genre_tail}{voice_tail}.",
+                    f"Condense this chapter into a "
+                    f"{genre or 'plot-focused'} summary"
+                    f"{voice_tail}.",
+                    f"Reduce the chapter below to its essential "
+                    f"plot moves{genre_tail}{voice_tail}.",
+                    # Casual / fragment
+                    f"plot summary of this{genre_tail}",
+                    f"key beats only{genre_tail}",
+                    f"what actually happens here{voice_tail}",
+                    # Questions
+                    f"What are the plot beats of this chapter"
+                    f"{genre_tail}?",
+                    f"Could you summarise the plot of this"
+                    f"{voice_tail}?",
+                    # Direct
+                    f"Beat-list this chapter{genre_tail}{voice_tail}.",
+                    f"Strip this down to plot{genre_tail}{voice_tail}.",
+                ]
+            elif kind == "pacing":
                 templates = [
                     # Formal
                     f"Rewrite this passage to match the pacing of "
@@ -1472,9 +2033,22 @@ class RephraseDatabase:
                 ]
             instruction = templates[variant_seed % len(templates)]
             input_block = src
-            system = ("You are a plot-structure assistant. You take "
-                      "a premise and produce coherent, well-paced "
-                      "narrative beats.")
+            # The summarize sub-family teaches plot extraction from a
+            # full chapter — different task than the premise→outline
+            # / event→beat / pacing-rewrite families, so it gets its
+            # own system prompt. The other three share the generic
+            # plot-structure prompt because they all build narrative
+            # forward from a seed.
+            if kind == "summarize":
+                system = ("You are a plot-extraction assistant. You "
+                          "read a chapter or scene and produce a "
+                          "tight, beat-level summary that captures "
+                          "the story moves without lapsing into "
+                          "prose imitation.")
+            else:
+                system = ("You are a plot-structure assistant. You "
+                          "take a premise and produce coherent, "
+                          "well-paced narrative beats.")
         else:  # rephrase / agent / default
             tone_clauses = []
             if style:
@@ -1517,21 +2091,40 @@ class RephraseDatabase:
             system = ("You are a creative writing assistant who rewrites "
                       "prose while preserving voice.")
 
-        # ``format_type`` tells the trainer how to apply the chat
-        # template + loss masking at training time:
-        #   * ``instruction`` — clear user-question/assistant-answer
-        #     split. Mask the prompt; only learn to predict the
-        #     assistant turn. Used for rephrase, character, world-
-        #     building, plot, chat.
-        #   * ``continuation`` — no real prompt boundary; the model
-        #     should learn to imitate the whole passage. Used only
-        #     for legacy raw corpus rows where the "input" is just an
-        #     opener sentence (any modern run uses the instruction
-        #     template above for corpus too — kept for fallback).
-        if st == SOURCE_CORPUS:
-            format_type = "continuation"
-        else:
-            format_type = "instruction"
+        # ``format_type`` is always ``instruction`` now: every row
+        # the formatter emits carries a real instruction template
+        # ("Continue this passage in the prose style of *Frankenstein*",
+        # "Summarise this chapter into beats", etc.) and a clear
+        # prompt/output boundary. The trainer masks the prompt
+        # tokens during loss computation so the model only learns
+        # to predict the assistant turn — not the variable
+        # instruction template, which would otherwise leak in as
+        # boilerplate. Corpus rows used to default to
+        # ``continuation`` (no masking, learn-the-whole-passage),
+        # but that polluted voice signal with template memorisation
+        # — switching to ``instruction`` keeps voice training
+        # (the continuation IS the author) without the leak.
+        format_type = "instruction"
+
+        # ``source_type`` in the emitted metadata is the *effective*
+        # type (what the model is being trained on). When the row
+        # was repurposed (effective != native), we also record
+        # ``original_source_type`` so the trainer + downstream
+        # tooling can audit the repurposing without losing the trail.
+        meta_block = {
+            "source_type": st,
+            "format_type": format_type,
+            "system_prompt": system,
+            "style": style,
+            "voice": voice,
+            "character": char,
+            "genre": genre,
+            "rating": row.get("rating", ""),
+            "created_at": row.get("created_at", ""),
+            "shape": shape,
+        }
+        if native_st != st:
+            meta_block["original_source_type"] = native_st
 
         if fmt == "chat":
             user_msg = (f"{instruction}\n\n{input_block}"
@@ -1542,11 +2135,7 @@ class RephraseDatabase:
                     {"role": "user", "content": user_msg},
                     {"role": "assistant", "content": out},
                 ],
-                "metadata": {
-                    "source_type": st,
-                    "format_type": format_type,
-                    "system_prompt": system,
-                },
+                "metadata": meta_block,
             }
         if fmt == "raw":
             return row
@@ -1558,17 +2147,7 @@ class RephraseDatabase:
             "instruction": instruction,
             "input": input_block,
             "output": out,
-            "metadata": {
-                "source_type": st,
-                "format_type": format_type,
-                "system_prompt": system,
-                "style": style,
-                "voice": voice,
-                "character": char,
-                "genre": genre,
-                "rating": row.get("rating", ""),
-                "created_at": row.get("created_at", ""),
-            },
+            "metadata": meta_block,
         }
 
 

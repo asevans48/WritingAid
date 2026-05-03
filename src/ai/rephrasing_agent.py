@@ -1191,12 +1191,18 @@ For each option, briefly explain what makes it different from the original."""
                 {"role": "user", "content": prompt}
             ]
 
-            # Apply chat template manually for MLX
-            prompt_text = self._mlx_tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True
+            # Apply chat template via the safe applier — handles
+            # tokenizers that ship without ``chat_template`` set
+            # (e.g. Cydonia 24B v3.1) by injecting a family-
+            # specific Jinja template based on the model id.
+            from src.ai.chat_template_fallbacks import (
+                apply_chat_template_safe,
             )
+            prompt_text = apply_chat_template_safe(
+                self._mlx_tokenizer,
+                messages,
+                model_id=self._mlx_model_id or "",
+                add_generation_prompt=True)
             print(f"[OK] Prompt prepared ({len(prompt_text)} chars)")
 
             print("\n[3/4] Generating with MLX...")

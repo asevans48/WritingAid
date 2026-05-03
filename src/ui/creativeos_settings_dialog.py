@@ -14,8 +14,13 @@ from PyQt6.QtWidgets import (
 
 from src.config.creativeos_config import (
     get_creativeos_config, TASK_MODEL_KEYS, TASK_MODEL_LABELS,
+    TASK_CLOUD_PROVIDERS, parse_task_model_spec, format_task_model_spec,
+    load_trained_models,
 )
 from src.ui.model_picker_widget import ModelPickerWidget
+from src.ui.per_task_model_picker import (
+    populate_task_combo, read_task_combo_spec, attach_custom_handler,
+)
 
 
 class CreativeOSSettingsDialog(QDialog):
@@ -173,45 +178,125 @@ class CreativeOSSettingsDialog(QDialog):
         # ── Per-task model picker ──
         # Lets the user route specific writing-tool tasks (rephrasing,
         # plot, worldbuilding, character generation, general chat) to
-        # different trained models. Empty = fall back to the global
-        # Model ID / cloud default.
+        # ANY model — trained, local HuggingFace / MLX, OR cloud.
+        # Each row is a two-combo cascade: a "Source" picker chooses
+        # the kind (default / trained / hugging face / mlx / cloud /
+        # custom-id) and a "Model" picker chooses within that kind.
+        # The serialised form is the spec string parsed by
+        # ``creativeos_config.parse_task_model_spec``.
         task_tab = QWidget()
         task_form = QFormLayout(task_tab)
 
         task_intro = QLabel(
-            "Pick a different trained model for each task. Leave a row on "
-            "<b>(default)</b> to keep using the global Local Model ID or "
-            "your cloud provider. Trained models come from the Model "
-            "Training Studio.")
+            "Pick any model for each task — trained, local, or cloud. "
+            "Leave a row on <b>(default)</b> to keep using the global "
+            "Local Model ID or your cloud provider.")
         task_intro.setWordWrap(True)
         task_intro.setStyleSheet("color: #6b7280; padding: 6px;")
         task_form.addRow(task_intro)
 
         try:
-            from src.config.creativeos_config import load_trained_models
             trained_for_tasks = load_trained_models()
         except Exception:
             trained_for_tasks = []
 
-        self.task_combos: dict = {}
+        # Source kinds shown in the kind combo.
+        # (display label, kind_value)
+        source_kinds = [
+            ("(default — use global)", ""),
+            ("Trained model (Training Studio)", "trained"),
+            ("Local HuggingFace", "hf"),
+            ("Local MLX (Apple Silicon)", "mlx"),
+            ("Cloud provider", "cloud"),
+            ("Custom (paste any model id)", "local"),
+        ]
+
+        # Cache rows so the save path can read them back. Each row
+        # holds the kind combo + the value widget(s).
+        self.task_rows: dict = {}
         for key in TASK_MODEL_KEYS:
-            combo = QComboBox()
-            combo.addItem("(default — use global model)", "")
-            current = self.config.get(key, "") or ""
-            selected_idx = 0
-            for i, m in enumerate(trained_for_tasks, start=1):
-                name = m.get("name", "?")
-                label = f"{name} — base: {m.get('base_model','?')}"
-                combo.addItem(label, name)
-                if name == current:
-                    selected_idx = i
-            combo.setCurrentIndex(selected_idx)
-            if not trained_for_tasks:
-                combo.setEnabled(False)
-                combo.setToolTip(
-                    "No trained models yet — use the Training Studio first.")
-            task_form.addRow(TASK_MODEL_LABELS.get(key, key) + ":", combo)
-            self.task_combos[key] = combo
+            row_widget, row_state = self._build_task_row(
+                key, trained_for_tasks, source_kinds)
+            task_form.addRow(
+                TASK_MODEL_LABELS.get(key, key) + ":", row_widget)
+            self.task_rows[key] = row_state
+
+        # Memory & multi-model controls — sit on the same tab as
+        # the per-task pickers because the cap directly governs
+        # how many of those task-specific models can be loaded at
+        # once. Bumping the cap lets the user keep a rephrase
+        # model AND a plot model in RAM simultaneously; lowering
+        # it forces single-model-at-a-time operation.
+        from PyQt6.QtWidgets import QSpinBox, QFrame
+        mem_box = QGroupBox("Memory & multi-model")
+        mem_form = QFormLayout(mem_box)
+
+        # Available RAM display so the percentage makes sense.
+        avail_gb = 0.0
+        try:
+            import psutil
+            avail_gb = psutil.virtual_memory().available / (1024 ** 3)
+        except Exception:
+            pass
+        mem_intro = QLabel(
+            "Both the writing tool's per-task LLM cache AND the "
+            "global model cache honour these limits. LRU eviction "
+            "drops the least-recently-used model when either cap "
+            "is hit.<br>"
+            f"<span style='color:#6b7280;font-size:11px;'>"
+            f"Detected available RAM at app start: "
+            f"<b>{avail_gb:.1f} GB</b></span>")
+        mem_intro.setWordWrap(True)
+        mem_form.addRow(mem_intro)
+
+        self.max_loaded_models_spin = QSpinBox()
+        self.max_loaded_models_spin.setRange(1, 8)
+        self.max_loaded_models_spin.setValue(int(
+            self.config.get("max_loaded_models", 2) or 2))
+        self.max_loaded_models_spin.setToolTip(
+            "Hard cap on how many local models can be loaded into "
+            "RAM at once. 1 = always one at a time (slow task "
+            "switching, minimal RAM); higher = faster switching "
+            "between rephrase / plot / character models at the "
+            "cost of more memory.")
+        mem_form.addRow(
+            "Max loaded models:", self.max_loaded_models_spin)
+
+        self.ram_pct_spin = QSpinBox()
+        self.ram_pct_spin.setRange(10, 95)
+        self.ram_pct_spin.setSuffix(" %")
+        self.ram_pct_spin.setValue(int(
+            self.config.get("model_cache_ram_pct", 60) or 60))
+        self.ram_pct_spin.setToolTip(
+            "Soft cap on aggregate model RAM as a percentage of "
+            "the system's *available* RAM at app start. When "
+            "estimated usage exceeds this the cache evicts even "
+            "if max_loaded_models hasn't been hit. 60% leaves "
+            "headroom for the OS and other apps.")
+        mem_form.addRow("RAM cap (% of available):", self.ram_pct_spin)
+
+        # Live preview of the resulting GB cap so the user sees
+        # what the percentage actually means on this machine.
+        self._ram_preview_label = QLabel("")
+        self._ram_preview_label.setStyleSheet(
+            "color:#6b7280;font-size:11px;padding:0 0 0 4px;")
+
+        def _refresh_preview():
+            if avail_gb <= 0:
+                self._ram_preview_label.setText(
+                    "(psutil unavailable — RAM cap will use 16 GB "
+                    "fallback)")
+                return
+            cap_gb = avail_gb * (self.ram_pct_spin.value() / 100.0)
+            self._ram_preview_label.setText(
+                f"~{cap_gb:.1f} GB cap "
+                f"(based on detected available RAM)")
+        self.ram_pct_spin.valueChanged.connect(
+            lambda _v: _refresh_preview())
+        _refresh_preview()
+        mem_form.addRow("", self._ram_preview_label)
+
+        task_form.addRow(mem_box)
 
         tabs.addTab(task_tab, "Per-Task Models")
 
@@ -253,9 +338,16 @@ class CreativeOSSettingsDialog(QDialog):
         data_form.addRow(self.collect_character_cb)
 
         self.collect_plot_cb = QCheckBox(
-            "Collect plot/outline generations for transfer learning")
+            "Collect plot generations for transfer learning")
         self.collect_plot_cb.setChecked(self.config.get(
             "enable_plot_data_collection", False))
+        self.collect_plot_cb.setToolTip(
+            "When ON: every plot suggestion you click "
+            "‘+ Add to project’ on, and every plot-AI reply you "
+            "rate Excellent or Good, is captured as a "
+            "(question, answer) training pair in the rephrase "
+            "database. The Model Training Studio picks them up "
+            "next time you fine-tune. OFF = nothing is recorded.")
         data_form.addRow(self.collect_plot_cb)
 
         # Show current count + a quick "Open Training Studio" link
@@ -289,6 +381,34 @@ class CreativeOSSettingsDialog(QDialog):
         if path:
             self.local_model_id.setText(path)
 
+    def _build_task_row(self, key: str, trained_models: list,
+                          source_kinds: list):
+        """Build a per-task picker row — single combo over all options.
+
+        Returns ``(QWidget, state_dict)``. The combo is populated from
+        the unified ``per_task_model_picker`` helper, which enumerates
+        every model the app actually has installed (trained + local
+        pretrained + pinned) plus cloud providers, plus a "Custom…"
+        escape hatch.
+
+        ``trained_models`` and ``source_kinds`` are unused — kept in
+        the signature so the call site doesn't have to change.
+        """
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(6)
+
+        combo = QComboBox()
+        h.addWidget(combo, stretch=1)
+        state = populate_task_combo(combo, self.config.get(key, ""))
+        combo.currentIndexChanged.connect(
+            attach_custom_handler(state, self))
+        return row, state
+
+    def _read_task_row_spec(self, state: dict) -> str:
+        return read_task_combo_spec(state)
+
     def _save_and_close(self):
         updates = dict(
             disable_all_ai=self.disable_cb.isChecked(),
@@ -311,7 +431,26 @@ class CreativeOSSettingsDialog(QDialog):
             enable_character_data_collection=self.collect_character_cb.isChecked(),
             enable_plot_data_collection=self.collect_plot_cb.isChecked(),
         )
-        for key, combo in self.task_combos.items():
-            updates[key] = combo.currentData() or ""
+        for key, row in self.task_rows.items():
+            updates[key] = self._read_task_row_spec(row)
+        # Memory & multi-model controls.
+        old_max = int(self.config.get("max_loaded_models", 2) or 2)
+        old_pct = int(self.config.get("model_cache_ram_pct", 60) or 60)
+        new_max = int(self.max_loaded_models_spin.value())
+        new_pct = int(self.ram_pct_spin.value())
+        updates["max_loaded_models"] = new_max
+        updates["model_cache_ram_pct"] = new_pct
         self.config.update(**updates)
+        # If the memory caps changed, rebuild the global cache so the
+        # new bounds take effect immediately. AgentSuite's task cache
+        # re-reads its cap on the next task call so it doesn't need a
+        # manual reset here.
+        if new_max != old_max or new_pct != old_pct:
+            try:
+                from src.ai.model_cache import (
+                    reload_default_cache_from_settings,
+                )
+                reload_default_cache_from_settings()
+            except Exception:
+                pass
         self.accept()

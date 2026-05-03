@@ -55,20 +55,19 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
-# ── GPU price table (us-east, public on-demand, 2025-Q1) ──
-# Used by ``estimate_cost`` to give the user a $-figure before they
-# click "Train on Modal". Numbers are deliberately pessimistic — we
-# round up so the bill rarely exceeds the estimate. Update when
-# Modal's pricing changes (https://modal.com/pricing).
-_GPU_PRICING_PER_HOUR_USD = {
-    "T4": 0.59,       # 16GB — too small for 7B+; included for tinkering
-    "L4": 0.80,       # 24GB
-    "A10G": 1.10,     # 24GB — sweet spot for 7-9B QLoRA
-    "L40S": 2.00,     # 48GB — comfortable for 13B QLoRA
-    "A100": 3.40,     # 40GB
-    "A100-80GB": 5.00,
-    "H100": 6.00,     # 80GB — needed for 26B+ at reasonable speed
-}
+# ── GPU price table ───────────────────────────────────────
+# The actual {gpu: $/hour} table lives in ``src.cloud.modal_pricing``
+# so the user can edit prices through the UI (or refresh from
+# https://modal.com/pricing) without redeploying. We read through
+# :func:`modal_pricing.get_pricing` on every cost calculation so
+# edits take effect immediately, mid-session.
+def _current_pricing():
+    """Read the active {gpu: $/hour} table.
+    Wrapped in a function (rather than imported at module load) so
+    the UI's "edit prices" dialog can change them without forcing a
+    studio restart — every estimate re-reads the file."""
+    from src.cloud.modal_pricing import get_pricing
+    return get_pricing()
 
 # Heuristic: how big a base can each GPU train (QLoRA 4-bit)
 # before activation memory makes it impractical. Used for the
@@ -193,7 +192,7 @@ def estimate_cost(base_model_size_b: float, *,
     """
     if not gpu:
         gpu = recommend_gpu(base_model_size_b, use_qlora=use_qlora)
-    rate = _GPU_PRICING_PER_HOUR_USD.get(gpu, 3.0)
+    rate = _current_pricing().get(gpu, 3.0)
 
     # Time-per-row baseline: ~0.6s for a 4B model at QLoRA, scaling
     # linearly with parameter count. Empirical on Modal A10G; we
@@ -881,6 +880,23 @@ def submit_training_job(*,
         raw=fc,
     )
     _persist_handle(handle)
+    # Record the run in the cost log immediately so the live tally
+    # and the lifetime spend dashboard pick it up. Status starts as
+    # "running"; the worker calls ``record_run_end`` when the job
+    # finishes / cancels / fails.
+    try:
+        from src.cloud.modal_cost_tracking import record_run_start
+        record_run_start(
+            call_id=handle.call_id,
+            adapter_name=handle.adapter_name,
+            base_model=handle.base_model,
+            gpu=handle.gpu,
+            submitted_at=handle.submitted_at,
+            estimate_low=handle.estimated_cost_low,
+            estimate_high=handle.estimated_cost_high)
+    except Exception:
+        # Cost tracking is observational — never block submission.
+        pass
     return handle
 
 
@@ -923,8 +939,25 @@ def poll_job(handle: JobHandle) -> Dict[str, Any]:
     return {"status": "done", "result": result}
 
 
-def cancel_job(handle: JobHandle) -> bool:
-    """Best-effort cancel. Returns True if the cancel was accepted."""
+def cancel_job(handle: JobHandle, *,
+               terminate_containers: bool = True) -> bool:
+    """Cancel the job and (by default) kill the running container.
+
+    ``terminate_containers=True`` is the *important* flag — without
+    it Modal merely marks the call as cancelled but lets the
+    in-flight container finish, which keeps billing the user for
+    however many minutes the training had left. With it, Modal
+    SIGKILLs the container within seconds, stopping the GPU bill.
+
+    The default is True precisely because the user clicking "Cancel"
+    in the UI universally means "stop spending money", not "stop the
+    next attempt while letting this one run". An advanced caller
+    that *does* want graceful drain can pass False explicitly.
+
+    On success, also records the cancel in the cost log so the
+    final estimated $ for this run snapshots the right elapsed time.
+    Returns True if Modal accepted the cancel request.
+    """
     try:
         import modal  # noqa: F401
     except ImportError:
@@ -936,11 +969,35 @@ def cancel_job(handle: JobHandle) -> bool:
             fc = modal.FunctionCall.from_id(handle.call_id)
         except Exception:
             return False
+    accepted = False
     try:
-        fc.cancel()
-        return True
+        # Newer Modal SDKs accept ``terminate_containers`` as a kw
+        # arg. Older ones only accept the no-arg form, in which case
+        # the cancel will mark-only and still bill until container
+        # exit. We try the kwarg first, fall back without — the user
+        # at least sees an "accepted" return either way.
+        try:
+            fc.cancel(terminate_containers=terminate_containers)
+        except TypeError:
+            # SDK predates the terminate_containers kwarg.
+            fc.cancel()
+        accepted = True
     except Exception:
-        return False
+        accepted = False
+
+    # Record the cancel — even if Modal didn't accept, locally we
+    # treat the user's intent as "cancelled" so the cost tally stops
+    # accruing on the studio side.
+    try:
+        from src.cloud.modal_cost_tracking import record_run_end
+        note = ("cancel accepted by Modal (containers terminated)"
+                if accepted else
+                "local cancel; Modal API call failed — verify on dashboard")
+        record_run_end(
+            call_id=handle.call_id, status="cancelled", note=note)
+    except Exception:
+        pass
+    return accepted
 
 
 def download_adapter(adapter_name: str, dest_dir: Path,

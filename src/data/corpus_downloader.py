@@ -247,13 +247,35 @@ def ingest(entry: CorpusEntry, *,
                 if t and str(t).strip():
                     row_title = str(t).strip()
 
-            db.log_corpus_pair(
-                prompt=prompt, completion=completion,
-                title=row_title,
-                genre=row_genre,
-                character_name=entry.author,
-                notes=f"{notes_base} purpose={entry.purpose} medium={entry.medium}",
-            )
+            # Route by the catalog entry's declared purpose so the
+            # row's ``source_type`` actually matches what it teaches.
+            # Without this, every catalog corpus lands as
+            # source_type='corpus' regardless of purpose — which means
+            # a BookSum download (purpose='plot') wouldn't appear in
+            # the Browse-rows "plot" filter and the trainer's per-
+            # source eligibility counts would mis-bucket it. The
+            # purpose= tag in notes is kept for backward-compat with
+            # the rebuild flow, which keys off ``corpus_id=`` only.
+            row_notes = (f"{notes_base} purpose={entry.purpose} "
+                         f"medium={entry.medium}")
+            common = dict(prompt=prompt, completion=completion,
+                          notes=row_notes, genre=row_genre)
+            purpose = (entry.purpose or "").lower()
+            if purpose == "plot":
+                db.log_plot(**common)
+            elif purpose == "character":
+                db.log_character(character_name=entry.author, **common)
+            elif purpose == "worldbuilding":
+                db.log_worldbuilding(**common)
+            else:
+                # "voice", "both", or anything unrecognised stays in
+                # the SOURCE_CORPUS bucket — that's the most
+                # inclusive default, and "both" is genuinely either
+                # so the corpus filter (which already trains on this
+                # bucket) is the right home.
+                db.log_corpus_pair(
+                    title=row_title, character_name=entry.author,
+                    **common)
             n_logged += 1
             # Update the bar every 200 inserts. SQLite inserts run
             # ~30k/s on a typical SSD; 200 keeps the progress bar

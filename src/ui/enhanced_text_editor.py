@@ -3360,6 +3360,34 @@ class TTSSettingsDialog(QDialog):
 
         layout.addWidget(volume_group)
 
+        # Inter-paragraph pause — splits text on blank lines and
+        # inserts real silence between chunks. Works with every
+        # engine because each engine's per-chunk synth blocks until
+        # audio finishes; we just sleep between calls. 0 disables
+        # the split and uses the legacy single-shot path. 700 ms is
+        # roughly a natural breath between paragraphs.
+        from PyQt6.QtWidgets import QSpinBox
+        pause_group = QGroupBox("Inter-paragraph pause")
+        pause_layout = QHBoxLayout(pause_group)
+        self.pause_spin = QSpinBox()
+        self.pause_spin.setRange(0, 5000)
+        self.pause_spin.setSingleStep(100)
+        self.pause_spin.setSuffix(" ms")
+        self.pause_spin.setValue(int(
+            self.tts_service.get_paragraph_pause_ms()
+            if hasattr(self.tts_service, "get_paragraph_pause_ms")
+            else 0))
+        self.pause_spin.setToolTip(
+            "Insert this much silence between paragraphs when "
+            "reading aloud. Splits on blank lines and waits for "
+            "each paragraph's audio to finish before pausing — "
+            "works with every engine. 0 = off (engine reads the "
+            "whole text in one go). 700 ms ≈ a natural breath.")
+        self.pause_spin.valueChanged.connect(self._on_pause_changed)
+        pause_layout.addWidget(self.pause_spin)
+        pause_layout.addStretch()
+        layout.addWidget(pause_group)
+
         # Test button
         test_layout = QHBoxLayout()
         test_btn = QPushButton("Test Voice")
@@ -3419,11 +3447,23 @@ class TTSSettingsDialog(QDialog):
         self.volume_label.setText(f"{value}%")
         self.tts_service.set_volume(value / 100.0)
 
+    def _on_pause_changed(self, value):
+        """Handle inter-paragraph pause spinner change. Pushes the
+        new value into the TTS service immediately; takes effect
+        on the next ``speak()`` call."""
+        if hasattr(self.tts_service, "set_paragraph_pause_ms"):
+            self.tts_service.set_paragraph_pause_ms(int(value))
+
     def _test_voice(self):
-        """Test the current voice."""
+        """Test the current voice. Uses a multi-paragraph sample so
+        the inter-paragraph pause is audible in the test playback."""
         self.tts_service.speak(
-            "Hello! This is a test of the text to speech system. "
-            "I can read your writing aloud so you can hear how it sounds."
+            "Hello! This is a test of the text to speech system.\n\n"
+            "I can read your writing aloud so you can hear how it "
+            "sounds. If you have set a pause between paragraphs, "
+            "you should notice a clear gap right about now.\n\n"
+            "That gap is configurable in the inter-paragraph pause "
+            "setting above."
         )
 
 

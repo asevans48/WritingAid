@@ -37,6 +37,11 @@ GENRES: Dict[str, Dict] = {
             "weird-fiction", "weird fiction", "weirdfiction", "eerie",
             "creepy", "ghost story", "ghost-story", "ghoststory",
         ],
+        # Sibling sub-genre — gothic shares atmosphere, dread, and
+        # most of the foundational corpus (Frankenstein, Dracula,
+        # Carmilla all live in both). A horror training run picks
+        # up gothic rows automatically and vice versa.
+        "ancillary": ["gothic"],
         "corpora": [
             "gutenberg-frankenstein", "gutenberg-dracula",
             "gutenberg-poe-tales", "gutenberg-king-in-yellow",
@@ -90,6 +95,8 @@ GENRES: Dict[str, Dict] = {
     "gothic": {
         "name": "Gothic",
         "aliases": ["gothic", "gothick", "gohtic", "gothic horror"],
+        # Sibling sub-genre — see horror entry for the rationale.
+        "ancillary": ["horror"],
         "corpora": [
             "gutenberg-frankenstein", "gutenberg-dracula",
             "gutenberg-wuthering-heights", "gutenberg-carmilla",
@@ -321,6 +328,11 @@ GENRES: Dict[str, Dict] = {
             "cowboy", "cowboi", "cowoy",
             "ranch", "outlaw", "old west",
         ],
+        # Sibling sub-genres — when the user filters for western,
+        # these come along for the ride. Frontier shares enough
+        # setting / vocabulary / craft DNA that a western training
+        # run benefits from frontier corpora and vice versa.
+        "ancillary": ["frontier"],
         "corpora": [
             "gutenberg-virginian", "gutenberg-riders-purple-sage",
             "gutenberg-log-of-cowboy", "gutenberg-arizona-nights",
@@ -377,6 +389,8 @@ GENRES: Dict[str, Dict] = {
             "captivity", "leatherstocking",
             "klondike", "yukon", "prairie",
         ],
+        # Sibling sub-genre — see western entry for the rationale.
+        "ancillary": ["western"],
         "corpora": [
             "gutenberg-mohicans", "gutenberg-deerslayer",
             "gutenberg-call-of-wild", "gutenberg-white-fang",
@@ -588,6 +602,243 @@ def _tokenize(text: str) -> List[str]:
     """Split on non-alphanum so "sci-fi" becomes ["sci", "fi"]."""
     import re
     return [t for t in re.split(r"[^a-z0-9]+", text) if t]
+
+
+# ── Auto-derived ancillary genres (taxonomy overlap) ────────
+#
+# In addition to the per-entry ``ancillary`` field (explicit
+# declarations the curator has made), the module derives ancillary
+# pairs automatically by looking for overlap in the existing
+# taxonomy fields. Two genres are considered ancillary when they
+# share enough specific (non-catch-all) items in any of:
+#
+#   * authors  (>= 2 shared specific names)
+#   * corpora  (>= 2 shared specific catalog ids)
+#   * craft    (>= 3 shared specific craft texts)
+#
+# Specific = not in the catch-all sets below. ``hf-pg-tagged`` and
+# ``hf-storytracer-us-pd`` are whole-shelf corpora cited under most
+# genres; counting them would make every pair ancillary. Aristotle's
+# Poetics + Lubbock + Hamilton are universal craft references for
+# the same reason.
+#
+# Auto-derivation runs once at module load (``GENRES`` is static),
+# stored in ``_DERIVED_ANCILLARIES``. Callers see the union of
+# explicit + derived through :func:`ancillaries_for`.
+
+_CATCHALL_CORPORA: Set[str] = {
+    "hf-pg-tagged",          # whole Project Gutenberg English shelf
+    "hf-storytracer-us-pd",  # whole 1923-1965 US PD pulp shelf
+}
+
+_CATCHALL_CRAFT: Set[str] = {
+    # Cited under 10-11 of 11 genres — universal craft references.
+    "gutenberg-poetics",            # Aristotle
+    "gutenberg-lubbock-craft",      # Lubbock POV
+    "gutenberg-hamilton-materials", # Hamilton's general survey
+    # Cited under 5+ genres — broad-relevance dramaturgy /
+    # narrative-defense essays, not genre-specific.
+    "gutenberg-matthews-playwrights",
+    "gutenberg-rls-humble-remonstrance",
+}
+
+_ANCILLARY_MIN_AUTHORS = 2
+_ANCILLARY_MIN_CORPORA = 2
+# Craft threshold is one higher than authors/corpora — craft texts
+# tend to be cited more broadly (insightful essays travel across
+# genre lines), so we want a stronger signal before declaring two
+# genres ancillary purely on shared craft references. Authors and
+# specific corpora are genre-bound, so a 2-item floor there is
+# enough.
+_ANCILLARY_MIN_CRAFT = 4
+
+
+def _ancillary_evidence(a_key: str, b_key: str) -> Dict[str, List[str]]:
+    """Return the shared specific items between two genres per field.
+
+    Used both by the threshold check and by the UI to explain *why*
+    two genres are considered ancillary ("share Frankenstein,
+    Dracula, and Mary Shelley"). Catch-all corpora and universal
+    craft references are stripped so the evidence is informative.
+    """
+    a = GENRES.get(a_key, {})
+    b = GENRES.get(b_key, {})
+    return {
+        "authors": sorted(set(a.get("authors", []))
+                          & set(b.get("authors", []))),
+        "corpora": sorted((set(a.get("corpora", []))
+                           & set(b.get("corpora", [])))
+                          - _CATCHALL_CORPORA),
+        "craft":   sorted((set(a.get("craft", []))
+                           & set(b.get("craft", [])))
+                          - _CATCHALL_CRAFT),
+    }
+
+
+def _meets_ancillary_threshold(evidence: Dict[str, List[str]]) -> bool:
+    """ANY of the three signal counts crossing its threshold is
+    enough — sibling genres often share strongly along one axis but
+    not all (western/frontier share craft texts heavily but no
+    authors; horror/gothic share authors and corpora but few craft
+    references). Requiring all three would miss real siblings."""
+    return (len(evidence.get("authors", [])) >= _ANCILLARY_MIN_AUTHORS
+            or len(evidence.get("corpora", [])) >= _ANCILLARY_MIN_CORPORA
+            or len(evidence.get("craft", []))   >= _ANCILLARY_MIN_CRAFT)
+
+
+def _build_derived_ancillaries(
+        ) -> Dict[str, Dict[str, Dict[str, List[str]]]]:
+    """Compute ``{key: {other_key: evidence}}`` for every pair of
+    genres that meets the threshold. Symmetric — both sides of a
+    pair record the same evidence. Run once at module load.
+    """
+    keys = list(GENRES.keys())
+    derived: Dict[str, Dict[str, Dict[str, List[str]]]] = {
+        k: {} for k in keys}
+    for i, a in enumerate(keys):
+        for b in keys[i + 1:]:
+            ev = _ancillary_evidence(a, b)
+            if _meets_ancillary_threshold(ev):
+                derived[a][b] = ev
+                derived[b][a] = ev
+    return derived
+
+
+_DERIVED_ANCILLARIES = _build_derived_ancillaries()
+
+
+def derived_ancillaries_for(key: str
+                             ) -> Dict[str, Dict[str, List[str]]]:
+    """Auto-derived sibling genres for ``key`` mapped to the shared-
+    item evidence that earned them ancillary status.
+
+    Returned as ``{other_key: {"authors": [...], "corpora": [...],
+    "craft": [...]}}``. Empty for genres with no auto-derived
+    siblings. The UI uses this to explain *why* a sibling appears
+    in expansions ("frontier was added because western shares 3
+    craft texts with it").
+    """
+    return dict(_DERIVED_ANCILLARIES.get(key, {}))
+
+
+def genres_overlap(row_genre_str: str,
+                   wanted_keys,
+                   *,
+                   fuzzy_cutoff: float = 0.85) -> bool:
+    """Decide whether a row's genre tag overlaps the wanted set.
+
+    The naive ``set(row.split(",")) & wanted`` check misses cases
+    that are obviously the same genre to a human:
+
+      * Composite tags — ``"gothic horror"`` should match a wanted
+        ``"horror"`` (and ``"gothic"``); ``"psychological thriller"``
+        should match ``"thriller"``.
+      * Hyphenated variants — ``"sci-fi"`` should match ``"scifi"``.
+      * Typos — ``"horor"`` should match ``"horror"``.
+
+    Three strategies tried in order; first hit wins:
+
+      1. **Token-set intersection** — split the row genre on
+         ``,;/+`` separators, lowercase, compare against ``wanted``.
+         Catches the canonical "horror, romance" case.
+      2. **Substring contains** — for each wanted ≥4 chars, check
+         if it appears inside any row token (or vice versa). The
+         length floor blocks accidental matches like "sf" inside
+         "stuff". Catches "gothic horror" → "horror".
+      3. **Fuzzy ratio** — per-word ``SequenceMatcher`` ratio
+         against the row tokens (and their hyphen-split sub-words)
+         with cutoff ``fuzzy_cutoff`` (default 0.85). Catches
+         "horor" → "horror" and "sci-fi" → "scifi".
+
+    Returns False on empty inputs. Used by the export pipeline,
+    the prompt-fit audit, and the genre-scope apply filter so all
+    three see the same matching semantics.
+    """
+    if not row_genre_str or not wanted_keys:
+        return False
+    import re
+    from difflib import SequenceMatcher
+
+    row_lower = row_genre_str.lower()
+    wanted_lower = {str(w).lower().strip()
+                    for w in wanted_keys if str(w).strip()}
+    if not wanted_lower:
+        return False
+
+    # Strategy 1: split on common separators, exact set intersection.
+    row_tokens = {t.strip() for t in re.split(r"[,;/+]", row_lower)
+                  if t.strip()}
+    if row_tokens & wanted_lower:
+        return True
+
+    # Strategy 2: substring contains in either direction. Only fire
+    # when the wanted key is long enough to avoid false positives
+    # ("sf" inside "stuff"). All canonical genre keys are ≥5 chars
+    # today; the floor of 4 is defensive.
+    for w in wanted_lower:
+        if len(w) < 4:
+            continue
+        for r in row_tokens:
+            if w in r or r in w:
+                return True
+
+    # Strategy 3: per-word fuzzy ratio. Tokenise each row token
+    # further on whitespace AND hyphens / underscores so a
+    # "sci-fi adventure" → ["sci", "fi", "adventure"] worth of
+    # candidates; "scifi" fuzzy-matches "sci" alone weakly but
+    # matches the joined "sci-fi" cleanly via the no-split path
+    # below.
+    for r in row_tokens:
+        candidates = {r}
+        candidates.update(r.split())
+        candidates.update(re.split(r"[-_]", r))
+        for cand in candidates:
+            if not cand:
+                continue
+            for w in wanted_lower:
+                if (SequenceMatcher(None, w, cand).ratio()
+                        >= fuzzy_cutoff):
+                    return True
+    return False
+
+
+def ancillaries_for(key: str) -> List[str]:
+    """Return sibling/ancillary genre keys for ``key``.
+
+    Sibling genres share enough setting / vocabulary / craft DNA
+    that filtering for one without the other loses signal. Sources
+    in priority order (both contribute, deduplicated):
+
+      * **Explicit** — entries' hand-coded ``ancillary`` field.
+        Survives data changes; lets the curator declare a sibling
+        even when the taxonomy doesn't yet have shared items.
+      * **Derived** — pairs auto-discovered by overlap in shared
+        authors / specific corpora / specific craft texts. See
+        :func:`derived_ancillaries_for` for the evidence behind
+        each derived pair.
+
+    Returns the union as a sorted list. Empty when neither source
+    has anything for the given key.
+    """
+    explicit = set(GENRES.get(key, {}).get("ancillary", []) or [])
+    derived = set(_DERIVED_ANCILLARIES.get(key, {}).keys())
+    return sorted(explicit | derived)
+
+
+def expand_with_ancillaries(keys) -> Set[str]:
+    """Return ``set(keys) ∪ ancillaries_for(every key)``.
+
+    Used by the export pipeline's genre filter and the Fix Data
+    tools' genre scope picker so a user who ticks "western" gets
+    both western and frontier rows. Idempotent — running it on an
+    already-expanded set is a no-op since the ancillary edges are
+    declared symmetrically in the taxonomy.
+    """
+    out: Set[str] = set()
+    for k in keys or []:
+        out.add(k)
+        out.update(ancillaries_for(k))
+    return out
 
 
 def info_for(key: str) -> Dict:

@@ -75,6 +75,9 @@ class TrainingPreset:
     lora_r: int = 8
     use_qlora: bool = False
     train_min_rating: str = "good"
+    expand_corpus_windows: bool = False  # opt-in: slice long corpus rows
+    enforce_purpose_fit: bool = False    # opt-in: drop craft from voice +
+                                          # extend genre filter cross-bucket
 
     # Forward-compat sink — unknown keys land here on load and are
     # written back on save.

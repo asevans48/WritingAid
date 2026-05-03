@@ -240,6 +240,15 @@ class TTSService:
         self._volume = 1.0  # 0.0 to 1.0
         self._voice_id: Optional[str] = None
 
+        # Inter-paragraph pause (milliseconds). When > 0, the speak()
+        # routine splits the text on blank lines and inserts a real
+        # silence gap of this length between chunks. Works with every
+        # engine because we wait for each chunk's audio to finish
+        # before moving on. 0 = legacy single-shot path (engine reads
+        # the whole text without injected pauses). Sensible default
+        # 700 ms ≈ a natural breath between paragraphs.
+        self._paragraph_pause_ms = 0
+
         # Edge-TTS settings
         self._edge_voice = "en-US-AriaNeural"  # Default edge voice
 
@@ -658,6 +667,81 @@ class TTSService:
         if self._pyttsx3_engine:
             self._pyttsx3_engine.setProperty('volume', self._volume)
 
+    def set_paragraph_pause_ms(self, pause_ms: int) -> None:
+        """Configure the silence inserted between paragraphs.
+
+        ``pause_ms == 0`` disables paragraph splitting entirely
+        (legacy single-shot path — the engine reads the whole text
+        in one go). Positive values clamp to a sensible band so a
+        slipped UI value can't freeze the read-aloud thread. The
+        new value applies to the next ``speak()`` call; an
+        in-flight read uses the value it started with.
+        """
+        try:
+            v = int(pause_ms)
+        except (TypeError, ValueError):
+            v = 0
+        # Clamp 0..5000 ms — anything longer is almost certainly a
+        # mistake (a 10-second pause between every paragraph would
+        # be excruciating).
+        self._paragraph_pause_ms = max(0, min(5000, v))
+
+    def get_paragraph_pause_ms(self) -> int:
+        return int(self._paragraph_pause_ms)
+
+    @staticmethod
+    def _split_paragraphs(text: str) -> "List[str]":
+        """Split ``text`` on newline runs into paragraph chunks.
+
+        Has to handle two prose conventions:
+
+          * **Markdown / file-on-disk**: paragraphs separated by
+            blank lines (``\\n\\n``). Standard for static text.
+          * **Qt editor (``QTextEdit.toPlainText()``)**: paragraphs
+            separated by *single* ``\\n`` because Qt converts the
+            internal ``\\u2029`` paragraph separator down to one
+            newline. The selection-copy path
+            (``cursor.selectedText().replace('\\u2029', '\\n')``)
+            does the same.
+
+        Splitting on ``\\n{2,}`` only would handle the first
+        convention but would never split text from the editor —
+        the user's actual reported failure mode. Splitting on
+        ``\\n+`` covers both: any run of one-or-more consecutive
+        newlines is a paragraph break, regardless of how many
+        blanks are in between.
+
+        The downside: prose with intentional soft line-wraps
+        inside a paragraph (rare in modern writing tools — they
+        word-wrap, they don't hard-break) would be over-split.
+        Acceptable corner case; the pause setting is opt-in and
+        the user can dial it back to 0.
+
+        Empty / whitespace-only chunks are dropped. Returns
+        ``[text]`` unchanged when no paragraph breaks are present
+        so callers don't need a length check.
+        """
+        import re as _re
+        if not text:
+            return [text or ""]
+        # Normalise CRLF / lone CR -> LF, then collapse Qt's
+        # paragraph and line separators (U+2029, U+2028) to
+        # plain newlines so callers passing the raw selection
+        # text (without an explicit replace) still split.
+        # ``chr(...)`` keeps the source file ASCII-safe -- the
+        # actual separator chars are invisible in editors and
+        # have caused diffs to corrupt before.
+        _PARA_SEP = chr(0x2029)
+        _LINE_SEP = chr(0x2028)
+        normalised = (text
+                      .replace("\r\n", "\n")
+                      .replace("\r", "\n")
+                      .replace(_PARA_SEP, "\n")
+                      .replace(_LINE_SEP, "\n"))
+        chunks = [c.strip() for c in _re.split(r"\n+", normalised)
+                  if c.strip()]
+        return chunks if chunks else [text]
+
     def set_callbacks(
         self,
         on_start: Optional[Callable] = None,
@@ -762,38 +846,75 @@ class TTSService:
         if self._on_start:
             self._on_start()
 
-        if self._current_engine == TTSEngine.SYSTEM:
-            self._speech_thread = threading.Thread(
-                target=self._speak_pyttsx3,
-                args=(text,),
-                daemon=True
-            )
-        elif self._current_engine == TTSEngine.VIBEVOICE:
-            self._speech_thread = threading.Thread(
-                target=self._speak_vibevoice,
-                args=(text,),
-                daemon=True
-            )
-        elif self._current_engine == TTSEngine.CHATTERBOX:
-            self._speech_thread = threading.Thread(
-                target=self._speak_chatterbox,
-                args=(text,),
-                daemon=True
-            )
-        elif self._current_engine == TTSEngine.KOKORO:
-            self._speech_thread = threading.Thread(
-                target=self._speak_kokoro,
-                args=(text,),
-                daemon=True
-            )
-        else:
-            self._speech_thread = threading.Thread(
-                target=self._speak_edge,
-                args=(text,),
-                daemon=True
-            )
-
+        # Pick the engine method, then route through the chunk-aware
+        # wrapper. The wrapper splits on paragraph breaks if
+        # ``_paragraph_pause_ms > 0`` and inserts real silence
+        # between chunks; otherwise it calls the engine method once
+        # with the full text (legacy single-shot path).
+        engine_map = {
+            TTSEngine.SYSTEM:     self._speak_pyttsx3,
+            TTSEngine.VIBEVOICE:  self._speak_vibevoice,
+            TTSEngine.CHATTERBOX: self._speak_chatterbox,
+            TTSEngine.KOKORO:     self._speak_kokoro,
+        }
+        engine_fn = engine_map.get(self._current_engine, self._speak_edge)
+        self._speech_thread = threading.Thread(
+            target=self._speak_paragraphs_threaded,
+            args=(engine_fn, text),
+            daemon=True,
+        )
         self._speech_thread.start()
+
+    def _speak_paragraphs_threaded(self, engine_fn, text: str):
+        """Thread entry point that splits ``text`` on paragraph
+        breaks and feeds each chunk through ``engine_fn`` with
+        ``_paragraph_pause_ms`` of silence between chunks.
+
+        Why this works for every engine: each per-engine speak
+        method (``_speak_kokoro`` / ``_speak_edge`` / etc.) blocks
+        until the audio for its input has finished playing, then
+        returns. So serialising chunk → wait → sleep → chunk gives
+        deterministic inter-paragraph pauses without engine-specific
+        SSML or system-text-tag plumbing.
+
+        Lifecycle handling: each engine method fires ``_on_end`` and
+        clears ``_is_speaking`` in its ``finally`` block. We
+        temporarily clear ``_on_end`` before each non-final chunk so
+        the consumer sees a single end-of-batch signal, then restore
+        and fire it once at the end. ``_is_speaking`` is re-set
+        between chunks so external observers (UI status text) keep
+        seeing "speaking" through the pauses.
+        """
+        pause_ms = int(self._paragraph_pause_ms)
+        chunks = (self._split_paragraphs(text)
+                  if pause_ms > 0 else [text])
+        if len(chunks) <= 1:
+            engine_fn(text)
+            return
+
+        # Save the consumer's end callback; suppress per-chunk by
+        # nulling ours, restore + fire once at end-of-batch.
+        saved_on_end = self._on_end
+        self._on_end = None
+        try:
+            for i, chunk in enumerate(chunks):
+                if self._stop_requested:
+                    break
+                engine_fn(chunk)
+                # Engine cleared _is_speaking in its finally; re-set
+                # so external observers don't flicker between chunks.
+                if i < len(chunks) - 1 and not self._stop_requested:
+                    self._is_speaking = True
+                    import time as _time
+                    _time.sleep(pause_ms / 1000.0)
+        finally:
+            self._on_end = saved_on_end
+            self._is_speaking = False
+            if saved_on_end:
+                try:
+                    saved_on_end()
+                except Exception:
+                    pass
 
     def _speak_pyttsx3(self, text: str):
         """Speak using pyttsx3 (runs in thread).

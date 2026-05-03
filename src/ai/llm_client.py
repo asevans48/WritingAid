@@ -634,32 +634,34 @@ class LLMClient:
         if not self._mlx_model or not self._mlx_tokenizer:
             raise RuntimeError("MLX model not initialized")
 
-        # Build prompt using chat template if available
-        if hasattr(self._mlx_tokenizer, 'apply_chat_template'):
-            messages = []
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
-            if history:
-                messages.extend(history)
-            messages.append({"role": "user", "content": prompt})
-
-            full_prompt = self._mlx_tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True
-            )
-        else:
-            history_text = ""
-            if history:
-                lines = []
-                for msg in history:
-                    role = "User" if msg["role"] == "user" else "Assistant"
-                    lines.append(f"{role}: {msg['content']}")
-                history_text = "\n".join(lines) + "\n\n"
-            if system_prompt:
-                full_prompt = f"{system_prompt}\n\n{history_text}User: {prompt}\n\nAssistant:"
-            else:
-                full_prompt = f"{history_text}User: {prompt}\n\nAssistant:"
+        # Build prompt via the safe template applier. Handles three
+        # cases:
+        #   1. Tokenizer has chat_template configured → use it.
+        #   2. Tokenizer is missing chat_template (e.g. Cydonia 24B
+        #      v3.1 ships without it) → look up a Jinja template
+        #      by model-id family (Mistral / Llama / Qwen / Gemma
+        #      / Phi) and pass it via the chat_template= kwarg.
+        #   3. Family unknown → plain "System: ... User: ...
+        #      Assistant:" fallback string.
+        # Fixes: "Cannot use chat template functions because
+        # tokenizer.chat_template is not set" on Cydonia and any
+        # other community fine-tunes that drop the template field.
+        from src.ai.chat_template_fallbacks import (
+            apply_chat_template_safe,
+        )
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        if history:
+            messages.extend(history)
+        messages.append({"role": "user", "content": prompt})
+        mlx_model_id = (
+            self.hf_config.model_id if self.hf_config else "")
+        full_prompt = apply_chat_template_safe(
+            self._mlx_tokenizer,
+            messages,
+            model_id=mlx_model_id,
+            add_generation_prompt=True)
 
         # Try mlx_lm.generate first, fall back to mlx_vlm.generate for
         # newer model architectures (gemma4, etc.)

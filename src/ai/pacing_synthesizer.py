@@ -30,10 +30,29 @@ def synthesize_pacing_pairs(
     source_collection_keys: Optional[Iterable[str]] = None,
     max_pairs: int = 20,
     min_passage_words: int = 100,
+    tones: Optional[List[str]] = None,
     on_log: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
     """Walk corpus rows, rewrite via LLM toward the target baseline,
     keep only rewrites whose stats genuinely move closer.
+
+    Tone variants
+    -------------
+    When ``tones`` is supplied (a list of canonical tone keys from
+    :mod:`src.data.tones`), the synthesiser produces one rewrite
+    *per tone* per source row. The LLM is asked to hit BOTH the
+    CONLIT pacing baseline AND the tone register — the resulting
+    pair carries ``style=<tone_key>`` so the trainer's plot/pacing
+    instruction template includes the tone at training time.
+
+    Composition: source repeated across tones isn't redundant. With
+    tone-conditioning in the prompt, the model learns "given source
+    X + target genre Y + tone Z, produce a rewrite". ``max_pairs``
+    is a hard cap on emissions — 200 cap with 4 tones ticked → ~50
+    source rows × 4 tones each.
+
+    When ``tones`` is None or empty the function behaves as before
+    (one tone-agnostic rewrite per source).
 
     Args:
         db: RephraseDatabase instance.
@@ -53,10 +72,13 @@ def synthesize_pacing_pairs(
             LLM call, so we budget rather than blowing through.
         min_passage_words: skip passages shorter than this; pacing
             stats on tiny snippets are noisy.
+        tones: optional list of canonical tone keys. When set, each
+            source row produces one rewrite per tone with the tone's
+            register injected into the LLM prompt.
         on_log: optional log sink for progress lines.
 
     Returns ``{n_logged, n_skipped_already_matching, n_skipped_no_improvement,
-    n_failed, target_genre, baseline_summary}``.
+    n_failed, target_genre, baseline_summary, tones_used}``.
     """
     log = on_log or (lambda *_: None)
 
@@ -109,12 +131,27 @@ def synthesize_pacing_pairs(
     n_already_matching = 0
     n_no_improvement = 0
     n_failed = 0
-    sys_prompt = (
+    DEFAULT_SYS = (
         "You are a literary editor. You rewrite passages to match a "
         "target genre's pacing while keeping the meaning intact. "
         "Match the requested sentence-length and word-length targets "
         "as closely as you can. Output only the rewritten passage, "
         "no commentary, no quotes around it.")
+
+    # Tone iteration. ``[None]`` is the legacy single-rewrite path;
+    # a non-empty tone list produces one variant per tone per source.
+    if tones:
+        from src.data.tones import (
+            TONES as _TONES,
+            display_name as _tone_name,
+        )
+        tone_iter = list(tones)
+        log(f"Tone variants per source row: "
+            f"{', '.join(_tone_name(t) for t in tone_iter)}")
+    else:
+        tone_iter = [None]
+        _TONES = {}                       # noqa: F841
+        _tone_name = lambda k: k or ""    # noqa: E731
 
     for row in rows:
         if n_logged >= max_pairs:
@@ -130,77 +167,123 @@ def synthesize_pacing_pairs(
 
         current_sl = stats["avg_sentence_length"]
         current_wl = stats["avg_word_length"]
-        # Skip passages already on-target (within ±1 word per sentence).
-        # No useful supervision signal — would just teach the model to
-        # echo. We want examples that demonstrate the rewrite move.
-        if abs(current_sl - target_sl) < 1.0:
+        # Skip passages already on-target (within ±1 word per sentence)
+        # — but only when not generating tone variants. With tones, the
+        # rewrite still needs to shift the *tone* even if pacing is
+        # already on-target, so we let those through.
+        if not tones and abs(current_sl - target_sl) < 1.0:
             n_already_matching += 1
             continue
 
-        prompt = (
-            f"Rewrite the passage below to match {target_genre} genre "
-            f"pacing.\n"
-            f"Target avg sentence length: {target_sl:.1f} words "
-            f"(currently {current_sl:.1f}).\n"
-            f"Target avg word length: {target_wl:.1f} chars "
-            f"(currently {current_wl:.1f}).\n"
-            f"Keep the meaning of the passage intact; rewrite the "
-            f"prose, don't summarize.\n\n"
-            f"Passage:\n{passage}\n\n"
-            f"Rewritten passage:")
+        for tone_key in tone_iter:
+            if n_logged >= max_pairs:
+                break
 
-        try:
-            rewrite = llm_generate(prompt, sys_prompt)
-        except Exception as e:
-            n_failed += 1
-            log(f"  LLM call failed: {e}")
-            continue
+            # Build the tone-conditional system + user prompts. The
+            # tone description from the canonical taxonomy is
+            # injected so the LLM knows the exact register required
+            # — pacing target + tone register together.
+            if tone_key:
+                tinfo = _TONES.get(tone_key, {})
+                tlabel = tinfo.get("name", tone_key)
+                tdesc = tinfo.get("description", "")
+                sys_for_call = (
+                    "You are a literary editor. You rewrite passages "
+                    f"to match a target genre's pacing in a "
+                    f"{tlabel.lower()} register — {tdesc} Match the "
+                    "requested sentence-length and word-length "
+                    "targets as closely as you can. Output only the "
+                    "rewritten passage, no commentary, no quotes "
+                    "around it.")
+                prompt = (
+                    f"Rewrite the passage below to match "
+                    f"{target_genre} genre pacing in a "
+                    f"{tlabel.lower()} register.\n"
+                    f"Target avg sentence length: {target_sl:.1f} "
+                    f"words (currently {current_sl:.1f}).\n"
+                    f"Target avg word length: {target_wl:.1f} chars "
+                    f"(currently {current_wl:.1f}).\n"
+                    f"Keep the meaning intact; rewrite the prose in "
+                    f"the {tlabel.lower()} register, don't summarize."
+                    f"\n\nPassage:\n{passage}\n\n"
+                    f"Rewritten passage:")
+            else:
+                sys_for_call = DEFAULT_SYS
+                prompt = (
+                    f"Rewrite the passage below to match "
+                    f"{target_genre} genre pacing.\n"
+                    f"Target avg sentence length: {target_sl:.1f} "
+                    f"words (currently {current_sl:.1f}).\n"
+                    f"Target avg word length: {target_wl:.1f} chars "
+                    f"(currently {current_wl:.1f}).\n"
+                    f"Keep the meaning of the passage intact; "
+                    f"rewrite the prose, don't summarize.\n\n"
+                    f"Passage:\n{passage}\n\n"
+                    f"Rewritten passage:")
 
-        rewrite = (rewrite or "").strip()
-        if not rewrite or len(rewrite.split()) < min_passage_words // 2:
-            n_failed += 1
-            continue
+            try:
+                rewrite = llm_generate(prompt, sys_for_call)
+            except Exception as e:
+                n_failed += 1
+                log(f"  LLM call failed: {e}")
+                continue
 
-        # Verify the rewrite *actually* moved closer to the target.
-        # Without this, we'd save junk supervision — e.g., the LLM
-        # ignored our request and the stats are unchanged or worse.
-        new_stats = analyze_text(rewrite)
-        if not new_stats:
-            n_failed += 1
-            continue
-        new_sl = new_stats["avg_sentence_length"]
-        old_distance = abs(current_sl - target_sl)
-        new_distance = abs(new_sl - target_sl)
-        if new_distance >= old_distance:
-            # Rewrite didn't help — drop it. Important for training
-            # quality; bad supervision is worse than less supervision.
-            n_no_improvement += 1
-            continue
+            rewrite = (rewrite or "").strip()
+            if (not rewrite
+                    or len(rewrite.split()) < min_passage_words // 2):
+                n_failed += 1
+                continue
 
-        # Save as a SOURCE_PLOT row tagged for pacing. The notes carry
-        # the target genre + stats deltas so the user (or a later
-        # analyzer) can audit what was learned.
-        notes = (
-            f"pacing_target={target_genre} "
-            f"old_sl={current_sl:.2f} new_sl={new_sl:.2f} "
-            f"target_sl={target_sl:.2f}")
-        # The trainer's plot prompt template adds "Generate a story
-        # outline" framing — for pacing pairs we want a clearer
-        # "rewrite this passage to match X pacing" framing instead.
-        # We embed the framing in the prompt itself (which becomes the
-        # "input" at training time) so the trainer's instruction
-        # template still works without a new source type.
-        train_prompt = (
-            f"Rewrite the following passage to match {target_genre} "
-            f"genre pacing (avg sentence length ≈ {target_sl:.1f} "
-            f"words, avg word length ≈ {target_wl:.1f} chars). "
-            f"Keep the meaning intact:\n\n{passage}")
-        db.log_plot(prompt=train_prompt, completion=rewrite,
-                    voice="", genre=target_genre, notes=notes)
-        n_logged += 1
-        log(f"  [{n_logged}/{max_pairs}] kept — "
-            f"sl: {current_sl:.1f} → {new_sl:.1f} "
-            f"(target {target_sl:.1f})")
+            # Verify the rewrite *actually* moved closer to the target.
+            # Without this, we'd save junk supervision — e.g., the LLM
+            # ignored our request and the stats are unchanged or worse.
+            new_stats = analyze_text(rewrite)
+            if not new_stats:
+                n_failed += 1
+                continue
+            new_sl = new_stats["avg_sentence_length"]
+            old_distance = abs(current_sl - target_sl)
+            new_distance = abs(new_sl - target_sl)
+            if new_distance >= old_distance:
+                # Rewrite didn't help — drop it. Important for
+                # training quality; bad supervision is worse than
+                # less supervision.
+                n_no_improvement += 1
+                continue
+
+            # Save as a SOURCE_PLOT row tagged for pacing. The
+            # ``source_text`` is the bare passage — NOT framed
+            # with "Rewrite this to match X pacing", because the
+            # trainer's plot/pacing template adds that framing at
+            # render time (see ``_format_row``'s SOURCE_PLOT
+            # branch with kind="pacing"). Earlier versions baked
+            # the framing into source_text as a workaround for a
+            # missing pacing template; that produced doubled
+            # instructions ("Rewrite this passage to match..."
+            # both inside and outside the input). The
+            # ``_init_schema`` backfill strips the legacy
+            # framing from existing rows; new rows skip it.
+            #
+            # Notes carry pacing_target so the trainer detects
+            # kind="pacing" via the existing notes-based hint;
+            # tone (when set) lands in ``style`` so the template
+            # adds "in a <tone> tone" at training time.
+            tone_note = (f" tone={tone_key}" if tone_key else "")
+            notes = (
+                f"pacing_target={target_genre}{tone_note} "
+                f"old_sl={current_sl:.2f} new_sl={new_sl:.2f} "
+                f"target_sl={target_sl:.2f}")
+            db.log_plot(
+                prompt=passage, completion=rewrite,
+                voice="", genre=target_genre,
+                style=(tone_key or ""),
+                notes=notes)
+            n_logged += 1
+            tone_label = (
+                f" [{_tone_name(tone_key)}]" if tone_key else "")
+            log(f"  [{n_logged}/{max_pairs}]{tone_label} kept — "
+                f"sl: {current_sl:.1f} → {new_sl:.1f} "
+                f"(target {target_sl:.1f})")
 
     summary_bits = [
         f"avg_sl≈{target_sl:.2f}",
@@ -214,4 +297,5 @@ def synthesize_pacing_pairs(
         "n_failed": n_failed,
         "target_genre": target_genre,
         "baseline_summary": ", ".join(s for s in summary_bits if s),
+        "tones_used": list(tone_iter) if tones else [],
     }

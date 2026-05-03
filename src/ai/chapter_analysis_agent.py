@@ -344,7 +344,8 @@ Be thorough but constructive. Explain the "why" clearly."""
         self,
         paragraph: str,
         context: str = "",
-        focus_areas: Optional[List[SuggestionType]] = None
+        focus_areas: Optional[List[SuggestionType]] = None,
+        llm_override: Optional['LLMClient'] = None,
     ) -> List[LineItemSuggestion]:
         """Analyze single paragraph for issues.
 
@@ -386,8 +387,10 @@ Why: [explanation]
 Priority: [high/medium/low]
 """
 
-        # Use local model for single paragraph if available
-        llm = self.local_llm if self.local_llm and len(paragraph) < 500 else self.primary_llm
+        if llm_override is not None:
+            llm = llm_override
+        else:
+            llm = self.local_llm if self.local_llm and len(paragraph) < 500 else self.primary_llm
 
         response = llm.generate_text(
             prompt,
@@ -409,7 +412,8 @@ Priority: [high/medium/low]
         detailed: bool = True,
         critique_context: Optional[CritiqueContext] = None,
         focus_areas: Optional[List[SuggestionType]] = None,
-        chapter_synopsis: str = ""
+        chapter_synopsis: str = "",
+        llm_override: Optional['LLMClient'] = None,
     ) -> ChapterAnalysis:
         """Analyze entire chapter.
 
@@ -428,7 +432,9 @@ Priority: [high/medium/low]
         paragraphs = [p.strip() for p in chapter_text.split('\n\n') if p.strip()]
 
         if not detailed:
-            return self._quick_chapter_review(chapter_text, chapter_title, paragraphs, critique_context)
+            return self._quick_chapter_review(
+                chapter_text, chapter_title, paragraphs,
+                critique_context, llm_override=llm_override)
 
         # Detailed analysis
         word_count = len(chapter_text.split())
@@ -494,7 +500,8 @@ For each suggestion, provide:
 Keep feedback constructive and actionable.
 """
 
-        response = self.primary_llm.generate_text(
+        llm = llm_override if llm_override is not None else self.primary_llm
+        response = llm.generate_text(
             prompt,
             system_prompt,
             max_tokens=1500,
@@ -519,7 +526,8 @@ Keep feedback constructive and actionable.
         max_lines: int = 150,
         progress_callback: Optional[callable] = None,
         manuscript_context: str = "",
-        chapter_synopsis: str = ""
+        chapter_synopsis: str = "",
+        llm_override: Optional['LLMClient'] = None,
     ) -> List[LineItemSuggestion]:
         """Perform two-stage line-by-line analysis of text.
 
@@ -573,7 +581,8 @@ Output ONLY line numbers with issue types (format: number|issue_type).
 TEXT TO SCAN:
 {numbered_text}"""
 
-        id_response = self.primary_llm.generate_text(
+        llm = llm_override if llm_override is not None else self.primary_llm
+        id_response = llm.generate_text(
             id_request,
             id_prompt,
             max_tokens=500,
@@ -628,7 +637,7 @@ TEXT TO SCAN:
 
 For each line, explain WHY it's a problem and HOW to fix it."""
 
-            detail_response = self.primary_llm.generate_text(
+            detail_response = llm.generate_text(
                 detail_request,
                 detail_prompt,
                 max_tokens=1500,
@@ -745,7 +754,8 @@ For each line, explain WHY it's a problem and HOW to fix it."""
         self,
         text: str,
         critique_context: Optional[CritiqueContext] = None,
-        max_lines: int = 100
+        max_lines: int = 100,
+        llm_override: Optional['LLMClient'] = None,
     ) -> List[LineItemSuggestion]:
         """Legacy single-pass line-by-line analysis (kept for comparison).
 
@@ -795,7 +805,8 @@ TEXT TO REVIEW:
 
 Provide your line-by-line feedback now. Use the format specified in your instructions."""
 
-        response = self.primary_llm.generate_text(
+        llm = llm_override if llm_override is not None else self.primary_llm
+        response = llm.generate_text(
             prompt,
             system_prompt,
             max_tokens=2500,
@@ -1014,7 +1025,8 @@ Provide your line-by-line feedback now. Use the format specified in your instruc
         chapter_text: str,
         chapter_title: str,
         paragraphs: List[str],
-        critique_context: Optional[CritiqueContext] = None
+        critique_context: Optional[CritiqueContext] = None,
+        llm_override: Optional['LLMClient'] = None,
     ) -> ChapterAnalysis:
         """Quick review of chapter for cost savings."""
         # Build context note if provided
@@ -1048,7 +1060,10 @@ Provide brief feedback:
 Be concise.
 """
 
-        llm = self.local_llm if self.local_llm else self.primary_llm
+        if llm_override is not None:
+            llm = llm_override
+        else:
+            llm = self.local_llm if self.local_llm else self.primary_llm
 
         # Use enhanced prompt if context provided
         system_prompt = self.QUICK_ENHANCED_PROMPT if critique_context else self.QUICK_REVIEW_PROMPT
@@ -1388,7 +1403,8 @@ For each issue you find:
         promises: List[Dict[str, Any]],
         characters: List[Dict[str, Any]],
         plot_outline: str = "",
-        previous_chapters_summary: str = ""
+        previous_chapters_summary: str = "",
+        llm_override: Optional['LLMClient'] = None,
     ) -> PromiseCheckResult:
         """Check a chapter against story promises and character consistency.
 
@@ -1452,7 +1468,8 @@ For each inconsistency found, provide:
 If no issues are found in a category, explicitly state "No issues found."
 """
 
-        response = self.llm.generate_text(
+        llm = llm_override if llm_override is not None else self.llm
+        response = llm.generate_text(
             prompt,
             self.PROMISE_CHECK_SYSTEM,
             max_tokens=2000,

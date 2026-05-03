@@ -266,6 +266,69 @@ FOR STAR SYSTEMS:
 }
 </create_star_system>
 
+=== PLOT-NATIVE ELEMENTS ===
+These four element types live in the StoryPlanning model rather than
+in worldbuilding. Use them when the user wants to add structural
+plot pieces — a new beat in the Freytag pyramid, a new subplot, a
+commitment to readers, or a sustained dramatic tension that runs
+across multiple scenes.
+
+FOR PLOT EVENTS (a single beat in the Freytag pyramid):
+<create_plot_event>
+{
+  "title": "Short event name",
+  "description": "What happens in this beat",
+  "stage": "exposition|rising_action|climax|falling_action|resolution",
+  "act": 1,
+  "intensity": 50,
+  "related_characters": ["Marcus", "Lena"],
+  "outcome": "What changes after this beat (optional)"
+}
+</create_plot_event>
+
+FOR SUBPLOTS (secondary storylines tied to the main plot):
+<create_subplot>
+{
+  "title": "Subplot name",
+  "description": "What this subplot is about",
+  "connection_to_main": "How it ties to the main plot",
+  "related_characters": ["Marcus"],
+  "status": "active|resolved|abandoned"
+}
+</create_subplot>
+
+FOR STORY PROMISES (commitments to readers about tone/plot/genre/character):
+<create_promise>
+{
+  "promise_type": "tone|plot|genre|character",
+  "title": "Brief summary of the promise",
+  "description": "Detailed description of what's being promised",
+  "related_characters": ["character names if relevant"]
+}
+</create_promise>
+
+FOR TENSIONS (sustained dramatic forces — internal struggles, rivalries,
+looming threats — that shape the plot across scenes):
+<create_tension>
+{
+  "title": "Short label, e.g. 'Marcus vs Lena' or 'Rachel's grief'",
+  "tension_type": "internal|interpersonal|societal|cosmic",
+  "description": "What's the source of this tension",
+  "characters_involved": ["Marcus", "Lena"],
+  "stakes": "What's at risk if this tension goes unresolved",
+  "current_state": "rising|stable|escalating|resolving|unresolved|resolved",
+  "intensity": 75
+}
+</create_tension>
+
+PLOT-DISCUSSION TIP: when the user is asking about plot ("what should
+happen next?", "how do I tighten Act 2?", "is the antagonist's pressure
+felt enough?"), prefer create_plot_event / create_subplot /
+create_promise / create_tension over create_character. Adding a
+brand-new character to fix a structural problem is usually the wrong
+answer — the right answer is naming the missing beat, the missing
+subplot thread, or the missing tension.
+
 RULES FOR CREATING ELEMENTS:
 
 **WHEN TO CREATE (include a create block):**
@@ -484,6 +547,42 @@ QUESTION TYPES AND HOW TO HANDLE THEM:
 • Anything else:
   Answer it directly.""",
 
+        "plot": """You are a story-structure consultant talking the author through their plot. You have the manuscript text, characters, worldbuilding, and the plot map (Freytag pyramid stages, plot events, subplots, story promises, sustained tensions) in your context.
+
+PRIME DIRECTIVE: be SPECIFIC. Every point you make should anchor to something concrete in the project — a chapter ("Ch 4: The Reckoning"), a plot event ("the inciting incident"), a promise ("the romance promise"), a tension ("Marcus's grief over his sister"), a character name, a location. Generic craft advice ("add more conflict", "deepen the protagonist") is a failure mode — readers can get that from any writing book. Your job is to react to *this* manuscript and *this* plot map.
+
+HOW TO USE EACH CONTEXT BLOCK (skipping any populated block is a failure mode — when a block has content, REFERENCE it):
+1. PLOT MAP — the author's intended structure. Reference items by their exact title. The STORY TENSIONS list captures sustained dramatic forces (internal struggles, interpersonal rivalries, societal pressure, cosmic threats) with current state and intensity — name them when discussing pacing or proposing beats so your suggestions move the right pressure on the right people.
+2. SUBPLOTS — secondary storylines tied to the main plot, each with status, characters, connection-to-main, and an event arc. Treat them as first-class story material: every plot discussion (pacing, what-next, structural audit) should weigh which subplots are advancing, stalled, or being dropped. Name which subplot a beat advances or which subplot needs a scene next. Don't let a subplot disappear from your reasoning just because the user didn't mention it by name.
+3. MANUSCRIPT (current chapter content + chapter list) — what is actually on the page. When you cite, use "Ch N: Title" format. Quote a short passage (≤25 words) when the wording matters; otherwise paraphrase with the chapter reference.
+4. CHARACTERS — names, personalities, wants/needs, fears, arcs. When discussing a beat or arc, name SPECIFIC characters from this block. Don't invent characters that aren't listed.
+5. WORLDBUILDING — factions, places, cultures, technologies. When the discussion touches on conflict, location, or capability, reference the specific entities by name. Don't invent worldbuilding that isn't listed.
+6. RELEVANT REFERENCE (when present) — RAG-selected character / worldbuilding entries closest to the user's question. Cross-reference these for deep detail.
+7. If a context block is missing or thin (e.g. plot map has only a title), say so explicitly and ask for what you need before guessing.
+
+OUTPUT SHAPE:
+• Direct answer first — one or two sentences resolving the question.
+• Then your reasoning, organised under short bold headers when there's more than one thread (e.g. **Setup**, **Payoff**, **Risk**).
+• When proposing changes, name the *exact* chapter or event the change lands in: "Insert a beat between Ch 5 and Ch 6 where…" not "add a transition somewhere".
+• When the question is open-ended ("what next?", "how do I tighten Act 2?"), give 2–3 numbered options with **what it costs** for each (tone shift, pacing impact, promise affected). Don't pick for the author.
+• Surface plot-hole / broken-promise / arc-inconsistency observations only when they answer the question. One incidental flag is fine; don't dump a critique the author didn't ask for.
+
+DO NOT:
+- Write manuscript prose. That's Writer mode. Stay in beats / outlines / notes.
+- Restate the question or open with "Great question!" or similar filler.
+- Invent chapter/event/promise titles that aren't in the context. If you need one that doesn't exist, say "(no event for this beat yet — would you like to add one?)".
+
+PROPOSING NEW ELEMENTS:
+When the plot discussion calls for a new structural piece (the most common case), prefer the PLOT-NATIVE create blocks defined in your general instructions:
+- <create_plot_event> — a missing beat in the Freytag pyramid
+- <create_subplot> — a missing secondary storyline
+- <create_promise> — a commitment to readers that should be on the page
+- <create_tension> — a sustained dramatic force the plot should feel
+
+When the discussion clearly calls for a NEW worldbuilding entity that doesn't exist yet, fall back to <create_character> / <create_place> / <create_faction> / <create_culture> / <create_chapter>.
+
+Cap proposals at TWO per reply. Each block must tie back to a specific chapter, event, promise, or tension already in the context. Don't reach for a new character if the structural issue is a missing beat or a missing tension.""",
+
         "writer": """You are a skilled creative writer working as a ghostwriter/collaborator. Your job is to WRITE prose based on the author's outline, world, and characters.
 
 You have access to the author's characters (personality, voice, traits), plot, worldbuilding, and the current chapter. Use ALL of this context to write prose that is consistent with the established world and characters. If reference material (encyclopedia) is provided, draw from it to add authentic detail — but never contradict the author's established world.
@@ -618,6 +717,14 @@ When asked to continue:
         # Plot/Story planning
         if self.context.get('plot_summary'):
             parts.append(f"\nPLOT OUTLINE:\n{self.context['plot_summary'][:2000]}")
+
+        # Structured plot map (Freytag pyramid + events + subplots +
+        # promises). Only built for plot-discussion mode; includes the
+        # author's intended story structure that the AI can reference
+        # by stage / event / promise title.
+        if self.context.get('plot_map'):
+            parts.append(f"\nPLOT MAP (author's intended structure):\n"
+                          f"{self.context['plot_map'][:3000]}")
 
         # Characters — personality, backstory, traits, speaking style
         if self.context.get('characters'):
@@ -783,6 +890,17 @@ When asked to continue:
             chapters_info = self.context['all_chapters'][:1500]
             parts.append(f"\nMANUSCRIPT CHAPTERS:\n{chapters_info}")
 
+        # Chapter excerpts (opening + closing of each). Plot discussion
+        # in particular needs these so the model can quote and cite
+        # specific scenes instead of speaking about chapters as opaque
+        # titles. Built only when the host explicitly populates the key
+        # (currently the plot-tab Discuss-with-AI provider).
+        if self.context.get('chapter_excerpts'):
+            parts.append(
+                f"\nCHAPTER EXCERPTS (opening + closing of each):\n"
+                f"{self.context['chapter_excerpts'][:9000]}"
+            )
+
         full_context = "\n".join(parts) if parts else ""
 
         # If context is very large, add a focused summary at the top.
@@ -874,14 +992,21 @@ When asked to continue:
                 self.error.emit("AI features are disabled. Enable them in Settings > AI Settings.")
                 return
 
-            # Per-task model routing. Writer-mode chat (where the model is
-            # producing prose) uses the 'rephrase' task model; everything
-            # else uses 'general'. If the chosen model has been deleted or
-            # the user never picked one, the resolver falls back through
+            # Per-task model routing. Writer-mode chat (the model is
+            # producing prose) uses the 'rephrase' task model;
+            # chapter-focus (plot/structure questions about the open
+            # chapter) uses the 'plot' model; everything else uses
+            # 'general'. If the chosen model has been deleted or the
+            # user never picked one, the resolver falls back through
             # general → global automatically.
             try:
                 from src.config.creativeos_config import get_creativeos_config
-                _task = "rephrase" if self.mode in ("writer", "chapter_focus") else "general"
+                if self.mode == "writer":
+                    _task = "rephrase"
+                elif self.mode in ("chapter_focus", "plot"):
+                    _task = "plot"
+                else:
+                    _task = "general"
                 _ts = get_creativeos_config().task_settings(_task)
                 if _ts.get("__trained_model_name"):
                     settings = dict(settings)
@@ -1125,6 +1250,27 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
+        # Whole-project checkpoint / restore. Each checkpoint is a
+        # zip of the entire project directory you can roll back to.
+        # Distinct from the paragraph-level checkpoint reviewer in
+        # the Drafts menu — that one produces a new draft from
+        # paragraph-level decisions; this one snapshots / restores
+        # the full project state.
+        checkpoints_action = QAction(
+            "Project &Checkpoints...", self)
+        checkpoints_action.setToolTip(
+            "Snapshot the entire project (all chapters, drafts, "
+            "characters, settings) into a zip archive you can roll "
+            "back to. Restoring a checkpoint replaces the current "
+            "state — but a fresh \"Before restore (auto)\" "
+            "checkpoint is created first so the restore itself "
+            "is reversible.")
+        checkpoints_action.triggered.connect(
+            self._open_project_checkpoints)
+        file_menu.addAction(checkpoints_action)
+
+        file_menu.addSeparator()
+
         export_audio_action = QAction("Export &Audio Book...", self)
         export_audio_action.triggered.connect(self._export_audio_book)
         file_menu.addAction(export_audio_action)
@@ -1153,6 +1299,20 @@ class MainWindow(QMainWindow):
         drafts_menu.addAction(open_draft_action)
 
         drafts_menu.addSeparator()
+
+        # Checkpoint draft — paragraph-by-paragraph reviewer that
+        # produces a new draft from kept / edited paragraphs of an
+        # existing chapter. Original is left untouched.
+        checkpoint_action = QAction(
+            "Create &Checkpoint Draft from Chapter...", self)
+        checkpoint_action.setToolTip(
+            "Walk a chapter paragraph-by-paragraph, choosing Keep "
+            "/ Reject / Edit (with optional AI rephrase suggestions) "
+            "for each one. The kept + edited paragraphs become a "
+            "new draft.")
+        checkpoint_action.triggered.connect(
+            self._create_checkpoint_draft)
+        drafts_menu.addAction(checkpoint_action)
 
         manage_drafts_action = QAction("&Manage Drafts...", self)
         manage_drafts_action.triggered.connect(self._manage_drafts)
@@ -1405,6 +1565,16 @@ class MainWindow(QMainWindow):
         self.manuscript_editor.content_changed.connect(self._on_content_changed)
         self.prose_profile_widget.content_changed.connect(self._on_content_changed)
 
+        # Plot tab's Discuss-with-AI: hand it a context provider that
+        # builds its prompt-context dict from the live project state
+        # (manuscript editor, plot map, worldbuilding) on demand.
+        self.story_planning_widget.set_ai_context_provider(
+            self._build_plot_ai_context)
+        # And the suggestion-create callback so "+ Add to project"
+        # cards in the AI tab actually create elements.
+        self.story_planning_widget.set_ai_create_callback(
+            self._create_from_plot_ai_suggestion)
+
         # Connect annotation changes to update attributions tab
         self.manuscript_editor.annotations_changed.connect(self._on_annotations_changed)
 
@@ -1535,6 +1705,96 @@ class MainWindow(QMainWindow):
         if file_path:
             self._save_to_path(file_path)
 
+    def _open_project_checkpoints(self):
+        """Open the whole-project checkpoints dialog (snapshot /
+        list / restore / delete).
+
+        Saves the project first so any in-memory state is on disk
+        before a checkpoint is created OR a checkpoint is restored
+        — otherwise the snapshot would miss the user's most-recent
+        edits, and a restore could be silently overwritten when
+        the next save flushed stale buffers.
+
+        Backwards compat: if the project has no ``_checkpoints/``
+        directory, the dialog opens with an empty list and a
+        clear "no checkpoints yet" hint. Nothing in the project
+        load/save paths depends on the directory existing.
+        """
+        if not self.current_project or not self.current_project.project_path:
+            QMessageBox.information(
+                self, "Save the project first",
+                "Save the project to a file before creating a "
+                "checkpoint — checkpoints snapshot the project's "
+                "directory on disk.")
+            return
+
+        # Best-effort save before opening so any in-memory edits
+        # land in the snapshot. Failures are non-fatal — the
+        # dialog still opens, the user just won't see the very
+        # latest edits in a new checkpoint until they save.
+        try:
+            self._collect_project_data()
+            self.current_project.save_project(
+                self.current_project.project_path)
+        except Exception as e:
+            print(f"[checkpoints] save before open failed: {e}")
+
+        from pathlib import Path as _P
+        project_dir = _P(self.current_project.project_path).parent
+
+        from src.ui.project_checkpoints_dialog import (
+            ProjectCheckpointsDialog,
+        )
+        dlg = ProjectCheckpointsDialog(
+            project_dir,
+            project_name=self.current_project.name,
+            on_before_restore=self._before_checkpoint_restore,
+            on_after_restore=self._after_checkpoint_restore,
+            parent=self)
+        dlg.exec()
+
+    def _before_checkpoint_restore(self):
+        """Hook called immediately before a checkpoint restore
+        wipes the project directory. We close any open editors
+        that hold lazy-loaded chapter content in RAM — if we
+        didn't, the editor's stale buffer would happily overwrite
+        the freshly-restored disk content on its next save.
+        """
+        try:
+            # Drop the in-memory project so a) editors stop
+            # writing back to disk, b) the next load re-reads
+            # whatever the restore wrote.
+            if hasattr(self, "_close_open_editors"):
+                self._close_open_editors()
+        except Exception as e:
+            print(f"[checkpoints] before_restore: {e}")
+
+    def _after_checkpoint_restore(self):
+        """Hook called after the checkpoint zip has been extracted.
+        Reload the project from disk so in-memory state matches
+        the restored content.
+        """
+        try:
+            path = self.current_project.project_path
+            if path:
+                from src.models.project import WriterProject
+                self.current_project = WriterProject.load_project(path)
+                # Re-render whatever the writing tool surfaces from
+                # the project. Best-effort — if the refresh hook
+                # isn't there we leave a status-bar nudge instead.
+                if hasattr(self, "_refresh_after_project_load"):
+                    self._refresh_after_project_load()
+                self.statusBar().showMessage(
+                    "Project restored from checkpoint", 5000)
+        except Exception as e:
+            print(f"[checkpoints] after_restore reload failed: {e}")
+            QMessageBox.warning(
+                self, "Restore complete — reload manually",
+                f"The restore wrote new files to disk, but the "
+                f"writing tool couldn't auto-reload the project "
+                f"({e}). Close and re-open the project to see "
+                f"the restored state.")
+
     def _save_to_path(self, file_path: str):
         """Save project to specified path."""
         try:
@@ -1603,6 +1863,15 @@ class MainWindow(QMainWindow):
 
         # Set project name for training data metadata
         self.chat_widget.set_project_name(self.current_project.name)
+
+        # Plot tab's Discuss-with-AI banner needs a kick after project
+        # load — its initial pre-flight ran before this project was
+        # available, so without this refresh it would still display
+        # the empty-context state.
+        try:
+            self.story_planning_widget.refresh_ai_status()
+        except Exception as e:
+            print(f"[plot-ai] refresh after load failed: {e}")
 
         # Initialize/refresh RAG system for semantic context retrieval
         self._init_rag_system()
@@ -2429,13 +2698,19 @@ class MainWindow(QMainWindow):
         except Exception:
             context['kb_enabled'] = False
 
-        # For chapter_focus and writer modes, additional RAG if not already set
-        if mode in ("chapter_focus", "writer") and not context.get('rag_context') and user_message and self._rag_initialized:
+        # For chapter_focus, plot and writer modes, additional RAG if not already set.
+        # Plot mode benefits from RAG since the user is asking structural questions
+        # that may reference characters/places by name buried deep in worldbuilding.
+        if mode in ("chapter_focus", "writer", "plot") and not context.get('rag_context') and user_message and self._rag_initialized:
             rag_context = self._get_rag_context(user_message, max_tokens=1200)
             if rag_context:
                 context['rag_context'] = rag_context
 
-        is_chapter_focused = mode in ("chapter_focus", "writer")
+        # ``is_chapter_focused`` gates the higher-detail character /
+        # worldbuilding payload. Plot mode joins it because plot
+        # discussions need the full character + world picture, not the
+        # name-only summary the general mode falls back to.
+        is_chapter_focused = mode in ("chapter_focus", "writer", "plot")
 
         # Try to use AI-generated summaries if available (more efficient)
         use_ai_summary = (hasattr(project, 'ai_summary') and
@@ -2523,6 +2798,177 @@ class MainWindow(QMainWindow):
                         place_info = [p.name for p in wb.places[:5]]
                     wb_parts.append(f"Places: {', '.join(place_info)}")
                 context['worldbuilding'] = "\n".join(wb_parts)
+
+        # Plot mode: build per-chapter excerpts (opening + closing of
+        # each chapter) so the AI can quote and cite scenes instead of
+        # speaking about chapters as opaque titles. Excerpts are capped
+        # per-chapter and across the batch so a 50-chapter manuscript
+        # doesn't blow the prompt budget.
+        if (mode == "plot"
+                and hasattr(project, 'manuscript')
+                and project.manuscript
+                and project.manuscript.chapters):
+            EXCERPT_HEAD = 350
+            EXCERPT_TAIL = 250
+            EXCERPT_BUDGET = 9000
+            excerpt_blocks = []
+            running = 0
+            for i, ch in enumerate(project.manuscript.chapters, 1):
+                if not ch.content or running >= EXCERPT_BUDGET:
+                    continue
+                text = ch.content.strip()
+                if len(text) <= EXCERPT_HEAD + EXCERPT_TAIL + 40:
+                    excerpt = text
+                else:
+                    excerpt = (
+                        f"{text[:EXCERPT_HEAD].rstrip()}"
+                        f"\n   …\n"
+                        f"{text[-EXCERPT_TAIL:].lstrip()}"
+                    )
+                block = f"--- Ch {i}: {ch.title} ---\n{excerpt}"
+                if running + len(block) > EXCERPT_BUDGET:
+                    excerpt_blocks.append(
+                        f"--- (… {len(project.manuscript.chapters) - i + 1} "
+                        f"more chapters not excerpted to save tokens) ---")
+                    break
+                excerpt_blocks.append(block)
+                running += len(block)
+            if excerpt_blocks:
+                context['chapter_excerpts'] = "\n\n".join(excerpt_blocks)
+
+        # Plot mode: build a structured plot map (Freytag stages, events,
+        # subplots, promises) so the AI can discuss the author's intended
+        # structure against what's actually written. The general
+        # ``plot_summary`` is short and free-form; this is the structured
+        # backbone the plot-discussion system prompt is asking for.
+        if mode == "plot" and hasattr(project, 'story_planning') and project.story_planning:
+            sp = project.story_planning
+            map_parts = []
+            fp = sp.freytag_pyramid
+            if fp:
+                stage_pairs = [
+                    ("Exposition", fp.exposition),
+                    ("Rising Action", getattr(fp, 'rising_action', '')),
+                    ("Climax", fp.climax),
+                    ("Falling Action", getattr(fp, 'falling_action', '')),
+                    ("Resolution", getattr(fp, 'resolution', '')),
+                ]
+                stage_lines = [f"  {name}: {text[:300]}"
+                                for name, text in stage_pairs if text]
+                if stage_lines:
+                    map_parts.append("FREYTAG PYRAMID:\n"
+                                      + "\n".join(stage_lines))
+                if getattr(fp, 'events', None):
+                    event_lines = [f"  - {e.title}"
+                                    + (f": {e.description[:150]}"
+                                        if getattr(e, 'description', '')
+                                        else "")
+                                    for e in fp.events[:25]]
+                    if event_lines:
+                        map_parts.append("PLOT EVENTS:\n"
+                                          + "\n".join(event_lines))
+            if sp.subplots:
+                # Subplots are first-class plot infrastructure — give
+                # the model enough detail to actually weave with them
+                # (not just a name). Per subplot we surface: title +
+                # status, the connection to the main plot, the people
+                # carrying it, and up to 3 of its events so the AI
+                # can see *what's happening inside* the subplot.
+                sub_lines = []
+                for s in sp.subplots[:10]:
+                    title = getattr(s, 'title', '') or '(untitled)'
+                    status = getattr(s, 'status', '') or 'active'
+                    head = f"  - {title}  (status: {status})"
+                    sub_lines.append(head)
+                    desc = (getattr(s, 'description', '') or '').strip()
+                    if desc:
+                        sub_lines.append(f"      what: {desc[:240]}")
+                    conn = (getattr(s, 'connection_to_main', '')
+                            or '').strip()
+                    if conn:
+                        sub_lines.append(
+                            f"      ties to main: {conn[:200]}")
+                    chars = (
+                        getattr(s, 'related_characters', []) or [])
+                    if chars:
+                        sub_lines.append(
+                            f"      characters: "
+                            f"{', '.join(str(c) for c in chars)}")
+                    events = getattr(s, 'events', []) or []
+                    if events:
+                        ev_lines = []
+                        for ev in events[:3]:
+                            et = (getattr(ev, 'title', '')
+                                  or '(untitled)')
+                            estage = getattr(ev, 'stage', '') or ''
+                            eact = getattr(ev, 'act', None)
+                            head = f"        • {et}"
+                            if eact:
+                                head += f" (act {eact}"
+                                if estage:
+                                    head += f", {estage}"
+                                head += ")"
+                            elif estage:
+                                head += f" ({estage})"
+                            ev_lines.append(head)
+                        if len(events) > 3:
+                            ev_lines.append(
+                                f"        … and {len(events) - 3} "
+                                f"more event(s)")
+                        sub_lines.append("      events:")
+                        sub_lines.extend(ev_lines)
+                map_parts.append(
+                    "SUBPLOTS (secondary storylines tied to the main "
+                    "plot):\n" + "\n".join(sub_lines))
+            if getattr(sp, 'promises', None):
+                promise_lines = []
+                for p in sp.promises[:15]:
+                    ptype = getattr(p, 'promise_type', '') or '?'
+                    title = getattr(p, 'title', '') or '(untitled)'
+                    desc = getattr(p, 'description', '') or ''
+                    promise_lines.append(
+                        f"  - [{ptype}] {title}"
+                        + (f": {desc[:150]}" if desc else ""))
+                if promise_lines:
+                    map_parts.append("STORY PROMISES:\n"
+                                      + "\n".join(promise_lines))
+            if getattr(sp, 'tensions', None):
+                # Sustained dramatic forces — name them so the AI
+                # can reason about which pressures are escalating
+                # vs resolving when proposing beats or auditing
+                # pacing. Order: highest intensity first so the
+                # most important tensions land first if we hit the
+                # token cap.
+                tension_lines = []
+                ranked = sorted(
+                    sp.tensions,
+                    key=lambda t: -int(getattr(t, 'intensity', 0)))
+                for t in ranked[:15]:
+                    ttype = getattr(t, 'tension_type', '') or '?'
+                    title = getattr(t, 'title', '') or '(untitled)'
+                    state = getattr(t, 'current_state', '') or '?'
+                    intensity = int(getattr(t, 'intensity', 0))
+                    chars = getattr(t, 'characters_involved', []) or []
+                    desc = getattr(t, 'description', '') or ''
+                    stakes = getattr(t, 'stakes', '') or ''
+                    head = (f"  - [{ttype}] {title}  "
+                            f"(state: {state}, intensity: "
+                            f"{intensity}/100"
+                            + (f", involves: {', '.join(chars)}"
+                                if chars else "")
+                            + ")")
+                    line = head
+                    if desc:
+                        line += f"\n      what: {desc[:200]}"
+                    if stakes:
+                        line += f"\n      stakes: {stakes[:200]}"
+                    tension_lines.append(line)
+                if tension_lines:
+                    map_parts.append(
+                        "STORY TENSIONS (sustained dramatic forces):\n"
+                        + "\n".join(tension_lines))
+            if map_parts:
+                context['plot_map'] = "\n\n".join(map_parts)
 
         # Current chapter context — include for ALL modes
         if hasattr(self, 'manuscript_editor'):
@@ -2716,6 +3162,118 @@ class MainWindow(QMainWindow):
 
         return context
 
+    def _build_plot_ai_context(self, question: str = "") -> dict:
+        """Return the context dict the plot-tab Discuss-with-AI needs.
+
+        Reuses ``_build_chat_context(mode='plot', user_message=question)``
+        so the plot tab's AI sees the exact same project payload as the
+        General Assistant in plot mode — manuscript chapters list,
+        plot map, characters, worldbuilding, currently-open chapter,
+        and (if the project's RAG index is built) RAG-selected
+        characters / worldbuilding entries that match the question.
+        Without the question argument this would dump everything; with
+        it, RAG narrows down to relevant items only — important once a
+        project has dozens of characters or hundreds of worldbuilding
+        entries.
+
+        We also add the writing-tool's initialised cloud LLM client so
+        the helper in plot_manager doesn't have to re-discover API
+        keys when the per-task model isn't configured.
+        """
+        try:
+            base = self._build_chat_context(
+                mode="plot", user_message=question or "")
+        except Exception as e:
+            print(f"[plot-ai] context build failed: {e}")
+            base = {}
+        # _build_chat_context already provides ``chapter_excerpts`` for
+        # plot mode; we just need a fuller manuscript index than the
+        # 20-chapter cap the chat path uses, since the plot tab is the
+        # one surface where the user is explicitly thinking about the
+        # whole structure.
+        try:
+            project = self.current_project
+            if (project and hasattr(project, 'manuscript')
+                    and project.manuscript
+                    and project.manuscript.chapters):
+                lines = []
+                for i, ch in enumerate(project.manuscript.chapters, 1):
+                    wc = len(ch.content.split()) if ch.content else 0
+                    lines.append(f"{i}. {ch.title} ({wc} words)")
+                base['manuscript_index'] = "\n".join(lines)
+        except Exception as e:
+            print(f"[plot-ai] index build failed: {e}")
+        # Hand over the writing tool's cloud client when one was
+        # initialised — the plot-AI helper falls back to it after the
+        # per-task model lookup misses.
+        try:
+            base['llm_client'] = getattr(
+                self.manuscript_editor, '_llm_client', None)
+        except Exception:
+            base['llm_client'] = None
+        return base
+
+    def _create_from_plot_ai_suggestion(self, kind: str,
+                                          data: dict) -> bool:
+        """Create a project element from a plot-AI suggestion card.
+
+        Wired into ``PlotManagerWidget`` via
+        ``set_ai_create_callback``. Routes by ``kind`` to the same
+        per-type create handlers the General Assistant chat uses for
+        its ``<create_*>`` blocks; that way a character / place /
+        faction / culture / chapter accepted from the plot-AI tab
+        ends up in the project model, the right widget tab, AND
+        triggers content_changed for autosave — all the bookkeeping
+        the existing pipeline already handles. Returns True when the
+        element was created (or, falling back, an existing one was
+        updated by name); False on any failure so the card can show
+        an error.
+        """
+        if not self.current_project:
+            print("[plot-ai] cannot add suggestion — no project open")
+            return False
+        handler = {
+            "character": self._create_character_from_json,
+            "place": self._create_place_from_json,
+            "faction": self._create_faction_from_json,
+            "culture": self._create_culture_from_json,
+            "chapter": self._create_chapter_from_json,
+            # Plot-native kinds — added so the plot AI can propose
+            # new beats / subplots / promises / tensions and the user
+            # can one-click accept them into the StoryPlanning model.
+            "plot_event": self._create_plot_event_from_json,
+            "subplot": self._create_subplot_from_json,
+            "promise": self._create_promise_from_json,
+            "tension": self._create_tension_from_json,
+        }.get(kind)
+        if handler is None:
+            print(f"[plot-ai] unknown suggestion kind: {kind}")
+            return False
+        try:
+            # Existing-element check mirrors the create-pipeline path
+            # so accepting a plot-AI suggestion that names something
+            # the user already has updates that record instead of
+            # silently making a near-duplicate.
+            name = (data.get('name') or data.get('title') or '').strip()
+            if name:
+                existing = self._find_similar_existing(name, handler)
+                if existing:
+                    result = self._update_existing_element(
+                        existing, data)
+                    if result:
+                        self._on_content_changed()
+                        return True
+            result = handler(data)
+            if result:
+                # Refresh the appropriate UI tab so the user sees
+                # their new element without having to reload.
+                self._on_content_changed()
+                return True
+            return False
+        except Exception as e:
+            print(f"[plot-ai] create failed for {kind}: {e}")
+            return False
+
     def _on_chat_response(self, response: str, system_prompt: str = ""):
         """Handle successful AI response.
 
@@ -2877,6 +3435,15 @@ class MainWindow(QMainWindow):
             (r'<create_climate_preset>\s*(.*?)\s*</create_climate_preset>', self._create_climate_preset_from_json),
             (r'<create_planet>\s*(.*?)\s*</create_planet>', self._create_planet_from_json),
             (r'<create_star_system>\s*(.*?)\s*</create_star_system>', self._create_star_system_from_json),
+            # Plot-native creators — added so the General Assistant
+            # (especially in plot mode) can create new beats /
+            # subplots / promises / tensions inline. Same JSON
+            # shape the plot-tab AI uses for its <suggest_*> blocks
+            # so the model only has to learn one schema per type.
+            (r'<create_plot_event>\s*(.*?)\s*</create_plot_event>', self._create_plot_event_from_json),
+            (r'<create_subplot>\s*(.*?)\s*</create_subplot>', self._create_subplot_from_json),
+            (r'<create_promise>\s*(.*?)\s*</create_promise>', self._create_promise_from_json),
+            (r'<create_tension>\s*(.*?)\s*</create_tension>', self._create_tension_from_json),
         ]
 
         for pattern, handler in creation_patterns:
@@ -3562,6 +4129,152 @@ class MainWindow(QMainWindow):
 
         return ('chapter', f"{next_number}. {title}")
 
+    # ── Plot-native creators ─────────────────────────────────────
+    # The plot AI (and the General Assistant in plot mode) can now
+    # propose new plot events / subplots / promises / tensions via
+    # ``<suggest_*>`` or ``<create_*>`` blocks. Each handler appends
+    # the new element to ``current_project.story_planning`` and
+    # refreshes the StoryPlanningWidget so the new entry shows up
+    # in the relevant sub-tab without requiring a project reload.
+
+    def _refresh_story_planning_after_create(self) -> None:
+        """Push the in-memory story_planning back into the widget so
+        the user sees the new element appear immediately."""
+        try:
+            if hasattr(self, 'story_planning_widget'):
+                self.story_planning_widget.load_data(
+                    self.current_project.story_planning)
+        except Exception as e:
+            print(f"[creation] story_planning refresh failed: {e}")
+
+    def _create_plot_event_from_json(self, data: dict) -> tuple:
+        """Create a PlotEvent (Freytag pyramid beat) from JSON data."""
+        from datetime import datetime
+        from src.models.project import PlotEvent
+        title = (data.get('title') or '').strip()
+        if not title:
+            return None
+        stage = (data.get('stage') or 'rising_action').lower()
+        valid_stages = (
+            'exposition', 'rising_action', 'climax',
+            'falling_action', 'resolution')
+        if stage not in valid_stages:
+            stage = 'rising_action'
+        try:
+            act = int(data.get('act', 1))
+        except Exception:
+            act = 1
+        try:
+            intensity = max(0, min(100, int(data.get('intensity', 50))))
+        except Exception:
+            intensity = 50
+        related = data.get('related_characters') or []
+        if not isinstance(related, list):
+            related = [str(related)]
+        ev = PlotEvent(
+            id=f"event_{datetime.now().strftime('%Y%m%d%H%M%S%f')}",
+            title=title,
+            description=data.get('description', '') or '',
+            outcome=data.get('outcome', '') or '',
+            stage=stage,
+            act=act,
+            intensity=intensity,
+            related_characters=[str(r) for r in related],
+            notes=data.get('notes', '') or '',
+        )
+        self.current_project.story_planning.freytag_pyramid.events.append(ev)
+        print(f"Created plot event: {title} (act {act}, "
+              f"stage={stage}, intensity={intensity})")
+        self._refresh_story_planning_after_create()
+        return ('plot_event', title)
+
+    def _create_subplot_from_json(self, data: dict) -> tuple:
+        """Create a Subplot from JSON data."""
+        from datetime import datetime
+        from src.models.project import Subplot
+        title = (data.get('title') or '').strip()
+        if not title:
+            return None
+        related = data.get('related_characters') or []
+        if not isinstance(related, list):
+            related = [str(related)]
+        sp = Subplot(
+            id=f"subplot_{datetime.now().strftime('%Y%m%d%H%M%S%f')}",
+            title=title,
+            description=data.get('description', '') or '',
+            connection_to_main=data.get('connection_to_main', '')
+                                or '',
+            related_characters=[str(r) for r in related],
+            status=(data.get('status') or 'active').lower(),
+        )
+        self.current_project.story_planning.subplots.append(sp)
+        print(f"Created subplot: {title}")
+        self._refresh_story_planning_after_create()
+        return ('subplot', title)
+
+    def _create_promise_from_json(self, data: dict) -> tuple:
+        """Create a StoryPromise from JSON data."""
+        from datetime import datetime
+        from src.models.project import StoryPromise
+        title = (data.get('title') or '').strip()
+        if not title:
+            return None
+        ptype = (data.get('promise_type') or 'plot').lower()
+        if ptype not in ('tone', 'plot', 'genre', 'character'):
+            ptype = 'plot'
+        related = data.get('related_characters') or []
+        if not isinstance(related, list):
+            related = [str(related)]
+        promise = StoryPromise(
+            id=f"promise_{datetime.now().strftime('%Y%m%d%H%M%S%f')}",
+            promise_type=ptype,
+            title=title,
+            description=data.get('description', '') or '',
+            related_characters=[str(r) for r in related],
+        )
+        self.current_project.story_planning.promises.append(promise)
+        print(f"Created promise: [{ptype}] {title}")
+        self._refresh_story_planning_after_create()
+        return ('promise', title)
+
+    def _create_tension_from_json(self, data: dict) -> tuple:
+        """Create a CharacterTension from JSON data."""
+        from datetime import datetime
+        from src.models.project import CharacterTension
+        title = (data.get('title') or '').strip()
+        if not title:
+            return None
+        ttype = (data.get('tension_type') or 'interpersonal').lower()
+        if ttype not in ('internal', 'interpersonal',
+                          'societal', 'cosmic'):
+            ttype = 'interpersonal'
+        state = (data.get('current_state') or 'rising').lower()
+        if state not in ('rising', 'stable', 'escalating',
+                          'resolving', 'unresolved', 'resolved'):
+            state = 'rising'
+        try:
+            intensity = max(0, min(100, int(data.get('intensity', 50))))
+        except Exception:
+            intensity = 50
+        chars = data.get('characters_involved') or []
+        if not isinstance(chars, list):
+            chars = [str(chars)]
+        t = CharacterTension(
+            id=f"tension_{datetime.now().strftime('%Y%m%d%H%M%S%f')}",
+            title=title,
+            description=data.get('description', '') or '',
+            tension_type=ttype,
+            characters_involved=[str(c) for c in chars],
+            stakes=data.get('stakes', '') or '',
+            current_state=state,
+            intensity=intensity,
+        )
+        self.current_project.story_planning.tensions.append(t)
+        print(f"Created tension: [{ttype}] {title} "
+              f"(state={state}, intensity={intensity})")
+        self._refresh_story_planning_after_create()
+        return ('tension', title)
+
     def _create_climate_preset_from_json(self, data: dict) -> tuple:
         """Create a climate preset from JSON data.
 
@@ -3907,6 +4620,154 @@ class MainWindow(QMainWindow):
                 self.current_project.save_project(self.current_project.project_path)
             except Exception as e:
                 print(f"[Drafts] Save failed: {e}")
+
+    def _create_checkpoint_draft(self):
+        """Open the paragraph-by-paragraph checkpoint reviewer for a
+        chosen chapter. The dialog produces a new ManuscriptDraft
+        from kept/edited paragraphs; rejected paragraphs are dropped.
+
+        Flow:
+          1. Pick which chapter to review (defaults to current).
+          2. Open ``CheckpointManifestDialog`` with the chapter's
+             content + a reference to the project's ``AgentSuite``
+             so the per-paragraph "Ask AI" button works.
+          3. On accept, deep-copy the manuscript via
+             ``create_draft_from_current`` and overwrite the
+             chosen chapter's content with the joined-paragraph
+             output. Other chapters carry over unchanged so the
+             draft stays a complete manuscript.
+        """
+        if not self.current_project:
+            QMessageBox.information(
+                self, "No Project", "Open a project first.")
+            return
+        chapters = (self.current_project.manuscript.chapters
+                    if self.current_project.manuscript else [])
+        if not chapters:
+            QMessageBox.information(
+                self, "No Chapters",
+                "This project has no chapters yet — add one before "
+                "creating a checkpoint draft.")
+            return
+
+        # Pick a chapter. Default to the currently-loaded chapter
+        # in the editor when there is one.
+        from PyQt6.QtWidgets import QInputDialog
+        labels = [
+            f"Ch {ch.number}: {ch.title or '(untitled)'} "
+            f"({len(ch.content or '')} chars)"
+            for ch in chapters]
+        # Try to default to whatever the editor is showing.
+        default_idx = 0
+        try:
+            current = getattr(self, "current_chapter", None)
+            if current is not None:
+                for i, ch in enumerate(chapters):
+                    if ch.id == current.id:
+                        default_idx = i
+                        break
+        except Exception:
+            pass
+        choice, ok = QInputDialog.getItem(
+            self, "Pick a chapter to review",
+            "Walk this chapter paragraph-by-paragraph:",
+            labels, default_idx, False)
+        if not ok:
+            return
+        chapter = chapters[labels.index(choice)]
+        chapter_text = chapter.content or ""
+        if not chapter_text.strip():
+            # Try lazy-load from disk if the chapter is folder-backed
+            # but its in-memory content is empty.
+            try:
+                from pathlib import Path as _P
+                project_dir = (_P(self.current_project.project_path).parent
+                               if self.current_project.project_path
+                               else None)
+                if project_dir:
+                    chapter.load_content_from_file(project_dir)
+                    chapter_text = chapter.content or ""
+            except Exception:
+                pass
+        if not chapter_text.strip():
+            QMessageBox.information(
+                self, "Empty Chapter",
+                f"Chapter '{chapter.title}' has no content to "
+                f"review.")
+            return
+
+        # Resolve the project's genre so the AI suggestions stay
+        # in register.
+        genre = ""
+        try:
+            genre = (getattr(self.current_project, "prose_profile", None)
+                     and getattr(
+                         self.current_project.prose_profile, "genre", "")
+                     or "")
+        except Exception:
+            pass
+
+        from src.ui.checkpoint_manifest_dialog import (
+            CheckpointManifestDialog,
+        )
+        dlg = CheckpointManifestDialog(
+            chapter_text,
+            agent_suite=getattr(self, "agent_suite", None),
+            source_label=f"Ch {chapter.number}: {chapter.title}",
+            genre=genre,
+            parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        accepted = dlg.accepted_text() or ""
+        if not accepted.strip():
+            return
+        draft_name = dlg.draft_name() or (
+            f"Checkpoint of Ch{chapter.number}")
+        description = dlg.draft_description() or ""
+
+        # Snapshot the manuscript into a new draft, then overwrite
+        # the reviewed chapter's content with the kept text. Other
+        # chapters in the draft carry their original content.
+        try:
+            draft = self.current_project.create_draft_from_current(
+                name=draft_name,
+                description=description)
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Draft creation failed", str(e))
+            return
+        # Find the cloned chapter by number (its id is fresh after
+        # the deep copy).
+        target = next((c for c in draft.chapters
+                       if c.number == chapter.number), None)
+        if target is None:
+            QMessageBox.warning(
+                self, "Draft creation incomplete",
+                "Couldn't locate the reviewed chapter inside the "
+                "new draft. The draft was created but the kept "
+                "paragraphs were not applied.")
+            return
+        target.content = accepted
+        # If the chapter has revisions, the active one's content
+        # should match the chapter content too.
+        try:
+            for rev in target.revisions:
+                if rev.revision_number == target.active_revision_number:
+                    rev.content = accepted
+                    break
+        except Exception:
+            pass
+
+        # Persist + tell the user what landed where.
+        try:
+            self.current_project.save_project()
+        except Exception:
+            pass
+        QMessageBox.information(
+            self, "Checkpoint draft created",
+            f"Draft <b>{draft_name}</b> created with the kept "
+            f"paragraphs of Ch {chapter.number}. Open it via "
+            f"Drafts → Open Draft in New Window.")
 
     def _manage_drafts(self):
         """Show a simple list/manage dialog for drafts (rename, delete)."""

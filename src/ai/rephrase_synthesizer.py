@@ -62,9 +62,34 @@ def synthesize_rephrase_pairs(
     max_overlap: float = 0.7,
     min_overlap: float = 0.15,
     length_tolerance: float = 0.30,
+    tones: Optional[List[str]] = None,
     on_log: Optional[Callable[[str], None]] = None,
 ) -> dict:
     """Generate rephrase training pairs by paraphrasing corpus rows.
+
+    Tone variants
+    -------------
+    When ``tones`` is supplied (a list of canonical tone keys from
+    :mod:`src.data.tones`), the synthesiser produces one rephrase
+    *per tone* for each eligible source row. Each variant:
+
+      * Uses a tone-conditional system prompt so the LLM rewrites
+        in that tone (e.g. "in a grimdark tone — bleak, brutal,
+        morally ambiguous…").
+      * Is logged with ``style=<tone_key>`` so the export
+        pipeline's instruction template includes the tone at
+        training time ("Rephrase the following passage in a
+        grimdark tone."), making the supervision tone-conditional
+        rather than tone-agnostic.
+
+    The model learns "given source X + tone Y, produce output". A
+    source row repeated across N tones isn't redundant — it's
+    teaching tone-conditional generation. ``max_pairs`` is a hard
+    cap on emitted rows, so 30 pairs across 3 tones = ~10 source
+    rows × 3 tones each.
+
+    When ``tones`` is None or empty the function behaves as before
+    (one tone-agnostic paraphrase per source row).
 
     Args:
         db: RephraseDatabase instance.
@@ -115,12 +140,26 @@ def synthesize_rephrase_pairs(
     rows.sort(key=lambda r: 0 if (r.get("voice") or "").strip() else 1)
     log(f"Candidate corpus rows: {len(rows)}")
 
-    sys_prompt = (
+    # Default tone-agnostic system prompt. Tone-conditional
+    # variants override this per-call inside the inner loop.
+    DEFAULT_SYS = (
         "You are a literary editor. You paraphrase passages — "
         "rewriting them so the prose is materially different but the "
         "meaning is preserved. Keep the same length (within 30% of "
         "the original). Don't summarize; rewrite. Output ONLY the "
         "paraphrased passage, no commentary, no quotes around it.")
+
+    # Tone iteration — None means "one tone-agnostic call per row"
+    # (legacy behaviour); a list means "one call per (source, tone)".
+    if tones:
+        from src.data.tones import TONES, display_name as tone_name
+        tone_iter = list(tones)
+        log(f"Tone variants per source row: "
+            f"{', '.join(tone_name(t) for t in tone_iter)}")
+    else:
+        tone_iter = [None]
+        TONES = {}                        # noqa: F841 — placeholder
+        tone_name = lambda k: k or ""     # noqa: E731
 
     n_logged = 0
     n_skipped_too_short = 0
@@ -143,69 +182,107 @@ def synthesize_rephrase_pairs(
             n_skipped_too_long += 1
             continue
 
-        prompt = (
-            f"Paraphrase this passage. Keep the meaning intact; "
-            f"rewrite the prose. Match the original length "
-            f"(~{passage_wc} words).\n\n"
-            f"Passage:\n{passage}\n\n"
-            f"Paraphrased passage:")
+        for tone_key in tone_iter:
+            if n_logged >= max_pairs:
+                break
 
-        try:
-            rewrite = llm_generate(prompt, sys_prompt)
-        except Exception as e:
-            n_failed += 1
-            log(f"  LLM call failed: {e}")
-            continue
-        rewrite = (rewrite or "").strip()
-        if not rewrite:
-            n_failed += 1
-            continue
+            # Build the tone-conditional system prompt + user prompt.
+            # The tone description from src.data.tones.TONES is
+            # injected verbatim so the LLM has the exact register
+            # the canonical taxonomy defines for the tone.
+            if tone_key:
+                from src.data.tones import TONES as _TONES
+                tinfo = _TONES.get(tone_key, {})
+                tlabel = tinfo.get("name", tone_key)
+                tdesc = tinfo.get("description", "")
+                sys_for_call = (
+                    "You are a literary editor. Paraphrase the "
+                    f"passage in a {tlabel.lower()} register — "
+                    f"{tdesc} Rewrite the prose so it's materially "
+                    "different from the original but the meaning is "
+                    "preserved. Keep the same length (within 30%). "
+                    "Output ONLY the paraphrased passage, no "
+                    "commentary.")
+                prompt = (
+                    f"Paraphrase this passage in a "
+                    f"{tlabel.lower()} register. Match the original "
+                    f"length (~{passage_wc} words).\n\n"
+                    f"Passage:\n{passage}\n\n"
+                    f"Paraphrased passage:")
+            else:
+                sys_for_call = DEFAULT_SYS
+                prompt = (
+                    f"Paraphrase this passage. Keep the meaning "
+                    f"intact; rewrite the prose. Match the original "
+                    f"length (~{passage_wc} words).\n\n"
+                    f"Passage:\n{passage}\n\n"
+                    f"Paraphrased passage:")
 
-        # Length gate
-        rewrite_wc = _word_count(rewrite)
-        if rewrite_wc == 0:
-            n_failed += 1
-            continue
-        length_ratio = rewrite_wc / passage_wc
-        if (length_ratio < (1 - length_tolerance)
-                or length_ratio > (1 + length_tolerance)):
-            n_skipped_length += 1
-            continue
+            try:
+                rewrite = llm_generate(prompt, sys_for_call)
+            except Exception as e:
+                n_failed += 1
+                log(f"  LLM call failed: {e}")
+                continue
+            rewrite = (rewrite or "").strip()
+            if not rewrite:
+                n_failed += 1
+                continue
 
-        # Surface-difference gate (bigram Jaccard)
-        overlap = _bigram_jaccard(passage, rewrite)
-        if overlap > max_overlap:
-            n_skipped_too_similar += 1
-            log(f"  too similar ({overlap:.2f}): rejected")
-            continue
-        if overlap < min_overlap:
-            n_skipped_too_different += 1
-            log(f"  too different ({overlap:.2f}): probably "
-                f"hallucinated, rejected")
-            continue
+            # Length gate
+            rewrite_wc = _word_count(rewrite)
+            if rewrite_wc == 0:
+                n_failed += 1
+                continue
+            length_ratio = rewrite_wc / passage_wc
+            if (length_ratio < (1 - length_tolerance)
+                    or length_ratio > (1 + length_tolerance)):
+                n_skipped_length += 1
+                continue
 
-        # Save as a rephrase training row. Voice + genre come from the
-        # source row so user-voice corpora produce voice-specific
-        # rephrase supervision (the user's own writing → their style
-        # of rephrase).
-        voice = (row.get("voice") or "").strip()
-        genre = (row.get("genre") or "").strip()
-        notes = (
-            f"synthesized=rephrase "
-            f"source_corpus_id={row.get('id', '?')} "
-            f"overlap={overlap:.2f} "
-            f"len_ratio={length_ratio:.2f}")
-        db.log(
-            source_text=passage, output_text=rewrite,
-            source_type=SOURCE_REPHRASE,
-            rating="good",         # synthetic but quality-gated → good
-            accepted=True,
-            voice=voice, genre=genre,
-            character_name=row.get("character_name", ""),
-            notes=notes)
-        n_logged += 1
-        log(f"  [{n_logged}/{max_pairs}] kept "
-            f"(overlap={overlap:.2f}, len_ratio={length_ratio:.2f})")
+            # Surface-difference gate (bigram Jaccard)
+            overlap = _bigram_jaccard(passage, rewrite)
+            if overlap > max_overlap:
+                n_skipped_too_similar += 1
+                log(f"  too similar ({overlap:.2f}): rejected")
+                continue
+            if overlap < min_overlap:
+                n_skipped_too_different += 1
+                log(f"  too different ({overlap:.2f}): probably "
+                    f"hallucinated, rejected")
+                continue
+
+            # Save as a rephrase training row. Voice + genre come
+            # from the source row so user-voice corpora produce
+            # voice-specific rephrase supervision. The tone (if any)
+            # lands in ``style`` so the export pipeline's
+            # instruction template ("Rephrase the following passage
+            # in a <style> tone") becomes tone-conditional at
+            # training time.
+            voice = (row.get("voice") or "").strip()
+            genre = (row.get("genre") or "").strip()
+            tone_note = (f" tone={tone_key}" if tone_key else "")
+            notes = (
+                f"synthesized=rephrase"
+                f"{tone_note} "
+                f"source_corpus_id={row.get('id', '?')} "
+                f"overlap={overlap:.2f} "
+                f"len_ratio={length_ratio:.2f}")
+            db.log(
+                source_text=passage, output_text=rewrite,
+                source_type=SOURCE_REPHRASE,
+                rating="good",
+                accepted=True,
+                voice=voice, genre=genre,
+                style=(tone_key or ""),
+                character_name=row.get("character_name", ""),
+                notes=notes)
+            n_logged += 1
+            tone_label = (
+                f" [{tone_name(tone_key)}]" if tone_key else "")
+            log(f"  [{n_logged}/{max_pairs}]{tone_label} kept "
+                f"(overlap={overlap:.2f}, "
+                f"len_ratio={length_ratio:.2f})")
 
     return {
         "n_logged": n_logged,
@@ -215,4 +292,5 @@ def synthesize_rephrase_pairs(
         "n_skipped_too_different": n_skipped_too_different,
         "n_skipped_length": n_skipped_length,
         "n_failed": n_failed,
+        "tones_used": list(tone_iter) if tones else [],
     }

@@ -564,6 +564,11 @@ class _ModalTrainingWorker(QThread):
     progress = pyqtSignal(int, int)  # step, total — indeterminate uses 0/0
     finished_ok = pyqtSignal(str, dict)  # output_path, result_meta
     failed = pyqtSignal(str)
+    cancelled = pyqtSignal(str)  # human-readable status note
+    # Emitted as soon as the Modal API returns the JobHandle so the
+    # UI can switch into "cancellable" mode (show ⏹ button, start
+    # the live-cost timer). Carries (call_id, gpu, submitted_at).
+    submitted = pyqtSignal(str, str, float)
 
     def __init__(self, *,
                  jsonl_path: Path,
@@ -576,10 +581,29 @@ class _ModalTrainingWorker(QThread):
         self.config = config
         self.gpu = gpu
         self.adapter_name = adapter_name
+        # Cancel flag set from the UI thread via ``request_cancel``.
+        # Polling loop checks it every iteration; on True it calls
+        # ``cancel_job`` (which terminates the container) and exits
+        # via the ``cancelled`` signal so billing stops promptly.
+        self._cancel_requested = False
+        # Stored once submit returns so request_cancel() can call
+        # cancel_job(handle) without needing the worker's run loop
+        # to forward the handle out.
+        self._handle = None
+
+    def request_cancel(self):
+        """Ask the worker to stop ASAP.
+
+        Safe to call from the UI thread. The actual Modal-side
+        cancel happens inside the worker thread on the next poll
+        iteration so we don't race with the SDK's connection state.
+        Idempotent — repeated calls just keep the flag set.
+        """
+        self._cancel_requested = True
 
     def run(self):  # noqa: D401 — Qt slot
         try:
-            from src.cloud import modal_train
+            from src.cloud import modal_train, modal_cost_tracking
 
             self.log.emit("[modal] Submitting job…")
             handle = modal_train.submit_training_job(
@@ -589,43 +613,96 @@ class _ModalTrainingWorker(QThread):
                 adapter_name=self.adapter_name,
                 on_log=lambda m: self.log.emit(f"[modal] {m}"),
             )
+            self._handle = handle
+            self.submitted.emit(handle.call_id, handle.gpu,
+                                handle.submitted_at)
             self.log.emit(
                 f"[modal] Submitted (call_id={handle.call_id}). "
-                f"Polling for completion every 8s…")
+                f"Polling for completion every 8s. Click ⏹ Cancel "
+                f"to stop and terminate the container.")
 
             # Poll loop. We keep this simple — Modal's FunctionCall
             # doesn't expose granular per-step progress, so we just
             # wait for completion and emit a heartbeat every minute
-            # so the user knows we're alive.
+            # so the user knows we're alive. Cancel-flag check runs
+            # *first* every iteration so a cancel during a long
+            # poll-sleep window is honoured promptly.
             poll_interval_s = 8
             last_heartbeat = time.time()
             heartbeat_interval_s = 60
+            persist_interval_s = 30  # how often we update the cost log
+            last_persist = time.time()
             while True:
+                if self._cancel_requested:
+                    self.log.emit(
+                        "[modal] Cancel requested — terminating "
+                        "the Modal container to stop billing…")
+                    accepted = False
+                    try:
+                        accepted = modal_train.cancel_job(handle)
+                    except Exception as e:
+                        self.log.emit(
+                            f"[modal] cancel call raised: {e} "
+                            f"(verify on the Modal dashboard)")
+                    if accepted:
+                        self.cancelled.emit(
+                            "Cancel accepted by Modal — container "
+                            "terminated, billing stopped.")
+                    else:
+                        self.cancelled.emit(
+                            "Cancel attempted; Modal API didn't "
+                            "confirm. Check the Modal dashboard "
+                            "to make sure the container has stopped.")
+                    return
                 state = modal_train.poll_job(handle)
                 status = state.get("status")
                 if status == "running":
-                    if (time.time() - last_heartbeat
+                    now = time.time()
+                    if (now - last_heartbeat
                             >= heartbeat_interval_s):
-                        elapsed = int(time.time() - handle.submitted_at)
+                        elapsed = int(now - handle.submitted_at)
                         mins = elapsed // 60
                         self.log.emit(
                             f"[modal] still running "
                             f"({mins}m elapsed)…")
-                        last_heartbeat = time.time()
+                        last_heartbeat = now
+                    if now - last_persist >= persist_interval_s:
+                        # Snapshot the running estimate to disk so a
+                        # studio crash doesn't lose the accrual.
+                        try:
+                            modal_cost_tracking.update_running_estimate(
+                                handle.call_id)
+                        except Exception:
+                            pass
+                        last_persist = now
                     self.msleep(poll_interval_s * 1000)
                     continue
                 if status == "failed":
-                    self.failed.emit(
-                        f"Modal job failed: "
-                        f"{state.get('error', 'unknown error')}")
+                    err = state.get("error", "unknown error")
+                    try:
+                        modal_cost_tracking.record_run_end(
+                            call_id=handle.call_id,
+                            status="failed", note=err)
+                    except Exception:
+                        pass
+                    self.failed.emit(f"Modal job failed: {err}")
                     return
                 if status == "done":
                     result = state.get("result") or {}
+                    try:
+                        rec = modal_cost_tracking.record_run_end(
+                            call_id=handle.call_id, status="done")
+                        cost_note = (
+                            f" (final estimated cost: "
+                            f"${rec.estimated_cost_usd:.2f})"
+                            if rec else "")
+                    except Exception:
+                        cost_note = ""
                     self.log.emit(
                         f"[modal] ✓ training complete: "
                         f"{result.get('rows_trained', '?')} rows "
                         f"trained, {result.get('rows_evaluated', 0)} "
-                        f"eval. Downloading adapter…")
+                        f"eval{cost_note}. Downloading adapter…")
                     break
                 # Unknown — keep polling.
                 self.msleep(poll_interval_s * 1000)
@@ -1858,6 +1935,794 @@ class _ModalCredentialsDialog(QDialog):
         self._refresh_status()
 
 
+class _ModalCostDialog(QDialog):
+    """Dashboard for Modal spend + GPU pricing.
+
+    Three sections, top-to-bottom:
+
+      1. **Lifetime spend** — total $ across every recorded run, plus
+         a refresh-from-disk button so a long-lived dialog reflects
+         changes from the worker.
+      2. **Recent runs** — table with submitted-at, GPU, status,
+         elapsed, and final estimated $. Clicking "Clear history"
+         empties the local log (Modal's billing dashboard is the
+         source of truth — this log is just our local mirror).
+      3. **GPU pricing** — editable spinboxes for each GPU. Buttons:
+         Save, Reset to defaults, Refresh from modal.com. The
+         refresh hits the website, parses GPU rates, and either
+         offers to save the parsed values or surfaces a parse error
+         so the user knows to edit manually.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Modal — Cost & Pricing")
+        self.setMinimumSize(720, 640)
+        self._build_ui()
+        self._refresh()
+
+    def _build_ui(self):
+        from PyQt6.QtWidgets import (
+            QFrame, QGridLayout, QSizePolicy, QDialogButtonBox,
+        )
+        layout = QVBoxLayout(self)
+
+        intro = QLabel(
+            "Track how much you've spent on Modal training, edit "
+            "the GPU price table the studio uses for cost "
+            "estimates, or pull the latest prices from "
+            "modal.com/pricing.")
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color: #4b5563;")
+        layout.addWidget(intro)
+
+        # ── Section 1: lifetime spend ─────────────────────────
+        spend_box = QGroupBox("Lifetime spend")
+        spend_layout = QVBoxLayout(spend_box)
+        self.spend_label = QLabel("…")
+        f = self.spend_label.font(); f.setPointSize(16); f.setBold(True)
+        self.spend_label.setFont(f)
+        spend_layout.addWidget(self.spend_label)
+        self.spend_caveat = QLabel(
+            "<span style='color:#6b7280;font-size:11px;'>"
+            "Estimated from elapsed time × the rate that was active "
+            "when each run finished. Modal's billing dashboard is "
+            "the source of truth for actual charges.</span>")
+        self.spend_caveat.setWordWrap(True)
+        spend_layout.addWidget(self.spend_caveat)
+        layout.addWidget(spend_box)
+
+        # ── Section 2: recent runs ────────────────────────────
+        runs_box = QGroupBox("Recent runs")
+        runs_layout = QVBoxLayout(runs_box)
+        self.runs_table = QTableWidget(0, 6)
+        self.runs_table.setHorizontalHeaderLabels(
+            ["Submitted", "Adapter", "GPU", "Status",
+             "Elapsed", "Est. cost"])
+        self.runs_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch)
+        self.runs_table.horizontalHeader().setSectionResizeMode(
+            5, QHeaderView.ResizeMode.ResizeToContents)
+        self.runs_table.verticalHeader().setVisible(False)
+        self.runs_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.runs_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.NoSelection)
+        self.runs_table.setMinimumHeight(180)
+        runs_layout.addWidget(self.runs_table)
+        runs_btn_row = QHBoxLayout()
+        refresh_runs_btn = QPushButton("⟳ Refresh")
+        refresh_runs_btn.clicked.connect(self._refresh)
+        runs_btn_row.addWidget(refresh_runs_btn)
+        runs_btn_row.addStretch()
+        clear_btn = QPushButton("🗑 Clear history")
+        clear_btn.setStyleSheet("color: #b91c1c;")
+        clear_btn.setToolTip(
+            "Delete the local cost log. Doesn't touch Modal's "
+            "billing records — only the studio's local mirror.")
+        clear_btn.clicked.connect(self._on_clear_history)
+        runs_btn_row.addWidget(clear_btn)
+        runs_layout.addLayout(runs_btn_row)
+        layout.addWidget(runs_box, 1)
+
+        # ── Section 3: GPU pricing ────────────────────────────
+        price_box = QGroupBox("GPU pricing ($/hour)")
+        price_outer = QVBoxLayout(price_box)
+        self.price_source_label = QLabel("")
+        self.price_source_label.setWordWrap(True)
+        self.price_source_label.setStyleSheet(
+            "background: #f3f4f6; padding: 6px 8px; "
+            "border-radius: 4px; color: #374151;")
+        price_outer.addWidget(self.price_source_label)
+        # The grid of editable spinboxes — populated in _refresh so
+        # adding a new GPU upstream doesn't require code edits here.
+        self.price_grid_holder = QFrame()
+        self._price_grid_layout = QGridLayout(self.price_grid_holder)
+        self._price_grid_layout.setContentsMargins(0, 4, 0, 4)
+        self._price_grid_layout.setHorizontalSpacing(12)
+        self._price_grid_layout.setVerticalSpacing(4)
+        self._price_spins: dict = {}
+        price_outer.addWidget(self.price_grid_holder)
+
+        price_btn_row = QHBoxLayout()
+        save_btn = QPushButton("💾 Save prices")
+        save_btn.setStyleSheet(
+            "QPushButton { background-color: #16a34a; color: white; "
+            "padding: 6px 14px; border-radius: 5px; font-weight: bold; }"
+            "QPushButton:hover { background-color: #15803d; }")
+        save_btn.clicked.connect(self._on_save_prices)
+        price_btn_row.addWidget(save_btn)
+
+        reset_btn = QPushButton("↺ Reset to defaults")
+        reset_btn.setToolTip(
+            "Discard saved prices and revert to the values baked "
+            "into this build of the studio.")
+        reset_btn.clicked.connect(self._on_reset_prices)
+        price_btn_row.addWidget(reset_btn)
+
+        fetch_btn = QPushButton("🌐 Refresh from modal.com")
+        fetch_btn.setToolTip(
+            "Fetch the latest GPU rates from modal.com/pricing. "
+            "Shows you the parsed values for confirmation before "
+            "saving.")
+        fetch_btn.clicked.connect(self._on_fetch_prices)
+        price_btn_row.addWidget(fetch_btn)
+        price_btn_row.addStretch()
+        price_outer.addLayout(price_btn_row)
+
+        self.price_status_label = QLabel("")
+        self.price_status_label.setWordWrap(True)
+        self.price_status_label.setStyleSheet(
+            "color: #6b7280; padding-top: 4px;")
+        price_outer.addWidget(self.price_status_label)
+        layout.addWidget(price_box)
+
+        # Footer close button.
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        bb.rejected.connect(self.reject)
+        bb.accepted.connect(self.accept)
+        layout.addWidget(bb)
+
+    # ── Refresh / render ──────────────────────────────────────
+
+    def _refresh(self):
+        from src.cloud import modal_cost_tracking, modal_pricing
+        # Section 1 — lifetime total.
+        total = modal_cost_tracking.lifetime_total()
+        self.spend_label.setText(f"${total:.2f}")
+        # Section 2 — recent runs.
+        runs = modal_cost_tracking.list_runs(limit=50)
+        self._render_runs(runs)
+        # Section 3 — pricing grid.
+        state = modal_pricing.load_pricing_state()
+        self._render_price_source(state)
+        self._render_price_grid(state.prices)
+
+    def _render_runs(self, runs):
+        from datetime import datetime
+        self.runs_table.setRowCount(len(runs))
+        for row_idx, r in enumerate(runs):
+            ts = datetime.fromtimestamp(r.submitted_at).strftime(
+                "%Y-%m-%d %H:%M")
+            elapsed = r.elapsed_seconds
+            if r.status == "running":
+                # For an in-flight run, show elapsed-as-of-now so the
+                # number doesn't look stale relative to the live tally
+                # the training UI is showing concurrently.
+                elapsed = max(elapsed, time.time() - r.submitted_at)
+            mm = int(elapsed) // 60
+            ss = int(elapsed) % 60
+            cells = [
+                ts,
+                r.adapter_name,
+                r.gpu,
+                r.status,
+                f"{mm:02d}:{ss:02d}",
+                f"${r.estimated_cost_usd:.3f}",
+            ]
+            for col, txt in enumerate(cells):
+                item = QTableWidgetItem(txt)
+                if r.status == "cancelled":
+                    item.setForeground(QColor("#b45309"))
+                elif r.status == "failed":
+                    item.setForeground(QColor("#b91c1c"))
+                elif r.status == "running":
+                    item.setForeground(QColor("#1d4ed8"))
+                self.runs_table.setItem(row_idx, col, item)
+
+    def _render_price_source(self, state):
+        from datetime import datetime
+        if state.source == "defaults":
+            self.price_source_label.setText(
+                "<b>Source:</b> built-in defaults (last manual sync "
+                "in the studio build). Edit a value below and click "
+                "Save, or click Refresh to pull current prices "
+                "from modal.com.")
+            return
+        when = (datetime.fromtimestamp(state.saved_at).strftime(
+            "%Y-%m-%d %H:%M") if state.saved_at else "(unknown)")
+        src_label = ("from modal.com" if state.source == "web"
+                     else "user-edited")
+        self.price_source_label.setText(
+            f"<b>Source:</b> {src_label} · saved {when}. "
+            f"Estimates throughout the studio use these values.")
+
+    def _render_price_grid(self, prices):
+        # Wipe and re-populate the grid. Sorted alphabetically so a
+        # new GPU type doesn't shuffle existing rows around.
+        while self._price_grid_layout.count():
+            item = self._price_grid_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self._price_spins.clear()
+        for row_idx, gpu in enumerate(sorted(prices.keys())):
+            label = QLabel(gpu)
+            label.setMinimumWidth(120)
+            spin = QDoubleSpinBox()
+            spin.setRange(0.0, 1000.0)
+            spin.setDecimals(4)
+            spin.setSingleStep(0.05)
+            spin.setSuffix(" $/hr")
+            spin.setValue(float(prices.get(gpu, 0.0)))
+            self._price_spins[gpu] = spin
+            self._price_grid_layout.addWidget(label, row_idx, 0)
+            self._price_grid_layout.addWidget(spin, row_idx, 1)
+
+    # ── Action handlers ───────────────────────────────────────
+
+    def _on_clear_history(self):
+        confirm = QMessageBox.question(
+            self, "Clear cost log",
+            "Delete every entry from the local Modal cost log?\n\n"
+            "This doesn't affect Modal's billing — only the "
+            "studio's local mirror used for the lifetime tally and "
+            "recent-runs table.",
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel)
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        from src.cloud.modal_cost_tracking import clear_log
+        ok = clear_log()
+        self.price_status_label.setText(
+            "✅ Cost log cleared." if ok
+            else "⚠ Could not clear cost log.")
+        self._refresh()
+
+    def _on_save_prices(self):
+        from src.cloud.modal_pricing import set_pricing
+        new_prices = {gpu: spin.value()
+                      for gpu, spin in self._price_spins.items()}
+        if not new_prices:
+            self.price_status_label.setText(
+                "⚠ Nothing to save (no GPUs in table).")
+            return
+        ok = set_pricing(new_prices, source="user",
+                         notes="edited via cost dialog")
+        if ok:
+            self.price_status_label.setText(
+                "✅ Saved. New estimates will use these prices "
+                "starting with the next cost calculation.")
+            self._refresh()
+        else:
+            self.price_status_label.setText(
+                "⚠ Failed to save prices to "
+                "~/.creativeos/modal_pricing.json — check disk "
+                "permissions.")
+
+    def _on_reset_prices(self):
+        confirm = QMessageBox.question(
+            self, "Reset GPU prices",
+            "Discard saved prices and revert to the studio's "
+            "built-in defaults?\n\n"
+            "You can re-edit or re-fetch afterwards.",
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel)
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        from src.cloud.modal_pricing import reset_pricing
+        ok = reset_pricing()
+        self.price_status_label.setText(
+            "✅ Reverted to defaults." if ok
+            else "⚠ Couldn't reset prices.")
+        self._refresh()
+
+    def _on_fetch_prices(self):
+        # Fetch happens synchronously — the page is small and the
+        # dialog is modal, so blocking the UI for ~1-2s here is fine
+        # and avoids the complexity of another QThread for a one-off.
+        self.price_status_label.setText("⏳ Fetching modal.com/pricing…")
+        self.repaint()
+        from src.cloud.modal_pricing import (
+            fetch_pricing_from_web, set_pricing,
+        )
+        result = fetch_pricing_from_web()
+        if not result.ok:
+            self.price_status_label.setText(
+                f"⚠ {result.error}")
+            return
+        # Show a confirm dialog with the diff before saving — users
+        # who've manually tuned a value shouldn't have it silently
+        # overwritten by a refresh click.
+        from src.cloud.modal_pricing import get_pricing
+        current = get_pricing()
+        diff_lines = []
+        for gpu in sorted(set(list(current.keys())
+                              + list(result.parsed.keys()))):
+            old = current.get(gpu)
+            new = result.parsed.get(gpu)
+            if new is None:
+                diff_lines.append(
+                    f"  {gpu:<14}  ${old:.2f}  →  (not on page; "
+                    f"will keep current)")
+                continue
+            if old is None:
+                diff_lines.append(
+                    f"  {gpu:<14}  (new)  →  ${new:.2f}")
+                continue
+            if abs(new - old) < 0.005:
+                continue  # unchanged; skip
+            diff_lines.append(
+                f"  {gpu:<14}  ${old:.2f}  →  ${new:.2f}")
+        if not diff_lines:
+            self.price_status_label.setText(
+                "✅ Modal.com prices match what's already saved — "
+                "nothing to update.")
+            return
+        body = ("Apply the following price updates from "
+                "modal.com/pricing?\n\n"
+                + "\n".join(diff_lines)
+                + "\n\nGPUs not in the diff are unchanged.")
+        confirm = QMessageBox.question(
+            self, "Apply fetched prices?", body,
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Yes)
+        if confirm != QMessageBox.StandardButton.Yes:
+            self.price_status_label.setText(
+                "Cancelled — no prices changed.")
+            return
+        # Merge: keep current values for GPUs not on the page; take
+        # parsed values for GPUs that are.
+        merged = dict(current)
+        merged.update(result.parsed)
+        ok = set_pricing(merged, source="web",
+                         notes=f"refreshed from {result.raw_url}")
+        if ok:
+            self.price_status_label.setText(
+                "✅ Saved fetched prices.")
+            self._refresh()
+        else:
+            self.price_status_label.setText(
+                "⚠ Could not save fetched prices.")
+
+
+class _TileButton(QWidget):
+    """Clickable tile widget — a QFrame styled like a card with a
+    bold title row and a gray subtitle row.
+
+    QPushButton doesn't render HTML in its label, so we can't use it
+    when we want a two-tone (bold-title + gray-subtitle) tile. Custom
+    widget = QFrame + two QLabels + mousePressEvent.
+    """
+    clicked = pyqtSignal(str)  # carries the tile's key
+
+    def __init__(self, key: str, emoji: str,
+                 title: str, subtitle: str, parent=None):
+        super().__init__(parent)
+        self._key = key
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet(
+            "_TileButton {"
+            " border: 1px solid #d1d5db; border-radius: 8px;"
+            " background-color: #ffffff;"
+            "}"
+            "_TileButton:hover {"
+            " background-color: #f3f4f6;"
+            " border: 1px solid #6366f1;"
+            "}")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setSpacing(2)
+        title_lbl = QLabel(f"{emoji}  {title}")
+        title_lbl.setStyleSheet(
+            "font-size:13px;font-weight:bold;color:#1f2937;"
+            "background:transparent;border:0;")
+        sub_lbl = QLabel(subtitle)
+        sub_lbl.setStyleSheet(
+            "font-size:11px;color:#6b7280;"
+            "background:transparent;border:0;")
+        sub_lbl.setWordWrap(True)
+        lay.addWidget(title_lbl)
+        lay.addWidget(sub_lbl)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self._key)
+        super().mousePressEvent(event)
+
+
+class _ChoiceTileDialog(QDialog):
+    """Generic "pick one of these actions" dialog.
+
+    Replaces a row of N buttons with one entry-point button that
+    opens this dialog and shows N tiles — each tile is a bold
+    title + one-line gray subtitle + clickable card. Picking a
+    tile closes the dialog and stores its key; the caller reads
+    :meth:`chosen_key` and routes to the matching handler.
+
+    Used by the Step 1 simplification to fold:
+      * Upload Local / Import Project / Open Library → "Add Data"
+      * Check / Clean / Scrub / Prune / Rebuild     → "Fix Data"
+
+    Tiles are passed as ``(key, emoji, title, subtitle)`` tuples
+    so adding a fourth source or a sixth fix tool is a one-line
+    change at the call site rather than a new dialog class.
+    """
+
+    def __init__(self, *, window_title: str, intro: str,
+                 tiles, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(window_title)
+        self.setMinimumSize(560, 120 + len(tiles) * 70)
+        self._chosen_key: str = ""
+        self._build_ui(intro, tiles)
+
+    def _build_ui(self, intro, tiles):
+        layout = QVBoxLayout(self)
+
+        if intro:
+            head = QLabel(intro)
+            head.setWordWrap(True)
+            head.setStyleSheet("color:#4b5563;padding-bottom:6px;")
+            layout.addWidget(head)
+
+        for key, emoji, title, subtitle in tiles:
+            tile = _TileButton(key, emoji, title, subtitle, parent=self)
+            tile.clicked.connect(self._pick)
+            layout.addWidget(tile)
+
+        layout.addStretch()
+        cancel_row = QHBoxLayout()
+        cancel_row.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        cancel_row.addWidget(cancel_btn)
+        layout.addLayout(cancel_row)
+
+    def _pick(self, key: str):
+        self._chosen_key = key
+        self.accept()
+
+    def chosen_key(self) -> str:
+        return self._chosen_key
+
+
+class _GenreScopeWidget(QWidget):
+    """Inherited-with-refine genre scope picker.
+
+    Used by both the Fix Data picker and the Audit dialog so the
+    UX is consistent across them. Layout:
+
+      * **Summary line** at top — "Scope: Horror + Gothic (auto-
+        included)". Reflects the *current* scope, including any
+        refinements the user has made.
+      * **✏ Refine…** toggle button — reveals/hides a checkbox
+        grid below. Hidden by default so the most common case
+        (just use Step 1's picks) is one click away.
+      * **Checkbox grid** (collapsible) — pre-checked from the
+        initial scope. Ticking/unticking updates the summary
+        immediately.
+
+    The widget owns the current scope state; callers query via
+    :meth:`current_scope`. ``initial_scope`` is the list inherited
+    from Step 1 (or empty for "all genres"); used both as the
+    starting state of the checkbox grid AND as the wording cue
+    for the summary ("Scope from Step 1" vs "Refined scope").
+    """
+    scope_changed = pyqtSignal()  # emitted on any tick change
+
+    def __init__(self, initial_scope=None, parent=None):
+        super().__init__(parent)
+        self._scope = list(initial_scope or [])
+        self._inherited = list(initial_scope or [])
+        self._expanded = False
+        self._genre_checkboxes: dict = {}
+        self._build_ui()
+
+    def _build_ui(self):
+        from PyQt6.QtWidgets import QFrame, QGridLayout
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        # Summary line — always visible.
+        self._summary_label = QLabel(self._format_summary())
+        self._summary_label.setWordWrap(True)
+        self._summary_label.setStyleSheet(
+            "background:#f3f4f6;border-radius:4px;"
+            "padding:8px 10px;color:#374151;font-size:11px;")
+        layout.addWidget(self._summary_label)
+
+        # Refine toggle row.
+        refine_row = QHBoxLayout()
+        refine_row.setContentsMargins(0, 0, 0, 0)
+        self._refine_btn = QPushButton("✏ Refine scope…")
+        self._refine_btn.setStyleSheet(
+            "QPushButton { padding: 4px 10px; border-radius: 4px;"
+            " background: transparent; color: #2563eb;"
+            " border: 1px solid #d1d5db; font-size: 11px; }"
+            "QPushButton:hover { background: #eef2ff; }")
+        self._refine_btn.clicked.connect(self._toggle_grid)
+        refine_row.addWidget(self._refine_btn)
+        refine_row.addStretch()
+        layout.addLayout(refine_row)
+
+        # Hidden-by-default genre grid.
+        self._grid_frame = QFrame()
+        self._grid_frame.setStyleSheet(
+            "QFrame { background:#fff; border:1px solid #e5e7eb;"
+            " border-radius:6px; padding:8px; }")
+        grid_lay = QVBoxLayout(self._grid_frame)
+        grid_lay.setContentsMargins(8, 6, 8, 6)
+        grid_hint = QLabel(
+            "<span style='color:#6b7280;font-size:10px;'>"
+            "Pre-checked from your Step 1 picks. Tick to add a "
+            "genre, untick to remove. Sibling genres still auto-"
+            "include in the result (western pulls in frontier, "
+            "horror pulls in gothic, etc.)."
+            "</span>")
+        grid_hint.setWordWrap(True)
+        grid_lay.addWidget(grid_hint)
+        try:
+            from src.data.genres import GENRES, display_name
+            grid = QGridLayout()
+            grid.setHorizontalSpacing(14)
+            grid.setVerticalSpacing(2)
+            for i, key in enumerate(sorted(GENRES.keys())):
+                cb = QCheckBox(display_name(key))
+                cb.setStyleSheet("font-size:11px;")
+                cb.setChecked(key in self._scope)
+                cb.toggled.connect(
+                    lambda checked, k=key: self._on_tick(k, checked))
+                self._genre_checkboxes[key] = cb
+                grid.addWidget(cb, i // 4, i % 4)
+            grid_lay.addLayout(grid)
+        except Exception as e:
+            grid_lay.addWidget(QLabel(f"(genre list unavailable: {e})"))
+
+        # Commit row inside the grid frame: Reset (only meaningful
+        # when the user has changed something away from the inherited
+        # scope) + Apply (always present; collapses the grid and
+        # flashes a brief "Applied" confirmation in the summary).
+        commit_row = QHBoxLayout()
+        commit_row.setContentsMargins(0, 4, 0, 0)
+        self._reset_btn = QPushButton("↺ Reset to Step 1 picks")
+        self._reset_btn.setStyleSheet(
+            "QPushButton { padding: 4px 10px; border-radius: 4px;"
+            " background: transparent; color: #6b7280;"
+            " border: 1px solid #d1d5db; font-size: 11px; }"
+            "QPushButton:hover { color: #1f2937;"
+            " background: #f3f4f6; }"
+            "QPushButton:disabled { color: #d1d5db;"
+            " border-color: #f3f4f6; }")
+        self._reset_btn.clicked.connect(self._reset_to_inherited)
+        self._reset_btn.setEnabled(False)
+        commit_row.addWidget(self._reset_btn)
+        commit_row.addStretch()
+        self._apply_btn = QPushButton("✓ Apply refinement")
+        self._apply_btn.setStyleSheet(
+            "QPushButton { background-color: #10b981; color: white;"
+            " padding: 5px 14px; border-radius: 4px; font-weight: bold;"
+            " font-size: 11px; }"
+            "QPushButton:hover { background-color: #059669; }")
+        self._apply_btn.clicked.connect(self._apply_and_collapse)
+        commit_row.addWidget(self._apply_btn)
+        grid_lay.addLayout(commit_row)
+
+        self._grid_frame.setVisible(False)
+        layout.addWidget(self._grid_frame)
+
+    def _toggle_grid(self):
+        self._expanded = not self._expanded
+        self._grid_frame.setVisible(self._expanded)
+        self._refine_btn.setText(
+            "▴ Hide refine" if self._expanded else "✏ Refine scope…")
+
+    def _on_tick(self, key: str, checked: bool):
+        if checked and key not in self._scope:
+            self._scope.append(key)
+        elif not checked and key in self._scope:
+            self._scope.remove(key)
+        self._summary_label.setText(self._format_summary())
+        # Reset is only meaningful when the user has actually
+        # diverged from their inherited Step 1 picks.
+        if hasattr(self, "_reset_btn"):
+            self._reset_btn.setEnabled(
+                sorted(self._scope) != sorted(self._inherited))
+        self.scope_changed.emit()
+
+    def _reset_to_inherited(self):
+        """Restore the scope to the inherited Step 1 picks. Re-syncs
+        every checkbox so the grid visibly reverts in one click."""
+        self._scope = list(self._inherited)
+        for key, cb in self._genre_checkboxes.items():
+            # blockSignals so per-tick handler doesn't re-fire while
+            # we're bulk-resetting.
+            cb.blockSignals(True)
+            cb.setChecked(key in self._scope)
+            cb.blockSignals(False)
+        self._summary_label.setText(self._format_summary())
+        self._reset_btn.setEnabled(False)
+        self.scope_changed.emit()
+
+    def _apply_and_collapse(self):
+        """Explicit commit affordance: collapse the grid and flash a
+        brief "Applied" confirmation in the summary so the user sees
+        the action took. The scope itself is applied live as ticks
+        change; this button is the explicit "I'm done refining"
+        moment so users have a clear commit gesture."""
+        self._toggle_grid()  # closes the grid
+        # Briefly prepend "✓ Applied — " to the summary, then revert
+        # after 1.5 s. Cheap visual confirmation.
+        original = self._format_summary()
+        self._summary_label.setText(
+            "<span style='color:#10b981;'>✓ Applied — </span>" + original)
+        try:
+            QTimer.singleShot(
+                1500,
+                lambda: self._summary_label.setText(self._format_summary()))
+        except Exception:
+            self._summary_label.setText(original)
+
+    def _format_summary(self) -> str:
+        from src.data.genres import (
+            display_name, expand_with_ancillaries,
+        )
+        if not self._scope:
+            return ("<b>Scope:</b> all genres "
+                    "<span style='color:#6b7280;'>"
+                    "(no genre ticks; runs on the full DB)</span>")
+        expanded = sorted(expand_with_ancillaries(set(self._scope)))
+        added = [g for g in expanded if g not in self._scope]
+        names = ", ".join(display_name(g) for g in sorted(self._scope))
+        # Heading wording reflects whether the scope is still the
+        # inherited one or the user has refined it.
+        if sorted(self._scope) == sorted(self._inherited):
+            heading = ("Scope from Step 1" if self._inherited
+                       else "Scope")
+        else:
+            heading = "Refined scope"
+        ancillary_note = ""
+        if added:
+            added_names = ", ".join(display_name(g) for g in added)
+            ancillary_note = (
+                f"<br><span style='color:#6b7280;'>"
+                f"+ auto-included sibling genres: "
+                f"{added_names}</span>")
+        # Always make the fuzzy keep-craft escape visible so users
+        # know plot/theory/instructional documents survive the
+        # genre filter regardless of their tagged genre.
+        craft_note = (
+            f"<br><span style='color:#6b7280;'>"
+            f"+ craft / theory / instructional documents kept "
+            f"regardless of genre tag (auto-detected)"
+            f"</span>")
+        return f"<b>{heading}:</b> {names}{ancillary_note}{craft_note}"
+
+    def current_scope(self) -> list:
+        return list(self._scope)
+
+
+class _FixDataPickerDialog(QDialog):
+    """Fix Data tile picker.
+
+    Inherits the genre scope from Step 1 (the user has already
+    ticked their target genres there) and surfaces it as a single
+    line at the top — no second checkbox grid to fill in. If they
+    want a different scope, they go change the Step 1 picks and
+    re-open this dialog: Step 1 stays the single source of truth
+    for genre selection.
+
+    Same tile pattern as :class:`_ChoiceTileDialog`. The chosen
+    scope and chosen tile key are both exposed so the caller can
+    route the scope down to the underlying handler (today the
+    Audit tool honours it; other tools operate DB-wide).
+    """
+
+    def __init__(self, *, tiles, current_genres=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Fix training data")
+        # Default to a comfortable size on a typical laptop; min
+        # height stays small so a tall content area scrolls instead
+        # of pushing Cancel off-screen on smaller displays.
+        self.resize(620, 600)
+        self.setMinimumSize(560, 360)
+        self._chosen_key: str = ""
+        self._scope_widget: Optional[_GenreScopeWidget] = None
+        self._build_ui(tiles, current_genres or [])
+
+    def _build_ui(self, tiles, current_genres):
+        outer = QVBoxLayout(self)
+
+        head = QLabel(
+            "Which data-quality tool do you want to run? Each one "
+            "targets a different problem.")
+        head.setWordWrap(True)
+        head.setStyleSheet("color:#4b5563;padding-bottom:4px;")
+        outer.addWidget(head)
+
+        # Scrollable content area. Wraps the scope widget + tool
+        # tiles so the dialog remains usable on smaller screens or
+        # when the Refine grid is expanded — Cancel stays pinned
+        # at the bottom outside the scroll.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_inner = QWidget()
+        scroll_layout = QVBoxLayout(scroll_inner)
+        scroll_layout.setContentsMargins(0, 0, 6, 0)
+
+        # Inherited scope (with optional Refine button). Defaults
+        # to the user's Step 1 picks; collapsed UI for the most
+        # common case, refine grid available on click for power
+        # users who want a different scope just for this run.
+        self._scope_widget = _GenreScopeWidget(
+            initial_scope=current_genres, parent=self)
+        scroll_layout.addWidget(self._scope_widget)
+
+        # Footnote so users know which tools currently honour the
+        # scope without having to click each one to find out.
+        footnote = QLabel(
+            "<span style='color:#6b7280;font-size:10px;'>"
+            "Respected by: <b>🎯 Audit</b> (groups by scope) and "
+            "<b>🎯 Apply genre scope</b> (drops out-of-scope rows). "
+            "Other tools operate DB-wide regardless of scope."
+            "</span>")
+        footnote.setWordWrap(True)
+        scroll_layout.addWidget(footnote)
+
+        # Tool tiles inside the scroll area.
+        for key, emoji, title, subtitle in tiles:
+            tile = _TileButton(key, emoji, title, subtitle, parent=self)
+            tile.clicked.connect(self._pick)
+            scroll_layout.addWidget(tile)
+
+        scroll_layout.addStretch()
+        scroll.setWidget(scroll_inner)
+        outer.addWidget(scroll, 1)
+
+        # Cancel pinned outside the scroll so it stays visible
+        # regardless of content height.
+        cancel_row = QHBoxLayout()
+        cancel_row.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        cancel_row.addWidget(cancel_btn)
+        outer.addLayout(cancel_row)
+
+    def _pick(self, key: str):
+        self._chosen_key = key
+        self.accept()
+
+    def chosen_key(self) -> str:
+        return self._chosen_key
+
+    def chosen_genres(self) -> list:
+        """Return the live scope from the widget (Step 1 picks,
+        possibly refined by the user). Sibling expansion is applied
+        downstream by the genre filter itself."""
+        if self._scope_widget is None:
+            return []
+        return self._scope_widget.current_scope()
+
+
 class TrainingToolWindow(QMainWindow):
     """Multi-step wizard for fine-tuning on rephrase data."""
 
@@ -2272,139 +3137,68 @@ class TrainingToolWindow(QMainWindow):
 
         self._section_header(
             layout, "5", "Bring corpora in & maintain them",
-            "Add writing the model will learn from. 📚 Upload Local / "
-            "📖 Import from Project pull from your own files; 🌐 Open "
-            "Library and 🎯 Smart Pick pull from curated public-domain "
-            "catalogs. Other buttons here filter, clean, rebuild, or "
-            "audit what's already in the DB.")
+            "➕ Add Data ingests new writing (your files, project "
+            "chapters, or curated public-domain corpora). 🩹 Fix Data "
+            "audits and cleans what's already in the DB. 🔎 Browse "
+            "lets you inspect rows; ✓ Corpora filter chooses which "
+            "ingested collections feed the next training run.")
 
-        # ── Corpus upload (local files) ──
+        # Consolidated corpus actions — one entry-point button per
+        # workflow group. Old layout had nine buttons in this row,
+        # half of them rarely-used cleanup tools the user had to
+        # disambiguate (Clean vs. Scrub vs. Prune). The consolidated
+        # set is four buttons; the picker dialogs surface the
+        # individual workflows with descriptions so a new user can
+        # tell them apart.
         corpus_row = QHBoxLayout()
-        self.upload_corpus_btn = QPushButton("📚 Upload Local Writing…")
-        self.upload_corpus_btn.setToolTip(
-            "Pick a text file (or several) of writing you admire. The "
-            "studio splits it into passages and turns each into a "
-            "training example so the model can imitate that voice.")
-        self.upload_corpus_btn.clicked.connect(self._upload_corpus)
-        corpus_row.addWidget(self.upload_corpus_btn)
 
-        self.import_project_btn = QPushButton("📖 Import from Project…")
-        self.import_project_btn.setToolTip(
-            "Pull chapters from one of your Writer Tool projects. Tick "
-            "the chapters you want, tag them with a voice and genre, "
-            "and they're ingested as corpus rows. Genre-tagged rows are "
-            "automatically included only when training a model in that "
-            "genre, so a horror project doesn't pollute a romance fine-"
-            "tune.")
-        self.import_project_btn.clicked.connect(self._open_project_import)
-        corpus_row.addWidget(self.import_project_btn)
+        self.add_data_btn = QPushButton("➕ Add Data…")
+        self.add_data_btn.setStyleSheet(
+            "QPushButton { background-color: #2563eb; color: white; "
+            "padding: 6px 14px; border-radius: 6px; font-weight: bold; }"
+            "QPushButton:hover { background-color: #1d4ed8; }")
+        self.add_data_btn.setToolTip(
+            "Bring new writing into the training DB — local files, "
+            "project chapters, or curated catalogs.")
+        self.add_data_btn.clicked.connect(self._open_add_data_picker)
+        corpus_row.addWidget(self.add_data_btn)
 
-        self.library_btn = QPushButton("🌐 Open Corpus Library…")
-        self.library_btn.setToolTip(
-            "Browse curated public-domain corpora to download, or "
-            "register your own URLs.")
-        self.library_btn.clicked.connect(self._open_corpus_library)
-        corpus_row.addWidget(self.library_btn)
+        self.fix_data_btn = QPushButton("🩹 Fix Data…")
+        self.fix_data_btn.setStyleSheet(
+            "QPushButton { background-color: #f59e0b; color: white; "
+            "padding: 6px 14px; border-radius: 6px; font-weight: bold; }"
+            "QPushButton:hover { background-color: #d97706; }")
+        self.fix_data_btn.setToolTip(
+            "Inspect quality, clean junk rows, scrub inline garbage, "
+            "prune for variability, or rebuild catalog downloads.")
+        self.fix_data_btn.clicked.connect(self._open_fix_data_picker)
+        corpus_row.addWidget(self.fix_data_btn)
 
-        # Per-run corpus picker. Lets the user fine-tune which
-        # ingested collections feed *this* training run without
-        # touching the underlying data. Defaults to all-checked.
+        # Per-row inspector — kept as a top-level button because it
+        # answers a different question ("what's actually in here?")
+        # and the user might want it without committing to a fix
+        # workflow.
         self.browse_db_btn = QPushButton("🔎 Browse rows…")
         self.browse_db_btn.setToolTip(
-            "Open a searchable view of every row in the training "
-            "DB. Filter by source type, genre, or corpus; type a "
-            "title or phrase to find specific rows; click a row to "
-            "see its full source / output / notes.")
+            "Searchable view of every row in the training DB. "
+            "Filter by source / genre / corpus, search text, click "
+            "a row for full details.")
         self.browse_db_btn.clicked.connect(self._open_corpus_browser)
         corpus_row.addWidget(self.browse_db_btn)
 
+        # Per-run corpus picker — orthogonal to data quality (it
+        # filters which collections feed the *next* training run
+        # without touching the data). Kept top-level so the user
+        # sees its current state ("✓ All corpora" vs a count).
         self.corpus_filter_btn = QPushButton("✓ All corpora")
         self.corpus_filter_btn.setToolTip(
             "Choose which ingested corpus collections feed the next "
-            "training run. Default: all included. Pick a subset to "
-            "(e.g.) train only on your project chapters without "
-            "re-ingesting anything.")
+            "training run. Default: all. Pick a subset to (e.g.) "
+            "train only on your project chapters without re-"
+            "ingesting anything.")
         self.corpus_filter_btn.clicked.connect(self._open_corpus_filter)
         corpus_row.addWidget(self.corpus_filter_btn)
 
-        # Retro-clean button: walk the existing DB and apply the same
-        # text-cleaner that all new ingestions go through. Existing
-        # data ingested before the cleaner existed (legacy PG dumps,
-        # scraped HF rows with stray boilerplate) gets scrubbed in
-        # place. Junk rows are deleted; their stats are reported.
-        self.clean_corpus_btn = QPushButton("🧹 Clean existing rows…")
-        self.clean_corpus_btn.setToolTip(
-            "Scan every corpus / character / worldbuilding / plot row "
-            "in your training DB. Drop rows that match junk signatures "
-            "(boilerplate, refusal templates, tool-call JSON, page "
-            "numbers, section headings, …). Keeps a backup of every "
-            "deleted row's id+text so you can undo if needed. Safe to "
-            "run multiple times — already-clean rows are no-ops.")
-        self.clean_corpus_btn.clicked.connect(self._open_clean_corpus_dialog)
-        corpus_row.addWidget(self.clean_corpus_btn)
-
-        # Rebuild button: drops every row that came through the catalog
-        # downloader (notes match ``corpus_id=…``), preserving user
-        # uploads, project imports, and character/worldbuilding/plot
-        # rows. Use after a splitter/cleaner upgrade to re-ingest with
-        # the new logic.
-        self.rebuild_corpus_btn = QPushButton("♻ Rebuild downloads…")
-        self.rebuild_corpus_btn.setToolTip(
-            "Drop every row that came through the catalog downloader "
-            "so you can re-download with the current splitter. Manual "
-            "uploads, project imports, and character/worldbuilding/"
-            "plot rows are preserved. A backup JSONL is written first.")
-        self.rebuild_corpus_btn.clicked.connect(
-            self._open_rebuild_corpus_dialog)
-        corpus_row.addWidget(self.rebuild_corpus_btn)
-
-        # Quality preview from Step 1 — runs the same dialog that
-        # gates Start Training, but as a standalone tool so the
-        # user can iterate on corpus picks before committing to
-        # the recipe + training step. Same button on Step 3 next
-        # to Start Training.
-        self.check_quality_step1_btn = QPushButton("🔍 Check quality")
-        self.check_quality_step1_btn.setToolTip(
-            "Preview what the trainer would see for the current "
-            "corpus selection — row counts, vocab diversity, "
-            "sample passages, and a verdict. Use it to iterate "
-            "on corpus / genre / tone picks before going to "
-            "Step 3.")
-        self.check_quality_step1_btn.clicked.connect(
-            self._open_corpus_quality_check)
-        corpus_row.addWidget(self.check_quality_step1_btn)
-
-        # Row scrubber — mutate rows in place to remove inline
-        # garbage (repeated words, mojibake, control chars,
-        # entities, weird whitespace). Different from Clean (drops
-        # rows) and Prune (drops redundant rows): this fixes
-        # garbage *inside* surviving rows.
-        self.scrub_records_btn = QPushButton("🩹 Scrub records…")
-        self.scrub_records_btn.setToolTip(
-            "Per-row content cleanup. Detects repeated-word runs, "
-            "mojibake, undecoded HTML entities, control "
-            "characters, and excess whitespace inside each row "
-            "and lets you approve each category before applying. "
-            "Backs up the original output_text of every mutated "
-            "row.")
-        self.scrub_records_btn.clicked.connect(
-            self._open_row_scrubber_dialog)
-        corpus_row.addWidget(self.scrub_records_btn)
-
-        # Variability prune — separate from junk cleaning. Detects
-        # exact duplicates, repeated openers, and dominant sources
-        # in the existing corpus, shows stats per category, and
-        # drops only what the user approves.
-        self.prune_corpus_btn = QPushButton("📊 Prune for variability…")
-        self.prune_corpus_btn.setToolTip(
-            "Audit the corpus for redundancy: exact duplicates, "
-            "oversampled openers, dominant sources. Each category "
-            "is shown with stats and approved separately. Different "
-            "from Clean (which removes junk) — this removes "
-            "redundancy.")
-        self.prune_corpus_btn.clicked.connect(
-            self._open_variability_prune_dialog)
-        corpus_row.addWidget(self.prune_corpus_btn)
         corpus_row.addStretch()
         layout.addLayout(corpus_row)
         # NOTE: Smart Pick used to live here; it's now reachable
@@ -2660,6 +3454,8 @@ class TrainingToolWindow(QMainWindow):
             lora_r=int(_spin("lora_r_spin", 8)),
             use_qlora=_check("qlora_cb", False),
             train_min_rating=_combo_data("train_min_rating", "good"),
+            expand_corpus_windows=_check("expand_corpus_cb", False),
+            enforce_purpose_fit=_check("purpose_fit_cb", False),
         )
 
     def _apply_preset(self, preset) -> None:
@@ -2732,6 +3528,10 @@ class TrainingToolWindow(QMainWindow):
         _set_spin("batch_spin", int(preset.batch_size))
         _set_spin("lora_r_spin", int(preset.lora_r))
         _set_check("qlora_cb", bool(getattr(preset, "use_qlora", False)))
+        _set_check("expand_corpus_cb",
+                   bool(getattr(preset, "expand_corpus_windows", False)))
+        _set_check("purpose_fit_cb",
+                   bool(getattr(preset, "enforce_purpose_fit", False)))
         _set_combo_data("train_min_rating", preset.train_min_rating)
 
         # Refresh derived state (recommendation banner reads everything
@@ -2963,6 +3763,113 @@ class TrainingToolWindow(QMainWindow):
             f"<b>Recommendation:</b> use {', '.join(sources_text) or 'no sources?'}; "
             f"export as <b>{suggested_fmt}</b>. "
             f"You can still tweak any of the checkboxes below.")
+
+    # ── Step 1 consolidated pickers ──
+
+    def _open_add_data_picker(self):
+        """Show the Add Data tile picker. Routes to one of three
+        existing data-ingestion handlers based on the user's pick.
+
+        Replaces three top-level buttons (Upload Local / Import
+        Project / Open Library) with one. The dialog explains each
+        option in a sentence so a new user can tell them apart.
+        """
+        tiles = [
+            ("upload", "📚", "Upload local writing",
+             "Pick text files (or a zip) of writing you admire. The "
+             "studio splits, tags, and ingests each as training rows."),
+            ("project", "📖", "Import from a Writer project",
+             "Pull chapters from one of your existing Writer projects, "
+             "tag them with voice and genre, and ingest as corpus rows."),
+            ("library", "🌐", "Open the corpus library",
+             "Browse curated public-domain corpora to download — or "
+             "register your own URLs / local folders to ingest."),
+        ]
+        dlg = _ChoiceTileDialog(
+            window_title="Add training data",
+            intro=("Where should the new training data come from? "
+                   "Pick a source and the matching tool opens."),
+            tiles=tiles, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        key = dlg.chosen_key()
+        if key == "upload":
+            self._upload_corpus()
+        elif key == "project":
+            self._open_project_import()
+        elif key == "library":
+            self._open_corpus_library()
+
+    def _open_fix_data_picker(self):
+        """Show the Fix Data tile picker. Routes to one of six
+        existing data-quality handlers.
+
+        The picker also surfaces an optional **genre scope** at the
+        top — selected genres flow down to whichever tool the user
+        picks (today the audit honours it; other tools operate
+        DB-wide regardless of scope).
+
+        The descriptions intentionally call out *what differs*
+        between the tools — historically the most-asked question
+        was "do I want Clean or Scrub or Prune?" so the dialog
+        spells it out at the choice point.
+        """
+        tiles = [
+            ("check", "🔍", "Check corpus quality",
+             "Preview what the trainer will see — row counts, vocab "
+             "diversity, sample passages, and a verdict. Read-only."),
+            ("clean", "🧹", "Clean junk rows (drop)",
+             "Walk every row; drop ones that match junk signatures "
+             "(boilerplate, refusals, tool-call JSON, page numbers)."),
+            ("scrub", "🩹", "Scrub records (in-place fix)",
+             "Per-row content cleanup — repeated-word runs, mojibake, "
+             "HTML entities, control chars. Mutates rows; doesn't "
+             "drop them."),
+            ("prune", "📊", "Prune for variability",
+             "Drop redundancy: exact duplicates, oversampled openers, "
+             "dominant sources. Different from Clean — this removes "
+             "well-formed rows that pile up the same patterns."),
+            ("audit_fit", "🎯", "Audit prompt fit (cluster review)",
+             "Group rows by source_type × shape, cluster each bucket, "
+             "and surface outlier clusters. Respects the genre scope "
+             "above (with sibling expansion)."),
+            ("apply_scope", "🎯", "Apply genre scope (drop unrelated)",
+             "Walk the DB and drop rows that don't match the genre "
+             "scope above. Sibling genres auto-include; craft / "
+             "theory / instructional documents are kept regardless. "
+             "Preview before deleting."),
+            ("rebuild", "♻", "Rebuild catalog downloads",
+             "Drop every row that came through the catalog downloader "
+             "so you can re-download with the current splitter. "
+             "User uploads / project imports are preserved."),
+        ]
+        # Inherit the user's Step 1 genre picks — Step 1 stays the
+        # single source of truth for genre selection. Sibling
+        # expansion is applied later by the genre filter itself.
+        try:
+            current_genres = self.selected_genres()
+        except Exception:
+            current_genres = []
+        dlg = _FixDataPickerDialog(
+            tiles=tiles, current_genres=current_genres, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        key = dlg.chosen_key()
+        scope = dlg.chosen_genres()
+        if key == "check":
+            self._open_corpus_quality_check()
+        elif key == "clean":
+            self._open_clean_corpus_dialog()
+        elif key == "scrub":
+            self._open_row_scrubber_dialog()
+        elif key == "prune":
+            self._open_variability_prune_dialog()
+        elif key == "audit_fit":
+            self._open_prompt_fit_audit_dialog(initial_genres=scope)
+        elif key == "apply_scope":
+            self._open_genre_scope_apply_dialog(initial_genres=scope)
+        elif key == "rebuild":
+            self._open_rebuild_corpus_dialog()
 
     # ── Corpus upload ──
 
@@ -3572,6 +4479,50 @@ class TrainingToolWindow(QMainWindow):
             self.corpus_dashboard.refresh()
         self._refresh_db_summary()
 
+    def _open_genre_scope_apply_dialog(
+            self, *, initial_genres: Optional[list] = None) -> None:
+        """Open the genre-scope apply dialog (preview + delete).
+
+        Drops rows that don't match the inherited Step 1 genre
+        scope (with sibling expansion + craft-keep escape). Reuses
+        the same composed filter rules as the export pipeline so
+        what gets dropped here matches what the trainer would have
+        excluded — but persists the change to the DB instead of
+        only filtering at export time.
+        """
+        dlg = _GenreScopeApplyDialog(
+            self.db_path,
+            initial_genres=initial_genres,
+            parent=self)
+        dlg.exec()
+        if hasattr(self, "corpus_dashboard"):
+            self.corpus_dashboard.refresh()
+        self._refresh_db_summary()
+
+    def _open_prompt_fit_audit_dialog(
+            self, *, initial_genres: Optional[list] = None) -> None:
+        """Open the prompt-fit cluster audit dialog.
+
+        Group rows by (source_type, shape), cluster each bucket,
+        surface outlier clusters whose sample rows don't match the
+        bucket's purpose. The user reviews and approves drops.
+        Companion to the always-on heuristic gate that runs in
+        ``export_jsonl``: the gate auto-drops obvious garbage; this
+        dialog catches systematic drift that needs human eyes.
+
+        ``initial_genres`` (optional) pre-checks the audit's genre
+        scope picker — used when the Fix Data picker passes its own
+        scope down so the user doesn't have to re-pick the same
+        genres in the child dialog.
+        """
+        dlg = _PromptFitAuditDialog(
+            self.db_path, parent=self,
+            initial_genres=initial_genres)
+        dlg.exec()
+        if hasattr(self, "corpus_dashboard"):
+            self.corpus_dashboard.refresh()
+        self._refresh_db_summary()
+
     def _open_corpus_browser(self) -> None:
         """Open the searchable DB browser. Read-only — no edits.
 
@@ -3745,8 +4696,16 @@ class TrainingToolWindow(QMainWindow):
             return
         try:
             db = RephraseDatabase(self.db_path)
+            expand_corpus = (self.expand_corpus_cb.isChecked()
+                             if hasattr(self, 'expand_corpus_cb')
+                             else False)
+            purpose_fit = (self.purpose_fit_cb.isChecked()
+                           if hasattr(self, 'purpose_fit_cb')
+                           else False)
             n = db.export_jsonl(Path(path), fmt=fmt, min_rating=min_rating,
-                                source_types=sources)
+                                source_types=sources,
+                                expand_corpus_windows=expand_corpus,
+                                enforce_purpose_fit=purpose_fit)
             self.dataset_jsonl = Path(path)
             tip = ""
             if fmt == "dpo":
@@ -4155,6 +5114,52 @@ class TrainingToolWindow(QMainWindow):
             "automatically.")
         form.addRow("Quantization:", self.qlora_cb)
 
+        # Sliding-window expansion for corpus rows. When ON, a long
+        # multi-paragraph corpus passage is sliced into 2-4 (context,
+        # next) pairs at export time — same content, more training
+        # signal, model learns to handle varying context lengths.
+        # OFF by default because the row-count multiplier interacts
+        # with the user-voice oversample setting; users opt in
+        # explicitly when they want the extra signal.
+        self.expand_corpus_cb = QCheckBox(
+            "Expand long corpus rows into sliding-window pairs")
+        self.expand_corpus_cb.setToolTip(
+            "Slice each multi-paragraph corpus passage into 2-4 "
+            "(context, next-paragraph) training pairs. More "
+            "supervision per row at varying context lengths — but "
+            "multiplies corpus row count 2-4×, which inflates the "
+            "user-voice oversample's effect. Leave off unless you "
+            "specifically want voice training to dominate the loss.")
+        form.addRow("Corpus expansion:", self.expand_corpus_cb)
+
+        # Purpose-fit filter — drop passages that don't match the
+        # bucket they'd be emitted under. Two rules fire when this
+        # is on:
+        #   * Voice / corpus training: drop craft / criticism /
+        #     "how to write" essays (they aren't voice exemplars).
+        #     Use your own writing or CONLIT-derived corpora to
+        #     teach voice — that's what they're for.
+        #   * Plot / character / worldbuilding training: KEEP craft
+        #     essays (they teach structure explicitly), but enforce
+        #     the genre filter across all buckets so an off-genre
+        #     plot row doesn't slip through when only corpus rows
+        #     would have been genre-filtered today.
+        self.purpose_fit_cb = QCheckBox(
+            "Match passages to training purpose (drop off-genre + "
+            "craft essays from voice training)")
+        self.purpose_fit_cb.setToolTip(
+            "Filter rows so each emitted bucket gets passages it "
+            "can actually learn from:\n\n"
+            "• Voice (corpus bucket): drops craft / criticism / "
+            "\"how to write\" essays. They aren't voice exemplars; "
+            "use your own writing or CONLIT corpora to teach voice.\n"
+            "• Plot / character / worldbuilding: KEEPS craft essays "
+            "(they teach structure explicitly), but applies the "
+            "genre filter across these buckets too — so a horror "
+            "plot row won't bleed into a romance training run.\n\n"
+            "Off by default for backward compatibility.")
+        form.addRow("Purpose fit:", self.purpose_fit_cb)
+
         self.train_min_rating = QComboBox()
         self.train_min_rating.addItem("⭐ Excellent + 👍 Good (recommended)", "good")
         self.train_min_rating.addItem("⭐ Excellent only (strictest)", "excellent")
@@ -4198,51 +5203,71 @@ class TrainingToolWindow(QMainWindow):
         self.modal_train_btn.clicked.connect(self._train_on_modal)
         btn_row.addWidget(self.modal_train_btn)
 
-        # Modal credentials button — opens a dialog where the user
-        # pastes their MODAL_TOKEN_ID / MODAL_TOKEN_SECRET and they
-        # land in the OS keystore (Keychain / Credential Manager /
-        # Secret Service). Separate from the Train button so the
-        # credentials flow is reachable even when the user isn't
-        # ready to spend money yet.
-        self.modal_creds_btn = QPushButton("🔑 Configure Modal…")
-        self.modal_creds_btn.setStyleSheet(
-            "QPushButton { padding: 6px 12px; border-radius: 6px; }")
-        self.modal_creds_btn.setToolTip(
-            "Store your Modal API tokens in the OS keystore. "
-            "Get them from https://modal.com/settings/tokens — "
-            "or skip this and run `modal token new` in a terminal.")
-        self.modal_creds_btn.clicked.connect(self._open_modal_credentials)
-        btn_row.addWidget(self.modal_creds_btn)
+        # Settings gear for Modal credentials + cost/pricing
+        # dashboard. Both are infrequent — credentials are pasted
+        # once per machine; the cost dialog is opened for review,
+        # not in the hot training path. Pulling them off the main
+        # row de-clutters Step 3 without hiding them: the gear sits
+        # right next to "Train on Modal" and pops a 2-item menu.
+        from PyQt6.QtWidgets import QToolButton, QMenu
+        self.modal_settings_btn = QToolButton()
+        self.modal_settings_btn.setText("⚙")
+        self.modal_settings_btn.setToolTip(
+            "Modal settings — credentials and cost / pricing.")
+        self.modal_settings_btn.setStyleSheet(
+            "QToolButton { padding: 6px 10px; border-radius: 6px; "
+            "border: 1px solid #d1d5db; background: #ffffff; "
+            "font-size: 14px; }"
+            "QToolButton:hover { background: #f3f4f6; }"
+            "QToolButton::menu-indicator { image: none; width: 0; }")
+        self.modal_settings_btn.setPopupMode(
+            QToolButton.ToolButtonPopupMode.InstantPopup)
+        modal_menu = QMenu(self.modal_settings_btn)
+        act_creds = modal_menu.addAction("🔑 Configure Modal credentials…")
+        act_creds.triggered.connect(self._open_modal_credentials)
+        act_cost = modal_menu.addAction("💰 Cost & pricing dashboard…")
+        act_cost.triggered.connect(self._open_modal_cost_dialog)
+        self.modal_settings_btn.setMenu(modal_menu)
+        btn_row.addWidget(self.modal_settings_btn)
+
+        # Cancel button — only visible while a Modal job is in
+        # flight. Wired to ``_cancel_modal_run`` which terminates the
+        # remote container (so billing stops) and ends the worker.
+        self.modal_cancel_btn = QPushButton("⏹ Cancel Modal run")
+        self.modal_cancel_btn.setStyleSheet(
+            "QPushButton { background-color: #dc2626; color: white; "
+            "padding: 6px 14px; border-radius: 6px; font-weight: bold; }"
+            "QPushButton:hover { background-color: #b91c1c; }"
+            "QPushButton:disabled { background-color: #fca5a5; }")
+        self.modal_cancel_btn.setToolTip(
+            "Stop the running Modal job and terminate its GPU "
+            "container. Billing stops as soon as the container "
+            "exits (usually within seconds).")
+        self.modal_cancel_btn.clicked.connect(self._cancel_modal_run)
+        self.modal_cancel_btn.setVisible(False)
+        btn_row.addWidget(self.modal_cancel_btn)
+
+        # Live cost label — shows accruing $ while a Modal run is
+        # active. Hidden between runs. Updated by a 1-second QTimer
+        # started in ``_train_on_modal`` and stopped in the run-end
+        # handlers.
+        self.modal_cost_label = QLabel("")
+        self.modal_cost_label.setStyleSheet(
+            "color: #b45309; font-weight: bold; "
+            "padding: 6px 10px; background: #fef3c7; "
+            "border-radius: 6px;")
+        self.modal_cost_label.setVisible(False)
+        btn_row.addWidget(self.modal_cost_label)
+
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
-        # Pre-training quality preview row — same dialog the
-        # Start-Training gate uses, but here it runs standalone so
-        # the user can iterate on corpus / recipe choices without
-        # committing to a training run. The pre-training gate
-        # *also* still fires when they click Start Training; this
-        # button is the discoverable surface for "let me check
-        # this NOW".
-        check_row = QHBoxLayout()
-        self.check_quality_btn = QPushButton(
-            "🔍 Check Corpus Quality")
-        self.check_quality_btn.setStyleSheet(
-            "QPushButton { padding: 6px 14px; border-radius: 5px; "
-            "background-color: #fbbf24; color: #78350f; "
-            "font-weight: bold; }"
-            "QPushButton:hover { background-color: #f59e0b; }")
-        self.check_quality_btn.setToolTip(
-            "Preview what the trainer will see — row counts, "
-            "vocab diversity, sample passages, and a verdict on "
-            "whether the dataset is ready. Same dialog that fires "
-            "automatically when you click Start Training, but here "
-            "you can iterate on corpus / recipe choices without "
-            "starting a training run.")
-        self.check_quality_btn.clicked.connect(
-            self._open_corpus_quality_check)
-        check_row.addWidget(self.check_quality_btn)
-        check_row.addStretch()
-        layout.addLayout(check_row)
+        # NOTE: The standalone "🔍 Check Corpus Quality" button used
+        # to live here as a duplicate of the Step 1 entry-point. It
+        # was removed during the Step-3 simplification — the same
+        # check is one click away via Step 1's 🩹 Fix Data… picker,
+        # and the pre-training gate still fires automatically when
+        # the user clicks Start Training.
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
@@ -4958,6 +5983,24 @@ class TrainingToolWindow(QMainWindow):
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)  # indeterminate
 
+        # Cost-tally state. ``_modal_run_meta`` lives until the run
+        # ends (done / cancel / fail). The QTimer drives the live
+        # label; we also pre-cache the estimate band so the label
+        # can show "accrued vs. estimate" without re-querying.
+        self._modal_run_meta = {
+            "gpu": gpu,
+            "submitted_at": 0.0,  # filled in by submitted signal
+            "call_id": "",
+            "estimate_low": low,
+            "estimate_high": high,
+            "name": name,
+        }
+        self.modal_cost_label.setText(
+            "⏳ submitting… (live cost will appear here)")
+        self.modal_cost_label.setVisible(True)
+        self.modal_cancel_btn.setEnabled(False)  # enabled on submit
+        self.modal_cancel_btn.setVisible(True)
+
         self._modal_worker = _ModalTrainingWorker(
             jsonl_path=dataset_path,
             config=config,
@@ -4968,7 +6011,128 @@ class TrainingToolWindow(QMainWindow):
         self._modal_worker.log.connect(self.train_log.appendPlainText)
         self._modal_worker.finished_ok.connect(self._on_modal_done)
         self._modal_worker.failed.connect(self._on_modal_failed)
+        self._modal_worker.cancelled.connect(self._on_modal_cancelled)
+        self._modal_worker.submitted.connect(self._on_modal_submitted)
         self._modal_worker.start()
+
+    def _on_modal_submitted(self, call_id: str, gpu: str,
+                            submitted_at: float):
+        """Slot fired once Modal has accepted the job. Switches the
+        Cancel button on (we now have a call_id to cancel against)
+        and starts the 1s tally timer."""
+        self._modal_run_meta["call_id"] = call_id
+        self._modal_run_meta["submitted_at"] = submitted_at
+        self._modal_run_meta["gpu"] = gpu
+        self.modal_cancel_btn.setEnabled(True)
+        # Start the live tally timer if not already running. 1s tick
+        # is responsive without burning CPU — the underlying call is
+        # a single multiply.
+        if not hasattr(self, "_modal_cost_timer"):
+            self._modal_cost_timer = QTimer(self)
+            self._modal_cost_timer.setInterval(1000)
+            self._modal_cost_timer.timeout.connect(
+                self._tick_modal_cost_label)
+        self._tick_modal_cost_label()  # first paint immediately
+        self._modal_cost_timer.start()
+
+    def _tick_modal_cost_label(self):
+        """Update the live cost label from current pricing + elapsed."""
+        meta = getattr(self, "_modal_run_meta", None)
+        if not meta or not meta.get("submitted_at"):
+            return
+        try:
+            from src.cloud.modal_cost_tracking import live_estimated_cost
+            spent = live_estimated_cost(
+                gpu=meta["gpu"],
+                submitted_at=meta["submitted_at"])
+        except Exception:
+            return
+        elapsed = int(time.time() - meta["submitted_at"])
+        mm, ss = elapsed // 60, elapsed % 60
+        self.modal_cost_label.setText(
+            f"💸 Modal run: ${spent:.3f} accrued "
+            f"(elapsed {mm:02d}:{ss:02d}, "
+            f"est ${meta['estimate_low']:.2f}–"
+            f"${meta['estimate_high']:.2f})")
+
+    def _stop_modal_cost_ui(self):
+        """Tear down the cost timer + hide the cancel/label widgets.
+        Called from every run-end path (done / cancelled / failed)."""
+        timer = getattr(self, "_modal_cost_timer", None)
+        if timer is not None:
+            try:
+                timer.stop()
+            except Exception:
+                pass
+        self.modal_cancel_btn.setVisible(False)
+        self.modal_cancel_btn.setEnabled(False)
+        # Leave the cost label visible briefly with the final value
+        # so the user sees what the run cost; subsequent runs replace
+        # the text. We only hide on a fresh studio session.
+
+    def _cancel_modal_run(self):
+        """Handler for the ⏹ Cancel button.
+
+        Confirms once (cancels are intentionally a click-and-confirm
+        affair so a misclick doesn't kill an in-flight job), then
+        signals the worker to stop. The worker terminates the Modal
+        container — billing stops as soon as the container exits.
+        """
+        worker = getattr(self, "_modal_worker", None)
+        if worker is None:
+            return
+        meta = getattr(self, "_modal_run_meta", {}) or {}
+        try:
+            from src.cloud.modal_cost_tracking import live_estimated_cost
+            spent = (live_estimated_cost(
+                gpu=meta.get("gpu", ""),
+                submitted_at=meta.get("submitted_at") or time.time())
+                if meta.get("submitted_at") else 0.0)
+        except Exception:
+            spent = 0.0
+        confirm = QMessageBox.question(
+            self, "Cancel Modal training?",
+            f"Stop the running Modal job and terminate its GPU "
+            f"container?\n\n"
+            f"Estimated spend so far: <b>${spent:.3f}</b>\n\n"
+            f"Modal billing will stop as soon as the container "
+            f"exits (usually within a few seconds). The partial "
+            f"adapter on Modal's volume is left in place; nothing "
+            f"is downloaded.",
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel)
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        self.train_log.appendPlainText(
+            "[modal] User clicked Cancel — sending cancel to worker…")
+        # Disable the button immediately so a double-click doesn't
+        # re-trigger the dialog. The worker re-emits via the
+        # ``cancelled`` slot which finishes teardown.
+        self.modal_cancel_btn.setEnabled(False)
+        try:
+            worker.request_cancel()
+        except Exception as e:
+            self.train_log.appendPlainText(
+                f"[modal] failed to signal cancel: {e}")
+
+    def _on_modal_cancelled(self, note: str):
+        """Worker reported the cancel was processed."""
+        self._stop_modal_cost_ui()
+        self.start_btn.setEnabled(True)
+        self.modal_train_btn.setEnabled(True)
+        self.progress_bar.setVisible(False)
+        self.train_log.appendPlainText(f"[modal] ⏹ {note}")
+        QMessageBox.information(
+            self, "Modal Training Cancelled",
+            f"{note}\n\n"
+            f"Open '💰 Cost & Pricing…' to see the recorded "
+            f"elapsed time and final estimated charge for this run.")
+
+    def _open_modal_cost_dialog(self):
+        """Open the Modal cost & pricing dashboard."""
+        dlg = _ModalCostDialog(parent=self)
+        dlg.exec()
 
     def _open_smart_pick(self) -> None:
         """Open the smart-pick corpus downloader dialog.
@@ -5253,12 +6417,20 @@ class TrainingToolWindow(QMainWindow):
                     getattr(recipe, "user_voice_oversample", 1)))
             ticked_genres = self.selected_genres()
             collection_keys = self._selected_collection_keys
+            expand_corpus = (self.expand_corpus_cb.isChecked()
+                             if hasattr(self, 'expand_corpus_cb')
+                             else False)
+            purpose_fit = (self.purpose_fit_cb.isChecked()
+                           if hasattr(self, 'purpose_fit_cb')
+                           else False)
             n = db.export_jsonl(
                 tmp, fmt="instruction", min_rating=min_rating,
                 source_types=sources,
                 user_voice_oversample=oversample,
                 genre_filter=ticked_genres or None,
-                corpus_collection_keys=collection_keys)
+                corpus_collection_keys=collection_keys,
+                expand_corpus_windows=expand_corpus,
+                enforce_purpose_fit=purpose_fit)
             if n == 0:
                 QMessageBox.warning(
                     self, "No Training Data",
@@ -5274,6 +6446,7 @@ class TrainingToolWindow(QMainWindow):
 
     def _on_modal_done(self, output_path: str, result_meta: dict):
         """Modal training finished — register and surface."""
+        self._stop_modal_cost_ui()
         self.start_btn.setEnabled(True)
         self.modal_train_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
@@ -5389,6 +6562,7 @@ class TrainingToolWindow(QMainWindow):
             f"'{adapter_name}'…")
 
     def _on_modal_failed(self, msg: str):
+        self._stop_modal_cost_ui()
         self.start_btn.setEnabled(True)
         self.modal_train_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
@@ -5477,12 +6651,20 @@ class TrainingToolWindow(QMainWindow):
             # are skipped automatically.
             ticked_genres = self.selected_genres()
             collection_keys = self._selected_collection_keys
+            expand_corpus = (self.expand_corpus_cb.isChecked()
+                             if hasattr(self, 'expand_corpus_cb')
+                             else False)
+            purpose_fit = (self.purpose_fit_cb.isChecked()
+                           if hasattr(self, 'purpose_fit_cb')
+                           else False)
             n = db.export_jsonl(
                 tmp, fmt="instruction", min_rating=min_rating,
                 source_types=sources,
                 user_voice_oversample=oversample,
                 genre_filter=ticked_genres or None,
-                corpus_collection_keys=collection_keys)
+                corpus_collection_keys=collection_keys,
+                expand_corpus_windows=expand_corpus,
+                enforce_purpose_fit=purpose_fit)
             if ticked_genres:
                 self.train_log.appendPlainText(
                     f"[setup] Genre filter active: corpus rows must "
@@ -8877,6 +10059,750 @@ class _PruneApplyWorker(QThread):
             self.failed.emit(str(e))
 
 
+class _GenreScopeApplyWorker(QThread):
+    """Runs the read-only :func:`plan_scope_filter` off the UI thread.
+
+    The scan walks every accepted row and per-row classifies kind
+    when the hard-genre filter would drop the row, so it's
+    proportional to DB size — keep it off the UI thread to avoid
+    freezing the dialog during a few-second scan on large DBs.
+    """
+    finished_ok = pyqtSignal(object)  # ScopeFilterPlan
+    progress = pyqtSignal(int, int, str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, db_path: Path, *, wanted_genres,
+                 drop_untagged: bool):
+        super().__init__()
+        self.db_path = db_path
+        self.wanted_genres = wanted_genres
+        self.drop_untagged = drop_untagged
+
+    def run(self):
+        try:
+            from src.data.genre_scope_apply import plan_scope_filter
+            db = RephraseDatabase(self.db_path)
+            plan = plan_scope_filter(
+                db,
+                self.wanted_genres,
+                drop_untagged=self.drop_untagged,
+                on_progress=lambda c, t, lbl:
+                    self.progress.emit(c, t, lbl))
+            self.finished_ok.emit(plan)
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            self.failed.emit(str(e))
+
+
+class _GenreScopeApplyDialog(QDialog):
+    """Preview + apply the genre scope filter to the DB.
+
+    Two-step UX:
+
+      1. **Plan phase** — kicks the worker, shows progress, then
+         renders a summary: total scanned, kept count, drop count
+         (with reason breakdown), and up to 8 sample drop rows so
+         the user can sanity-check before pulling the trigger.
+      2. **Apply phase** — destructive deletion. The Apply button
+         is disabled until the plan is ready; the user confirms
+         once via a QMessageBox before any rows go.
+
+    Mirrors the audit dialog's pattern: scope is inherited from the
+    Fix Data picker (which itself reads Step 1) and shown read-only
+    here. Sibling/ancillary genre expansion is applied automatically
+    via :func:`expand_with_ancillaries`. Craft / theory / instructional
+    rows are kept regardless of genre via the kind classifier.
+
+    The "Also drop untagged rows" checkbox is the only knob the
+    user has in this dialog. Default off (matches the export
+    pipeline's "untagged is universal context" convention); flip
+    on for a stricter purge.
+    """
+
+    def __init__(self, db_path: Path, *,
+                 initial_genres=None, parent=None):
+        super().__init__(parent)
+        self.db_path = db_path
+        self.setWindowTitle("Apply genre scope (drop unrelated rows)")
+        self.setMinimumSize(820, 640)
+        self._scope = list(initial_genres or [])
+        self._plan = None
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        title = QLabel(
+            "<b>Apply genre scope (drop unrelated rows)</b>")
+        f = title.font(); f.setPointSize(13); title.setFont(f)
+        layout.addWidget(title)
+        intro = QLabel(
+            "Walks the DB and drops rows whose genre tag doesn't "
+            "match the scope. <b>Sibling genres auto-include</b> "
+            "(western pulls in frontier, horror pulls in gothic, "
+            "etc.). <b>Craft / theory / instructional documents "
+            "are kept regardless of genre tag</b> via the auto-"
+            "kind classifier — they teach structure across genres."
+            "<br><br>"
+            "Click Plan to scan and preview; nothing is deleted "
+            "until you click Apply.")
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color:#374151;font-size:12px;")
+        layout.addWidget(intro)
+
+        # Scope summary (read-only — inherited from Fix Data picker)
+        from src.data.genres import (
+            display_name, expand_with_ancillaries,
+        )
+        if self._scope:
+            expanded = sorted(expand_with_ancillaries(set(self._scope)))
+            added = [g for g in expanded if g not in self._scope]
+            names = ", ".join(display_name(g)
+                              for g in sorted(self._scope))
+            summary_text = f"<b>Scope:</b> {names}"
+            if added:
+                added_names = ", ".join(display_name(g) for g in added)
+                summary_text += (
+                    f"<br><span style='color:#6b7280;'>"
+                    f"+ auto-included sibling genres: "
+                    f"{added_names}</span>")
+            summary_text += (
+                f"<br><span style='color:#6b7280;'>"
+                f"+ craft / theory / instructional documents kept "
+                f"regardless of genre tag</span>")
+        else:
+            summary_text = (
+                "<b>⚠ No scope set on Step 1.</b> "
+                "Without a genre scope, this tool would drop "
+                "nothing. Cancel and pick at least one genre on "
+                "Step 1 first.")
+        scope_label = QLabel(summary_text)
+        scope_label.setWordWrap(True)
+        scope_label.setStyleSheet(
+            "background:#f3f4f6;border-radius:4px;"
+            "padding:8px 10px;color:#374151;font-size:11px;")
+        layout.addWidget(scope_label)
+
+        self.drop_untagged_cb = QCheckBox(
+            "Also drop untagged rows (genre column empty)")
+        self.drop_untagged_cb.setToolTip(
+            "Off by default — matches the training pipeline's "
+            "convention that untagged rows are universal context. "
+            "Flip on for a stricter purge that removes everything "
+            "without an explicit genre tag.")
+        layout.addWidget(self.drop_untagged_cb)
+
+        # Status / progress.
+        self.status_label = QLabel(
+            "Click Plan to scan the DB.")
+        self.status_label.setStyleSheet(
+            "background:#f3f4f6;border-radius:4px;padding:8px;"
+            "font-family:monospace;font-size:11px;")
+        layout.addWidget(self.status_label)
+        self.scan_bar = QProgressBar()
+        self.scan_bar.setVisible(False)
+        layout.addWidget(self.scan_bar)
+
+        # Per-genre review section (populated after Plan runs).
+        # Each row is one unique unmatched genre tag with a
+        # checkbox (default checked = drop). Unchecking keeps that
+        # genre's rows in the DB. Apply count updates live.
+        from PyQt6.QtWidgets import QFrame
+        review_intro = QLabel(
+            "<b>Unmatched genres</b> "
+            "<span style='color:#6b7280;font-size:11px;'>"
+            "(uncheck a genre to <i>keep</i> its rows; "
+            "the Apply count updates live)</span>")
+        review_intro.setWordWrap(True)
+        review_intro.setVisible(False)
+        self._review_intro = review_intro
+        layout.addWidget(review_intro)
+
+        # Scroll-wrapped frame so a long list of unmatched genres
+        # doesn't push Apply off the dialog.
+        self._review_scroll = QScrollArea()
+        self._review_scroll.setWidgetResizable(True)
+        self._review_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self._review_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._review_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._review_scroll.setVisible(False)
+        self._review_inner = QWidget()
+        self._review_layout = QVBoxLayout(self._review_inner)
+        self._review_layout.setContentsMargins(0, 0, 6, 0)
+        self._review_layout.setSpacing(2)
+        self._review_layout.addStretch()
+        self._review_scroll.setWidget(self._review_inner)
+        layout.addWidget(self._review_scroll, 1)
+
+        # Per-genre checkbox state — populated by ``_render_review``.
+        # ``genre_label → QCheckBox``; readers query ``isChecked``
+        # to decide which row ids to delete on Apply.
+        self._genre_drop_checkboxes: dict = {}
+
+        # Action row.
+        actions = QHBoxLayout()
+        self.plan_btn = QPushButton("🔍 Plan (preview drops)")
+        self.plan_btn.setStyleSheet(
+            "QPushButton { background-color: #2563eb; color: white; "
+            "padding: 6px 14px; border-radius: 5px; font-weight: bold; }"
+            "QPushButton:hover { background-color: #1d4ed8; }"
+            "QPushButton:disabled { background-color: #93c5fd; }")
+        self.plan_btn.clicked.connect(self._on_plan)
+        if not self._scope:
+            self.plan_btn.setEnabled(False)
+        actions.addWidget(self.plan_btn)
+        actions.addStretch()
+        self.cancel_btn = QPushButton("Close")
+        self.cancel_btn.clicked.connect(self.reject)
+        actions.addWidget(self.cancel_btn)
+        self.apply_btn = QPushButton("✓ Apply (delete planned rows)")
+        self.apply_btn.setStyleSheet(
+            "QPushButton { background-color: #dc2626; color: white; "
+            "padding: 6px 14px; border-radius: 5px; font-weight: bold; }"
+            "QPushButton:hover { background-color: #b91c1c; }"
+            "QPushButton:disabled { background-color: #fca5a5; }")
+        self.apply_btn.setEnabled(False)
+        self.apply_btn.clicked.connect(self._on_apply)
+        actions.addWidget(self.apply_btn)
+        layout.addLayout(actions)
+
+    def _on_plan(self):
+        # Disable controls during scan; Apply stays disabled until
+        # the plan returns and we re-render the per-genre review.
+        self.plan_btn.setEnabled(False)
+        self.apply_btn.setEnabled(False)
+        self.drop_untagged_cb.setEnabled(False)
+        self.scan_bar.setVisible(True)
+        self.scan_bar.setRange(0, 0)
+        self.status_label.setText("Scanning DB…")
+        # Wipe any prior review (e.g. on re-Plan) so stale rows
+        # don't linger underneath the new plan's results.
+        self._genre_drop_checkboxes = {}
+        self._review_intro.setVisible(False)
+        self._review_scroll.setVisible(False)
+        while self._review_layout.count():
+            item = self._review_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self._review_layout.addStretch()
+
+        self._worker = _GenreScopeApplyWorker(
+            self.db_path,
+            wanted_genres=self._scope,
+            drop_untagged=self.drop_untagged_cb.isChecked())
+        self._worker.progress.connect(self._on_progress)
+        self._worker.finished_ok.connect(self._on_planned)
+        self._worker.failed.connect(self._on_failed)
+        self._worker.start()
+
+    def _on_progress(self, done, total, msg):
+        self.status_label.setText(msg)
+        if total > 0:
+            self.scan_bar.setRange(0, total)
+            self.scan_bar.setValue(done)
+        else:
+            self.scan_bar.setRange(0, 0)
+
+    def _on_failed(self, msg):
+        self.scan_bar.setVisible(False)
+        self.status_label.setText(f"⚠ Plan failed: {msg}")
+        self._reenable_inputs()
+
+    def _on_planned(self, plan):
+        self._plan = plan
+        self.scan_bar.setVisible(False)
+        self._reenable_inputs()
+        if not plan.drop_ids:
+            self.status_label.setText(
+                f"Scanned {plan.total_scanned:,} row(s) in "
+                f"{plan.elapsed_seconds:.1f}s. <b>Nothing to "
+                f"drop</b> — every row already matches the scope "
+                f"(or is craft / theory / untagged-and-kept).")
+            return
+        reason_str = ", ".join(
+            f"{n:,} {r}" for r, n in plan.by_reason.items())
+        self.status_label.setText(
+            f"Scanned {plan.total_scanned:,} row(s) in "
+            f"{plan.elapsed_seconds:.1f}s. "
+            f"<b>{plan.kept_count:,}</b> would be kept; "
+            f"<b>{len(plan.drop_ids):,}</b> would be dropped "
+            f"({reason_str}). Review per-genre below.")
+        self._render_review(plan)
+        self._refresh_apply_count()
+        self.apply_btn.setEnabled(True)
+
+    def _render_review(self, plan):
+        """Build a per-genre checkbox row for every unique
+        unmatched genre tag. Each row = checkbox + genre name +
+        count + first sample preview."""
+        from PyQt6.QtWidgets import QFrame
+        # Wipe any previous rows (re-Plan rebuilds the list).
+        while self._review_layout.count():
+            item = self._review_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self._genre_drop_checkboxes = {}
+
+        # Sort genres by drop count descending so the biggest
+        # offenders are at the top.
+        sorted_genres = sorted(
+            plan.drops_by_genre.items(),
+            key=lambda kv: -len(kv[1]))
+        for genre_label, ids in sorted_genres:
+            row = QFrame()
+            row.setStyleSheet(
+                "QFrame { background:#fff; border:1px solid #e5e7eb;"
+                " border-radius:4px; padding:6px 8px; }")
+            row_lay = QVBoxLayout(row)
+            row_lay.setContentsMargins(6, 4, 6, 4)
+            row_lay.setSpacing(2)
+            cb = QCheckBox(
+                f"{genre_label}  ({len(ids):,} rows)")
+            cb.setChecked(True)  # default: drop
+            cb.setStyleSheet("font-weight: bold; color:#991b1b;")
+            cb.toggled.connect(
+                lambda _checked: self._refresh_apply_count())
+            self._genre_drop_checkboxes[genre_label] = cb
+            row_lay.addWidget(cb)
+            sample = plan.first_samples_by_genre.get(genre_label, "")
+            if sample:
+                lbl = QLabel(
+                    f"<span style='color:#6b7280;font-size:10px;'>"
+                    f"e.g.: {_html_escape(sample)}</span>")
+                lbl.setWordWrap(True)
+                lbl.setStyleSheet("padding-left: 22px;")
+                row_lay.addWidget(lbl)
+            self._review_layout.addWidget(row)
+        self._review_layout.addStretch()
+        self._review_intro.setVisible(True)
+        self._review_scroll.setVisible(True)
+
+    def _refresh_apply_count(self):
+        """Tally row ids across all checked genres and update the
+        Apply button label so the user always sees the live count
+        as they uncheck genres to keep."""
+        if not self._plan:
+            return
+        total = 0
+        for genre_label, cb in self._genre_drop_checkboxes.items():
+            if cb.isChecked():
+                total += len(self._plan.drops_by_genre.get(
+                    genre_label, []))
+        self.apply_btn.setText(
+            f"✓ Apply (drop {total:,} rows)" if total
+            else "✓ Apply (no genres checked)")
+        self.apply_btn.setEnabled(total > 0)
+
+    def _reenable_inputs(self):
+        self.plan_btn.setEnabled(bool(self._scope))
+        self.drop_untagged_cb.setEnabled(True)
+
+    def _on_apply(self):
+        if not self._plan:
+            return
+        # Collect ids only from genres the user left checked.
+        # Unchecked genres = "keep these rows".
+        ids_to_drop: list = []
+        kept_genres: list = []
+        for genre_label, cb in self._genre_drop_checkboxes.items():
+            if cb.isChecked():
+                ids_to_drop.extend(
+                    self._plan.drops_by_genre.get(genre_label, []))
+            else:
+                kept_genres.append(genre_label)
+        if not ids_to_drop:
+            QMessageBox.information(
+                self, "Nothing to drop",
+                "All unmatched genres are unchecked — no rows "
+                "would be deleted. Check at least one genre to "
+                "drop, or close this dialog.")
+            return
+        kept_note = ""
+        if kept_genres:
+            kept_note = (
+                f"\n\nUnchecked genres (kept in DB): "
+                f"{', '.join(sorted(kept_genres))}")
+        confirm = QMessageBox.question(
+            self, "Apply genre scope filter?",
+            f"Delete <b>{len(ids_to_drop):,}</b> row(s) from the "
+            f"training DB across "
+            f"<b>{sum(1 for cb in self._genre_drop_checkboxes.values() if cb.isChecked()):,}</b>"
+            f" checked genres?\n\n"
+            f"This is destructive — there is no built-in undo "
+            f"(though existing JSONL exports are unaffected)."
+            f"{kept_note}",
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel)
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            from src.data.genre_scope_apply import apply_drops
+            db = RephraseDatabase(self.db_path)
+            n = apply_drops(db, ids_to_drop)
+        except Exception as e:
+            QMessageBox.warning(self, "Delete failed", str(e))
+            return
+        QMessageBox.information(
+            self, "Rows dropped",
+            f"Deleted {n:,} row(s).")
+        self.accept()
+
+
+class _PromptFitAuditWorker(QThread):
+    """Run the prompt-fit cluster audit off the UI thread.
+
+    The audit walks the DB, buckets rows by (source_type, shape),
+    and TF-IDF/MiniBatchKMeans-clusters each bucket to surface
+    outlier clusters. Same evict-LLM-cache-first pattern as
+    :class:`_TopicAnalysisWorker` since clustering on a large DB
+    can OOM if a model is loaded alongside.
+
+    ``genre_filter`` (optional) scopes the audit to rows whose genre
+    overlaps the supplied set; sibling genres expand automatically
+    (western↔frontier, horror↔gothic) via the genres taxonomy.
+    """
+    finished_ok = pyqtSignal(object)  # AuditReport
+    progress = pyqtSignal(int, int, str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, db_path: Path, *,
+                 genre_filter=None):
+        super().__init__()
+        self.db_path = db_path
+        self.genre_filter = genre_filter
+
+    def run(self):
+        try:
+            try:
+                from src.ai.model_cache import get_default_cache
+                cache = get_default_cache()
+                if cache.loaded_summary():
+                    self.progress.emit(
+                        0, 0,
+                        "freeing loaded models for clustering")
+                    cache.clear()
+                    import gc; gc.collect()
+            except Exception:
+                pass
+            from src.data.prompt_fit_audit import audit
+            db = RephraseDatabase(self.db_path)
+            report = audit(
+                db,
+                genre_filter=self.genre_filter,
+                on_progress=lambda c, t, lbl:
+                    self.progress.emit(c, t, lbl))
+            self.finished_ok.emit(report)
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            self.failed.emit(str(e))
+
+
+class _PromptFitAuditDialog(QDialog):
+    """Cluster-based audit of (source_type × shape) buckets.
+
+    Surfaces *outlier* clusters within each bucket so the user can
+    drop systematic mis-fits the heuristic gate can't catch.
+    Companion to the always-on heuristic gate in
+    :mod:`prompt_fit_gate`: the gate handles obvious broken pairs
+    automatically; this dialog handles drift that needs human
+    review.
+
+    Layout:
+      * Status / progress bar while the audit runs.
+      * One collapsible card per bucket with at least one outlier
+        cluster. Each card lists the bucket's (source_type, shape),
+        total rows, and clusters; outlier clusters are checkboxed
+        with a sample row preview underneath.
+      * Apply button at the bottom — drops only the *previewed*
+        sample rows of each checked cluster (conservative v1).
+    """
+
+    def __init__(self, db_path: Path, *, parent=None,
+                 initial_genres: Optional[list] = None):
+        super().__init__(parent)
+        self.db_path = db_path
+        self.setWindowTitle("Audit prompt fit")
+        self.setMinimumSize(820, 720)
+        self._report = None
+        self._cluster_checkboxes: list = []  # (cluster, QCheckBox)
+        # Inherits scope from Fix Data picker (which itself reads
+        # Step 1). Refinable inline via the scope widget's Refine
+        # button so power users can audit a different slice without
+        # leaving the dialog.
+        self._scope_widget: Optional[_GenreScopeWidget] = None
+        self._initial_genres = list(initial_genres or [])
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        title = QLabel("<b>Audit prompt fit (cluster review)</b>")
+        f = title.font(); f.setPointSize(13); title.setFont(f)
+        layout.addWidget(title)
+        intro = QLabel(
+            "Groups every accepted row by <i>source_type × data "
+            "shape</i> (the same buckets the export pipeline uses), "
+            "then clusters each bucket and surfaces any clusters "
+            "that look like systematic mis-fits — content that "
+            "drifted off-purpose. Review the samples and approve "
+            "the ones to drop. <b>Conservative v1:</b> only the "
+            "previewed sample rows of each checked cluster are "
+            "deleted, not the whole cluster.")
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color:#374151;font-size:12px;")
+        layout.addWidget(intro)
+
+        # Inherited-scope summary with collapsible Refine grid.
+        # Pre-checked from initial_genres (which came from Step 1
+        # via the Fix Data picker); user can refine inline if they
+        # want to audit a different slice for this run.
+        self._scope_widget = _GenreScopeWidget(
+            initial_scope=self._initial_genres, parent=self)
+        layout.addWidget(self._scope_widget)
+
+        run_row = QHBoxLayout()
+        run_row.addStretch()
+        self.run_btn = QPushButton("▶ Run audit")
+        self.run_btn.setStyleSheet(
+            "QPushButton { background-color: #2563eb; color: white; "
+            "padding: 6px 14px; border-radius: 5px; font-weight: bold; }"
+            "QPushButton:hover { background-color: #1d4ed8; }")
+        self.run_btn.clicked.connect(self._kick_off)
+        run_row.addWidget(self.run_btn)
+        layout.addLayout(run_row)
+
+        self.status_label = QLabel("Click Run audit to start.")
+        self.status_label.setStyleSheet(
+            "background:#f3f4f6;border-radius:4px;padding:8px;"
+            "font-family:monospace;font-size:11px;")
+        layout.addWidget(self.status_label)
+
+
+        self.audit_bar = QProgressBar()
+        self.audit_bar.setRange(0, 1)
+        self.audit_bar.setValue(0)
+        self.audit_bar.setVisible(True)
+        layout.addWidget(self.audit_bar)
+
+        # Scrollable area for bucket cards (one per bucket with
+        # outliers). Shown empty until the audit completes.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; }")
+        self._cards_holder = QWidget()
+        self._cards_layout = QVBoxLayout(self._cards_holder)
+        self._cards_layout.setContentsMargins(0, 0, 4, 0)
+        self._cards_layout.setSpacing(8)
+        self._cards_layout.addStretch()
+        scroll.setWidget(self._cards_holder)
+        layout.addWidget(scroll, 1)
+
+        # Action row.
+        actions = QHBoxLayout()
+        actions.addStretch()
+        self.close_btn = QPushButton("Close")
+        self.close_btn.clicked.connect(self.reject)
+        actions.addWidget(self.close_btn)
+        self.apply_btn = QPushButton("✓ Drop checked clusters")
+        self.apply_btn.setStyleSheet(
+            "QPushButton { background-color: #dc2626; color: white; "
+            "padding: 6px 14px; border-radius: 5px; font-weight: bold; }"
+            "QPushButton:hover { background-color: #b91c1c; }"
+            "QPushButton:disabled { background-color: #fca5a5; }")
+        self.apply_btn.setEnabled(False)
+        self.apply_btn.clicked.connect(self._on_apply)
+        actions.addWidget(self.apply_btn)
+        layout.addLayout(actions)
+
+    def _reenable_scope_controls(self):
+        """Re-enable the run button after a run ends. (Genre picker
+        was removed — scope is inherited and read-only here.)"""
+        self.run_btn.setEnabled(True)
+
+    def _kick_off(self):
+        # Scope is inherited from the Fix Data picker (which itself
+        # read it from Step 1) and may have been refined inline via
+        # the scope widget's Refine button. Empty list = audit all
+        # rows.
+        selected = (self._scope_widget.current_scope()
+                    if self._scope_widget else [])
+        # Disable the run button while running so the user can't
+        # kick a second audit on top of the first.
+        self.run_btn.setEnabled(False)
+        # Reset cluster-cards holder for re-runs.
+        self._cluster_checkboxes = []
+        if hasattr(self, "_cards_layout"):
+            while self._cards_layout.count():
+                item = self._cards_layout.takeAt(0)
+                w = item.widget()
+                if w is not None:
+                    w.deleteLater()
+            self._cards_layout.addStretch()
+        self.audit_bar.setVisible(True)
+        self.audit_bar.setRange(0, 0)
+        scope_msg = (f"scope: {', '.join(sorted(selected))} "
+                     f"(+ ancillaries)" if selected
+                     else "scope: all genres")
+        self.status_label.setText(f"Scanning… ({scope_msg})")
+        self._worker = _PromptFitAuditWorker(
+            self.db_path,
+            genre_filter=selected if selected else None)
+        self._worker.progress.connect(self._on_progress)
+        self._worker.finished_ok.connect(self._on_finished)
+        self._worker.failed.connect(self._on_failed)
+        self._worker.start()
+
+    def _on_progress(self, done: int, total: int, msg: str):
+        self.status_label.setText(msg)
+        if total > 0:
+            self.audit_bar.setRange(0, total)
+            self.audit_bar.setValue(done)
+        else:
+            self.audit_bar.setRange(0, 0)  # indeterminate
+
+    def _on_failed(self, msg: str):
+        self.audit_bar.setVisible(False)
+        self.status_label.setText(f"⚠ Audit failed: {msg}")
+        self._reenable_scope_controls()
+
+    def _on_finished(self, report):
+        self._report = report
+        self.audit_bar.setVisible(False)
+        self._reenable_scope_controls()
+        if not report.available:
+            self.status_label.setText(f"⚠ {report.error}")
+            return
+        if not report.buckets:
+            self.status_label.setText(
+                report.error or "No buckets large enough to audit.")
+            return
+        n_outliers = sum(len(b.outlier_clusters) for b in report.buckets)
+        if n_outliers == 0:
+            self.status_label.setText(
+                f"Scanned {report.total_rows_scanned:,} rows in "
+                f"{report.elapsed_seconds:.1f}s across "
+                f"{len(report.buckets)} bucket(s). "
+                f"<b>No outlier clusters found.</b>")
+            return
+        self.status_label.setText(
+            f"Scanned {report.total_rows_scanned:,} rows in "
+            f"{report.elapsed_seconds:.1f}s. Found "
+            f"<b>{n_outliers}</b> outlier cluster(s) across "
+            f"{sum(1 for b in report.buckets if b.outlier_clusters)} "
+            f"bucket(s). Tick the clusters whose samples don't fit "
+            f"the bucket's purpose, then click Apply.")
+        self._render_bucket_cards(report)
+        self.apply_btn.setEnabled(True)
+
+    def _render_bucket_cards(self, report):
+        from src.data.prompt_fit_audit import shape_label
+        # Drop the trailing stretch so cards insert before it.
+        # We re-add the stretch at the end so the cards collect at
+        # the top of the scroll area.
+        while self._cards_layout.count():
+            item = self._cards_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        from PyQt6.QtWidgets import QFrame
+        for bucket in report.buckets:
+            if not bucket.outlier_clusters:
+                continue
+            st, shape = bucket.bucket_key
+            card = QFrame()
+            card.setStyleSheet(
+                "QFrame { background:#fff; border:1px solid #e5e7eb;"
+                " border-radius:6px; padding:10px; }")
+            card_lay = QVBoxLayout(card)
+            card_lay.setContentsMargins(10, 8, 10, 8)
+            card_lay.setSpacing(6)
+            head = QLabel(
+                f"<b>{st}</b> · <i>{shape_label(shape)}</i> &nbsp;—&nbsp; "
+                f"{bucket.total_rows:,} rows in {bucket.n_clusters} clusters; "
+                f"<b>{len(bucket.outlier_clusters)}</b> flagged as outliers")
+            head.setStyleSheet("color:#1f2937;font-size:12px;")
+            card_lay.addWidget(head)
+
+            for cluster in bucket.outlier_clusters:
+                cb_label = (
+                    f"Cluster #{cluster.cluster_id} · "
+                    f"{cluster.size:,} rows · "
+                    f"typicality {cluster.typicality:.2f} · "
+                    f"top terms: "
+                    f"{', '.join(cluster.top_terms[:3]) or '—'}")
+                cb = QCheckBox(cb_label)
+                cb.setStyleSheet(
+                    "QCheckBox { color:#991b1b; font-weight:bold; }")
+                card_lay.addWidget(cb)
+                self._cluster_checkboxes.append((cluster, cb))
+
+                # Sample rows (input → output), each truncated.
+                for in_text, out_text in zip(
+                        cluster.sample_inputs, cluster.sample_outputs):
+                    row = QLabel(
+                        f"<span style='color:#6b7280;'>in:</span> "
+                        f"{_html_escape(in_text)}<br>"
+                        f"<span style='color:#6b7280;'>out:</span> "
+                        f"{_html_escape(out_text)}")
+                    row.setWordWrap(True)
+                    row.setStyleSheet(
+                        "background:#f9fafb;border-left:3px solid #fca5a5;"
+                        "border-radius:3px;padding:6px 8px;"
+                        "font-size:11px;color:#374151;margin-left:18px;")
+                    card_lay.addWidget(row)
+
+            self._cards_layout.addWidget(card)
+        self._cards_layout.addStretch()
+
+    def _on_apply(self):
+        checked = [c for c, cb in self._cluster_checkboxes
+                   if cb.isChecked()]
+        if not checked:
+            QMessageBox.information(
+                self, "Nothing checked",
+                "Tick at least one cluster's checkbox before "
+                "applying.")
+            return
+        ids = []
+        for c in checked:
+            ids.extend(c.sample_row_ids)
+        ids = list(set(ids))
+        confirm = QMessageBox.question(
+            self, "Drop previewed rows?",
+            f"Delete {len(ids):,} row(s) from the training DB?\n\n"
+            f"This drops only the rows shown in the previews of "
+            f"the checked clusters — not the entire clusters.\n\n"
+            f"There is no built-in undo — the rows are removed "
+            f"from the DB. Existing JSONL exports are unaffected.",
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel)
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        from src.data.prompt_fit_audit import delete_rows_by_id
+        try:
+            db = RephraseDatabase(self.db_path)
+            n = delete_rows_by_id(db, ids)
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Delete failed", str(e))
+            return
+        QMessageBox.information(
+            self, "Rows dropped",
+            f"Deleted {n:,} row(s). Re-run the audit to refresh "
+            f"the cluster view.")
+        self.accept()
+
+
+def _html_escape(s: str) -> str:
+    """Minimal HTML escape for the QLabel sample previews."""
+    return (s or "").replace("&", "&amp;").replace("<", "&lt;") \
+                    .replace(">", "&gt;")
+
+
 class _VariabilityPruneDialog(QDialog):
     """Audit + prune the corpus for variability.
 
@@ -10375,11 +12301,106 @@ class _CorpusBrowserDialog(QDialog):
 
         # Footer
         btn_row = QHBoxLayout()
+        # Drop-matching action — respects the *current filter set*
+        # (source / genre / corpus / query). Lets users sweep an
+        # entire category without leaving the dialog: e.g. filter to
+        # source=rephrase + genre=horror and drop just those rows.
+        # Confirmed once via QMessageBox; deletion goes through the
+        # same chunked helper the audit uses.
+        self.drop_matching_btn = QPushButton(
+            "🗑 Drop matching rows…")
+        self.drop_matching_btn.setStyleSheet(
+            "QPushButton { background-color: #dc2626; color: white; "
+            "padding: 6px 14px; border-radius: 5px; "
+            "font-weight: bold; }"
+            "QPushButton:hover { background-color: #b91c1c; }"
+            "QPushButton:disabled { background-color: #fca5a5; }")
+        self.drop_matching_btn.setToolTip(
+            "Delete every row matching the current filter "
+            "(source / genre / corpus / query). Only the matching "
+            "rows are affected; nothing else in the DB is touched. "
+            "Use this to scope-drop a corpus task — e.g. filter to "
+            "source=rephrase + genre=horror and drop just those.")
+        self.drop_matching_btn.clicked.connect(self._on_drop_matching)
+        btn_row.addWidget(self.drop_matching_btn)
         btn_row.addStretch()
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.accept)
         btn_row.addWidget(close_btn)
         outer.addLayout(btn_row)
+
+    # ── Drop matching rows ────────────────────────────────
+
+    def _filter_summary(self) -> str:
+        """Render the active filter as a human-readable string for
+        the confirmation dialog."""
+        f = self._filters()
+        parts = []
+        if f["query"]:
+            parts.append(f"query=\"{f['query']}\"")
+        if f["source_types"]:
+            parts.append(f"source={','.join(f['source_types'])}")
+        if f["genre"]:
+            parts.append(f"genre={f['genre']}")
+        if f["corpus_id"]:
+            parts.append(f"corpus_id={f['corpus_id']}")
+        return ", ".join(parts) if parts else "(no filters — ALL rows)"
+
+    def _on_drop_matching(self):
+        """Compute matching ids, confirm with the user, delete."""
+        f = self._filters()
+        try:
+            db = RephraseDatabase(self.db_path)
+            ids = db.search_row_ids(
+                query=f["query"],
+                source_types=f["source_types"],
+                genre=f["genre"],
+                corpus_id=f["corpus_id"],
+                only_accepted=True)
+        except Exception as e:
+            QMessageBox.warning(self, "Search failed", str(e))
+            return
+        if not ids:
+            QMessageBox.information(
+                self, "Nothing to drop",
+                f"No rows match the current filter.\n\n"
+                f"Filter: {self._filter_summary()}")
+            return
+        # Refuse to delete with no filter set — too dangerous
+        # ("drop ALL rows" should not be a one-button gesture).
+        if (not f["query"] and not f["source_types"]
+                and not f["genre"] and not f["corpus_id"]):
+            QMessageBox.warning(
+                self, "Set a filter first",
+                f"Refusing to drop {len(ids):,} row(s) with no "
+                f"filter set — that's the whole DB. Apply at least "
+                f"one filter (source / genre / corpus / query) "
+                f"before clicking Drop.")
+            return
+        confirm = QMessageBox.question(
+            self, "Drop matching rows?",
+            f"Delete <b>{len(ids):,}</b> row(s) from the training "
+            f"DB?\n\n"
+            f"Filter: <code>{self._filter_summary()}</code>\n\n"
+            f"This is destructive — there is no built-in undo "
+            f"(though existing JSONL exports are unaffected).",
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel)
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            from src.data.genre_scope_apply import apply_drops
+            n = apply_drops(db, ids)
+        except Exception as e:
+            QMessageBox.warning(self, "Delete failed", str(e))
+            return
+        QMessageBox.information(
+            self, "Rows dropped",
+            f"Deleted {n:,} row(s).")
+        # Refresh the table so the user sees the post-delete state.
+        self._offset = 0
+        self._refresh()
 
     # ── Search / paging ───────────────────────────────────
 
@@ -11089,10 +13110,16 @@ class _PacingPairsDialog(QDialog):
         form.addRow("Target genre (from CONLIT):", self.genre_combo)
 
         self.max_pairs_spin = QSpinBox()
-        self.max_pairs_spin.setRange(1, 200)
+        # Allow hundreds of pairs — same range as the rephrase
+        # synthesizer. Real bulk runs (with multiple tones × many
+        # source rows) can chew through a lot of LLM calls; the
+        # cost preview under the tone grid shows the live tally.
+        self.max_pairs_spin.setRange(1, 2000)
         self.max_pairs_spin.setValue(20)
         self.max_pairs_spin.setToolTip(
-            "Cap on training pairs to write. Each = 1 LLM call.")
+            "Cap on training pairs to write. Each = 1 LLM call. "
+            "Allowed up to 2000 — set high for bulk runs, low for "
+            "quick samples.")
         form.addRow("Max pairs to generate:", self.max_pairs_spin)
 
         self.min_words_spin = QSpinBox()
@@ -11124,6 +13151,57 @@ class _PacingPairsDialog(QDialog):
         self.baseline_label.setVisible(False)
         layout.addWidget(self.baseline_label)
         self.genre_combo.currentIndexChanged.connect(self._refresh_baseline)
+
+        # ── Tone variants (mirrors the rephrase synthesizer) ──
+        # Each ticked tone produces ONE rewrite per source row,
+        # tagged style=<tone> so the trainer's plot/pacing
+        # instruction template becomes tone-conditional. The LLM
+        # is asked to hit BOTH the CONLIT pacing target AND the
+        # tone register in the same rewrite. Source repetition
+        # across tones is exactly what the model needs to learn
+        # tone-conditional pacing rewriting — not data inflation.
+        from PyQt6.QtWidgets import QFrame, QGridLayout
+        tone_box = QFrame()
+        tone_box.setStyleSheet(
+            "QFrame { background:#fff; border:1px solid #e5e7eb;"
+            " border-radius:6px; padding:8px; }")
+        tone_lay = QVBoxLayout(tone_box)
+        tone_head = QLabel(
+            "<b>Tone variants per source row</b> "
+            "<span style='color:#6b7280;font-size:11px;'>"
+            "(each ticked tone = one rewrite per source, asked to "
+            "hit both the genre pacing AND the tone register; "
+            "leave all unticked for tone-agnostic rewrites)</span>")
+        tone_head.setWordWrap(True)
+        tone_lay.addWidget(tone_head)
+        self._tone_checkboxes: dict = {}
+        try:
+            from src.data.tones import (
+                TONES, display_name as _tone_name,
+            )
+            grid = QGridLayout()
+            grid.setHorizontalSpacing(14)
+            grid.setVerticalSpacing(2)
+            for i, key in enumerate(sorted(TONES.keys())):
+                info = TONES[key]
+                cb = QCheckBox(_tone_name(key))
+                cb.setStyleSheet("font-size:11px;")
+                cb.setToolTip(info.get("description", ""))
+                self._tone_checkboxes[key] = cb
+                grid.addWidget(cb, i // 4, i % 4)
+            tone_lay.addLayout(grid)
+        except Exception as e:
+            tone_lay.addWidget(QLabel(f"(tone list unavailable: {e})"))
+        self._tone_cost_label = QLabel("")
+        self._tone_cost_label.setStyleSheet(
+            "color:#6b7280;font-size:10px;padding-top:4px;")
+        tone_lay.addWidget(self._tone_cost_label)
+        for cb in self._tone_checkboxes.values():
+            cb.toggled.connect(self._refresh_tone_cost_preview)
+        self.max_pairs_spin.valueChanged.connect(
+            self._refresh_tone_cost_preview)
+        self._refresh_tone_cost_preview()
+        layout.addWidget(tone_box)
 
         # Progress log
         self.log_box = QPlainTextEdit()
@@ -11191,6 +13269,29 @@ class _PacingPairsDialog(QDialog):
             "<br>&nbsp;&nbsp;".join(lines))
         self.baseline_label.setVisible(True)
 
+    def _refresh_tone_cost_preview(self):
+        """Live cost preview under the tone grid — updates as the
+        user toggles tones or changes the max-pairs cap."""
+        if not hasattr(self, "_tone_checkboxes"):
+            return
+        n_tones = sum(1 for cb in self._tone_checkboxes.values()
+                      if cb.isChecked())
+        cap = self.max_pairs_spin.value()
+        if n_tones == 0:
+            self._tone_cost_label.setText(
+                "(no tones ticked → tone-agnostic rewrites; "
+                f"up to {cap} LLM calls)")
+        else:
+            sources_per_tone = max(1, cap // n_tones)
+            self._tone_cost_label.setText(
+                f"({n_tones} tone(s) × ≈{sources_per_tone} source row(s) "
+                f"= up to {cap} LLM calls; each pair tagged "
+                f"style=&lt;tone&gt; for tone-conditional training)")
+
+    def _selected_tones(self) -> list:
+        return [k for k, cb in self._tone_checkboxes.items()
+                if cb.isChecked()]
+
     def _run(self) -> None:
         from PyQt6.QtWidgets import QApplication
         target_genre = self.genre_combo.currentData()
@@ -11200,15 +13301,20 @@ class _PacingPairsDialog(QDialog):
         min_words = self.min_words_spin.value()
         coll_keys = (self._selected_collection_keys
                      if self.use_filter_cb.isChecked() else None)
+        tones = self._selected_tones()
+        tone_clause = (
+            f" Each source row will produce one rewrite per ticked "
+            f"tone ({', '.join(tones)})."
+            if tones else "")
 
         # Confirm cost
         reply = QMessageBox.question(
             self, "Confirm",
             f"Generate up to {max_pairs} pacing pairs targeting "
-            f"<b>{target_genre}</b>? Each pair = 1 LLM call.<br><br>"
-            f"The synthesizer will skip passages already on-target "
-            f"and will discard rewrites that don't actually move "
-            f"closer to the baseline.",
+            f"<b>{target_genre}</b>? Each pair = 1 LLM call."
+            f"{tone_clause}<br><br>"
+            f"The synthesizer will discard rewrites that don't "
+            f"actually move closer to the baseline.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Yes)
         if reply != QMessageBox.StandardButton.Yes:
@@ -11229,7 +13335,8 @@ class _PacingPairsDialog(QDialog):
         self.run_btn.setEnabled(False)
         self.log_box.clear()
         self.log_box.appendPlainText(
-            f"Synthesizing up to {max_pairs} pairs for {target_genre}…")
+            f"Synthesizing up to {max_pairs} pairs for {target_genre}…"
+            + (f" (tones: {', '.join(tones)})" if tones else ""))
         QApplication.processEvents()
 
         from src.ai.pacing_synthesizer import synthesize_pacing_pairs
@@ -11242,6 +13349,7 @@ class _PacingPairsDialog(QDialog):
                 source_collection_keys=coll_keys,
                 max_pairs=max_pairs,
                 min_passage_words=min_words,
+                tones=tones or None,
                 on_log=lambda s: (
                     self.log_box.appendPlainText(s),
                     QApplication.processEvents()),
@@ -11261,6 +13369,10 @@ class _PacingPairsDialog(QDialog):
         self.log_box.appendPlainText(
             f"Done. Logged {result['n_logged']} pairs to the training DB "
             f"as plot/pacing rows tagged 'pacing_target={target_genre}'.")
+        if result.get("tones_used"):
+            self.log_box.appendPlainText(
+                f"  tone variants per source: "
+                f"{', '.join(result['tones_used'])}")
         self.log_box.appendPlainText(
             f"  skipped already-matching: "
             f"{result['n_skipped_already_matching']}")
@@ -11638,10 +13750,16 @@ class _RephrasePairsDialog(QDialog):
         form = QFormLayout()
 
         self.max_pairs_spin = QSpinBox()
-        self.max_pairs_spin.setRange(1, 500)
+        # Allow hundreds of pairs in a single bulk run, matching
+        # the CONLIT pacing synthesizer's range. The cost preview
+        # under the tone grid below shows the live LLM-call tally
+        # so the user sees what they're committing to.
+        self.max_pairs_spin.setRange(1, 2000)
         self.max_pairs_spin.setValue(30)
         self.max_pairs_spin.setToolTip(
-            "Cap on training pairs. Each = 1 LLM call.")
+            "Cap on training pairs. Each = 1 LLM call. Allowed "
+            "up to 2000 — set high for bulk runs, low for quick "
+            "samples.")
         form.addRow("Max pairs to generate:", self.max_pairs_spin)
 
         self.min_words_spin = QSpinBox()
@@ -11695,6 +13813,61 @@ class _RephrasePairsDialog(QDialog):
 
         layout.addLayout(form)
 
+        # ── Tone variants ────────────────────────────────────
+        # Pick which canonical tones to ask the LLM to rephrase
+        # in. Each ticked tone produces ONE rephrase per source
+        # row, tagged with style=<tone> so the trainer's
+        # instruction template becomes tone-conditional ("Rephrase
+        # this in a grimdark tone."). Source rows repeated across
+        # tones is exactly the supervision the model needs to
+        # learn tone-conditional rephrasing — not data inflation.
+        # The Max pairs cap above bounds the total emissions, so
+        # picking 3 tones with cap=30 yields ~10 sources × 3
+        # tones each.
+        from PyQt6.QtWidgets import QFrame, QGridLayout
+        tone_box = QFrame()
+        tone_box.setStyleSheet(
+            "QFrame { background:#fff; border:1px solid #e5e7eb;"
+            " border-radius:6px; padding:8px; }")
+        tone_lay = QVBoxLayout(tone_box)
+        tone_head = QLabel(
+            "<b>Tone variants per source row</b> "
+            "<span style='color:#6b7280;font-size:11px;'>"
+            "(each ticked tone = one rephrase per source row, "
+            "tagged so the trainer's prompt becomes tone-"
+            "conditional; leave all unticked for tone-agnostic "
+            "rephrasing)</span>")
+        tone_head.setWordWrap(True)
+        tone_lay.addWidget(tone_head)
+        self._tone_checkboxes: dict = {}
+        try:
+            from src.data.tones import TONES, display_name as tone_name
+            grid = QGridLayout()
+            grid.setHorizontalSpacing(14)
+            grid.setVerticalSpacing(2)
+            for i, key in enumerate(sorted(TONES.keys())):
+                info = TONES[key]
+                cb = QCheckBox(tone_name(key))
+                cb.setStyleSheet("font-size:11px;")
+                cb.setToolTip(info.get("description", ""))
+                self._tone_checkboxes[key] = cb
+                grid.addWidget(cb, i // 4, i % 4)
+            tone_lay.addLayout(grid)
+        except Exception as e:
+            tone_lay.addWidget(QLabel(f"(tone list unavailable: {e})"))
+        # Live cost preview — multi-tone multiplies the LLM-call
+        # count, which the user is paying for.
+        self._tone_cost_label = QLabel("")
+        self._tone_cost_label.setStyleSheet(
+            "color:#6b7280;font-size:10px;padding-top:4px;")
+        tone_lay.addWidget(self._tone_cost_label)
+        for cb in self._tone_checkboxes.values():
+            cb.toggled.connect(self._refresh_tone_cost_preview)
+        self.max_pairs_spin.valueChanged.connect(
+            self._refresh_tone_cost_preview)
+        self._refresh_tone_cost_preview()
+        layout.addWidget(tone_box)
+
         # Progress log
         self.log_box = QPlainTextEdit()
         self.log_box.setReadOnly(True)
@@ -11719,6 +13892,27 @@ class _RephrasePairsDialog(QDialog):
         btn_row.addWidget(close_btn)
         layout.addLayout(btn_row)
 
+    def _refresh_tone_cost_preview(self):
+        """Update the small cost preview under the tone grid as
+        the user toggles tones or changes the max-pairs cap."""
+        n_tones = sum(1 for cb in self._tone_checkboxes.values()
+                      if cb.isChecked())
+        cap = self.max_pairs_spin.value()
+        if n_tones == 0:
+            self._tone_cost_label.setText(
+                "(no tones ticked → tone-agnostic rephrases; "
+                f"up to {cap} LLM calls)")
+        else:
+            sources_per_tone = max(1, cap // n_tones)
+            self._tone_cost_label.setText(
+                f"({n_tones} tone(s) × ≈{sources_per_tone} source row(s) "
+                f"= up to {cap} LLM calls; each pair tagged "
+                f"style=&lt;tone&gt; for tone-conditional training)")
+
+    def _selected_tones(self) -> list:
+        return [k for k, cb in self._tone_checkboxes.items()
+                if cb.isChecked()]
+
     def _run(self) -> None:
         from PyQt6.QtWidgets import QApplication
         max_pairs = self.max_pairs_spin.value()
@@ -11728,11 +13922,17 @@ class _RephrasePairsDialog(QDialog):
         min_overlap = self.min_overlap_spin.value()
         coll_keys = (self._selected_collection_keys
                      if self.use_filter_cb.isChecked() else None)
+        tones = self._selected_tones()
+        tone_clause = (
+            f" Each source row will produce one rephrase per ticked "
+            f"tone ({', '.join(tones)})."
+            if tones else "")
 
         reply = QMessageBox.question(
             self, "Confirm",
             f"Generate up to {max_pairs} rephrase pairs by "
-            f"paraphrasing corpus passages? Each = 1 LLM call.<br><br>"
+            f"paraphrasing corpus passages? Each = 1 LLM call."
+            f"{tone_clause}<br><br>"
             f"Quality gates: bigram overlap "
             f"{min_overlap:.2f}–{max_overlap:.2f}, length within ±30%.",
             QMessageBox.StandardButton.Yes
@@ -11755,7 +13955,8 @@ class _RephrasePairsDialog(QDialog):
         self.run_btn.setEnabled(False)
         self.log_box.clear()
         self.log_box.appendPlainText(
-            f"Synthesizing up to {max_pairs} rephrase pairs…")
+            f"Synthesizing up to {max_pairs} rephrase pairs…"
+            + (f" (tones: {', '.join(tones)})" if tones else ""))
         QApplication.processEvents()
 
         from src.ai.rephrase_synthesizer import synthesize_rephrase_pairs
@@ -11770,6 +13971,7 @@ class _RephrasePairsDialog(QDialog):
                 max_passage_words=max_words,
                 max_overlap=max_overlap,
                 min_overlap=min_overlap,
+                tones=tones or None,
                 on_log=lambda s: (
                     self.log_box.appendPlainText(s),
                     QApplication.processEvents()),
@@ -11785,6 +13987,10 @@ class _RephrasePairsDialog(QDialog):
         self.log_box.appendPlainText(
             f"Done. Logged {result['n_logged']} rephrase pairs as "
             f"SOURCE_REPHRASE rows.")
+        if result.get("tones_used"):
+            self.log_box.appendPlainText(
+                f"  tone variants per source: "
+                f"{', '.join(result['tones_used'])}")
         self.log_box.appendPlainText(
             f"  skipped — too short:       "
             f"{result['n_skipped_too_short']}")

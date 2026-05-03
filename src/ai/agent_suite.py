@@ -121,7 +121,32 @@ class AgentSuite:
         from collections import OrderedDict
         self._task_local_llms: "OrderedDict[str, Optional[LLMClient]]" = (
             OrderedDict())
-        self._task_local_llm_cap = 2
+        # Cap is sourced from the user's CreativeOS settings
+        # (``max_loaded_models``) so it stays in lockstep with the
+        # global LoadedModelCache cap. Falls back to 2 when the
+        # settings layer isn't reachable. The cap is re-read on
+        # every ``get_llm_for_task`` call so a settings change takes
+        # effect on the next task without restarting.
+        self._task_local_llm_cap = self._read_max_models_from_config()
+
+    @staticmethod
+    def _read_max_models_from_config() -> int:
+        """Read ``max_loaded_models`` from CreativeOS settings.
+
+        Bounded to [1, 8] — 1 is "always one at a time" (slow but
+        minimal RAM); above 8 is almost never useful (RAM headroom
+        runs out before the cap matters). Defaults to 2 on any
+        config-import failure so the writing tool is always usable.
+        """
+        try:
+            from src.config.creativeos_config import (
+                get_creativeos_config,
+            )
+            cfg = get_creativeos_config()
+            n = int(cfg.get("max_loaded_models", 2) or 2)
+            return max(1, min(8, n))
+        except Exception:
+            return 2
 
         # Initialize primary LLM
         self._init_primary_llm()
@@ -216,14 +241,14 @@ class AgentSuite:
         """Return the LLMClient that should handle the given task.
 
         Resolution chain:
-            1. Per-task trained model (creativeos_config.resolve_task_model)
-            2. ``model_for_general`` trained model (handled inside the
-               resolver — it falls back automatically)
+            1. Per-task model spec from CreativeOS settings (any kind:
+               trained, local HF/MLX, or cloud)
+            2. ``model_for_general`` spec, same options
             3. The agent suite's ``primary_llm`` (cloud or default local)
 
         This is what call sites should use instead of ``self.primary_llm``
         directly. The returned client may be local OR cloud depending on
-        whether a trained model is configured for this task.
+        which kind the user picked.
 
         ``task`` should be one of: ``rephrase``, ``plot``, ``worldbuilding``,
         ``character``, ``general``. Unknown tasks fall through to the
@@ -233,14 +258,39 @@ class AgentSuite:
             from src.config.creativeos_config import get_creativeos_config
             cfg = get_creativeos_config()
             res = cfg.resolve_task_model(task)
-            trained = res.get("trained_model")
         except Exception:
             return self.primary_llm
 
-        if not trained or not trained.get("path"):
+        # Refresh the cap from settings — the user may have raised
+        # ``max_loaded_models`` while the writing tool was open and
+        # we don't want to require a restart for the new cap to apply.
+        self._task_local_llm_cap = self._read_max_models_from_config()
+
+        spec = (res or {}).get("spec") or {"kind": ""}
+        kind = spec.get("kind", "")
+        if not kind:
             return self.primary_llm
 
-        cache_key = trained.get("path", "")
+        # Cache key is the canonical spec — same model, same key,
+        # whether it came in as ``trained:Foo`` or ``hf:foo/bar``. We
+        # use the resolved-to local path / hf id / cloud signature so
+        # the cache de-duplicates correctly.
+        if kind == "trained":
+            trained = (res or {}).get("trained_model") or {}
+            cache_key = trained.get("path", "")
+        elif kind in ("hf", "mlx", "local"):
+            cache_key = f"{kind}:{spec.get('model_id', '')}"
+        elif kind == "cloud":
+            # Cloud clients are cheap and don't hold weights; key on
+            # provider+model so swapping models for the same provider
+            # rebuilds.
+            cache_key = (f"cloud:{spec.get('provider', '')}"
+                         f":{spec.get('model') or ''}")
+        else:
+            return self.primary_llm
+        if not cache_key:
+            return self.primary_llm
+
         cached = self._task_local_llms.get(cache_key)
         if cached is not None:
             # Detect a stale entry whose weights were dropped by the
@@ -249,26 +299,45 @@ class AgentSuite:
             try:
                 still_loaded = cached.has_loaded_local_model()
             except Exception:
+                # Cloud clients return False for has_loaded_local_model
+                # — treat them as still-good since they don't hold
+                # weights in RAM anyway.
                 still_loaded = True
-            if still_loaded:
+            if still_loaded or kind == "cloud":
                 # Mark this entry as most-recently-used so it survives
                 # the next eviction round.
                 self._task_local_llms.move_to_end(cache_key)
                 return cached
             self._task_local_llms.pop(cache_key, None)
 
-        client = self._build_task_local_llm(cache_key)
+        # Build the client. Reuse the new task_llm helper so cloud /
+        # local / trained all share one construction path.
+        try:
+            from src.ai.task_llm import build_task_llm_override
+            client = build_task_llm_override(task)
+        except Exception as e:
+            print(f"[AgentSuite] task LLM build failed for {task}: {e}")
+            client = None
         if client is None:
             # Cache the miss so we don't keep retrying the failing build
             self._task_local_llms[cache_key] = None
             self._task_local_llms.move_to_end(cache_key)
             return self.primary_llm
 
-        # Evict LRU entries if we're at the cap. Only evict entries
+        # Evict LRU entries if we're at the cap. Only count entries
         # that are actually loaded (have weights in RAM) — None
-        # entries cost nothing and serve as miss-cache markers.
+        # entries cost nothing (miss-cache markers), and cloud
+        # entries cost no RAM either, so neither should consume slots
+        # in the local-model cap.
+        def _is_local_loaded(c):
+            if c is None:
+                return False
+            try:
+                return bool(c.has_loaded_local_model())
+            except Exception:
+                return False
         loaded_keys = [k for k, v in self._task_local_llms.items()
-                       if v is not None]
+                       if _is_local_loaded(v)]
         while len(loaded_keys) >= self._task_local_llm_cap:
             oldest = loaded_keys[0]
             evicted = self._task_local_llms.pop(oldest, None)
@@ -278,11 +347,31 @@ class AgentSuite:
                 except Exception:
                     pass
             loaded_keys = [k for k, v in self._task_local_llms.items()
-                           if v is not None]
+                           if _is_local_loaded(v)]
 
         self._task_local_llms[cache_key] = client
         self._task_local_llms.move_to_end(cache_key)
         return client
+
+    def loaded_task_models(self) -> list:
+        """Snapshot of currently-loaded per-task models. UI use.
+
+        Returns a list of dicts ``{path, basename, loaded}`` ordered
+        oldest → newest (LRU order). The bool ``loaded`` is True for
+        entries with active LLMClient weights, False for cached
+        miss-markers (failed builds we didn't retry). Each entry's
+        ``basename`` is the trailing path segment so the UI can show
+        a short label without exposing the full disk path.
+        """
+        from pathlib import Path as _P
+        snap: list = []
+        for path, client in self._task_local_llms.items():
+            snap.append({
+                "path": path,
+                "basename": _P(path).name if path else "(unknown)",
+                "loaded": client is not None,
+            })
+        return snap
 
     def _init_local_llm(self):
         """Initialize local LLM for cost savings.
@@ -376,6 +465,107 @@ class AgentSuite:
                 local_llm=self.local_llm
             )
         return self._chapter_agent
+
+    def suggest_paragraph_improvement(self,
+                                       paragraph: str,
+                                       *,
+                                       context_before: str = "",
+                                       context_after: str = "",
+                                       max_suggestions: int = 2,
+                                       genre: str = "") -> list:
+        """Return up to ``max_suggestions`` rephrased versions of
+        ``paragraph`` for the checkpoint-manifest reviewer.
+
+        Each suggestion preserves meaning and length within ±25%;
+        rephrases for clarity, voice, and prose rhythm. The
+        surrounding paragraphs (``context_before`` / ``context_after``)
+        give the model enough scaffolding to keep tense, POV, and
+        character voice consistent. Returns ``[]`` on any LLM
+        failure so the caller can surface a "no suggestions" state
+        without crashing the dialog.
+
+        The call routes through ``get_llm_for_task('rephrase')`` so
+        the user's per-task trained-model preference (if any) is
+        honoured and the LRU cache shares loaded models with other
+        rephrase work.
+        """
+        text = (paragraph or "").strip()
+        if not text:
+            return []
+        try:
+            llm = self.get_llm_for_task("rephrase")
+        except Exception:
+            llm = self.primary_llm
+        if not llm:
+            return []
+        n = max(1, min(5, int(max_suggestions)))
+        sys_prompt = (
+            "You are a literary editor. Rewrite the given paragraph "
+            "to read more naturally — preserve meaning, length "
+            "(within 25%), tense, POV, and character voice. "
+            "Do not summarise. Output ONLY the numbered rewrites, "
+            "one per line, prefixed '1. ' / '2. ' / etc., no "
+            "commentary or quotes around them.")
+        ctx_block = ""
+        if context_before:
+            ctx_block += (
+                f"PARAGRAPH BEFORE (for tense/voice cues):\n"
+                f"{context_before[-400:]}\n\n")
+        if context_after:
+            ctx_block += (
+                f"PARAGRAPH AFTER (for tense/voice cues):\n"
+                f"{context_after[:400]}\n\n")
+        genre_clause = (
+            f" Stay in the {genre} genre register." if genre else "")
+        prompt = (
+            f"{ctx_block}REWRITE THIS PARAGRAPH ({n} alternatives):"
+            f"{genre_clause}\n\n{text}\n\n"
+            f"Numbered rewrites (1.-{n}.):")
+        try:
+            raw = llm.generate_text(
+                prompt=prompt,
+                system_prompt=sys_prompt,
+                max_tokens=max(800, len(text) * 3),
+                temperature=0.7,
+                task_type="rephrase")
+        except Exception as e:
+            print(f"[suggest_paragraph_improvement] LLM call failed: {e}")
+            return []
+        return self._parse_numbered_rewrites(raw, n)
+
+    @staticmethod
+    def _parse_numbered_rewrites(raw: str, max_n: int) -> list:
+        """Pull numbered rewrites out of an LLM response.
+
+        Handles three common shapes:
+          * ``1. text\\n2. text\\n…``
+          * ``1) text\\n2) text\\n…``
+          * Plain newline-separated paragraphs (when the model
+            ignored the numbering instruction).
+
+        Returns at most ``max_n`` non-empty trimmed rewrites.
+        """
+        if not raw:
+            return []
+        import re as _re
+        text = raw.strip()
+        # Try numbered pattern first.
+        candidates = _re.findall(
+            r"^\s*\d+[\.\)]\s+(.+?)(?=\n\s*\d+[\.\)]|\Z)",
+            text, flags=_re.MULTILINE | _re.DOTALL)
+        if not candidates:
+            # Fall back: blank-line separated chunks, capped to N.
+            candidates = [
+                c.strip() for c in _re.split(r"\n{2,}", text)
+                if c.strip()]
+        results = []
+        for c in candidates:
+            clean = c.strip().strip('"').strip("'")
+            if clean and clean not in results:
+                results.append(clean)
+            if len(results) >= max_n:
+                break
+        return results
 
     def chat(self, user_message: str, mode: Optional[AgentMode] = None) -> str:
         """Conversational interface with the agent.

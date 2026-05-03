@@ -378,7 +378,16 @@ class CritiqueWorker(QThread):
                 }
                 llm = LLMClient(provider=provider_map.get(default_provider, LLMProvider.CLAUDE))
 
-            # Create agent
+            # Create agent. ``primary_llm`` is the settings-based default
+            # (cloud or local). ``llm_override`` honours the per-task
+            # ``model_for_plot`` preference when one is configured —
+            # critique is plot/structural analysis, so it routes to the
+            # plot-trained model the same way the chat path does.
+            from src.ai.task_llm import build_task_llm_override
+            plot_override = build_task_llm_override("plot")
+            if plot_override is not None:
+                self.progress.emit(
+                    "Using your plot-task model for critique...")
             agent = ChapterAnalysisAgent(primary_llm=llm)
 
             if self.line_by_line:
@@ -392,7 +401,8 @@ class CritiqueWorker(QThread):
                     critique_context=self.critique_context,
                     progress_callback=progress_update,
                     manuscript_context=self.manuscript_context,
-                    chapter_synopsis=self.chapter_synopsis
+                    chapter_synopsis=self.chapter_synopsis,
+                    llm_override=plot_override,
                 )
                 self.progress.emit("Complete!")
                 # Return as dict to distinguish from ChapterAnalysis
@@ -411,7 +421,8 @@ class CritiqueWorker(QThread):
                     critique_context=self.critique_context,
                     focus_areas=self.focus_areas,
                     manuscript_context=self.manuscript_context,
-                    chapter_synopsis=self.chapter_synopsis
+                    chapter_synopsis=self.chapter_synopsis,
+                    llm_override=plot_override,
                 )
                 self.progress.emit("Complete!")
                 self.finished.emit(analysis)

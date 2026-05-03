@@ -190,6 +190,33 @@ class Subplot(BaseModel):
     status: str = "active"  # active, resolved, abandoned
 
 
+class CharacterTension(BaseModel):
+    """A sustained dramatic tension that shapes the plot.
+
+    Distinct from PlotEvent (a one-off beat) and StoryPromise (a
+    commitment to readers): a tension is a *persistent* dramatic
+    force — internal struggle, interpersonal conflict, looming
+    external threat — that creates pressure on characters across
+    multiple scenes. The plot AI uses these to suggest beats that
+    keep the right pressure on the right people at the right time.
+
+    Examples:
+      • internal:        "Marcus's grief over his sister's death"
+      • interpersonal:   "Lena and Marcus's eroding trust"
+      • societal:        "The town's suspicion of outsiders"
+      • cosmic:          "The encroaching frost"
+    """
+    id: str
+    title: str
+    description: str = ""           # What's at stake; why it matters
+    tension_type: str = "interpersonal"  # internal | interpersonal | societal | cosmic
+    characters_involved: List[str] = Field(default_factory=list)  # names
+    stakes: str = ""                # What happens if it's not resolved
+    current_state: str = "rising"   # rising | stable | escalating | resolving | unresolved | resolved
+    intensity: int = 50             # 0-100 — relative dramatic weight
+    created_at: datetime = Field(default_factory=datetime.now)
+
+
 class StoryPlanning(BaseModel):
     """Story planning with Freytag pyramid and plot structure."""
     freytag_pyramid: FreytagPyramid = Field(default_factory=FreytagPyramid)
@@ -197,6 +224,11 @@ class StoryPlanning(BaseModel):
     subplots: List[Subplot] = Field(default_factory=list)
     themes: List[str] = Field(default_factory=list)
     promises: List[StoryPromise] = Field(default_factory=list)  # Commitments to readers
+    # Sustained dramatic tensions that shape the plot — one of the
+    # things the plot AI is asked to weigh when proposing beats /
+    # auditing pacing. New field, defaults to empty so existing
+    # projects load cleanly.
+    tensions: List[CharacterTension] = Field(default_factory=list)
 
 
 class ChapterRevision(BaseModel):

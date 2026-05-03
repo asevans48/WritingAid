@@ -777,6 +777,23 @@ class ChapterEditor(QWidget):
         print(f"🎯 Will use: {'LOCAL MODEL' if will_use_local else f'CLOUD LLM ({self._llm_client._provider.value if self._llm_client else 'Unknown'})'}")
         print(f"{'#'*70}\n")
 
+        # If the user has picked a per-task plot model in CreativeOS
+        # settings, that wins over both the dropdown and the cloud
+        # default — chapter planning IS plot work.
+        try:
+            from src.ai.task_llm import build_task_llm_override
+            plot_override = build_task_llm_override("plot")
+        except Exception:
+            plot_override = None
+        if plot_override is not None:
+            print("🎯 Using your plot-task trained model "
+                  "(CreativeOS settings > model_for_plot)")
+            try:
+                return plot_override.generate_text(prompt, "", max_tokens=600,
+                                                    temperature=0.7)
+            except Exception as e:
+                print(f"⚠️  Plot-task model failed: {e}; falling back")
+
         # Route to local model if requested via dropdown OR configured in settings
         if model_name == "Local SLM" or use_local_for_planning:
             return self._handle_local_model_request(prompt)
@@ -3691,9 +3708,20 @@ class ManuscriptEditor(QWidget):
 
         menu.addSeparator()
 
-        # Delete action
+        # Delete action (single)
         delete_action = menu.addAction("Delete Chapter")
         delete_action.triggered.connect(self._remove_chapter)
+
+        # Bulk-cut several chapters in one go, with an optional
+        # safety checkpoint. Surfaced from the same right-click
+        # menu so it's discoverable without polluting the toolbar.
+        bulk_cut_action = menu.addAction("🗑 Bulk Cut Chapters…")
+        bulk_cut_action.setToolTip(
+            "Open a multi-select dialog to drop several chapters "
+            "in one click. The recommended path takes a project "
+            "checkpoint first so the cut is reversible from File "
+            "→ Project Checkpoints.")
+        bulk_cut_action.triggered.connect(self._open_bulk_cut_chapters)
 
         menu.exec(self.chapter_list.mapToGlobal(position))
 
@@ -4030,6 +4058,161 @@ class ManuscriptEditor(QWidget):
             # Persist new ordering immediately
             self.content_changed.emit()
             self.chapter_switched.emit()
+
+    def _open_bulk_cut_chapters(self):
+        """Open the BulkCutChaptersDialog and apply the result.
+
+        The dialog handles the optional pre-cut checkpoint
+        itself (via the project_checkpoint service); we just
+        receive the list of ids the user wants gone and run the
+        same delete pipeline as the single-chapter path. Saves
+        the in-flight editor first so unsaved edits to a
+        not-being-deleted chapter aren't lost when the editor
+        repaints after the bulk delete.
+        """
+        if not self.manuscript or not self.manuscript.chapters:
+            QMessageBox.information(
+                self, "No Chapters",
+                "There are no chapters to cut.")
+            return
+
+        # Resolve project_dir for the checkpoint button. None
+        # means "project unsaved" — the dialog will disable the
+        # checkpoint path with an explanatory tooltip.
+        project_dir = self._get_project_dir()
+        project_name = ""
+        try:
+            if (hasattr(self, "project") and self.project
+                    and getattr(self.project, "name", "")):
+                project_name = self.project.name
+        except Exception:
+            pass
+
+        # Save the editor's current chapter to disk so a fresh
+        # checkpoint zip captures whatever the user has typed.
+        try:
+            if (self.current_chapter_editor
+                    and hasattr(self.current_chapter_editor,
+                                 "save_to_model")):
+                self.current_chapter_editor.save_to_model()
+        except Exception:
+            pass
+
+        from src.ui.bulk_cut_chapters_dialog import (
+            BulkCutChaptersDialog,
+        )
+        dlg = BulkCutChaptersDialog(
+            self.manuscript.chapters,
+            project_dir=project_dir,
+            project_name=project_name,
+            parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        ids = dlg.selected_chapter_ids()
+        if not ids:
+            return
+        n_deleted = self._delete_chapters_by_ids(ids)
+        # Confirm what landed where, including the checkpoint if
+        # the user took the recommended path.
+        if dlg.should_create_checkpoint():
+            cp_name = dlg.created_checkpoint_name()
+            QMessageBox.information(
+                self, "Chapters cut",
+                f"Removed <b>{n_deleted}</b> chapter"
+                f"{'s' if n_deleted != 1 else ''}. The "
+                f"pre-cut state was saved as the <b>{cp_name}</b> "
+                f"checkpoint — restore it any time from "
+                f"File → Project Checkpoints.")
+        else:
+            QMessageBox.information(
+                self, "Chapters cut",
+                f"Removed <b>{n_deleted}</b> chapter"
+                f"{'s' if n_deleted != 1 else ''}.")
+
+    def _delete_chapters_by_ids(self, chapter_ids: list) -> int:
+        """Delete several chapters by id in one pass.
+
+        Mirrors the cleanup steps in :meth:`_remove_chapter` but
+        runs them once at the end instead of per-chapter, so a
+        bulk cut of 30 chapters doesn't trigger 30 list-rebuilds
+        and 30 folder-relocation passes. Returns the actual
+        number of chapters removed (some ids may have already
+        been gone if the project changed underneath us).
+        """
+        if not chapter_ids:
+            return 0
+        ids_set = set(chapter_ids)
+
+        # Find which chapters we'll actually delete (by id), and
+        # whether the currently-displayed chapter is in that set.
+        deleting_current = (self._current_chapter_id in ids_set)
+        targets = [ch for ch in self.manuscript.chapters
+                   if ch.id in ids_set]
+        if not targets:
+            return 0
+
+        # If we're keeping the current editor's chapter, save it
+        # first — the rebuild below could otherwise drop unsaved
+        # edits.
+        if (not deleting_current and self.current_chapter_editor
+                and hasattr(self.current_chapter_editor,
+                             "save_to_model")):
+            try:
+                self.current_chapter_editor.save_to_model()
+            except Exception:
+                pass
+
+        # Per-chapter disk + cache cleanup.
+        project_dir = self._get_project_dir()
+        for chapter in targets:
+            try:
+                if chapter.folder_path and project_dir:
+                    chapter.delete_folder(project_dir)
+            except Exception as e:
+                print(f"[bulk-cut] could not delete folder for "
+                      f"Ch{chapter.number}: {e}")
+            try:
+                self.memory_manager.cache.remove(chapter.id)
+            except Exception:
+                pass
+
+        # Drop from the in-memory list in one pass.
+        self.manuscript.chapters = [
+            c for c in self.manuscript.chapters
+            if c.id not in ids_set]
+
+        # Block signals so the upcoming rebuild doesn't fire
+        # selection-change handlers against widgets we're tearing
+        # down.
+        self.chapter_list.blockSignals(True)
+        try:
+            # Renumber surviving chapters on disk + rebuild list.
+            self._relocate_chapter_folders()
+            self._rebuild_chapter_list()
+
+            if deleting_current:
+                # The displayed chapter is gone — clear the
+                # editor pane. The user picks something else from
+                # the list.
+                self._clear_editor()
+                self._current_chapter_id = None
+                self.current_chapter_editor = None
+            else:
+                # Re-select whatever the editor was showing.
+                if self._current_chapter_id:
+                    for i in range(self.chapter_list.count()):
+                        item = self.chapter_list.item(i)
+                        if (item and item.data(Qt.ItemDataRole.UserRole)
+                                == self._current_chapter_id):
+                            self.chapter_list.setCurrentRow(i)
+                            break
+        finally:
+            self.chapter_list.blockSignals(False)
+
+        # Persist + notify.
+        self.content_changed.emit()
+        self.chapter_switched.emit()
+        return len(targets)
 
     def _move_chapter_up(self):
         """Move selected chapter up."""
@@ -5094,14 +5277,19 @@ class PromiseCheckDialog(QDialog):
                 model=settings['ai'].get('model', 'gpt-4o-mini')
             )
 
-            # Run the check
+            # Run the check. Honour the per-task plot-trained model
+            # (CreativeOS settings → ``model_for_plot``) when one is
+            # configured — promise/plot continuity is plot-task work.
+            from src.ai.task_llm import build_task_llm_override
+            plot_override = build_task_llm_override("plot")
             checker = PromiseChecker(llm)
             result = checker.check_chapter(
                 chapter_content=self.chapter_content,
                 chapter_title=self.chapter_title,
                 promises=self.promises,
                 characters=self.characters,
-                plot_outline=self.plot_outline
+                plot_outline=self.plot_outline,
+                llm_override=plot_override,
             )
 
             # Display results

@@ -79,6 +79,29 @@ SHARED_LLM_DEFAULTS: Dict[str, Any] = {
     "model_for_character": "",
     "model_for_general": "",
 
+    # Multi-model memory management. Both the writing tool's per-task
+    # cache (``AgentSuite._task_local_llms``) AND the global
+    # ``LoadedModelCache`` honour these limits so the user can't blow
+    # past the configured headroom by routing through different surfaces.
+    #
+    #   max_loaded_models    — hard cap on simultaneously-loaded local
+    #                          models. LRU evicts the least-recently-used
+    #                          model when the cap is hit. 1 = "always
+    #                          one at a time" (slow but minimal RAM);
+    #                          higher = faster task switching at the
+    #                          cost of more RAM. Default 2 keeps
+    #                          existing behaviour.
+    #   model_cache_ram_pct  — soft cap on aggregate model RAM as a
+    #                          percentage of the system's *available*
+    #                          RAM (not total — leaves headroom for
+    #                          other apps). When estimated usage
+    #                          exceeds this, LRU evicts even if
+    #                          ``max_loaded_models`` hasn't been hit.
+    #                          Default 60% matches the previous hard-
+    #                          coded value.
+    "max_loaded_models": 2,
+    "model_cache_ram_pct": 60,
+
     # Transfer-learning data collection (opt-in). Each flag gates one
     # source-type pipeline in the unified learning DB.
     "enable_rephrase_data_collection": False,
@@ -116,6 +139,108 @@ TASK_MODEL_LABELS: Dict[str, str] = {
 # Where the registry of locally-trained models lives.
 TRAINED_MODELS_REGISTRY = CREATIVEOS_DIR / "trained_models.json"
 TRAINED_MODELS_DIR = CREATIVEOS_DIR / "trained_models"
+
+
+# ── Per-task model spec format ───────────────────────────────
+# Each ``model_for_<task>`` setting is a string. Historically it stored
+# only a Training Studio "name" (i.e. registered trained model); now it
+# carries an arbitrary model spec so the user can route a task to ANY
+# model — trained, local HuggingFace, local MLX, or a cloud provider.
+#
+# Format (backwards-compatible): ``"<kind>:<value>"``
+#   - ``""``                    → fall back to global default
+#   - ``"<bare_name>"``         → legacy: treated as ``trained:<bare_name>``
+#                                 so existing settings keep working
+#   - ``"trained:<name>"``      → trained model registered in trained_models.json
+#   - ``"hf:<model_id>"``       → local HuggingFace transformer (e.g. mistralai/...)
+#   - ``"mlx:<model_id>"``      → local MLX model (Apple Silicon only)
+#   - ``"local:<model_id>"``    → auto-detect (mlx if id contains "mlx",
+#                                 else hf) — useful when the user pastes
+#                                 an id from the catalog without prefix
+#   - ``"cloud:<provider>"`` /
+#     ``"cloud:<provider>:<model>"``
+#                                → cloud provider (claude / chatgpt / openai /
+#                                 gemini), with optional explicit model id;
+#                                 omit the model to use the default the
+#                                 user configured in AI Settings
+#
+# All consumers should use ``parse_task_model_spec`` rather than
+# substring-matching the raw string.
+
+# Valid kinds. Kept here so settings UI and resolver agree on the set.
+TASK_MODEL_KINDS = (
+    "trained", "hf", "mlx", "local", "cloud",
+)
+
+# Cloud providers we know how to construct LLMClient for.
+TASK_CLOUD_PROVIDERS = ("claude", "chatgpt", "openai", "gemini")
+
+
+def parse_task_model_spec(spec: str) -> Dict[str, Any]:
+    """Parse a per-task model setting string into its components.
+
+    Returns a dict with ``kind`` and the kind-appropriate fields:
+      - trained: ``{"kind": "trained", "name": str}``
+      - hf:      ``{"kind": "hf", "model_id": str}``
+      - mlx:     ``{"kind": "mlx", "model_id": str}``
+      - local:   ``{"kind": "local", "model_id": str}``  (auto-detect mlx/hf)
+      - cloud:   ``{"kind": "cloud", "provider": str, "model": str|None}``
+      - empty:   ``{"kind": ""}``  (caller should fall back to default)
+
+    Unknown / malformed specs are treated as legacy bare trained-model
+    names so old configs keep working — the registry lookup will simply
+    miss and the resolver will fall through to the next tier.
+    """
+    s = (spec or "").strip()
+    if not s:
+        return {"kind": ""}
+    # Cloud has up to two colons (cloud:claude:claude-opus-4-5) — must
+    # be parsed before the generic single-split path.
+    if s.startswith("cloud:"):
+        rest = s[len("cloud:"):]
+        if ":" in rest:
+            provider, model = rest.split(":", 1)
+        else:
+            provider, model = rest, None
+        return {
+            "kind": "cloud",
+            "provider": provider.strip().lower(),
+            "model": (model.strip() if model else None) or None,
+        }
+    # Other prefixes: single colon split.
+    if ":" in s:
+        kind, value = s.split(":", 1)
+        kind = kind.strip().lower()
+        value = value.strip()
+        if kind == "trained":
+            return {"kind": "trained", "name": value}
+        if kind == "hf":
+            return {"kind": "hf", "model_id": value}
+        if kind == "mlx":
+            return {"kind": "mlx", "model_id": value}
+        if kind == "local":
+            return {"kind": "local", "model_id": value}
+        # Unknown prefix → fall through and treat the whole string as a
+        # legacy trained-model name (the prefix is just part of the name).
+    return {"kind": "trained", "name": s}
+
+
+def format_task_model_spec(kind: str, **fields) -> str:
+    """Inverse of ``parse_task_model_spec``. Used by the settings UI
+    to serialise a user pick back to the storage string."""
+    if not kind:
+        return ""
+    if kind == "trained":
+        return f"trained:{fields.get('name', '').strip()}"
+    if kind in ("hf", "mlx", "local"):
+        return f"{kind}:{fields.get('model_id', '').strip()}"
+    if kind == "cloud":
+        provider = fields.get("provider", "").strip().lower()
+        model = (fields.get("model") or "").strip()
+        if model:
+            return f"cloud:{provider}:{model}"
+        return f"cloud:{provider}"
+    return ""
 
 
 # ── Tool registry ────────────────────────────────────────────
@@ -465,52 +590,86 @@ class CreativeOSConfig:
         """Resolve which model the writing tool should use for a given task.
 
         Resolution chain (first match wins):
-          1. The task-specific override, if set AND the trained model
-             still exists on disk.
+          1. The task-specific override, if set AND it points to
+             something that resolves cleanly (trained model dir exists,
+             cloud provider known, etc.).
           2. The ``model_for_general`` override, same check.
-          3. None — caller falls back to the global ``local_model_id``
-             or its cloud provider.
+          3. ``spec={"kind":""}`` — caller falls back to the global
+             ``local_model_id`` or its cloud provider.
 
-        The on-disk check means that if the user deletes a trained model
-        directory we silently fall back to general → global rather than
-        crashing later when the path is loaded.
+        Returns a richer dict than the original implementation so
+        callers can build ANY kind of LLM client — trained, local
+        HuggingFace, local MLX, or cloud — not just the trained ones
+        the picker historically restricted to. Backwards compat is
+        preserved: bare names in ``model_for_*`` are interpreted as
+        legacy trained-model references, and the ``trained_model``
+        key in the returned dict is still set when the spec resolves
+        to a registered trained model (so ``AgentSuite`` and friends
+        keep working unchanged).
 
-        Returns:
-            ``{"trained_model": <entry|None>, "source": "task"|"general"|"fallback",
-              "fallback_local_model_id": <global local_model_id>}``
+        Returned shape::
+
+            {
+              "source": "task" | "general" | "fallback",
+              "spec":   {<parsed_task_model_spec>},
+              "trained_model": <registry entry|None>,
+              "fallback_local_model_id": <global local_model_id>,
+            }
         """
         key = f"model_for_{task}" if not task.startswith("model_for_") else task
         registry = load_trained_models()
         by_name = {e.get("name", ""): e for e in registry}
 
-        def _pick(name: str):
-            if not name:
-                return None
-            entry = by_name.get(name)
-            if not entry:
-                return None
-            path = entry.get("path", "")
-            if path and not Path(path).exists():
-                # Model was registered but its directory has been removed.
-                # Fall back gracefully — don't return a broken pointer.
-                return None
-            return entry
+        def _resolve(spec_str: str):
+            """Try to interpret ``spec_str``. Returns
+            ``(spec_dict, trained_entry_or_None)`` on success, or
+            ``(None, None)`` when the spec points at something that
+            doesn't exist (the caller falls through to the next tier).
+            """
+            spec = parse_task_model_spec(spec_str)
+            kind = spec.get("kind", "")
+            if not kind:
+                return None, None
+            if kind == "trained":
+                entry = by_name.get(spec.get("name", ""))
+                if not entry:
+                    return None, None
+                path = entry.get("path", "")
+                if path and not Path(path).exists():
+                    # Registered but the directory was removed —
+                    # treat as broken pointer.
+                    return None, None
+                return spec, entry
+            if kind in ("hf", "mlx", "local"):
+                if not spec.get("model_id"):
+                    return None, None
+                return spec, None
+            if kind == "cloud":
+                if spec.get("provider") not in TASK_CLOUD_PROVIDERS:
+                    return None, None
+                return spec, None
+            return None, None
 
         source = "fallback"
-        trained = None
+        chosen_spec = None
+        trained_entry = None
         if key in TASK_MODEL_KEYS:
-            trained = _pick((self.settings.get(key) or "").strip())
-            if trained is not None:
+            chosen_spec, trained_entry = _resolve(
+                (self.settings.get(key) or "").strip())
+            if chosen_spec is not None:
                 source = "task"
-        if trained is None:
-            trained = _pick((self.settings.get("model_for_general") or "").strip())
-            if trained is not None and source == "fallback":
+        if chosen_spec is None:
+            chosen_spec, trained_entry = _resolve(
+                (self.settings.get("model_for_general") or "").strip())
+            if chosen_spec is not None and source == "fallback":
                 source = "general"
 
         return {
-            "trained_model": trained,
             "source": source,
-            "fallback_local_model_id": self.settings.get("local_model_id", ""),
+            "spec": chosen_spec or {"kind": ""},
+            "trained_model": trained_entry,
+            "fallback_local_model_id": self.settings.get(
+                "local_model_id", ""),
         }
 
     def task_local_model_id(self, task: str) -> str:
@@ -548,27 +707,52 @@ class CreativeOSConfig:
     def task_settings(self, task: str) -> Dict[str, Any]:
         """Return shared LLM settings overridden for one task.
 
-        If the user picked a trained model for this task (or the general
-        fallback), the returned dict has:
-          * ``local_model_id`` — the trained model's path
-          * ``enable_local_models`` — True
-          * ``prefer_local_model`` — True (so callers that branch on
-            this flag actually pick the override)
-          * ``__task_model_source`` — "task" / "general" / "fallback"
-            (a private hint so callers can log which override fired)
+        Layered:
+          • Local kinds (trained / hf / mlx / local) flip
+            ``enable_local_models`` / ``prefer_local_model`` on and
+            stamp ``local_model_id`` so call sites that build their
+            own LLMClient from settings (notably the chat panel's
+            local path) pick the right model.
+          • Cloud kind flips local off and stamps the cloud
+            provider + model so callers that respect the shared
+            settings dict route correctly.
+          • Empty kind / fallback returns the shared defaults
+            unchanged so the caller behaves as if no per-task
+            preference were set.
 
-        When no trained model is picked, returns a copy of the shared
-        defaults unchanged.
+        Always sets a private ``__task_model_source`` hint
+        ("task" / "general" / "fallback") so callers can log which
+        override actually fired.
         """
         s = self.shared_llm_settings()
         res = self.resolve_task_model(task)
         s["__task_model_source"] = res.get("source", "fallback")
+        spec = res.get("spec") or {"kind": ""}
+        kind = spec.get("kind", "")
         trained = res.get("trained_model")
-        if trained and trained.get("path"):
+
+        if kind == "trained" and trained and trained.get("path"):
             s["local_model_id"] = trained["path"]
             s["enable_local_models"] = True
             s["prefer_local_model"] = True
             s["__trained_model_name"] = trained.get("name", "")
+        elif kind in ("hf", "mlx", "local"):
+            s["local_model_id"] = spec.get("model_id", "")
+            s["enable_local_models"] = True
+            s["prefer_local_model"] = True
+            # Tell downstream MLX-vs-HF detection what to use when
+            # the kind is explicit. ``local`` defers to substring
+            # heuristics (default behaviour), so don't stamp here.
+            if kind == "mlx":
+                s["__force_mlx"] = True
+            elif kind == "hf":
+                s["__force_mlx"] = False
+        elif kind == "cloud":
+            s["enable_local_models"] = False
+            s["prefer_local_model"] = False
+            s["default_llm"] = spec.get("provider", "")
+            if spec.get("model"):
+                s["__cloud_model_override"] = spec.get("model")
         return s
 
 
