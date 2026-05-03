@@ -213,6 +213,10 @@ class ChatWidget(QWidget):
     collapsed_changed = pyqtSignal(bool)  # Emits True when collapsed
     mode_changed = pyqtSignal(str)  # Emits mode name when changed
     clear_requested = pyqtSignal()  # Emits when user clicks Clear
+    # User clicked the "Preview context" button — main_window builds
+    # the context dict + system prompt for the current message+mode
+    # and opens the shared context-preview dialog.
+    preview_requested = pyqtSignal(str, str)  # message, mode
 
     def __init__(self):
         """Initialize chat widget."""
@@ -586,6 +590,33 @@ class ChatWidget(QWidget):
         self._on_input_rows_changed(self.input_field.visible_rows())
         content_layout.addWidget(self.input_field)
 
+        # Send / preview action row — sits under the input. Send is
+        # primary; Preview opens a dialog showing exactly what the
+        # AI will receive (system prompt + user-block + RAG-focused
+        # selections + history) so the user can sanity-check the
+        # context before paying for a model call.
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(0, 0, 0, 0)
+        action_row.setSpacing(6)
+        action_row.addStretch()
+
+        self.preview_btn = QPushButton("👁 Preview")
+        self.preview_btn.setStyleSheet(
+            "QPushButton { padding: 3px 10px; font-size: 11px; "
+            " border: 1px solid #d1d5db; border-radius: 4px; "
+            " background: white; color: #374151; }"
+            "QPushButton:hover { border-color: #6366f1; "
+            " color: #6366f1; }")
+        self.preview_btn.setToolTip(
+            "Open a popup showing the exact context the AI will "
+            "receive when you Send — system prompt, user block, "
+            "RAG-selected items for your current input, and "
+            "conversation history. Useful for sanity-checking what "
+            "the model can actually see.")
+        self.preview_btn.clicked.connect(self._on_preview_clicked)
+        action_row.addWidget(self.preview_btn)
+        content_layout.addLayout(action_row)
+
         # Rating widget (hidden by default, shown after AI responses)
         self.rating_widget = QFrame()
         self.rating_widget.setStyleSheet("""
@@ -801,6 +832,20 @@ class ChatWidget(QWidget):
             self.input_field.clear()
             insert_mode = self.get_insert_mode() if self._current_mode == ChatMode.WRITER else ""
             self.message_sent.emit(message, self._current_mode.value, insert_mode)
+
+    def _on_preview_clicked(self):
+        """Ask the host to show the context-preview dialog.
+
+        The host (main_window) listens for ``preview_requested``,
+        builds the chat-context dict + system prompt for the
+        current message+mode, and opens the shared dialog. We pass
+        the current input text (or empty string if not typed yet —
+        the dialog can show a placeholder + warn the user that RAG
+        won't fire without a real question).
+        """
+        message = self.input_field.text().strip()
+        self.preview_requested.emit(
+            message, self._current_mode.value)
 
     # — prompt-height helpers —
     def _step_input_rows(self, delta: int) -> None:

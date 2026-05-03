@@ -95,6 +95,8 @@ class StoryPlanningWidget(QWidget):
             story_planning.subplots,
             story_planning.promises,
             getattr(story_planning, 'tensions', None) or [],
+            getattr(story_planning, 'theme_details', None) or [],
+            getattr(story_planning, 'themes', None) or [],
         )
 
     def get_data(self) -> StoryPlanning:
@@ -103,7 +105,8 @@ class StoryPlanningWidget(QWidget):
         Returns:
             StoryPlanning object with all data
         """
-        freytag_pyramid, subplots, promises, tensions = (
+        (freytag_pyramid, subplots, promises, tensions,
+         theme_details, legacy_themes) = (
             self.plot_manager.get_plot_data())
 
         return StoryPlanning(
@@ -112,6 +115,8 @@ class StoryPlanningWidget(QWidget):
             subplots=subplots,
             promises=promises,
             tensions=tensions,
+            theme_details=theme_details,
+            themes=legacy_themes,  # preserved for backwards compat
         )
 
     def set_available_characters(self, characters: List[str]):

@@ -12,6 +12,7 @@ from PyQt6.QtGui import QFont
 
 from src.models.project import (
     FreytagPyramid, PlotEvent, Subplot, StoryPromise, CharacterTension,
+    Theme,
 )
 from src.ui.plot.freytag_pyramid_visual import FreytagPyramidVisual
 from src.ui.plot.plot_event_editor import PlotEventEditor
@@ -44,7 +45,14 @@ _PLOT_AI_SYSTEM = (
     "intensity — name them when discussing pacing or proposing "
     "beats so your suggestions move the right pressure on the "
     "right people.\n"
-    "2. SUBPLOTS — secondary storylines tied to the main plot, each "
+    "2. STORY THEMES — what the book is *about* underneath its "
+    "events (the argument it's making). Every plot suggestion "
+    "should reinforce a named theme or explicitly reckon with "
+    "undercutting one. When asked about plot, weigh whether the "
+    "proposed beat lands the theme. When the THEMES block is "
+    "empty or only has bare labels, you may PROPOSE themes the "
+    "manuscript is implicitly making (use <suggest_theme>).\n"
+    "3. SUBPLOTS — secondary storylines tied to the main plot, each "
     "with its own status, characters, and event arc. Treat them as "
     "first-class story material: every plot discussion (pacing, "
     "what-next, structural audit) should weigh which subplots are "
@@ -52,26 +60,26 @@ _PLOT_AI_SYSTEM = (
     "name which subplot the beat advances or which subplot needs a "
     "scene next. Don't let a subplot disappear from the discussion "
     "just because the user didn't mention it by name.\n"
-    "3. MANUSCRIPT — what is actually on the page. Cite as 'Ch N: "
+    "4. MANUSCRIPT — what is actually on the page. Cite as 'Ch N: "
     "Title'. Quote ≤25-word passages when wording matters.\n"
-    "4. CHARACTERS — names, personalities, wants/needs, fears, "
+    "5. CHARACTERS — names, personalities, wants/needs, fears, "
     "arcs. Check that the people in your proposed beats match "
     "their established profile (a quiet character doesn't "
     "suddenly give a speech without justification). When asked "
     "about character arcs, name SPECIFIC characters from this "
     "block and the chapter their state shows up in.\n"
-    "5. WORLDBUILDING — factions, places, cultures, magic, tech. "
+    "6. WORLDBUILDING — factions, places, cultures, magic, tech. "
     "Check that proposed beats are plausible in the world. When "
     "the discussion touches on faction conflict or location, "
     "reference the SPECIFIC entities in this block by name.\n"
-    "6. RELEVANT PROJECT DETAIL (if present) — RAG-selected "
+    "7. RELEVANT PROJECT DETAIL (if present) — RAG-selected "
     "characters and worldbuilding entries closest to the user's "
     "question. These are your deep-detail source; cross-reference "
     "them when they're relevant.\n"
-    "7. If a context block is empty or thin, SAY SO and ask for "
+    "8. If a context block is empty or thin, SAY SO and ask for "
     "what you need. Don't fabricate. Don't invent characters, "
-    "subplots, tensions, or worldbuilding entities that aren't "
-    "listed.\n\n"
+    "subplots, tensions, themes, or worldbuilding entities that "
+    "aren't listed.\n\n"
     "OUTPUT SHAPE:\n"
     "• Direct answer first (1-2 sentences).\n"
     "• Then reasoning under short bold headers when there's more "
@@ -119,7 +127,33 @@ _PLOT_AI_SYSTEM = (
     "[\"name1\",\"name2\"],\"stakes\":\"what's at risk\","
     "\"current_state\":\"rising|stable|escalating|resolving|"
     "unresolved|resolved\",\"intensity\":<int 0-100>,\"why\":\"why "
-    "this tension matters now\"}</suggest_tension>\n\n"
+    "this tension matters now\"}</suggest_tension>\n"
+    "    NOTE: ``characters_involved`` MUST contain names that "
+    "appear in the CHARACTERS context block. If you want to put "
+    "pressure on a character that doesn't exist yet, propose the "
+    "character with <suggest_character> in the SAME reply, and "
+    "use that character's name in the tension's "
+    "characters_involved.\n"
+    "    DEFINING TENSIONS INTERACTIVELY: when the user asks to "
+    "discuss / define / brainstorm tensions, prefer to talk "
+    "through the option(s) in prose first (who's pressed, what's "
+    "at stake, why now) before emitting the suggest_tension "
+    "block. The block goes at the END of your reply so the user "
+    "can read your reasoning before clicking Add.\n\n"
+    "  <suggest_theme>{\"title\":\"short label\",\"statement\":"
+    "\"the argument the story makes — one or two sentences\","
+    "\"description\":\"what the theme is exploring\","
+    "\"motifs\":[\"recurring image 1\",\"recurring object 2\"],"
+    "\"related_characters\":[\"name1\"],\"why\":\"why this theme "
+    "is implied by the manuscript and worth naming explicitly\"}"
+    "</suggest_theme>\n"
+    "    NOTE: ``related_characters`` MUST contain names from the "
+    "CHARACTERS context block. Themes are about the meaning layer "
+    "(what the book is *about*), not the plot layer (what "
+    "happens) — propose them when the discussion reveals an "
+    "argument the manuscript is making but hasn't formalised, or "
+    "when proposed beats would only land if a particular theme "
+    "were already named.\n\n"
     "WORLDBUILDING / CHARACTER SUGGESTIONS (only when the plot "
     "discussion calls for a NEW entity that doesn't yet exist):\n\n"
     "  <suggest_character>{\"name\":\"…\",\"character_type\":"
@@ -172,6 +206,7 @@ _SUGGEST_TAG_RX = {
     "suggest_subplot": ("Subplot", "subplot"),
     "suggest_promise": ("Story Promise", "promise"),
     "suggest_tension": ("Tension", "tension"),
+    "suggest_theme": ("Theme", "theme"),
     "suggest_character": ("Character", "character"),
     "suggest_place": ("Place", "place"),
     "suggest_faction": ("Faction", "faction"),
@@ -226,53 +261,142 @@ def _extract_suggestions(reply: str):
 def _build_plot_ai_user_block(question: str, ctx: dict) -> str:
     """Assemble the user-prompt block sent to the plot LLM.
 
-    Extracted from ``_ask_plot_ai`` so the UI preview can show the
-    user exactly what the model will see, byte-for-byte.
+    Each major project concept gets its OWN labelled block with
+    its OWN per-block char budget — themes, subplots, promises,
+    tensions, characters, worldbuilding all render independently
+    so a busy project can't silently drop the back half of any
+    one section the way the old single-aggregate ``plot_map``
+    string did. The system prompt references each block by the
+    exact heading shown here.
 
-    Order matters: plot map and manuscript come first because the
-    system prompt tells the model to anchor every claim to those
-    blocks. Worldbuilding and characters follow as supporting
-    context. The author's question goes last so the model sees it
-    after the evidence it should reason from.
+    Order matters: structural plot scaffolding (Freytag → events →
+    subplots → promises → tensions → themes) comes first because
+    the system prompt tells the model to anchor every claim to
+    those. Manuscript anchors next, then characters and
+    worldbuilding (the tactile detail that makes beats land),
+    then RAG-selected entries, then conversation history, then
+    the author's question.
     """
     parts = []
     if ctx.get('project_name'):
         parts.append(f"PROJECT: {ctx['project_name']}")
-    if ctx.get('plot_map'):
+
+    # ── Structural plot scaffolding ──────────────────────────
+    # Each block is a separate context key now (see
+    # _build_chat_context). They come labelled so the model can
+    # cite by section name. Caps are deliberately generous — a
+    # rich project might have 8-10k chars of plot scaffolding
+    # alone and we'd rather pay the tokens than silently drop
+    # subplots / themes / tensions like the old aggregate did.
+    if ctx.get('plot_freytag'):
+        parts.append(f"\nFREYTAG PYRAMID:\n"
+                      f"{ctx['plot_freytag'][:2500]}")
+    if ctx.get('plot_events'):
+        parts.append(f"\nPLOT EVENTS:\n"
+                      f"{ctx['plot_events'][:4000]}")
+    if ctx.get('plot_subplots'):
+        parts.append(
+            f"\nSUBPLOTS (secondary storylines tied to the main "
+            f"plot):\n{ctx['plot_subplots'][:4000]}")
+    if ctx.get('plot_promises'):
+        parts.append(
+            f"\nSTORY PROMISES (commitments to the reader):\n"
+            f"{ctx['plot_promises'][:3000]}")
+    if ctx.get('plot_tensions'):
+        parts.append(
+            f"\nSTORY TENSIONS (sustained dramatic forces — "
+            f"name them when proposing beats):\n"
+            f"{ctx['plot_tensions'][:3500]}")
+    if ctx.get('plot_themes'):
+        parts.append(
+            f"\nSTORY THEMES (what the book is about underneath "
+            f"its events — every plot suggestion should reinforce "
+            f"or explicitly reckon with one):\n"
+            f"{ctx['plot_themes'][:3500]}")
+    # Free-form fallback when none of the structured keys were set
+    # (e.g. the legacy plot_map aggregate is the only source). Only
+    # used when we don't have any of the dedicated keys above.
+    if (not any(ctx.get(k) for k in (
+            'plot_freytag', 'plot_events', 'plot_subplots',
+            'plot_promises', 'plot_tensions', 'plot_themes'))
+            and ctx.get('plot_map')):
         parts.append(f"\nPLOT MAP (intended structure):\n"
-                      f"{ctx['plot_map'][:3000]}")
-    elif ctx.get('plot_summary'):
-        parts.append(f"\nPLOT OUTLINE:\n{ctx['plot_summary'][:1500]}")
+                      f"{ctx['plot_map'][:8000]}")
+    elif (not any(ctx.get(k) for k in (
+            'plot_freytag', 'plot_events', 'plot_subplots'))
+            and ctx.get('plot_summary')):
+        parts.append(
+            f"\nPLOT OUTLINE:\n{ctx['plot_summary'][:2000]}")
+
+    # ── Manuscript anchors ───────────────────────────────────
     if ctx.get('manuscript_index'):
         parts.append(f"\nMANUSCRIPT CHAPTERS (in order):\n"
-                      f"{ctx['manuscript_index'][:2000]}")
+                      f"{ctx['manuscript_index'][:2500]}")
     if ctx.get('chapter_excerpts'):
         # First+last few hundred words of every chapter — gives the
         # model enough to recognise/cite without exploding the prompt.
         parts.append(f"\nCHAPTER EXCERPTS (opening + closing of each):\n"
-                      f"{ctx['chapter_excerpts'][:8000]}")
+                      f"{ctx['chapter_excerpts'][:9000]}")
     if ctx.get('current_chapter_title'):
         parts.append(f"\nCURRENTLY OPEN CHAPTER: "
                       f"{ctx['current_chapter_title']}")
         if ctx.get('current_chapter_content'):
             content = ctx['current_chapter_content'][:6000]
-            parts.append(f"\n--- full text of currently open chapter ---\n"
-                          f"{content}")
+            parts.append(
+                f"\n--- full text of currently open chapter ---\n"
+                f"{content}")
+
+    # ── RAG-FOCUSED BLOCKS (top-K most relevant per type) ──
+    # Populated by main_window's _rag_top_chunks_per_type helper for
+    # plot mode. These are the high-signal subset for THIS question
+    # — placed BEFORE the broad CHARACTERS / WORLDBUILDING lists so
+    # the model forms its initial reasoning around the most-relevant
+    # items, then has the full roster behind it for context. Each
+    # block is already capped on the producing side.
+    rag_blocks = []
+    if ctx.get('rag_focused_characters'):
+        rag_blocks.append(
+            f"  CHARACTERS most relevant to this question:\n"
+            f"{ctx['rag_focused_characters']}")
+    if ctx.get('rag_focused_worldbuilding'):
+        rag_blocks.append(
+            f"  WORLDBUILDING most relevant to this question:\n"
+            f"{ctx['rag_focused_worldbuilding']}")
+    if ctx.get('rag_focused_subplots'):
+        rag_blocks.append(
+            f"  SUBPLOTS most relevant to this question:\n"
+            f"{ctx['rag_focused_subplots']}")
+    if ctx.get('rag_focused_chapters'):
+        rag_blocks.append(
+            f"  CHAPTER PASSAGES most relevant to this question:\n"
+            f"{ctx['rag_focused_chapters']}")
+    if rag_blocks:
+        parts.append(
+            "\n=== RAG-FOCUSED CONTEXT (selected for THIS "
+            "question — prefer citing these specific items) ===\n"
+            + "\n\n".join(rag_blocks))
+
+    # ── Tactile detail (people + world) — full roster ───────
+    # Comes AFTER the RAG-focused subset so the model has both the
+    # relevant items at the top of its short-term memory AND the
+    # full roster as fallback context.
     if ctx.get('characters'):
-        parts.append(f"\nCHARACTERS:\n{ctx['characters'][:1500]}")
+        # Bumped from 1500 → 4000 so a project with 10+ characters
+        # doesn't get the cast list cut in half.
+        parts.append(f"\nCHARACTERS (full roster):\n"
+                      f"{ctx['characters'][:4000]}")
     if ctx.get('worldbuilding'):
-        parts.append(f"\nWORLDBUILDING:\n{ctx['worldbuilding'][:1500]}")
-    # RAG-selected characters / worldbuilding entries relevant to THIS
-    # question. Lives in its own block so the model knows these are
-    # the deep-detail items it should cross-reference (the broader
-    # CHARACTERS / WORLDBUILDING blocks above are name-and-summary).
+        parts.append(
+            f"\nWORLDBUILDING (full set):\n"
+            f"{ctx['worldbuilding'][:4000]}")
+
+    # Generic mixed RAG (cross-source-type) — kept as a fallback for
+    # surfaces that don't populate the rag_focused_* keys above.
     if ctx.get('rag_context'):
         parts.append(
-            f"\nRELEVANT PROJECT DETAIL (selected for this question):\n"
+            f"\nRELEVANT PROJECT DETAIL (mixed RAG):\n"
             f"{ctx['rag_context'][:3500]}")
     if ctx.get('history_summary'):
-        # Compacted older turns from this conversation — see
-        # PlotManagerWidget._compact_history.
         parts.append(
             f"\nEARLIER IN THIS CONVERSATION (compacted):\n"
             f"{ctx['history_summary']}")
@@ -530,6 +654,10 @@ class PlotManagerWidget(QWidget):
         self.subplots: List[Subplot] = []
         self.promises: List[StoryPromise] = []
         self.tensions: List[CharacterTension] = []
+        self.themes: List[Theme] = []   # rich themes (theme_details)
+        self.legacy_themes: List[str] = []  # bare-string themes for
+                                           # backwards compat with
+                                           # older projects
         self.available_characters: List[str] = []
         # Discuss-with-AI tab. ``_ai_context_provider`` is a callable
         # injected by main_window that returns a dict with manuscript
@@ -624,6 +752,12 @@ class PlotManagerWidget(QWidget):
         # suggestions weigh which pressures are escalating.
         tensions_tab = self._create_tensions_tab()
         tabs.addTab(tensions_tab, "⚡ Tensions")
+
+        # Themes tab — what the story is *about* underneath its
+        # events. Surfaces in the AI context so plot discussion can
+        # check whether beats reinforce or undercut the themes.
+        themes_tab = self._create_themes_tab()
+        tabs.addTab(themes_tab, "🎯 Themes")
 
         # Discuss-with-AI tab — pulls manuscript + worldbuilding from
         # the host (main_window) and routes through the per-task
@@ -1195,6 +1329,32 @@ class PlotManagerWidget(QWidget):
              "underweight and the chapter to fix it in. If there are "
              "no tensions in the map, name 2-3 the manuscript "
              "implies."),
+            ("Define tensions with me",
+             "Look at the CHARACTERS context block and the manuscript "
+             "excerpts. Propose 2-3 sustained tensions this story "
+             "should be running, each tied to specific characters "
+             "from the CHARACTERS list (use their actual names — do "
+             "not invent characters). For EACH tension propose, "
+             "describe in prose what the tension is, who it presses "
+             "on, what's at stake, and which chapter / scene first "
+             "puts it on the page. Then emit a <suggest_tension> "
+             "block with the JSON so I can add it with one click. "
+             "Cap at TWO suggest_tension blocks per reply; the "
+             "third tension goes in prose only so I can refine it "
+             "before you formalise it."),
+            ("Themes pulse",
+             "For EACH theme in the STORY THEMES context block, "
+             "output: '**Title** — Statement: <from the plot map> "
+             "— Where it's landing: <Ch N: ‘scene that proves it’> "
+             "— Where it's drifting: <Ch N: ‘scene that contradicts "
+             "it’ or ‘never on the page’> — One-line beat to "
+             "reinforce it'. End with which theme is most "
+             "underweight in the manuscript and the chapter to fix "
+             "it in. If there are no themes (or only legacy bare "
+             "labels), use the manuscript + characters to PROPOSE "
+             "2-3 themes the book is implicitly making — emit a "
+             "<suggest_theme> block for the first one so I can "
+             "formalise it."),
         )
 
     def set_ai_context_provider(self, provider):
@@ -1348,41 +1508,63 @@ class PlotManagerWidget(QWidget):
             self._ai_ask_btn.setEnabled(not self._ai_busy)
 
     def _show_ai_context_preview(self):
-        """Pop up the full assembled context the AI will see."""
-        ctx = self._gather_ai_context()
+        """Pop up the full assembled context the AI will see.
+
+        Honours the current input — if the user has typed a
+        question, we pass it as the RAG query so the preview shows
+        the actual focused-per-question context (not the empty-
+        question fallback). The preview is a tabbed dialog: User
+        block / System prompt / RAG breakdown / History.
+        """
+        question = ""
+        if hasattr(self, '_ai_input'):
+            question = self._ai_input.toPlainText().strip()
+        # Use the typed question (if any) so RAG fires and the
+        # rag_focused_* keys actually populate. Without a question
+        # the provider returns no RAG output and the preview is
+        # misleading.
+        ctx = self._gather_ai_context(question)
         if not ctx:
-            QDialog  # noqa — keep the import warm
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.information(
                 self, "Plot AI context",
                 "No context available. Open a project first.")
             return
-        # Reuse the same builder _ask_plot_ai uses so the preview
-        # matches what the model receives.
+        # Build the user-block exactly as _ask_plot_ai does — same
+        # question (or a placeholder when the input is empty), same
+        # context, same per-section budgets — so the preview is
+        # byte-accurate.
+        preview_question = question or "<your question here>"
         try:
-            preview = _build_plot_ai_user_block(
-                "<your question here>", ctx)
+            user_block = _build_plot_ai_user_block(
+                preview_question, ctx)
         except Exception as e:
-            preview = f"(could not assemble preview: {e})"
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Plot AI — context preview")
-        dlg.resize(720, 520)
-        v = QVBoxLayout(dlg)
-        intro = QLabel(
-            "This is exactly what the AI will see when you ask. If "
-            "something is missing, edit the plot map / chapters and "
-            "click <b>Refresh</b>.")
-        intro.setWordWrap(True)
-        intro.setStyleSheet("color:#374151;font-size:11px;")
-        v.addWidget(intro)
-        body = QTextEdit()
-        body.setReadOnly(True)
-        body.setPlainText(preview)
-        v.addWidget(body, stretch=1)
-        close_btn = QPushButton("✕ Close")
-        close_btn.clicked.connect(dlg.accept)
-        v.addWidget(close_btn)
-        dlg.exec()
+            user_block = f"(could not assemble preview: {e})"
+        # Inject any history summary captured by compaction so the
+        # preview reflects what the worker would actually send.
+        history = list(getattr(self, '_ai_history', []) or [])
+        # Pull the RAG breakdown out of the context dict for its
+        # own dialog tab.
+        from src.ui.context_preview_dialog import (
+            show_context_preview, build_rag_summary,
+        )
+        rag_summary = build_rag_summary(ctx)
+        intro = (
+            "This is exactly what the AI will see when you click "
+            "Ask. The user-block reflects your current input — if "
+            "you change the input, click Preview again to refresh."
+            if question else
+            "Type a question in the input box and click Preview "
+            "again to see RAG-selected context for that specific "
+            "question. The preview below uses a placeholder.")
+        show_context_preview(
+            self,
+            title="Plot AI — context preview",
+            intro=intro,
+            system_prompt=_PLOT_AI_SYSTEM,
+            user_block=user_block,
+            rag_summary=rag_summary,
+            conversation_history=history)
 
     def _on_ai_clear(self):
         """Reset the transcript + history."""
@@ -2254,6 +2436,187 @@ class PlotManagerWidget(QWidget):
                 item.setToolTip("\n\n".join(tip_parts))
             self._tension_list.addItem(item)
 
+    # ── Themes ────────────────────────────────────────────────
+    # What the story is *about* underneath its events. Each theme
+    # surfaces in the plot AI context so suggestions can reinforce
+    # rather than dilute the book's argument. Legacy projects with
+    # bare-string themes display them in a separate row at the top
+    # of the list — the user can promote them to rich themes by
+    # clicking ✏️ Edit on the row.
+
+    def _create_themes_tab(self) -> QWidget:
+        """Create the Themes sub-tab — list + add/edit/remove."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        header = QHBoxLayout()
+        title = QLabel("Story Themes")
+        title.setStyleSheet("font-size: 14px; font-weight: 600;")
+        header.addWidget(title)
+        header.addStretch()
+        help_text = QLabel(
+            "What the story is about underneath its events — the "
+            "argument the book makes")
+        help_text.setStyleSheet("font-size: 11px; color: #6b7280;")
+        header.addWidget(help_text)
+        layout.addLayout(header)
+
+        toolbar = QHBoxLayout()
+        add_btn = QPushButton("➕ Add Theme")
+        add_btn.clicked.connect(self._add_theme)
+        toolbar.addWidget(add_btn)
+
+        self.edit_theme_btn = QPushButton("✏️ Edit")
+        self.edit_theme_btn.setEnabled(False)
+        self.edit_theme_btn.clicked.connect(self._edit_theme)
+        toolbar.addWidget(self.edit_theme_btn)
+
+        self.remove_theme_btn = QPushButton("🗑️ Remove")
+        self.remove_theme_btn.setEnabled(False)
+        self.remove_theme_btn.clicked.connect(self._remove_theme)
+        toolbar.addWidget(self.remove_theme_btn)
+        toolbar.addStretch()
+        layout.addLayout(toolbar)
+
+        info = QLabel(
+            "<b>A good theme has:</b><br/>"
+            "• A short title — the label you'll reference<br/>"
+            "• A statement — the argument your story makes "
+            "(e.g. \"Redemption requires confession, not just "
+            "remorse\")<br/>"
+            "• Motifs — recurring images / objects / phrases that "
+            "signal it (e.g. \"broken mirrors\", \"the frost\")<br/>"
+            "• Related characters — whose arc carries it")
+        info.setWordWrap(True)
+        info.setStyleSheet(
+            "background-color: #f3f4f6; padding: 8px; "
+            "border-radius: 4px; font-size: 11px;")
+        layout.addWidget(info)
+
+        self._theme_list = QListWidget()
+        self._theme_list.itemSelectionChanged.connect(
+            self._on_theme_selection_changed)
+        self._theme_list.itemDoubleClicked.connect(self._edit_theme)
+        layout.addWidget(self._theme_list, stretch=1)
+        return widget
+
+    def _add_theme(self):
+        dialog = ThemeEditor(
+            available_characters=self.available_characters,
+            parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            theme = dialog.get_theme()
+            self.themes.append(theme)
+            self._update_theme_list()
+            self.content_changed.emit()
+
+    def _edit_theme(self):
+        items = self._theme_list.selectedItems()
+        if not items:
+            return
+        item = items[0]
+        # Legacy bare-string themes get promoted to rich Theme on edit.
+        legacy_index = item.data(Qt.ItemDataRole.UserRole + 1)
+        if legacy_index is not None:
+            legacy_text = self.legacy_themes[legacy_index]
+            import uuid
+            stub = Theme(id=str(uuid.uuid4()), title=legacy_text)
+            dialog = ThemeEditor(
+                theme=stub,
+                available_characters=self.available_characters,
+                parent=self)
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                self.themes.append(dialog.get_theme())
+                # Drop the legacy entry now that it's been promoted.
+                self.legacy_themes.pop(legacy_index)
+                self._update_theme_list()
+                self.content_changed.emit()
+            return
+        theme_id = item.data(Qt.ItemDataRole.UserRole)
+        theme = next((t for t in self.themes if t.id == theme_id),
+                     None)
+        if not theme:
+            return
+        dialog = ThemeEditor(
+            theme=theme,
+            available_characters=self.available_characters,
+            parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            updated = dialog.get_theme()
+            for i, t in enumerate(self.themes):
+                if t.id == theme_id:
+                    self.themes[i] = updated
+                    break
+            self._update_theme_list()
+            self.content_changed.emit()
+
+    def _remove_theme(self):
+        items = self._theme_list.selectedItems()
+        if not items:
+            return
+        item = items[0]
+        legacy_index = item.data(Qt.ItemDataRole.UserRole + 1)
+        from PyQt6.QtWidgets import QMessageBox
+        confirm = QMessageBox.question(
+            self, "Remove theme?",
+            "Remove this theme? You can re-add it later.",
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel)
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        if legacy_index is not None:
+            self.legacy_themes.pop(legacy_index)
+        else:
+            theme_id = item.data(Qt.ItemDataRole.UserRole)
+            self.themes = [t for t in self.themes if t.id != theme_id]
+        self._update_theme_list()
+        self.content_changed.emit()
+
+    def _on_theme_selection_changed(self):
+        has = bool(self._theme_list.selectedItems())
+        self.edit_theme_btn.setEnabled(has)
+        self.remove_theme_btn.setEnabled(has)
+
+    def _update_theme_list(self):
+        if not hasattr(self, '_theme_list'):
+            return
+        self._theme_list.clear()
+        # Rich themes first.
+        for t in self.themes:
+            label = f"🎯  {t.title}"
+            if t.statement:
+                label += f"  —  {t.statement[:80]}"
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, t.id)
+            tip_parts = []
+            if t.description:
+                tip_parts.append(t.description)
+            if t.statement:
+                tip_parts.append(f"Statement: {t.statement}")
+            if t.motifs:
+                tip_parts.append(f"Motifs: {', '.join(t.motifs)}")
+            if t.related_characters:
+                tip_parts.append(
+                    f"Carried by: "
+                    f"{', '.join(t.related_characters)}")
+            if tip_parts:
+                item.setToolTip("\n\n".join(tip_parts))
+            self._theme_list.addItem(item)
+        # Legacy bare-string themes — promotable via Edit.
+        for i, txt in enumerate(self.legacy_themes):
+            item = QListWidgetItem(
+                f"📝  {txt}  (legacy — click Edit to flesh out)")
+            # We use UserRole+1 to mark the legacy index so _edit/_remove
+            # can route correctly.
+            item.setData(Qt.ItemDataRole.UserRole + 1, i)
+            item.setToolTip(
+                "Bare-text theme from an older save. Click Edit to "
+                "add a description, statement, motifs, and related "
+                "characters — it'll become a rich theme that the "
+                "plot AI can reason about more deeply.")
+            self._theme_list.addItem(item)
+
     def _add_event(self):
         """Add new plot event."""
         editor = PlotEventEditor(
@@ -2565,6 +2928,8 @@ class PlotManagerWidget(QWidget):
         subplots: List[Subplot],
         promises: List[StoryPromise] = None,
         tensions: List = None,
+        themes: List = None,
+        legacy_themes: List[str] = None,
     ):
         """Load plot data.
 
@@ -2575,11 +2940,18 @@ class PlotManagerWidget(QWidget):
             tensions: List of CharacterTension objects (sustained
                 dramatic forces shaping the plot — surfaced in the
                 plot AI context so suggestions weigh them)
+            themes: List of Theme objects (rich themes with
+                description, statement, motifs)
+            legacy_themes: List of plain-string themes from older
+                projects — surfaced in the AI context as a fallback
+                when themes is empty
         """
         self.freytag_pyramid = freytag_pyramid
         self.subplots = subplots
         self.promises = promises or []
         self.tensions = tensions or []
+        self.themes = themes or []
+        self.legacy_themes = list(legacy_themes or [])
 
         # Sync act configuration UI
         self.num_acts_spin.blockSignals(True)
@@ -2594,16 +2966,19 @@ class PlotManagerWidget(QWidget):
         self._update_promise_list()
         if hasattr(self, '_tension_list'):
             self._update_tension_list()
+        if hasattr(self, '_theme_list'):
+            self._update_theme_list()
 
     def get_plot_data(self):
         """Get plot data.
 
         Returns:
             Tuple of (FreytagPyramid, List[Subplot], List[StoryPromise],
-                      List[CharacterTension])
+                      List[CharacterTension], List[Theme],
+                      List[str] legacy_themes)
         """
         return (self.freytag_pyramid, self.subplots, self.promises,
-                self.tensions)
+                self.tensions, self.themes, self.legacy_themes)
 
     def set_available_characters(self, characters: List[str]):
         """Set available characters for event association.
@@ -3267,3 +3642,153 @@ class TensionEditor(QDialog):
 
     def get_tension(self) -> 'CharacterTension':
         return self.tension
+
+
+class ThemeEditor(QDialog):
+    """Dialog for adding / editing a Theme.
+
+    Same shape as TensionEditor / PromiseEditor: title + description
+    + statement + motifs (one per line) + related characters
+    multi-select. Returns a fully-populated Theme via
+    :meth:`get_theme`.
+    """
+
+    def __init__(self, theme: 'Theme' = None,
+                 available_characters: List[str] = None,
+                 parent=None):
+        super().__init__(parent)
+        self.theme = theme
+        self.available_characters = available_characters or []
+        self.is_new = theme is None
+        self._init_ui()
+        if not self.is_new:
+            self._load_theme()
+
+    def _init_ui(self):
+        self.setWindowTitle(
+            "Edit Theme" if not self.is_new else "New Story Theme")
+        self.setMinimumWidth(540)
+        self.setMinimumHeight(540)
+
+        layout = QVBoxLayout(self)
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        form_widget = QWidget()
+        form_layout = QFormLayout(form_widget)
+
+        self.title_edit = QLineEdit()
+        self.title_edit.setPlaceholderText(
+            "Short label, e.g. 'Cost of loyalty' or "
+            "'Identity survives memory loss'")
+        form_layout.addRow("Title:*", self.title_edit)
+
+        self.statement_edit = QTextEdit()
+        self.statement_edit.setPlaceholderText(
+            "The argument the story makes (one or two sentences). "
+            "E.g. \"Redemption requires confession, not just remorse — "
+            "Marcus must speak the wrong he did before he can outrun "
+            "it.\"")
+        self.statement_edit.setMaximumHeight(80)
+        form_layout.addRow("Statement:", self.statement_edit)
+
+        self.description_edit = QTextEdit()
+        self.description_edit.setPlaceholderText(
+            "What the theme is exploring. What questions does it "
+            "ask? What experience are you trying to give the reader?")
+        self.description_edit.setMaximumHeight(100)
+        form_layout.addRow("Description:", self.description_edit)
+
+        self.motifs_edit = QTextEdit()
+        self.motifs_edit.setPlaceholderText(
+            "Recurring images / objects / phrases that signal this "
+            "theme. One per line.\n"
+            "E.g.:\n"
+            "broken mirrors\n"
+            "the encroaching frost\n"
+            "Marcus's father's pocket watch")
+        self.motifs_edit.setMaximumHeight(110)
+        form_layout.addRow("Motifs (one per line):",
+                           self.motifs_edit)
+
+        char_group = QGroupBox("Related characters (whose arc carries this theme)")
+        char_layout = QVBoxLayout(char_group)
+        self.characters_list = QListWidget()
+        self.characters_list.setSelectionMode(
+            QListWidget.SelectionMode.MultiSelection)
+        self.characters_list.setMaximumHeight(120)
+        for name in self.available_characters:
+            self.characters_list.addItem(name)
+        char_layout.addWidget(self.characters_list)
+        if not self.available_characters:
+            no_chars = QLabel(
+                "(No characters defined yet — add them in the "
+                "Characters tab and they'll show up here.)")
+            no_chars.setStyleSheet(
+                "color: #6b7280; font-size: 11px;")
+            char_layout.addWidget(no_chars)
+        form_layout.addRow(char_group)
+
+        scroll_area.setWidget(form_widget)
+        layout.addWidget(scroll_area)
+
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        save_btn = QPushButton("💾 Save")
+        save_btn.setDefault(True)
+        save_btn.clicked.connect(self._save)
+        button_layout.addWidget(save_btn)
+        cancel_btn = QPushButton("✕ Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        button_layout.addWidget(cancel_btn)
+        layout.addLayout(button_layout)
+
+    def _load_theme(self):
+        t = self.theme
+        self.title_edit.setText(t.title)
+        self.statement_edit.setPlainText(t.statement)
+        self.description_edit.setPlainText(t.description)
+        self.motifs_edit.setPlainText("\n".join(t.motifs or []))
+        for i in range(self.characters_list.count()):
+            it = self.characters_list.item(i)
+            if it.text() in t.related_characters:
+                it.setSelected(True)
+
+    def _save(self):
+        from PyQt6.QtWidgets import QMessageBox
+        title = self.title_edit.text().strip()
+        if not title:
+            QMessageBox.warning(self, "Missing title",
+                                "Please give this theme a title.")
+            return
+        motifs = [
+            line.strip() for line in
+            self.motifs_edit.toPlainText().splitlines()
+            if line.strip()]
+        chars = [self.characters_list.item(i).text()
+                 for i in range(self.characters_list.count())
+                 if self.characters_list.item(i).isSelected()]
+        if self.is_new:
+            import uuid
+            self.theme = Theme(
+                id=str(uuid.uuid4()),
+                title=title,
+                statement=self.statement_edit.toPlainText().strip(),
+                description=(
+                    self.description_edit.toPlainText().strip()),
+                motifs=motifs,
+                related_characters=chars,
+            )
+        else:
+            self.theme.title = title
+            self.theme.statement = (
+                self.statement_edit.toPlainText().strip())
+            self.theme.description = (
+                self.description_edit.toPlainText().strip())
+            self.theme.motifs = motifs
+            self.theme.related_characters = chars
+        self.accept()
+
+    def get_theme(self) -> 'Theme':
+        return self.theme

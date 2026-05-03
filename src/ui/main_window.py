@@ -321,13 +321,26 @@ looming threats — that shape the plot across scenes):
 }
 </create_tension>
 
+FOR THEMES (what the story is *about* underneath its events — the
+argument the book makes):
+<create_theme>
+{
+  "title": "Short label, e.g. 'Cost of loyalty'",
+  "statement": "The argument the story makes (one or two sentences). E.g. 'Redemption requires confession, not just remorse.'",
+  "description": "What the theme is exploring; what questions it asks",
+  "motifs": ["recurring image 1", "recurring object 2"],
+  "related_characters": ["Marcus", "Rachel"],
+  "related_subplots": ["subplot id if relevant (optional)"]
+}
+</create_theme>
+
 PLOT-DISCUSSION TIP: when the user is asking about plot ("what should
 happen next?", "how do I tighten Act 2?", "is the antagonist's pressure
 felt enough?"), prefer create_plot_event / create_subplot /
-create_promise / create_tension over create_character. Adding a
-brand-new character to fix a structural problem is usually the wrong
-answer — the right answer is naming the missing beat, the missing
-subplot thread, or the missing tension.
+create_promise / create_tension / create_theme over create_character.
+Adding a brand-new character to fix a structural problem is usually the
+wrong answer — the right answer is naming the missing beat, the missing
+subplot thread, the missing tension, or the missing thematic argument.
 
 RULES FOR CREATING ELEMENTS:
 
@@ -553,12 +566,13 @@ PRIME DIRECTIVE: be SPECIFIC. Every point you make should anchor to something co
 
 HOW TO USE EACH CONTEXT BLOCK (skipping any populated block is a failure mode — when a block has content, REFERENCE it):
 1. PLOT MAP — the author's intended structure. Reference items by their exact title. The STORY TENSIONS list captures sustained dramatic forces (internal struggles, interpersonal rivalries, societal pressure, cosmic threats) with current state and intensity — name them when discussing pacing or proposing beats so your suggestions move the right pressure on the right people.
-2. SUBPLOTS — secondary storylines tied to the main plot, each with status, characters, connection-to-main, and an event arc. Treat them as first-class story material: every plot discussion (pacing, what-next, structural audit) should weigh which subplots are advancing, stalled, or being dropped. Name which subplot a beat advances or which subplot needs a scene next. Don't let a subplot disappear from your reasoning just because the user didn't mention it by name.
-3. MANUSCRIPT (current chapter content + chapter list) — what is actually on the page. When you cite, use "Ch N: Title" format. Quote a short passage (≤25 words) when the wording matters; otherwise paraphrase with the chapter reference.
-4. CHARACTERS — names, personalities, wants/needs, fears, arcs. When discussing a beat or arc, name SPECIFIC characters from this block. Don't invent characters that aren't listed.
-5. WORLDBUILDING — factions, places, cultures, technologies. When the discussion touches on conflict, location, or capability, reference the specific entities by name. Don't invent worldbuilding that isn't listed.
-6. RELEVANT REFERENCE (when present) — RAG-selected character / worldbuilding entries closest to the user's question. Cross-reference these for deep detail.
-7. If a context block is missing or thin (e.g. plot map has only a title), say so explicitly and ask for what you need before guessing.
+2. STORY THEMES — what the book is *about* underneath its events (the argument it's making). Every plot suggestion should reinforce a named theme or explicitly reckon with undercutting one. When the THEMES block is empty or only has bare labels, you may propose themes the manuscript is implicitly making via <create_theme>.
+3. SUBPLOTS — secondary storylines tied to the main plot, each with status, characters, connection-to-main, and an event arc. Treat them as first-class story material: every plot discussion (pacing, what-next, structural audit) should weigh which subplots are advancing, stalled, or being dropped. Name which subplot a beat advances or which subplot needs a scene next. Don't let a subplot disappear from your reasoning just because the user didn't mention it by name.
+4. MANUSCRIPT (current chapter content + chapter list) — what is actually on the page. When you cite, use "Ch N: Title" format. Quote a short passage (≤25 words) when the wording matters; otherwise paraphrase with the chapter reference.
+5. CHARACTERS — names, personalities, wants/needs, fears, arcs. When discussing a beat or arc, name SPECIFIC characters from this block. Don't invent characters that aren't listed.
+6. WORLDBUILDING — factions, places, cultures, technologies. When the discussion touches on conflict, location, or capability, reference the specific entities by name. Don't invent worldbuilding that isn't listed.
+7. RELEVANT REFERENCE (when present) — RAG-selected character / worldbuilding entries closest to the user's question. Cross-reference these for deep detail.
+8. If a context block is missing or thin (e.g. plot map has only a title), say so explicitly and ask for what you need before guessing.
 
 OUTPUT SHAPE:
 • Direct answer first — one or two sentences resolving the question.
@@ -580,6 +594,10 @@ When the plot discussion calls for a new structural piece (the most common case)
 - <create_tension> — a sustained dramatic force the plot should feel
 
 When the discussion clearly calls for a NEW worldbuilding entity that doesn't exist yet, fall back to <create_character> / <create_place> / <create_faction> / <create_culture> / <create_chapter>.
+
+WHEN PROPOSING A TENSION: ``characters_involved`` MUST contain names that already exist in the CHARACTERS context block. If you want to apply pressure to someone who doesn't exist, propose them with <create_character> in the SAME reply and use that character's name in the tension's characters_involved.
+
+WHEN DEFINING TENSIONS INTERACTIVELY (the user asks "help me define tensions" or similar): talk through the option(s) in prose first — who's pressed, what's at stake, why now — before emitting any <create_tension> block. The block goes at the END of your reply so the user can read your reasoning first.
 
 Cap proposals at TWO per reply. Each block must tie back to a specific chapter, event, promise, or tension already in the context. Don't reach for a new character if the structural issue is a missing beat or a missing tension.""",
 
@@ -718,23 +736,90 @@ When asked to continue:
         if self.context.get('plot_summary'):
             parts.append(f"\nPLOT OUTLINE:\n{self.context['plot_summary'][:2000]}")
 
-        # Structured plot map (Freytag pyramid + events + subplots +
-        # promises). Only built for plot-discussion mode; includes the
-        # author's intended story structure that the AI can reference
-        # by stage / event / promise title.
-        if self.context.get('plot_map'):
-            parts.append(f"\nPLOT MAP (author's intended structure):\n"
-                          f"{self.context['plot_map'][:3000]}")
+        # Structured plot scaffolding — emitted by _build_chat_context
+        # for plot mode as separate keys per concept (Freytag, events,
+        # subplots, promises, tensions, themes) so each renders with
+        # its own per-block budget instead of being silently truncated
+        # when stuffed into a single ``plot_map`` aggregate. Each
+        # heading exactly matches what the system prompt tells the
+        # model to cite.
+        if self.context.get('plot_freytag'):
+            parts.append(f"\nFREYTAG PYRAMID:\n"
+                          f"{self.context['plot_freytag'][:2500]}")
+        if self.context.get('plot_events'):
+            parts.append(f"\nPLOT EVENTS:\n"
+                          f"{self.context['plot_events'][:4000]}")
+        if self.context.get('plot_subplots'):
+            parts.append(
+                f"\nSUBPLOTS (secondary storylines tied to the main "
+                f"plot):\n{self.context['plot_subplots'][:4000]}")
+        if self.context.get('plot_promises'):
+            parts.append(
+                f"\nSTORY PROMISES (commitments to the reader):\n"
+                f"{self.context['plot_promises'][:3000]}")
+        if self.context.get('plot_tensions'):
+            parts.append(
+                f"\nSTORY TENSIONS (sustained dramatic forces — "
+                f"name them when proposing beats):\n"
+                f"{self.context['plot_tensions'][:3500]}")
+        if self.context.get('plot_themes'):
+            parts.append(
+                f"\nSTORY THEMES (what the book is about underneath "
+                f"its events — every plot suggestion should reinforce "
+                f"or explicitly reckon with one):\n"
+                f"{self.context['plot_themes'][:3500]}")
+        # Aggregate fallback for surfaces that haven't been split yet,
+        # only when none of the dedicated keys above fired.
+        if (self.context.get('plot_map')
+                and not any(self.context.get(k) for k in (
+                    'plot_freytag', 'plot_events', 'plot_subplots',
+                    'plot_promises', 'plot_tensions',
+                    'plot_themes'))):
+            parts.append(
+                f"\nPLOT MAP (author's intended structure):\n"
+                f"{self.context['plot_map'][:8000]}")
 
-        # Characters — personality, backstory, traits, speaking style
+        # Characters — personality, backstory, traits, speaking style.
+        # Bumped from 2000 → 4000 chars so a project with 10+
+        # characters doesn't have its cast list cut in half.
         if self.context.get('characters'):
-            parts.append(f"\nMAIN CHARACTERS:\n{self.context['characters'][:2000]}")
+            parts.append(f"\nMAIN CHARACTERS:\n"
+                          f"{self.context['characters'][:4000]}")
 
         # Worldbuilding — factions, cultures, magic, places, etc.
+        # Same bump from 2000 → 4000 for the same reason.
         if self.context.get('worldbuilding'):
-            parts.append(f"\nWORLDBUILDING:\n{self.context['worldbuilding'][:2000]}")
+            parts.append(f"\nWORLDBUILDING:\n"
+                          f"{self.context['worldbuilding'][:4000]}")
 
         # === SECONDARY CONTEXT (RAG results — enriches with specifics) ===
+        # Plot mode sets per-source-type RAG selections (top-K most
+        # relevant entries per source type) — render those as a
+        # focused block before the mixed rag_context fallback.
+        rag_focused = []
+        if self.context.get('rag_focused_characters'):
+            rag_focused.append(
+                f"  CHARACTERS most relevant to this question:\n"
+                f"{self.context['rag_focused_characters']}")
+        if self.context.get('rag_focused_worldbuilding'):
+            rag_focused.append(
+                f"  WORLDBUILDING most relevant to this question:\n"
+                f"{self.context['rag_focused_worldbuilding']}")
+        if self.context.get('rag_focused_subplots'):
+            rag_focused.append(
+                f"  SUBPLOTS most relevant to this question:\n"
+                f"{self.context['rag_focused_subplots']}")
+        if self.context.get('rag_focused_chapters'):
+            rag_focused.append(
+                f"  CHAPTER PASSAGES most relevant to this "
+                f"question:\n"
+                f"{self.context['rag_focused_chapters']}")
+        if rag_focused:
+            parts.append(
+                "\n=== RAG-FOCUSED CONTEXT (selected for THIS "
+                "question — prefer citing these specific items) "
+                "===\n" + "\n\n".join(rag_focused))
+
         # Includes relevant worldbuilding entries, character details, and
         # encyclopedia/knowledge base if enabled. Supplements primary context.
         if self.context.get('rag_context'):
@@ -1561,6 +1646,12 @@ class MainWindow(QMainWindow):
         # Connect project changes
         self.worldbuilding_widget.content_changed.connect(self._on_content_changed)
         self.characters_widget.content_changed.connect(self._on_content_changed)
+        # When characters are added / removed / renamed, refresh the
+        # name list the plot widget hands to its Tension and Plot
+        # Event editors so the multi-select pickers stay in sync
+        # without needing a project reload.
+        self.characters_widget.content_changed.connect(
+            self._push_characters_to_plot_widget)
         self.story_planning_widget.content_changed.connect(self._on_content_changed)
         self.manuscript_editor.content_changed.connect(self._on_content_changed)
         self.prose_profile_widget.content_changed.connect(self._on_content_changed)
@@ -1588,6 +1679,11 @@ class MainWindow(QMainWindow):
         self.chat_widget.message_sent.connect(self._handle_chat_message)
         self.chat_widget.clear_requested.connect(self._clear_chat_history)
         self.chat_widget.mode_changed.connect(lambda _: self._clear_chat_history())
+        # Preview button: build the context dict + system prompt
+        # for the current message+mode and open the shared dialog
+        # so the user sees exactly what the AI is about to receive.
+        self.chat_widget.preview_requested.connect(
+            self._handle_chat_preview_request)
 
         # Connect mic button to voice input
         self.chat_widget.mic_button.clicked.connect(self._toggle_voice_input)
@@ -1845,6 +1941,13 @@ class MainWindow(QMainWindow):
         self.characters_widget.set_project(self.current_project)
         self.characters_widget.load_data(self.current_project.characters)
         self.story_planning_widget.load_data(self.current_project.story_planning)
+        # Push character names into the plot widget so the Tension /
+        # Plot Event editors (which let the user pick which characters
+        # are involved) can populate their multi-select lists from
+        # the actual roster instead of starting empty. We refresh
+        # this on every characters_widget change too — see
+        # _push_characters_to_plot_widget below.
+        self._push_characters_to_plot_widget()
         self.manuscript_editor.load_manuscript(self.current_project.manuscript)
         self.image_generator.load_data(self.current_project.generated_images)
         # Update characters for image generation
@@ -2040,6 +2143,62 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"RAG context retrieval failed: {e}")
             return ""
+
+    def _rag_top_chunks_per_type(self, query: str,
+                                   source_types: list,
+                                   top_k: int = 6,
+                                   max_chars_per_chunk: int = 600,
+                                   max_total_chars: int = 3500) -> str:
+        """Return a RAG-selected formatted block for given source types.
+
+        Used by the plot-AI context builder to populate
+        ``rag_focused_*`` keys with the most relevant chunks for the
+        user's question — instead of dumping every character / world
+        entry / subplot and hoping the truncation keeps the right
+        ones. Each result renders as ``[<source_type>] <name>: <body>``
+        so the model knows where the chunk came from.
+
+        Returns ``""`` when RAG isn't initialised or no matches
+        surfaced — the caller treats that as "use the full block
+        instead". ``source_types`` is forwarded to the search engine
+        as a filter, so an unknown type is silently dropped without
+        crashing the call.
+        """
+        if not self._rag_initialized or not self._rag_system:
+            return ""
+        if not query or not source_types:
+            return ""
+        try:
+            results = self._rag_system.search(
+                query=query,
+                top_k=top_k,
+                source_types=source_types)
+        except Exception as e:
+            print(f"[rag] per-type search failed "
+                  f"({source_types}): {e}")
+            return ""
+        if not results:
+            return ""
+        lines = []
+        running = 0
+        for r in results:
+            body = (r.content or "").strip()
+            if not body:
+                continue
+            if len(body) > max_chars_per_chunk:
+                body = body[:max_chars_per_chunk].rstrip() + " …"
+            head = (
+                f"  - [{r.source_type}] "
+                f"{r.source_name or '(unnamed)'}")
+            line = f"{head}: {body}"
+            if running + len(line) > max_total_chars:
+                lines.append(
+                    f"  …{len(results) - len(lines)} more "
+                    f"matches not shown to save tokens.")
+                break
+            lines.append(line)
+            running += len(line)
+        return "\n".join(lines)
 
     def _collect_project_data(self):
         """Collect data from UI widgets into project model."""
@@ -2322,6 +2481,94 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"Chat compaction summarization failed: {e}")
             return ""
+
+    def _handle_chat_preview_request(self, message: str,
+                                       mode: str = "general") -> None:
+        """Show the AI-context preview for the General Assistant chat.
+
+        Wired to ``ChatWidget.preview_requested``. Builds the same
+        context dict + system prompt the chat would actually send,
+        then renders the user-block via a temporary ChatWorker so
+        the preview is byte-accurate. Opens the shared
+        context-preview dialog.
+
+        ``message`` may be empty if the user clicked Preview before
+        typing — we use a placeholder so the user-block still
+        renders, but RAG won't fire (RAG needs a query). The dialog
+        intro flags this so the user knows to type something and
+        click Preview again for the focused subset.
+        """
+        try:
+            ctx = self._build_chat_context(
+                mode=mode, user_message=message)
+        except Exception as e:
+            print(f"[chat-preview] context build failed: {e}")
+            ctx = {'mode': mode}
+
+        # If we're in writer mode the live handler also injects POV
+        # + cursor context. Mirror that here so the preview matches.
+        if mode == "writer" and hasattr(self, 'chat_widget'):
+            try:
+                ws = self.chat_widget.get_writer_settings() or {}
+                ctx['writer_character_pov'] = ws.get(
+                    'character_pov', '')
+                ctx['writer_narrative_pov'] = ws.get(
+                    'writing_pov', '')
+            except Exception:
+                pass
+
+        # Use a throwaway ChatWorker just for its _build_context_prompt
+        # method — that way the preview is byte-accurate to what the
+        # real send path produces.
+        preview_question = message or "<your question here>"
+        try:
+            tmp_worker = ChatWorker(
+                message=preview_question,
+                context=ctx, mode=mode)
+            ctx_block = tmp_worker._build_context_prompt() or ""
+        except Exception as e:
+            ctx_block = f"(context build failed: {e})"
+
+        # System prompt for this mode + writer-mode chapter emphasis
+        # mirrors what ChatWorker.run does before generation.
+        system_prompt = ChatWorker.SYSTEM_PROMPTS.get(
+            mode, ChatWorker.SYSTEM_PROMPTS.get("general", ""))
+        if ctx_block:
+            system_prompt = (
+                f"{system_prompt}\n\n{'='*60}\n"
+                f"PROJECT CONTEXT:\n{'='*60}\n{ctx_block}")
+        if (mode == "writer"
+                and ctx.get('current_chapter_content')):
+            system_prompt += (
+                "\n\nIMPORTANT: Write prose that seamlessly "
+                "continues or fits with the existing chapter "
+                "content above.")
+
+        from src.ui.context_preview_dialog import (
+            show_context_preview, build_rag_summary,
+        )
+        rag_summary = build_rag_summary(ctx)
+        history = ctx.get('conversation_history') or []
+
+        intro = (
+            "This is exactly what the AI will see when you click "
+            "Send. The user-block reflects your current input — "
+            "if you change the input, click Preview again to "
+            "refresh."
+            if message else
+            "Type a message in the input box and click Preview "
+            "again to see the RAG-selected context for that "
+            "specific question. The preview below uses a "
+            "placeholder.")
+
+        show_context_preview(
+            self,
+            title=f"Chat ({mode}) — context preview",
+            intro=intro,
+            system_prompt=system_prompt,
+            user_block=preview_question,
+            rag_summary=rag_summary,
+            conversation_history=history)
 
     def _handle_chat_message(self, message: str, mode: str = "general", insert_mode: str = ""):
         """Handle chat message from user.
@@ -2706,6 +2953,57 @@ class MainWindow(QMainWindow):
             if rag_context:
                 context['rag_context'] = rag_context
 
+        # Plot mode: per-source-type RAG selections. The full
+        # ``characters`` / ``worldbuilding`` / ``plot_subplots`` /
+        # ``chapter_excerpts`` blocks below dump the whole roster
+        # capped at byte budgets — for projects with dozens of
+        # entries that means the back half is silently truncated.
+        # The ``rag_focused_*`` keys carry the top-K results per type
+        # for THIS specific question so the model gets a tight,
+        # high-signal subset alongside the broader full lists. The
+        # user-block builder renders these in their own labelled
+        # block at the top of the prompt.
+        if (mode == "plot" and user_message
+                and self._rag_initialized):
+            try:
+                rag_chars = self._rag_top_chunks_per_type(
+                    user_message, source_types=['character'],
+                    top_k=8, max_chars_per_chunk=500,
+                    max_total_chars=3000)
+                if rag_chars:
+                    context['rag_focused_characters'] = rag_chars
+
+                world_types = [
+                    'worldbuilding', 'place', 'faction', 'culture',
+                    'technology', 'historical_event', 'flora',
+                    'fauna', 'myth', 'star_system', 'military',
+                    'economy', 'political_system',
+                ]
+                rag_world = self._rag_top_chunks_per_type(
+                    user_message, source_types=world_types,
+                    top_k=8, max_chars_per_chunk=500,
+                    max_total_chars=3500)
+                if rag_world:
+                    context['rag_focused_worldbuilding'] = rag_world
+
+                rag_subplots = self._rag_top_chunks_per_type(
+                    user_message, source_types=['subplot'],
+                    top_k=5, max_chars_per_chunk=400,
+                    max_total_chars=2000)
+                if rag_subplots:
+                    context['rag_focused_subplots'] = rag_subplots
+
+                rag_chapters = self._rag_top_chunks_per_type(
+                    user_message,
+                    source_types=['chapter_content',
+                                  'chapter_key_point'],
+                    top_k=5, max_chars_per_chunk=600,
+                    max_total_chars=3000)
+                if rag_chapters:
+                    context['rag_focused_chapters'] = rag_chapters
+            except Exception as e:
+                print(f"[rag] per-type focused fetch failed: {e}")
+
         # ``is_chapter_focused`` gates the higher-detail character /
         # worldbuilding payload. Plot mode joins it because plot
         # discussions need the full character + world picture, not the
@@ -2837,10 +3135,17 @@ class MainWindow(QMainWindow):
                 context['chapter_excerpts'] = "\n\n".join(excerpt_blocks)
 
         # Plot mode: build a structured plot map (Freytag stages, events,
-        # subplots, promises) so the AI can discuss the author's intended
-        # structure against what's actually written. The general
-        # ``plot_summary`` is short and free-form; this is the structured
-        # backbone the plot-discussion system prompt is asking for.
+        # subplots, promises, tensions, themes) so the AI can discuss
+        # the author's intended structure against what's actually
+        # written. Each section is emitted as its OWN context key
+        # (``plot_freytag``, ``plot_events``, ``plot_subplots``, …)
+        # so the user-block builder can render each as a clearly
+        # labelled section with its own per-block budget — instead
+        # of stuffing everything into a single ``plot_map`` string
+        # that gets truncated mid-list and silently drops late
+        # sections (subplots, tensions, themes).
+        # ``plot_map`` is still set as an aggregate fallback for
+        # surfaces that read it as a single string.
         if mode == "plot" and hasattr(project, 'story_planning') and project.story_planning:
             sp = project.story_planning
             map_parts = []
@@ -2856,8 +3161,9 @@ class MainWindow(QMainWindow):
                 stage_lines = [f"  {name}: {text[:300]}"
                                 for name, text in stage_pairs if text]
                 if stage_lines:
-                    map_parts.append("FREYTAG PYRAMID:\n"
-                                      + "\n".join(stage_lines))
+                    block = "\n".join(stage_lines)
+                    context['plot_freytag'] = block
+                    map_parts.append("FREYTAG PYRAMID:\n" + block)
                 if getattr(fp, 'events', None):
                     event_lines = [f"  - {e.title}"
                                     + (f": {e.description[:150]}"
@@ -2865,8 +3171,9 @@ class MainWindow(QMainWindow):
                                         else "")
                                     for e in fp.events[:25]]
                     if event_lines:
-                        map_parts.append("PLOT EVENTS:\n"
-                                          + "\n".join(event_lines))
+                        block = "\n".join(event_lines)
+                        context['plot_events'] = block
+                        map_parts.append("PLOT EVENTS:\n" + block)
             if sp.subplots:
                 # Subplots are first-class plot infrastructure — give
                 # the model enough detail to actually weave with them
@@ -2917,9 +3224,11 @@ class MainWindow(QMainWindow):
                                 f"more event(s)")
                         sub_lines.append("      events:")
                         sub_lines.extend(ev_lines)
+                block = "\n".join(sub_lines)
+                context['plot_subplots'] = block
                 map_parts.append(
                     "SUBPLOTS (secondary storylines tied to the main "
-                    "plot):\n" + "\n".join(sub_lines))
+                    "plot):\n" + block)
             if getattr(sp, 'promises', None):
                 promise_lines = []
                 for p in sp.promises[:15]:
@@ -2930,8 +3239,52 @@ class MainWindow(QMainWindow):
                         f"  - [{ptype}] {title}"
                         + (f": {desc[:150]}" if desc else ""))
                 if promise_lines:
-                    map_parts.append("STORY PROMISES:\n"
-                                      + "\n".join(promise_lines))
+                    block = "\n".join(promise_lines)
+                    context['plot_promises'] = block
+                    map_parts.append("STORY PROMISES:\n" + block)
+            # Themes — what the story is *about* underneath its
+            # events. Surfaced so the plot AI can check whether
+            # proposed beats reinforce or undercut the book's
+            # argument. Both rich themes (theme_details) and any
+            # legacy bare-string themes are included.
+            rich_themes = getattr(sp, 'theme_details', None) or []
+            legacy_themes = getattr(sp, 'themes', None) or []
+            if rich_themes or legacy_themes:
+                theme_lines = []
+                for th in rich_themes[:10]:
+                    title = getattr(th, 'title', '') or '(untitled)'
+                    statement = (getattr(th, 'statement', '') or '').strip()
+                    desc = (getattr(th, 'description', '') or '').strip()
+                    motifs = (getattr(th, 'motifs', []) or [])
+                    chars = (getattr(th, 'related_characters', []) or [])
+                    head = f"  - {title}"
+                    if statement:
+                        head += f" — “{statement[:200]}”"
+                    theme_lines.append(head)
+                    if desc and not statement:
+                        theme_lines.append(f"      what: {desc[:200]}")
+                    if motifs:
+                        theme_lines.append(
+                            f"      motifs: "
+                            f"{', '.join(str(m) for m in motifs[:8])}")
+                    if chars:
+                        theme_lines.append(
+                            f"      carried by: "
+                            f"{', '.join(str(c) for c in chars)}")
+                # Legacy bare-text themes — surface them so they're
+                # not invisible to the AI, but flag them so the model
+                # knows to ask for the underlying argument.
+                for txt in legacy_themes[:10]:
+                    if txt:
+                        theme_lines.append(
+                            f"  - {txt}  (bare label only — no "
+                            f"statement / motifs defined yet)")
+                if theme_lines:
+                    block = "\n".join(theme_lines)
+                    context['plot_themes'] = block
+                    map_parts.append(
+                        "STORY THEMES (what the book is about "
+                        "underneath its events):\n" + block)
             if getattr(sp, 'tensions', None):
                 # Sustained dramatic forces — name them so the AI
                 # can reason about which pressures are escalating
@@ -2964,9 +3317,11 @@ class MainWindow(QMainWindow):
                         line += f"\n      stakes: {stakes[:200]}"
                     tension_lines.append(line)
                 if tension_lines:
+                    block = "\n".join(tension_lines)
+                    context['plot_tensions'] = block
                     map_parts.append(
                         "STORY TENSIONS (sustained dramatic forces):\n"
-                        + "\n".join(tension_lines))
+                        + block)
             if map_parts:
                 context['plot_map'] = "\n\n".join(map_parts)
 
@@ -3213,6 +3568,55 @@ class MainWindow(QMainWindow):
             base['llm_client'] = None
         return base
 
+    def _push_characters_to_plot_widget(self) -> None:
+        """Send the current character roster into the plot widget.
+
+        Called after project load and on every characters_widget
+        content change. Keeps the Tension and Plot Event editors'
+        multi-select pickers in sync with the actual Characters tab
+        — without this, the editors start empty even when the
+        project has a full cast, and tensions can't reference real
+        people.
+
+        The widget normalises both data sources:
+          * From characters_widget if the user has been editing in
+            this session (live, includes unsaved adds).
+          * From current_project.characters as a fallback.
+        Either way, a deduped sorted list of names is handed to the
+        plot widget.
+        """
+        names: list = []
+        try:
+            if hasattr(self, 'characters_widget'):
+                live = self.characters_widget.get_data() or []
+                names.extend(getattr(c, 'name', '') for c in live
+                              if getattr(c, 'name', ''))
+        except Exception as e:
+            print(f"[plot-chars] live read failed: {e}")
+        try:
+            if (not names and self.current_project
+                    and getattr(self.current_project,
+                                  'characters', None)):
+                names.extend(getattr(c, 'name', '')
+                              for c in self.current_project.characters
+                              if getattr(c, 'name', ''))
+        except Exception:
+            pass
+        # Dedupe while preserving the first-seen order so the cast
+        # appears roughly in the order the user added them.
+        seen: set = set()
+        deduped: list = []
+        for n in names:
+            if n and n not in seen:
+                seen.add(n)
+                deduped.append(n)
+        try:
+            if hasattr(self, 'story_planning_widget'):
+                self.story_planning_widget.set_available_characters(
+                    deduped)
+        except Exception as e:
+            print(f"[plot-chars] push failed: {e}")
+
     def _create_from_plot_ai_suggestion(self, kind: str,
                                           data: dict) -> bool:
         """Create a project element from a plot-AI suggestion card.
@@ -3245,6 +3649,7 @@ class MainWindow(QMainWindow):
             "subplot": self._create_subplot_from_json,
             "promise": self._create_promise_from_json,
             "tension": self._create_tension_from_json,
+            "theme": self._create_theme_from_json,
         }.get(kind)
         if handler is None:
             print(f"[plot-ai] unknown suggestion kind: {kind}")
@@ -3444,6 +3849,7 @@ class MainWindow(QMainWindow):
             (r'<create_subplot>\s*(.*?)\s*</create_subplot>', self._create_subplot_from_json),
             (r'<create_promise>\s*(.*?)\s*</create_promise>', self._create_promise_from_json),
             (r'<create_tension>\s*(.*?)\s*</create_tension>', self._create_tension_from_json),
+            (r'<create_theme>\s*(.*?)\s*</create_theme>', self._create_theme_from_json),
         ]
 
         for pattern, handler in creation_patterns:
@@ -4274,6 +4680,38 @@ class MainWindow(QMainWindow):
               f"(state={state}, intensity={intensity})")
         self._refresh_story_planning_after_create()
         return ('tension', title)
+
+    def _create_theme_from_json(self, data: dict) -> tuple:
+        """Create a Theme (rich, structured) from JSON data."""
+        from datetime import datetime
+        from src.models.project import Theme
+        title = (data.get('title') or '').strip()
+        if not title:
+            return None
+        motifs = data.get('motifs') or []
+        if not isinstance(motifs, list):
+            motifs = [str(motifs)]
+        related_chars = data.get('related_characters') or []
+        if not isinstance(related_chars, list):
+            related_chars = [str(related_chars)]
+        related_subs = data.get('related_subplots') or []
+        if not isinstance(related_subs, list):
+            related_subs = [str(related_subs)]
+        th = Theme(
+            id=f"theme_{datetime.now().strftime('%Y%m%d%H%M%S%f')}",
+            title=title,
+            statement=data.get('statement', '') or '',
+            description=data.get('description', '') or '',
+            motifs=[str(m) for m in motifs if str(m).strip()],
+            related_characters=[str(c) for c in related_chars
+                                 if str(c).strip()],
+            related_subplots=[str(s) for s in related_subs
+                              if str(s).strip()],
+        )
+        self.current_project.story_planning.theme_details.append(th)
+        print(f"Created theme: {title}")
+        self._refresh_story_planning_after_create()
+        return ('theme', title)
 
     def _create_climate_preset_from_json(self, data: dict) -> tuple:
         """Create a climate preset from JSON data.

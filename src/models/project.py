@@ -190,6 +190,40 @@ class Subplot(BaseModel):
     status: str = "active"  # active, resolved, abandoned
 
 
+class Theme(BaseModel):
+    """A thematic thread the story is exploring.
+
+    Distinct from a plot event (a single beat) and a tension (a
+    sustained pressure between forces): a theme is the *meaning*
+    layer — what the story is *about* underneath its events.
+    Themes shape which beats land, which character arcs feel
+    earned, and which subplots feel relevant. The plot AI uses
+    them so suggestions don't drift away from the book's
+    statement.
+
+    Examples:
+      • "Redemption requires confession"
+      • "Loyalty has a cost"
+      • "Identity survives memory loss"
+    """
+    id: str
+    title: str                       # Short label, e.g. "Cost of loyalty"
+    description: str = ""            # What the theme is exploring
+    statement: str = ""              # The argument the story makes
+                                     # (e.g. "Redemption requires
+                                     # confession, not just remorse")
+    motifs: List[str] = Field(default_factory=list)
+                                     # Recurring images / phrases /
+                                     # objects that signal the theme
+                                     # (e.g. ["broken mirrors", "frost"])
+    related_characters: List[str] = Field(default_factory=list)
+                                     # Characters whose arc carries
+                                     # this theme
+    related_subplots: List[str] = Field(default_factory=list)
+                                     # Subplot ids that thread it
+    created_at: datetime = Field(default_factory=datetime.now)
+
+
 class CharacterTension(BaseModel):
     """A sustained dramatic tension that shapes the plot.
 
@@ -229,6 +263,12 @@ class StoryPlanning(BaseModel):
     # auditing pacing. New field, defaults to empty so existing
     # projects load cleanly.
     tensions: List[CharacterTension] = Field(default_factory=list)
+    # Structured themes with description, statement, motifs, and
+    # related characters/subplots — sits alongside the legacy
+    # ``themes: List[str]`` field for backwards compatibility. Both
+    # are surfaced in the plot AI context; the AI prefers the rich
+    # form when present. Defaults to empty so old projects load.
+    theme_details: List[Theme] = Field(default_factory=list)
 
 
 class ChapterRevision(BaseModel):
