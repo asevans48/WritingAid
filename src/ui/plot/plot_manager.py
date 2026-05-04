@@ -250,6 +250,53 @@ _SUGGEST_TAG_RX = {
 }
 
 
+def _response_has_unclosed_suggest(text: str) -> bool:
+    """True when ANY <suggest_*> tag is open without a close.
+
+    Used by the plot-AI continuation loop to decide whether to
+    re-prompt the model to finish a cut-off block before parsing.
+    Counts opens and closes across all known suggestion tags so a
+    response cut off mid-suggest_tension or mid-suggest_chapter
+    triggers continuation just like mid-suggest_event would.
+    """
+    if not text:
+        return False
+    import re
+    for tag in _SUGGEST_TAG_RX:
+        opens = len(re.findall(
+            rf"<{tag}>", text, re.IGNORECASE))
+        closes = len(re.findall(
+            rf"</{tag}>", text, re.IGNORECASE))
+        if opens > closes:
+            return True
+    return False
+
+
+def _plot_ai_continuation_prompt(partial: str) -> str:
+    """Continuation prompt for the plot AI.
+
+    Tells the model the previous response was cut off and hands it
+    the last 300 chars so it knows exactly where to resume — without
+    repeating itself. The continuation gets appended verbatim to the
+    partial response, so the model must NOT echo the snippet.
+    """
+    tail = (partial or "")[-300:]
+    return (
+        "Your previous response was cut off mid-stream. Continue "
+        "from EXACTLY where you stopped — do not restate, recap, "
+        "or repeat anything from before. Resume the partial text "
+        "below seamlessly, then close any open <suggest_*> block "
+        "and finish the reply naturally.\n\n"
+        "PARTIAL RESPONSE (your last ~300 chars; do NOT repeat any "
+        "of this — your continuation gets appended directly):\n"
+        "---\n"
+        f"{tail}\n"
+        "---\n\n"
+        "CONTINUATION (start writing from immediately after the "
+        "last character above):"
+    )
+
+
 def _extract_suggestions(reply: str):
     """Pull <suggest_*> blocks from a model reply.
 
@@ -287,6 +334,15 @@ def _extract_suggestions(reply: str):
                 "raw": raw,
             })
         cleaned = pattern.sub("", cleaned)
+        # Drop any orphan unclosed tags of THIS kind. Without this,
+        # a truncated <suggest_chapter>{partial JSON ... would leave
+        # an XML tail in the displayed reply even after the
+        # continuation loop succeeded and parsed the full block out
+        # of the accumulated text.
+        orphan_open = re.compile(
+            rf"<{tag}>(?:(?!</{tag}>).)*$",
+            re.DOTALL | re.IGNORECASE)
+        cleaned = orphan_open.sub("", cleaned)
     # Squeeze multiple blank lines that the strip leaves behind so
     # the displayed reply stays tidy.
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
@@ -1786,6 +1842,18 @@ class PlotManagerWidget(QWidget):
             return
 
         self._ai_input.clear()
+        # Drop any pending suggestion cards from the prior assistant
+        # turn(s). Once the user has moved on with a new question,
+        # those Add buttons are stale — the new response will bring
+        # its own suggestions. Without this, half-considered cards
+        # pile up in the transcript and compete with fresh ones.
+        # Cards on TURNS the user already actioned (status banner
+        # already swapped in via _replace_with_banner) stay around;
+        # only un-actioned suggestions get dropped.
+        for turn in self._ai_history:
+            if turn.get('role') == 'assistant' and turn.get(
+                    'suggestions'):
+                turn['suggestions'] = []
         # Append the user turn to history immediately so it shows up
         # in the transcript while the model is thinking. The worker
         # gets a snapshot taken AFTER this append, so the model sees
@@ -1845,7 +1913,34 @@ class PlotManagerWidget(QWidget):
                 except Exception as e:
                     self.failed.emit(str(e))
                     return
-                self.done.emit(response or "(empty response)")
+
+                # Continuation loop: when the model cuts off mid
+                # <suggest_*> block, re-ask it to finish — capped
+                # at 3 rounds so a perpetually broken response
+                # can't spin forever. Continuations stay inside the
+                # worker so the main thread sees a single done
+                # signal with the fully-assembled reply.
+                accumulated = response or ""
+                rounds = 0
+                MAX_ROUNDS = 3
+                while (_response_has_unclosed_suggest(accumulated)
+                        and rounds < MAX_ROUNDS):
+                    rounds += 1
+                    print(f"[plot-ai] response cut off mid-"
+                          f"<suggest_*> — requesting continuation "
+                          f"(round {rounds}/{MAX_ROUNDS})")
+                    cont_q = _plot_ai_continuation_prompt(
+                        accumulated)
+                    try:
+                        cont = _ask_plot_ai(cont_q, [], ctx)
+                    except Exception as e:
+                        print(f"[plot-ai] continuation failed: {e}")
+                        break
+                    if not cont:
+                        break
+                    accumulated += cont
+                self.done.emit(
+                    accumulated or "(empty response)")
 
         self._ai_worker = _Worker(
             question, list(self._ai_history),

@@ -2390,6 +2390,14 @@ Make each event concrete with specific character actions and scene details."""
             return
 
         self.chat_input.clear()
+        # Drop any pending suggestion cards from the previous AI
+        # response. Once the user has moved on with a new question,
+        # those Add buttons are stale — the new response will bring
+        # its own suggestions. Without this, half-considered cards
+        # pile up and compete with fresh ones the next round.
+        # Cards the user already actioned are gone (banner replaced
+        # them), so this is safe.
+        self._clear_event_suggestion_cards()
         self._append_to_chat("user", message)
         self._ai_history.append(
             {"role": "user", "content": message})
@@ -2524,7 +2532,18 @@ Respond conversationally otherwise — quotes from the project, references to sp
         self.chat_history.clear()
         self._ai_history = []
         self._ai_history_summary = ""
-        # Clear the suggestions panel.
+        self._clear_event_suggestion_cards()
+
+    def _clear_event_suggestion_cards(self):
+        """Drop every suggestion card from the panel.
+
+        Called from ``_clear_ai_conversation`` (full reset) AND from
+        ``_send_chat_message`` (drop stale cards from the previous
+        response when a new prompt is sent). Doesn't touch the chat
+        history widget or the conversation history list.
+        """
+        if not hasattr(self, '_event_suggestions_layout'):
+            return
         while self._event_suggestions_layout.count() > 0:
             item = self._event_suggestions_layout.takeAt(0)
             w = item.widget() if item else None

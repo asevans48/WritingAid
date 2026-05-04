@@ -4770,11 +4770,28 @@ class MainWindow(QMainWindow):
                 if description else f"Goal: {goal}")
 
         # Build the event list the chapter planner displays on its
-        # arc visual. Prefer explicit ``events`` (richer), fall
-        # back to deriving from ``scene_list``.
+        # arc visual. Prefer explicit ``events`` (richer), then
+        # ``scene_list``, then derive 1-3 stub events from the
+        # description so the planner pane is never blank for an
+        # AI-spawned chapter — even when the AI gave only a
+        # one-line synopsis.
         scene_list = _as_str_list(data.get('scene_list'))
         events = self._build_chapter_planner_events(
             data.get('events'), scene_list, chapter_id)
+        if not events and description:
+            # Fallback: split the description's first 1-3 sentences
+            # into beats so the planner has SOMETHING to render.
+            # Better than an empty arc.
+            import re as _re
+            sentences = [
+                s.strip() for s in
+                _re.split(r"(?<=[.!?])\s+",
+                          description.replace("Goal:", " ").strip())
+                if s.strip()]
+            stub_scenes = sentences[:3] if sentences else []
+            if stub_scenes:
+                events = self._build_chapter_planner_events(
+                    None, stub_scenes, chapter_id)
 
         planning = ChapterPlanning(
             description=description,
@@ -4804,6 +4821,24 @@ class MainWindow(QMainWindow):
         )
 
         self.current_project.manuscript.chapters.append(chapter)
+
+        # Also drop a single project-wide PlotEvent on the Freytag
+        # pyramid representing this chapter as one beat on the
+        # overall arc. Different from the chapter's INTERNAL events
+        # (those are scenes within the chapter); this is one
+        # macro-beat the user sees on the project plot map. Without
+        # it, AI-spawned chapters show up in the manuscript but are
+        # invisible on the project arc — a confusing split. Stage +
+        # act are derived from the chapter's position relative to
+        # the manuscript total; intensity stays at the default 50
+        # so the user can tune it on the visual.
+        try:
+            self._add_chapter_to_project_plot_arc(
+                chapter, planning, next_number)
+        except Exception as e:
+            print(f"[chapter-create] couldn't add to project "
+                  f"plot arc: {e}")
+
         # Surface what landed so it's clear in the console which
         # plot-plan fields the AI provided vs which were defaulted.
         filled = sum(1 for v in (
@@ -4813,13 +4848,86 @@ class MainWindow(QMainWindow):
             planning.style, planning.pacing,
             planning.pov_character) if v)
         print(f"Created chapter: {title} (Chapter {next_number}) "
-              f"with {filled} plan field(s) populated")
+              f"with {filled} plan field(s) populated, "
+              f"{len(planning.events)} chapter-arc beat(s), "
+              f"+1 project-arc beat")
 
         # Refresh manuscript editor to show the new chapter
         if hasattr(self, 'manuscript_editor'):
             self.manuscript_editor.load_manuscript(self.current_project.manuscript)
+        # And the story-planning widget so the new project-arc
+        # PlotEvent shows up on the Freytag pyramid immediately.
+        self._refresh_story_planning_after_create()
 
         return ('chapter', f"{next_number}. {title}")
+
+    def _add_chapter_to_project_plot_arc(
+            self, chapter, planning, chapter_number: int) -> None:
+        """Append a project-arc PlotEvent representing this chapter.
+
+        Stage / act assignment is heuristic from chapter position
+        within the manuscript so AI-spawned chapters land in a
+        sensible spot on the Freytag pyramid even before the user
+        adjusts. The event references the chapter via title +
+        ``related_characters`` (drawn from the planning roster) so
+        downstream views (plot-tab arc, plot AI's STORY EVENTS
+        block) link cleanly back to the chapter.
+        """
+        from datetime import datetime
+        from src.models.project import PlotEvent
+        sp = self.current_project.story_planning
+        if sp is None or sp.freytag_pyramid is None:
+            return
+
+        total = max(1, len(self.current_project.manuscript.chapters))
+        # Position 1..total → 0..100; new chapters always land at the
+        # end of the project arc so position ≈ 100 unless the user
+        # later renumbers.
+        pct = (chapter_number - 1) / max(1, total - 1) if total > 1 else 100
+        pct *= 100 if total > 1 else 1
+        if total == 1:
+            pct = 50  # Single-chapter projects: park mid-arc.
+        if pct <= 15:
+            stage = 'exposition'
+        elif pct < 50:
+            stage = 'rising_action'
+        elif pct < 65:
+            stage = 'climax'
+        elif pct < 90:
+            stage = 'falling_action'
+        else:
+            stage = 'resolution'
+
+        # Pick an act based on the user's configured num_acts. With
+        # the default 3-act structure: chapter 1-33% → act 1, 33-66%
+        # → act 2, 66-100% → act 3.
+        num_acts = max(1, int(getattr(
+            sp.freytag_pyramid, 'num_acts', 3)))
+        act = min(num_acts, max(1, int(pct / 100 * num_acts) + 1))
+
+        # Build a short label so the project arc reads as a chapter
+        # list, not a scene list. Description carries the chapter's
+        # description / synopsis so the plot AI's STORY EVENTS
+        # block surfaces enough detail to discuss this chapter.
+        title = f"Ch {chapter_number}: {chapter.title}"
+        description = (planning.description or '').strip()
+        if not description and planning.scene_list:
+            description = planning.scene_list[0]
+
+        ev = PlotEvent(
+            id=f"chapter_event_{chapter.id}",
+            title=title,
+            description=description[:600],
+            outcome='',
+            stage=stage,
+            act=act,
+            intensity=50,
+            related_characters=list(planning.characters_featured),
+            notes=(f"Auto-added when Chapter {chapter_number} was "
+                   f"created. Adjust the act / stage / intensity "
+                   f"on the Freytag pyramid to taste."),
+        )
+        sp.freytag_pyramid.events.append(ev)
 
     # ── Plot-native creators ─────────────────────────────────────
     # The plot AI (and the General Assistant in plot mode) can now
