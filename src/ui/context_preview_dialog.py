@@ -32,6 +32,7 @@ def show_context_preview(parent,
                          system_prompt: str = "",
                          user_block: str = "",
                          rag_summary: str = "",
+                         research_brief: str = "",
                          conversation_history: Optional[list] = None) -> None:
     """Open a modal showing exactly what the AI is about to receive.
 
@@ -97,6 +98,14 @@ def show_context_preview(parent,
         rag_pane = _make_pane(rag_summary)
         tabs.addTab(rag_pane, "🔍 RAG breakdown")
 
+    if research_brief:
+        # Writer mode runs a research pass before writing — this tab
+        # shows what the librarian sub-agent picked out for the
+        # writer to anchor prose in.
+        tabs.addTab(_make_pane(research_brief),
+                    f"🔬 Research brief "
+                    f"({len(research_brief):,} chars)")
+
     if conversation_history:
         rendered_turns = []
         for i, turn in enumerate(conversation_history, 1):
@@ -113,7 +122,8 @@ def show_context_preview(parent,
     layout.addWidget(tabs, stretch=1)
 
     # Footer: total-size summary + Copy-all + Close.
-    total_chars = user_chars + sys_chars + len(rag_summary or "")
+    total_chars = (user_chars + sys_chars + len(rag_summary or "")
+                   + len(research_brief or ""))
     footer = QHBoxLayout()
     size_label = QLabel(
         f"<span style='color:#6b7280;font-size:11px;'>"

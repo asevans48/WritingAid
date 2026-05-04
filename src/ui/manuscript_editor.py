@@ -625,11 +625,21 @@ class ChapterEditor(QWidget):
         """Handle plan content changes."""
         self.content_changed.emit()
 
-    def _get_planner_context(self) -> dict:
+    def _get_planner_context(self, question: str = "") -> dict:
         """Get context for the planner AI assistant.
 
-        Uses AI-generated summaries if available for efficient context management.
+        Uses AI-generated summaries if available for efficient
+        context management. When ``question`` is non-empty, also
+        runs the host's RAG over it and emits ``rag_focused_*``
+        keys for the planner to fold into the prompt — the same
+        pattern the plot-tab AI uses so the planner gets a
+        narrowed-per-question slice of characters / worldbuilding
+        / subplots / plot scaffolding.
         """
+        # Stash the question so the RAG-enrichment block at the
+        # bottom of this method can pick it up without changing
+        # the rest of the existing extraction logic.
+        self._planner_pending_question = question or ""
         context = {
             'chapter_title': self.chapter.title,
             'plot': '',
@@ -699,7 +709,86 @@ class ChapterEditor(QWidget):
                 if char_parts:
                     context['characters'] = '\n'.join(char_parts)
 
+        # ── RAG enrichment ─────────────────────────────────────
+        # Pull narrowed-per-question chunks from the host
+        # main_window's RAG system when one is available. The
+        # planner widget calls _get_planner_context() once per
+        # AI request and forwards ``planner_question`` so we know
+        # what to retrieve. When ``planner_question`` isn't set
+        # (or RAG isn't initialised), these keys stay absent and
+        # the prompt builder falls back to the broad blocks above.
+        try:
+            mw = self._find_main_window()
+            question = (
+                getattr(self, '_planner_pending_question', '')
+                or '').strip()
+            if (mw is not None
+                    and getattr(mw, '_rag_initialized', False)
+                    and question
+                    and hasattr(mw, '_rag_top_chunks_per_type')):
+                # Characters most relevant to this question.
+                rag_chars = mw._rag_top_chunks_per_type(
+                    question, source_types=['character'],
+                    top_k=6, max_chars_per_chunk=400,
+                    max_total_chars=2400)
+                if rag_chars:
+                    context['rag_focused_characters'] = rag_chars
+                # Worldbuilding spread across the cluster of types.
+                world_types = [
+                    'worldbuilding', 'place', 'faction',
+                    'culture', 'technology', 'historical_event',
+                    'flora', 'fauna', 'myth', 'star_system',
+                    'military', 'economy', 'political_system',
+                ]
+                rag_world = mw._rag_top_chunks_per_type(
+                    question, source_types=world_types,
+                    top_k=6, max_chars_per_chunk=400,
+                    max_total_chars=2800)
+                if rag_world:
+                    context['rag_focused_worldbuilding'] = rag_world
+                # Subplots — small but useful for chapter shaping.
+                rag_sub = mw._rag_top_chunks_per_type(
+                    question, source_types=['subplot'],
+                    top_k=4, max_chars_per_chunk=400,
+                    max_total_chars=1600)
+                if rag_sub:
+                    context['rag_focused_subplots'] = rag_sub
+                # Plot scaffolding (themes, tensions, promises) as
+                # one mixed slice — these tend to be small and
+                # semantically related.
+                plot_scaffold = mw._rag_top_chunks_per_type(
+                    question,
+                    source_types=['themes', 'theme', 'tension',
+                                  'promise', 'plot', 'plot_event'],
+                    top_k=6, max_chars_per_chunk=300,
+                    max_total_chars=1800)
+                if plot_scaffold:
+                    context['rag_focused_plot_scaffold'] = (
+                        plot_scaffold)
+        except Exception as e:
+            print(f"[planner] RAG enrichment failed: {e}")
+
         return context
+
+    def _find_main_window(self):
+        """Walk the parent chain looking for the MainWindow.
+
+        We need it to reach the RAG system. Cached on the editor
+        once found so the lookup is cheap on subsequent calls.
+        """
+        if hasattr(self, '_cached_main_window'):
+            return self._cached_main_window
+        cur = self.parent()
+        while cur is not None:
+            # MainWindow is the only ancestor that exposes
+            # ``_rag_top_chunks_per_type``; check for it directly
+            # to avoid a hard import dependency.
+            if hasattr(cur, '_rag_top_chunks_per_type'):
+                self._cached_main_window = cur
+                return cur
+            cur = cur.parent()
+        self._cached_main_window = None
+        return None
 
     def _init_ai(self):
         """Initialize AI client for the planner."""
@@ -789,8 +878,17 @@ class ChapterEditor(QWidget):
             print("🎯 Using your plot-task trained model "
                   "(CreativeOS settings > model_for_plot)")
             try:
-                return plot_override.generate_text(prompt, "", max_tokens=600,
-                                                    temperature=0.7)
+                # max_tokens bumped from 600 → 4000 because planner
+                # responses now include <suggest_event> JSON blocks
+                # — those eat tokens fast and 600 was truncating
+                # multi-event suggestions mid-block. The chat
+                # widget's own continuation loop catches anything
+                # that still cuts off, but starting wider means
+                # most replies land complete in one round.
+                return plot_override.generate_text(
+                    prompt, "",
+                    max_tokens=4000, temperature=0.7,
+                    continue_if_truncated=True)
             except Exception as e:
                 print(f"⚠️  Plot-task model failed: {e}; falling back")
 

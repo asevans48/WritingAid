@@ -76,6 +76,13 @@ class AIConfig:
         "critique_temperature": 0.3,  # Lower temperature for consistent critique
         "critique_max_tokens": 2000,  # Max tokens for critique responses
 
+        # Writer-mode two-pass research → write. When True, the
+        # chat worker runs a research pass before writing so the
+        # writer agent gets a focused brief instead of the full
+        # project dump. False = single-pass (faster, cheaper, but
+        # the writer has to sift through more raw context).
+        "writer_two_pass_research": True,
+
         # Session State
         "last_project_path": ""
     }

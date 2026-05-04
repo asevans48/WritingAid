@@ -57,8 +57,12 @@ class _ChatInput(QPlainTextEdit):
         self.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        # Vertical Expanding so the input fills its splitter pane —
+        # the user resizes by dragging the splitter handle, not by
+        # us pinning a fixed height. _apply_height now sets only the
+        # minimum so we still respect the +/- preset row counts.
         self.setSizePolicy(QSizePolicy.Policy.Expanding,
-                            QSizePolicy.Policy.Fixed)
+                            QSizePolicy.Policy.Expanding)
         self.setStyleSheet(
             f"QPlainTextEdit {{"
             f" padding: 8px 12px;"
@@ -92,16 +96,24 @@ class _ChatInput(QPlainTextEdit):
         self.rows_changed.emit(rows)
 
     def _apply_height(self) -> None:
-        # Use the actual font metrics of the widget so the height
-        # tracks the real line spacing (theme/HiDPI aware) rather
-        # than guessing line_h = font_px * 1.5.
+        """Set a minimum height matching the configured row count.
+
+        The widget itself is now Expanding (the parent splitter
+        controls the actual height). We only enforce a minimum so
+        the +/- buttons feel responsive: shrinking to 1 row pulls
+        the minimum down so the user can drag the splitter tighter,
+        and growing to 10 rows pushes the minimum up so the splitter
+        snaps to at least that height. Mouse-drag on the splitter
+        is the primary resize gesture; +/- are quick presets.
+        """
         fm = self.fontMetrics()
         line_h = fm.lineSpacing()
-        # Padding (8 top + 8 bottom) + a touch of slack for the
-        # cursor + frame so the last line isn't clipped against the
-        # bottom border.
+        # Padding (8 top + 8 bottom) + slack for cursor + frame.
         chrome = 8 + 8 + 6
-        self.setFixedHeight(line_h * self._rows + chrome)
+        self.setMinimumHeight(line_h * self._rows + chrome)
+        # Drop any old fixed-height constraint so the splitter can
+        # actually expand the widget beyond the minimum.
+        self.setMaximumHeight(16777215)
 
     # — keyboard shortcuts —
     def keyPressEvent(self, event):
@@ -511,7 +523,27 @@ class ChatWidget(QWidget):
                 line-height: 1.5;
             }
         """)
-        content_layout.addWidget(self.chat_history)
+        # The history pane and the input pane are wrapped in a
+        # vertical QSplitter — built below — so the user can drag
+        # the handle to resize the prompt area with the mouse. The
+        # +/- preset buttons just nudge the splitter to a row count.
+        from PyQt6.QtWidgets import QSplitter
+        self._chat_splitter = QSplitter(Qt.Orientation.Vertical)
+        self._chat_splitter.setChildrenCollapsible(False)
+        self._chat_splitter.setHandleWidth(6)
+        # Subtle visual cue on the handle so it's discoverable as a
+        # drag target rather than a flat line between two panes.
+        self._chat_splitter.setStyleSheet(
+            "QSplitter::handle:vertical { "
+            "  background: #e5e7eb; "
+            "  margin: 2px 12px; "
+            "  border-radius: 2px; "
+            "} "
+            "QSplitter::handle:vertical:hover { "
+            "  background: #6366f1; "
+            "}")
+        self._chat_splitter.addWidget(self.chat_history)
+        content_layout.addWidget(self._chat_splitter, stretch=1)
 
         # Prompt-height controls. Lets the user grow the prompt area
         # so they can see (and scroll through) more of a long prompt
@@ -571,8 +603,17 @@ class ChatWidget(QWidget):
 
         content_layout.addLayout(size_row)
 
+        # Input panel — input field + action row in their own QWidget
+        # so the splitter has two clean panes. Mouse-drag on the
+        # splitter handle resizes the input vs the history.
+        input_panel = QWidget()
+        input_panel_layout = QVBoxLayout(input_panel)
+        input_panel_layout.setContentsMargins(0, 0, 0, 0)
+        input_panel_layout.setSpacing(4)
+
         # Input area — multi-line. Enter sends, Shift/Ctrl+Enter for
-        # newline. Resizable via the buttons above or Ctrl++/−/0.
+        # newline. Resize via mouse-drag on the splitter handle
+        # above OR via the +/- presets / Ctrl++/−/0 shortcuts.
         # Long prompts scroll vertically inside the field.
         self.input_field = _ChatInput()
         self.input_field.setPlaceholderText("Ask me anything...")
@@ -588,7 +629,7 @@ class ChatWidget(QWidget):
         # set in the constructor, so push the label state once for the
         # default-restore case.
         self._on_input_rows_changed(self.input_field.visible_rows())
-        content_layout.addWidget(self.input_field)
+        input_panel_layout.addWidget(self.input_field, stretch=1)
 
         # Send / preview action row — sits under the input. Send is
         # primary; Preview opens a dialog showing exactly what the
@@ -615,7 +656,32 @@ class ChatWidget(QWidget):
             "the model can actually see.")
         self.preview_btn.clicked.connect(self._on_preview_clicked)
         action_row.addWidget(self.preview_btn)
-        content_layout.addLayout(action_row)
+        input_panel_layout.addLayout(action_row)
+
+        self._chat_splitter.addWidget(input_panel)
+        # Default split: history takes 3x what the input takes. The
+        # user can drag the handle to bias either way.
+        self._chat_splitter.setStretchFactor(0, 3)
+        self._chat_splitter.setStretchFactor(1, 1)
+        # Persist + restore splitter sizes across sessions.
+        saved_sizes = self._input_settings.value(
+            "chatSplitterSizes", "")
+        try:
+            if saved_sizes:
+                # QSettings can return a list of strings or a single
+                # string depending on the platform — handle both.
+                if isinstance(saved_sizes, list):
+                    parsed = [int(x) for x in saved_sizes]
+                else:
+                    parsed = [int(x) for x in
+                              str(saved_sizes).split(",") if x]
+                if parsed:
+                    self._chat_splitter.setSizes(parsed)
+        except Exception:
+            pass
+        # Save sizes whenever the user drags the handle.
+        self._chat_splitter.splitterMoved.connect(
+            lambda *_: self._save_chat_splitter_sizes())
 
         # Rating widget (hidden by default, shown after AI responses)
         self.rating_widget = QFrame()
@@ -857,7 +923,14 @@ class ChatWidget(QWidget):
         self.input_field.set_visible_rows(rows)
 
     def _on_input_rows_changed(self, rows: int) -> None:
-        """Sync the row label, button enabled state, and saved pref."""
+        """Sync the row label, button enabled state, and saved pref.
+
+        Also nudges the splitter so the input pane gets enough
+        room for the requested row count — the user sees the
+        +/- buttons resize the input even when the splitter
+        currently gives the pane more or less space than the
+        chosen row count would.
+        """
         self.input_size_label.setText(
             f"{rows} line{'' if rows == 1 else 's'}")
         # Disable the at-bound buttons so the user sees they're capped.
@@ -865,6 +938,39 @@ class ChatWidget(QWidget):
         self.input_grow_btn.setEnabled(rows < _INPUT_ROWS_MAX)
         try:
             self._input_settings.setValue("inputRows", rows)
+        except Exception:
+            pass
+        # Sync splitter so the +/- preset actually changes the
+        # visible height — the splitter would otherwise hold the
+        # input pane at whatever the user dragged it to. Only
+        # apply when we have a splitter (constructor ordering).
+        if hasattr(self, '_chat_splitter'):
+            try:
+                fm = self.input_field.fontMetrics()
+                line_h = fm.lineSpacing()
+                desired_input = line_h * rows + 22 + 36  # input + button row
+                sizes = self._chat_splitter.sizes()
+                total = sum(sizes) or 400
+                # Don't shrink the history below ~120 px even if the
+                # user picked a giant row count — they can drag the
+                # splitter for finer control if they really want.
+                history_h = max(120, total - desired_input)
+                self._chat_splitter.setSizes(
+                    [history_h, total - history_h])
+                self._save_chat_splitter_sizes()
+            except Exception:
+                pass
+
+    def _save_chat_splitter_sizes(self) -> None:
+        """Persist the current splitter sizes so they survive
+        across sessions."""
+        if not hasattr(self, '_chat_splitter'):
+            return
+        try:
+            sizes = self._chat_splitter.sizes()
+            self._input_settings.setValue(
+                "chatSplitterSizes",
+                ",".join(str(s) for s in sizes))
         except Exception:
             pass
 

@@ -15,6 +15,99 @@ import uuid
 from src.ui.styles import SYSTEM_FONT
 
 
+# Tags the chapter-planner AI emits when it wants to propose a new
+# StoryEvent (chapter beat) for the user to review. Cards render
+# with Add / Skip in the AI panel; clicking Add calls
+# ``_add_event_item`` so the beat lands on the chapter arc with the
+# AI's chosen stage + arc_position.
+_VALID_EVENT_STAGES = (
+    'exposition', 'rising', 'climax', 'falling', 'resolution')
+
+
+def _extract_event_suggestions(reply: str):
+    """Pull <suggest_event> blocks out of a model reply.
+
+    Returns ``(cleaned_text, [suggestions])`` where ``cleaned_text``
+    has the tags stripped (so we render it as normal prose) and
+    ``suggestions`` is a list of dicts:
+        {"data": <parsed JSON dict>, "raw": <original block text>}
+    Bad JSON is captured with ``data=None`` so the user at least sees
+    the raw block in the failure card. Multiple blocks are extracted
+    in order.
+    """
+    import re
+    import json
+    cleaned = reply
+    suggestions = []
+    pattern = re.compile(
+        r"<suggest_event>\s*(.*?)\s*</suggest_event>",
+        re.DOTALL | re.IGNORECASE)
+    for m in pattern.finditer(reply):
+        raw = m.group(1).strip()
+        data = None
+        try:
+            normalized = re.sub(r",\s*}", "}", raw)
+            normalized = re.sub(r",\s*]", "]", normalized)
+            data = json.loads(normalized)
+        except Exception:
+            data = None
+        suggestions.append({"data": data, "raw": raw})
+    cleaned = pattern.sub("", cleaned)
+    # Drop any orphan unclosed ``<suggest_event>`` from the cleaned
+    # text — those are truncation artifacts and shouldn't show up in
+    # the user-visible chat. The continuation loop in
+    # ``_send_chat_message`` will re-prompt the model and re-parse
+    # against the appended response.
+    orphan_open = re.compile(
+        r"<suggest_event>(?:(?!</suggest_event>).)*$",
+        re.DOTALL | re.IGNORECASE)
+    cleaned = orphan_open.sub("", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned, suggestions
+
+
+def _response_has_unclosed_suggest_event(text: str) -> bool:
+    """True when the response has more open <suggest_event> tags
+    than closing tags — i.e. the model got cut off mid-block.
+
+    The chapter-planner uses this to decide whether to loop a
+    continuation request before parsing the final reply.
+    """
+    if not text:
+        return False
+    import re
+    opens = len(re.findall(
+        r"<suggest_event>", text, re.IGNORECASE))
+    closes = len(re.findall(
+        r"</suggest_event>", text, re.IGNORECASE))
+    return opens > closes
+
+
+def _truncation_continuation_prompt(partial: str) -> str:
+    """Build a continuation prompt for the planner AI.
+
+    Tells the model the previous response was cut off and gives it
+    a tail snippet so it knows exactly where to resume — without
+    repeating itself. The continuation will be appended to the
+    partial verbatim, so the model must NOT echo the snippet.
+    """
+    tail = (partial or "")[-300:]
+    return (
+        "Your previous response was cut off mid-stream. Continue "
+        "from EXACTLY where you stopped — do not restate, recap, "
+        "or repeat anything from before. Resume the partial text "
+        "below seamlessly, then close any open <suggest_event> "
+        "block and finish the reply naturally.\n\n"
+        "PARTIAL RESPONSE (your last ~300 chars; do NOT repeat any "
+        "of this — your continuation gets appended directly):\n"
+        "---\n"
+        f"{tail}\n"
+        "---\n\n"
+        "CONTINUATION (start writing from immediately after the "
+        "last character above):"
+    )
+
+
 class TodoItemWidget(QWidget):
     """Widget for a single todo item."""
 
@@ -622,6 +715,12 @@ class ChapterPlannerWidget(QWidget):
         self._current_callback: Optional[Callable] = None
         self._todo_widgets: List[TodoItemWidget] = []
         self._event_widgets: List[StoryEventWidget] = []
+        # AI conversation state — kept separate from the visible
+        # chat_history widget so we can compact older turns into a
+        # summary without disturbing what the user can scroll back
+        # to read.
+        self._ai_history: List[dict] = []  # [{role, content}]
+        self._ai_history_summary: str = ""
         self._init_ui()
 
     def _init_ui(self):
@@ -1049,6 +1148,24 @@ class ChapterPlannerWidget(QWidget):
         self.ai_toggle_btn.clicked.connect(self._toggle_ai_panel)
         ai_header.addWidget(self.ai_toggle_btn)
         ai_header.addStretch()
+
+        # Clear button — wipes the visible chat history AND the
+        # tracked _ai_history list (so the model isn't fed
+        # already-discarded turns next time). Doesn't touch the
+        # chapter's actual planning data; only the conversation.
+        self.clear_chat_btn = QPushButton("🗑 Clear")
+        self.clear_chat_btn.setStyleSheet(
+            "QPushButton { padding: 3px 10px; font-size: 11px; "
+            " border: 1px solid #d1d5db; border-radius: 4px; "
+            " background: white; color: #374151; }"
+            "QPushButton:hover { border-color: #6b7280; "
+            " color: #111827; }")
+        self.clear_chat_btn.setToolTip(
+            "Clear the AI chat history (transcript + tracked "
+            "context). Your planning data is unaffected.")
+        self.clear_chat_btn.clicked.connect(
+            self._clear_ai_conversation)
+        ai_header.addWidget(self.clear_chat_btn)
         ai_panel_layout.addLayout(ai_header)
 
         # Collapsible content container
@@ -1075,6 +1192,20 @@ class ChapterPlannerWidget(QWidget):
         self.chat_history.setMinimumHeight(100)
         self.chat_history.setMaximumHeight(250)
         ai_content_layout.addWidget(self.chat_history)
+
+        # Event-suggestion cards land in this dedicated panel below
+        # the chat. Sits empty until the AI emits a <suggest_event>
+        # block — then a card appears with the proposed beat + Add /
+        # Skip buttons. The chat stays a plain QTextEdit (cheap +
+        # familiar) and the cards live separately so they can host
+        # real buttons without rebuilding the transcript as a widget
+        # column.
+        self._event_suggestions_panel = QWidget()
+        self._event_suggestions_layout = QVBoxLayout(
+            self._event_suggestions_panel)
+        self._event_suggestions_layout.setContentsMargins(0, 0, 0, 0)
+        self._event_suggestions_layout.setSpacing(4)
+        ai_content_layout.addWidget(self._event_suggestions_panel)
 
         # Chat input - compact
         input_layout = QHBoxLayout()
@@ -1951,11 +2082,20 @@ class ChapterPlannerWidget(QWidget):
         """Set function that provides current chapter content."""
         self._chapter_content_provider = provider
 
-    def _get_context(self) -> dict:
-        """Get the current context for AI requests."""
-        if self._context_provider:
-            return self._context_provider()
-        return {}
+    def _get_context(self, question: str = "") -> dict:
+        """Get the current context for AI requests.
+
+        ``question`` is forwarded to the host's context provider so
+        the host's RAG layer can pick the most relevant items for
+        THIS question. Providers that don't accept the kwarg fall
+        back to a no-arg call so older wiring keeps working.
+        """
+        if not self._context_provider:
+            return {}
+        try:
+            return self._context_provider(question=question) or {}
+        except TypeError:
+            return self._context_provider() or {}
 
     def _get_chapter_content(self) -> str:
         """Get the current chapter content."""
@@ -2227,7 +2367,20 @@ Make each event concrete with specific character actions and scene details."""
                 event_order += 1
 
     def _send_chat_message(self):
-        """Send a chat message to the AI."""
+        """Send a chat message to the AI.
+
+        Capabilities the model is told it has:
+          * Reference the chapter's plan + the project's plot map,
+            characters, worldbuilding, and any RAG-focused matches
+            the host injects into the context.
+          * Propose new chapter beats inline via <suggest_event>
+            blocks the user can review with Add / Skip cards.
+
+        Conversation history is tracked in ``_ai_history`` (turn
+        list) and ``_ai_history_summary`` (compacted older turns),
+        so multi-turn discussions stay coherent without blowing
+        the context window.
+        """
         if not self._ai_handler:
             QMessageBox.warning(self, "AI Not Available", "AI handler not configured.")
             return
@@ -2238,33 +2391,369 @@ Make each event concrete with specific character actions and scene details."""
 
         self.chat_input.clear()
         self._append_to_chat("user", message)
+        self._ai_history.append(
+            {"role": "user", "content": message})
 
-        context = self._get_context()
+        # Compact older turns before sending so a long planner
+        # session doesn't fill the context window with stale chat.
+        self._maybe_compact_ai_history()
+
+        # Pass the user's question so the host's RAG layer can pick
+        # the most relevant project items for THIS question (instead
+        # of dumping the whole roster).
+        context = self._get_context(question=message)
         context['current_plan'] = self.get_plan()
+        # Compacted older-turns summary becomes its own context key
+        # the prompt builder folds in.
+        if self._ai_history_summary:
+            context['planner_history_summary'] = (
+                self._ai_history_summary)
+        # Keep the recent turns (excluding the one we just appended,
+        # which becomes the live USER QUESTION) so the model has
+        # multi-turn coherence.
+        recent_turns = (
+            self._ai_history[:-1]
+            if self._ai_history else [])
+        context['planner_recent_turns'] = recent_turns
 
         prompt = f"""USER QUESTION:
 {message}
 
 INSTRUCTIONS:
-Help the user with their chapter planning question. Reference the story context (plot, characters, worldbuilding, and current outline) provided above to give specific, actionable advice that fits their story."""
+You are the chapter-planner sub-agent. Help the user shape this chapter using the project context above (plot map, characters, worldbuilding, current outline, and any RAG-selected items relevant to the question).
+
+WHEN THE DISCUSSION CALLS FOR NEW BEATS:
+You may propose new story beats (the events shown on the chapter arc) by emitting one or more inline blocks the user reviews with Add / Skip cards. Use this exact tag and JSON shape:
+
+  <suggest_event>{{"text":"short beat name","description":"one or two sentences on what happens","stage":"exposition|rising|climax|falling|resolution","arc_position":<int 0-100>,"why":"why this beat belongs in the chapter"}}</suggest_event>
+
+Rules for suggestions:
+- Only suggest when the discussion genuinely calls for it (e.g. user asks "what should happen first?", "add a beat where Marcus confronts Lena", "what's missing from this chapter?"). Don't pad answers with suggestions.
+- For a series of beats (3-6 events covering opening → close), emit one <suggest_event> per beat in order. Cap at 6 per reply.
+- ``arc_position`` should be 0 (chapter open) → 100 (chapter end), spread sensibly across the suggested beats.
+- ``stage`` should match where the beat falls in the chapter's arc. For a single new beat slotted into an existing chapter, pick the stage that fits its position relative to the events already in the outline.
+- Use character names from the CHARACTERS context — don't invent characters.
+- The block goes inline in your reply; the rest of your reply stays normal prose so the user can read your reasoning before clicking Add.
+
+Respond conversationally otherwise — quotes from the project, references to specific characters or plot events by name, and concrete actionable advice the user can adopt or refine."""
 
         self._set_processing(True)
 
-        def on_response(response: str):
-            print(f"\n[ChapterPlanner] on_response callback called!")
-            print(f"[ChapterPlanner] Response length: {len(response) if response else 0}")
-            print(f"[ChapterPlanner] Response preview: {repr(response[:100]) if response else 'None'}")
+        # Continuation accounting — if the AI cuts off mid
+        # <suggest_event>, we re-prompt it to finish, up to
+        # ``_MAX_CONTINUATIONS`` times. Each round's text is
+        # accumulated into ``accumulated`` so the final cleaned
+        # reply contains every block the model produced across
+        # rounds. We stash this state on a per-request key so a
+        # rapid second click doesn't tangle two continuations.
+        request_state = {
+            'accumulated': '',
+            'rounds': 0,
+            'max_rounds': self._MAX_CONTINUATIONS,
+            'context_for_continuation': context,
+        }
 
+        def finish(reply_text: str):
+            """Final-render path: parse, append to chat, render cards."""
             self._set_processing(False)
-            if response:
-                print(f"[ChapterPlanner] Calling _append_to_chat with response...")
-                self._append_to_chat("assistant", response)
-                print(f"[ChapterPlanner] _append_to_chat completed")
-            else:
-                print(f"[ChapterPlanner] Response is empty/None, showing error")
-                self._append_to_chat("error", "Failed to get response.")
+            if not reply_text:
+                self._append_to_chat(
+                    "error", "Failed to get response.")
+                return
+            cleaned, suggestions = _extract_event_suggestions(
+                reply_text)
+            if cleaned:
+                self._append_to_chat("assistant", cleaned)
+            self._ai_history.append({
+                "role": "assistant",
+                "content": cleaned or reply_text,
+            })
+            for s in suggestions:
+                self._add_event_suggestion_card(s)
+
+        def on_response(response: str):
+            print(f"\n[ChapterPlanner] on_response: "
+                  f"len={len(response) if response else 0}")
+            if not response:
+                finish('')
+                return
+            request_state['accumulated'] += response
+            full = request_state['accumulated']
+            # If the model left an unclosed <suggest_event>, loop a
+            # continuation request — but cap rounds so a perpetually
+            # broken response can't spin forever.
+            if (_response_has_unclosed_suggest_event(full)
+                    and request_state['rounds']
+                        < request_state['max_rounds']):
+                request_state['rounds'] += 1
+                print(f"[ChapterPlanner] response cut off mid-"
+                      f"<suggest_event> — requesting continuation "
+                      f"(round {request_state['rounds']}/"
+                      f"{request_state['max_rounds']})")
+                # Show the user we're still working so a long
+                # multi-round continuation doesn't look frozen.
+                self._append_to_chat(
+                    "system",
+                    f"(response was cut off — fetching the rest, "
+                    f"round {request_state['rounds']}…)")
+                cont_prompt = _truncation_continuation_prompt(full)
+                self._run_ai_request(
+                    cont_prompt,
+                    request_state['context_for_continuation'],
+                    on_response)
+                return
+            finish(full)
 
         self._run_ai_request(prompt, context, on_response)
+
+    # Cap on continuation rounds. 3 is generous — most truncations
+    # finish in 1 extra round; the cap exists so a model that
+    # genuinely can't close the block (e.g. local model with a
+    # too-tight max_tokens setting) doesn't spin forever.
+    _MAX_CONTINUATIONS = 3
+
+    # ── AI-conversation maintenance ──────────────────────────
+
+    def _clear_ai_conversation(self):
+        """Wipe the visible chat + the tracked history.
+
+        Doesn't touch the chapter's planning data. Suggestion cards
+        already added to the panel are dropped too — the user can
+        re-ask if they wanted them back.
+        """
+        self.chat_history.clear()
+        self._ai_history = []
+        self._ai_history_summary = ""
+        # Clear the suggestions panel.
+        while self._event_suggestions_layout.count() > 0:
+            item = self._event_suggestions_layout.takeAt(0)
+            w = item.widget() if item else None
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+
+    # Compaction thresholds — when ``_ai_history`` grows past these,
+    # the older window collapses into ``_ai_history_summary`` which
+    # ships in the prompt as a separate context key. Recent turns
+    # stay verbatim so back-and-forth keeps full nuance.
+    _COMPACT_KEEP_RECENT_TURNS = 6
+    _COMPACT_TRIGGER_TURNS = 12
+    _COMPACT_MAX_CHARS = 12000
+
+    def _maybe_compact_ai_history(self):
+        """Trim ``_ai_history`` if it's grown past the budget.
+
+        Heuristic compaction — questions kept verbatim (capped),
+        AI replies squeezed to first ~200 + last ~100 chars so
+        framing + conclusion both survive. Free + instant; the
+        recent-window stays intact for full nuance.
+        """
+        n = len(self._ai_history)
+        total_chars = sum(
+            len(t.get('content') or '')
+            for t in self._ai_history)
+        if (n <= self._COMPACT_TRIGGER_TURNS
+                and total_chars <= self._COMPACT_MAX_CHARS):
+            return
+        cutoff = max(0, n - self._COMPACT_KEEP_RECENT_TURNS)
+        if cutoff <= 0:
+            return
+        old_turns = self._ai_history[:cutoff]
+        self._ai_history = self._ai_history[cutoff:]
+        summary_lines = []
+        for turn in old_turns:
+            role = turn.get('role', '?')
+            content = (turn.get('content') or '').strip()
+            if not content:
+                continue
+            if role == 'user':
+                summary_lines.append(
+                    f"Q: {content[:240]}"
+                    + ("…" if len(content) > 240 else ""))
+            else:
+                if len(content) <= 320:
+                    body = content
+                else:
+                    body = (f"{content[:200].rstrip()} "
+                            f"… {content[-100:].lstrip()}")
+                summary_lines.append(f"A: {body}")
+        if summary_lines:
+            new_chunk = "\n".join(summary_lines)
+            if self._ai_history_summary:
+                self._ai_history_summary = (
+                    f"{self._ai_history_summary}\n{new_chunk}")
+            else:
+                self._ai_history_summary = new_chunk
+            # Cap cumulative summary so it doesn't grow unbounded.
+            if len(self._ai_history_summary) > 4000:
+                self._ai_history_summary = (
+                    "…[older context trimmed]…\n"
+                    + self._ai_history_summary[-4000:])
+            print(f"[ChapterPlanner] compacted "
+                  f"{len(old_turns)} older turns into a "
+                  f"{len(new_chunk)}-char summary "
+                  f"({len(self._ai_history)} turns retained)")
+
+    def _add_event_suggestion_card(self, suggestion: dict):
+        """Render an Add / Skip card for one <suggest_event>.
+
+        ``suggestion`` is ``{"data": <dict|None>, "raw": <str>}``.
+        ``data`` may be None when the AI's JSON failed to parse —
+        in that case the card surfaces the raw text + disables Add
+        so the user can copy/edit instead.
+        """
+        from PyQt6.QtWidgets import QHBoxLayout, QFrame
+        card = QFrame()
+        card.setStyleSheet(
+            "QFrame { background-color: #f0f9ff; "
+            "border: 1px solid #bfdbfe; border-radius: 6px; }")
+        v = QVBoxLayout(card)
+        v.setContentsMargins(8, 6, 8, 6)
+        v.setSpacing(4)
+
+        kind_label = QLabel(
+            "<span style='background:#dbeafe;color:#1d4ed8;"
+            "padding:1px 6px;border-radius:3px;font-size:10px;"
+            "font-weight:600;'>+ EVENT</span> suggestion")
+        kind_label.setStyleSheet("font-size: 11px;")
+        v.addWidget(kind_label)
+
+        data = suggestion.get('data')
+        if data:
+            text = (data.get('text') or '(unnamed beat)').strip()
+            description = (data.get('description') or '').strip()
+            stage = (data.get('stage') or '').lower()
+            arc = data.get('arc_position', '?')
+            why = (data.get('why') or '').strip()
+            badge_bits = []
+            if stage in _VALID_EVENT_STAGES:
+                badge_bits.append(stage)
+            if isinstance(arc, (int, float)):
+                badge_bits.append(f"arc {int(arc)}")
+            badge = (f" <span style='color:#6b7280;font-size:10px;'>"
+                     f"({' • '.join(badge_bits)})</span>"
+                     if badge_bits else "")
+            summary_html = (
+                f"<span style='font-size:13px;'>"
+                f"<b>{self._html_escape(text)}</b>{badge}</span>")
+            if description:
+                summary_html += (
+                    f"<br/><span style='color:#475569;font-size:11px;'>"
+                    f"{self._html_escape(description)}</span>")
+            if why:
+                summary_html += (
+                    f"<br/><span style='color:#9ca3af;"
+                    f"font-size:10px;font-style:italic;'>"
+                    f"why: {self._html_escape(why)}</span>")
+            summary = QLabel(summary_html)
+            summary.setWordWrap(True)
+            summary.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse)
+            v.addWidget(summary)
+        else:
+            err = QLabel(
+                "<i>(couldn't parse the AI's suggestion JSON; raw "
+                "text below — copy if you'd like to add it manually)"
+                "</i>")
+            err.setStyleSheet("color: #b91c1c; font-size: 11px;")
+            err.setWordWrap(True)
+            v.addWidget(err)
+            raw = QLabel(
+                f"<pre style='font-size:10px;color:#374151;"
+                f"white-space:pre-wrap;'>"
+                f"{self._html_escape(suggestion.get('raw', ''))}"
+                f"</pre>")
+            raw.setWordWrap(True)
+            v.addWidget(raw)
+
+        action_row_w = QWidget()
+        action_row = QHBoxLayout(action_row_w)
+        action_row.setContentsMargins(0, 0, 0, 0)
+        action_row.setSpacing(6)
+        action_row.addStretch()
+
+        skip_btn = QPushButton("✕ Skip")
+        skip_btn.setStyleSheet(
+            "QPushButton { padding: 4px 12px; font-size: 11px; "
+            " border: 1px solid #d1d5db; border-radius: 4px; "
+            " background: white; color: #374151; }"
+            "QPushButton:hover { border-color: #6b7280; }")
+        action_row.addWidget(skip_btn)
+
+        add_btn = QPushButton("➕ Add to chapter")
+        add_btn.setStyleSheet(
+            "QPushButton { background-color: #2563eb; color: white; "
+            " padding: 4px 14px; border-radius: 4px; font-size: 11px;"
+            " font-weight: 600; }"
+            "QPushButton:hover { background-color: #1d4ed8; }"
+            "QPushButton:disabled { background-color: #93c5fd; }")
+        add_btn.setEnabled(bool(data))
+        if not data:
+            add_btn.setToolTip(
+                "Can't add — the AI's JSON didn't parse.")
+        action_row.addWidget(add_btn)
+        v.addWidget(action_row_w)
+
+        def _replace_with_banner(html: str, color: str):
+            banner = QLabel(html)
+            banner.setStyleSheet(
+                f"color: {color}; font-size: 11px; "
+                f"padding: 2px 0;")
+            banner.setWordWrap(True)
+            v.replaceWidget(action_row_w, banner)
+            add_btn.setEnabled(False)
+            skip_btn.setEnabled(False)
+            action_row_w.hide()
+            action_row_w.deleteLater()
+
+        def on_add():
+            if not data:
+                return
+            stage = (data.get('stage') or 'rising').lower()
+            if stage not in _VALID_EVENT_STAGES:
+                stage = 'rising'
+            try:
+                arc = max(0, min(100, int(
+                    data.get('arc_position', -1))))
+            except Exception:
+                arc = -1
+            text = (data.get('text') or '').strip()
+            if not text:
+                _replace_with_banner(
+                    "✗ Skipped: beat name was empty.",
+                    "#b91c1c")
+                return
+            try:
+                self._add_event_item(
+                    text=text,
+                    description=(
+                        data.get('description') or '').strip(),
+                    completed=False,
+                    stage=stage,
+                    arc_position=arc,
+                )
+                _replace_with_banner(
+                    f"✓ <b>Added</b> — "
+                    f"{self._html_escape(text)}",
+                    "#15803d")
+            except Exception as e:
+                _replace_with_banner(
+                    f"✗ Couldn't add — {self._html_escape(str(e))}",
+                    "#b91c1c")
+
+        def on_skip():
+            _replace_with_banner("— Skipped —", "#6b7280")
+
+        add_btn.clicked.connect(on_add)
+        skip_btn.clicked.connect(on_skip)
+        self._event_suggestions_layout.addWidget(card)
+
+    @staticmethod
+    def _html_escape(text: str) -> str:
+        return (str(text).replace("&", "&amp;")
+                          .replace("<", "&lt;")
+                          .replace(">", "&gt;")
+                          .replace("\n", "<br/>"))
 
     def _check_plan_consistency(self):
         """Check if the chapter content follows the plan."""
@@ -2346,29 +2835,81 @@ Provide specific, constructive feedback."""
                 if context.get('plot'):
                     context_parts.append(f"PLOT OUTLINE:\n{context['plot']}")
 
-                # Add characters (limit to avoid context overflow)
+                # RAG-focused blocks first (high-signal subset for
+                # THIS question) so the model reads them BEFORE the
+                # broader rosters and reaches for the right items.
+                if context.get('rag_focused_plot_scaffold'):
+                    context_parts.append(
+                        "PLOT SCAFFOLDING relevant to this question "
+                        "(themes / tensions / promises / events):\n"
+                        + context['rag_focused_plot_scaffold'][:2000])
+                if context.get('rag_focused_characters'):
+                    context_parts.append(
+                        "CHARACTERS most relevant to this question:\n"
+                        + context['rag_focused_characters'][:2500])
+                if context.get('rag_focused_worldbuilding'):
+                    context_parts.append(
+                        "WORLDBUILDING most relevant to this "
+                        "question:\n"
+                        + context['rag_focused_worldbuilding'][:2800])
+                if context.get('rag_focused_subplots'):
+                    context_parts.append(
+                        "SUBPLOTS most relevant to this question:\n"
+                        + context['rag_focused_subplots'][:1600])
+
+                # Add characters (broader roster — limit to avoid
+                # context overflow, bumped from 1500 → 3000 since
+                # the RAG-focused block above already names the
+                # relevant ones).
                 if context.get('characters'):
                     char_text = context['characters']
-                    # Truncate if too long (keep first 1500 chars)
-                    if len(char_text) > 1500:
-                        char_text = char_text[:1500] + "\n... (more characters not shown)"
-                    context_parts.append(f"MAIN CHARACTERS:\n{char_text}")
+                    if len(char_text) > 3000:
+                        char_text = char_text[:3000] + "\n... (more characters not shown)"
+                    context_parts.append(
+                        f"MAIN CHARACTERS (full roster):\n{char_text}")
 
-                # Add worldbuilding (limit to avoid context overflow)
+                # Add worldbuilding (broader set, same bump).
                 if context.get('worldbuilding'):
                     wb_text = context['worldbuilding']
-                    # Truncate if too long (keep first 1500 chars)
-                    if len(wb_text) > 1500:
-                        wb_text = wb_text[:1500] + "\n... (more worldbuilding details available)"
-                    context_parts.append(f"WORLDBUILDING:\n{wb_text}")
+                    if len(wb_text) > 3000:
+                        wb_text = wb_text[:3000] + "\n... (more worldbuilding details available)"
+                    context_parts.append(
+                        f"WORLDBUILDING (full set):\n{wb_text}")
 
-                # Add current outline (important for continuity)
+                # Add current outline (important for continuity).
+                # The model needs this to know which beats already
+                # exist so it can place suggested events sensibly on
+                # the arc and avoid duplicating beats.
                 if context.get('current_plan'):
                     plan_text = context['current_plan']
-                    # Truncate if extremely long
                     if len(plan_text) > 2000:
                         plan_text = plan_text[:2000] + "\n... (outline continues)"
                     context_parts.append(f"CURRENT CHAPTER OUTLINE:\n{plan_text}")
+
+                # Compacted older turns from this conversation —
+                # see _maybe_compact_ai_history.
+                if context.get('planner_history_summary'):
+                    context_parts.append(
+                        f"EARLIER IN THIS CONVERSATION (compacted):\n"
+                        f"{context['planner_history_summary']}")
+
+                # Recent verbatim turns (kept short — the live
+                # message is in the prompt below).
+                recent = context.get('planner_recent_turns') or []
+                if recent:
+                    turn_lines = []
+                    for t in recent[-6:]:
+                        role = (t.get('role') or '?').upper()
+                        body = (t.get('content') or '').strip()
+                        if not body:
+                            continue
+                        if len(body) > 600:
+                            body = body[:600].rstrip() + " …"
+                        turn_lines.append(f"{role}: {body}")
+                    if turn_lines:
+                        context_parts.append(
+                            "RECENT CONVERSATION TURNS:\n"
+                            + "\n\n".join(turn_lines))
 
                 # Build full prompt with context
                 full_context = "\n\n".join(context_parts)
@@ -2421,11 +2962,18 @@ Provide specific, constructive feedback."""
         except:
             pass  # Already disconnected
 
-        # Invoke the stored callback
-        if self._current_callback:
+        # Capture + clear the callback BEFORE invoking. The callback
+        # may re-enter ``_run_ai_request`` (e.g. our continuation
+        # loop when a <suggest_event> block was cut off) which
+        # writes a fresh callback to ``self._current_callback`` —
+        # if we cleared after invoking, we'd overwrite the
+        # newly-installed continuation callback back to None and
+        # drop the re-entrant response on the floor.
+        cb = self._current_callback
+        self._current_callback = None
+        if cb:
             print(f"[ChapterPlanner] Invoking callback...")
-            self._current_callback(result)
-            self._current_callback = None
+            cb(result)
         else:
             print(f"[ChapterPlanner] ERROR: No callback stored!")
 

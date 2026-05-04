@@ -222,9 +222,28 @@ FOR NEW CHAPTERS:
   "title": "Chapter Title",
   "description": "Brief description of what happens in this chapter",
   "pov_character": "Point of view character (optional)",
+  "scene_list": ["opening: where + who + the inciting moment",
+                  "middle: complication or escalation",
+                  "close: turn or hook into next chapter"],
+  "characters_featured": ["names from the project's character roster"],
+  "locations": ["place names from worldbuilding"],
+  "themes": ["theme titles from the plot map"],
+  "tone": "e.g. tense, melancholic, hopeful",
+  "voice": "narrative voice (sardonic, lyrical, flat, …)",
+  "style": "prose style note (short punchy / flowing / …)",
+  "pacing": "e.g. slow-burn, rapid-fire, contemplative",
+  "timeline_position": "e.g. one week after Ch 7 / next morning",
   "content": "Initial chapter content (optional)"
 }
 </create_chapter>
+When the user is in a plot discussion, fill in scene_list, characters_featured, themes, tone, voice, pacing — the chapter should be born with structure so they can drop into Writer mode immediately. Title-only chapters are appropriate ONLY when the user explicitly asks for "just a placeholder chapter".
+
+The scene_list is auto-converted into chapter-arc events the user sees in the chapter planner (each scene becomes a beat with a heuristic stage + arc position). For finer control over the dramatic shape, use the optional ``events`` array instead:
+  "events": [
+    {"text": "short beat name", "description": "one-line beat detail",
+     "stage": "exposition|rising|climax|falling|resolution",
+     "arc_position": <0-100>}
+  ]
 
 FOR CLIMATE PRESETS:
 <create_climate_preset>
@@ -1155,10 +1174,53 @@ When asked to continue:
             # Build system prompt based on mode
             system_prompt = self.SYSTEM_PROMPTS.get(self.mode, self.SYSTEM_PROMPTS["general"])
 
-            # Add project context
+            # Writer mode: two-pass research → write. The research
+            # agent distills the broad project context into a focused
+            # brief that names the SPECIFIC characters / world / themes
+            # this scene should ground in. The writer then receives the
+            # brief in place of the kitchen-sink context dump (cheaper
+            # tokens, sharper grounding). Falls back to the single-
+            # pass context build when (a) the user disabled two-pass
+            # in settings, or (b) the research call itself failed.
+            research_brief = ""
+            two_pass_enabled = True
+            try:
+                two_pass_enabled = bool(
+                    settings.get("writer_two_pass_research", True))
+            except Exception:
+                two_pass_enabled = True
+            if (self.mode == "writer" and two_pass_enabled
+                    and self.message):
+                try:
+                    from src.ai.research_agent import ResearchAgent
+                    researcher = ResearchAgent()
+                    research_brief = researcher.research(
+                        self.message, self.context, llm=llm)
+                except Exception as e:
+                    print(f"[writer] research pass failed: {e}; "
+                          f"falling back to single-pass context")
+                    research_brief = ""
+                if research_brief:
+                    # Stash on context so the preview dialog (and any
+                    # downstream observer) can see what the writer
+                    # was anchored to.
+                    self.context['writer_research_brief'] = (
+                        research_brief)
+
+            # Add project context. In writer two-pass mode the brief
+            # REPLACES the broad rosters in the system prompt (the
+            # writer still gets manuscript anchors via _build_context_prompt
+            # — chapter content + previous-chapter ending are kept).
             context_prompt = self._build_context_prompt()
             if context_prompt:
                 system_prompt += f"\n\n{'='*60}\nPROJECT CONTEXT:\n{'='*60}\n{context_prompt}"
+
+            if research_brief:
+                system_prompt += (
+                    f"\n\n{'='*60}\nRESEARCH BRIEF (written by a "
+                    f"librarian sub-agent — anchor your prose to "
+                    f"the SPECIFIC items named here)\n{'='*60}\n"
+                    f"{research_brief}")
 
             # For writer mode, add extra emphasis on current chapter
             if self.mode == "writer" and self.context.get('current_chapter_content'):
@@ -2550,6 +2612,26 @@ class MainWindow(QMainWindow):
         rag_summary = build_rag_summary(ctx)
         history = ctx.get('conversation_history') or []
 
+        # Writer mode: pre-run the research pass so the user can see
+        # what the librarian picked before paying for the actual
+        # write call. We use a stub LLM-free brief here (deterministic
+        # fallback) to avoid burning tokens on every Preview click —
+        # the real call uses an LLM at send time. If the user wants
+        # the LLM-produced brief, they can click Send.
+        research_brief = ""
+        if mode == "writer" and message:
+            try:
+                from src.ai.research_agent import (
+                    ResearchAgent, _fallback_brief,
+                )
+                # Skip the LLM call here — Preview should be cheap.
+                # The deterministic fallback gives a reasonable
+                # signal of what the writer pass will see.
+                research_brief = _fallback_brief(message, ctx)
+            except Exception as e:
+                print(f"[chat-preview] research-brief stub "
+                      f"failed: {e}")
+
         intro = (
             "This is exactly what the AI will see when you click "
             "Send. The user-block reflects your current input — "
@@ -2560,6 +2642,12 @@ class MainWindow(QMainWindow):
             "again to see the RAG-selected context for that "
             "specific question. The preview below uses a "
             "placeholder.")
+        if research_brief:
+            intro += (
+                "  •  Writer mode runs a research pass before "
+                "writing — the brief tab shows a deterministic "
+                "preview; the actual send uses an LLM-produced "
+                "brief that may be richer.")
 
         show_context_preview(
             self,
@@ -2568,6 +2656,7 @@ class MainWindow(QMainWindow):
             system_prompt=system_prompt,
             user_block=preview_question,
             rag_summary=rag_summary,
+            research_brief=research_brief,
             conversation_history=history)
 
     def _handle_chat_message(self, message: str, mode: str = "general", insert_mode: str = ""):
@@ -4491,17 +4580,163 @@ class MainWindow(QMainWindow):
         print(f"Created fauna: {name}")
         return ('fauna', name)
 
+    @staticmethod
+    def _stage_for_arc_position(i: int, total: int) -> str:
+        """Heuristic: which dramatic stage does scene ``i`` of ``total`` fall in?
+
+        Mirrors the chapter-arc visualisation's bands: roughly
+        15%/35%/15%/25%/10% for exposition/rising/climax/falling/
+        resolution. Used when the AI gives us an ordered scene list
+        but doesn't tag each scene with a stage.
+        """
+        if total <= 1:
+            return 'rising'
+        pct = i / max(1, total - 1)
+        if pct <= 0.15:
+            return 'exposition'
+        if pct < 0.50:
+            return 'rising'
+        if pct < 0.65:
+            return 'climax'
+        if pct < 0.90:
+            return 'falling'
+        return 'resolution'
+
+    @staticmethod
+    def _arc_position_for_index(i: int, total: int) -> int:
+        """Spread ``total`` events evenly across the 0-100 arc.
+
+        Position 0 = chapter open, 100 = chapter end. Single-event
+        chapters land at midpoint (50) so they sit naturally on the
+        visual arc instead of pinned to the left edge.
+        """
+        if total <= 1:
+            return 50
+        return int(round(i / (total - 1) * 100))
+
+    def _build_chapter_planner_events(self, explicit_events,
+                                       scene_list,
+                                       chapter_id: str) -> list:
+        """Produce the StoryEvent list the chapter planner renders.
+
+        Resolution order:
+          1. Explicit ``events`` array in the JSON — richer, lets the
+             AI pin stage / arc_position per beat.
+          2. Derived from ``scene_list`` — each string becomes an
+             event with auto-assigned stage + evenly-spread
+             arc_position.
+          3. Empty list — fine, the planner just shows no beats.
+
+        For (2), strings shaped ``"opening: where + who"`` get split
+        on the first colon: head ("opening") becomes the event title,
+        body becomes the description. That matches the convention the
+        plot AI is encouraged to use in its scene_list.
+        """
+        from src.models.project import StoryEvent
+
+        out = []
+        # Path 1: explicit events list.
+        if isinstance(explicit_events, list) and explicit_events:
+            n = len(explicit_events)
+            for i, ev in enumerate(explicit_events):
+                if isinstance(ev, str):
+                    text, desc = ev.strip(), ''
+                elif isinstance(ev, dict):
+                    text = (ev.get('text') or ev.get('title')
+                            or '').strip()
+                    desc = (ev.get('description') or '').strip()
+                else:
+                    continue
+                if not text and not desc:
+                    continue
+                # Stage + arc position: AI may have provided them;
+                # otherwise auto-derive from order.
+                stage = ''
+                arc_pos = -1
+                if isinstance(ev, dict):
+                    stage_in = (
+                        ev.get('stage') or '').strip().lower()
+                    if stage_in in (
+                            'exposition', 'rising', 'climax',
+                            'falling', 'resolution'):
+                        stage = stage_in
+                    try:
+                        arc_pos = max(0, min(
+                            100, int(ev.get('arc_position', -1))))
+                    except Exception:
+                        arc_pos = -1
+                if not stage:
+                    stage = self._stage_for_arc_position(i, n)
+                if arc_pos < 0:
+                    arc_pos = self._arc_position_for_index(i, n)
+                out.append(StoryEvent(
+                    id=f"{chapter_id}_event_{i}",
+                    text=text or "(untitled beat)",
+                    description=desc,
+                    stage=stage,
+                    arc_position=arc_pos,
+                    order=i,
+                ))
+            return out
+
+        # Path 2: derived from scene_list.
+        if scene_list:
+            n = len(scene_list)
+            for i, scene in enumerate(scene_list):
+                # Split "opening: where + who" → text="opening",
+                # description="where + who". Falls through cleanly
+                # for scenes with no colon — whole string is text.
+                if ':' in scene:
+                    head, body = scene.split(':', 1)
+                    text = head.strip() or "(untitled beat)"
+                    description = body.strip()
+                else:
+                    text = scene.strip() or "(untitled beat)"
+                    description = ''
+                out.append(StoryEvent(
+                    id=f"{chapter_id}_event_{i}",
+                    text=text,
+                    description=description,
+                    stage=self._stage_for_arc_position(i, n),
+                    arc_position=self._arc_position_for_index(i, n),
+                    order=i,
+                ))
+        return out
+
     def _create_chapter_from_json(self, data: dict) -> tuple:
         """Create a chapter from JSON data.
 
+        Captures the full ChapterPlanning model when the AI provides
+        plot-plan fields (scene_list, themes, characters_featured,
+        tone, voice, pacing, locations, timeline_position) — not
+        just title + description. The plot AI uses this to spawn
+        chapters that are born with structure during a plot
+        discussion (e.g. "next we need a chapter where Marcus
+        confronts Lena at the Glassworks; here's the scene-by-
+        scene plan").
+
+        Also derives ``ChapterPlanning.events`` (the structured
+        StoryEvent list the chapter planner UI renders on the
+        visual arc) from either:
+          • an explicit ``events`` list in the JSON, or
+          • the ``scene_list`` (auto-derived: each scene becomes a
+            StoryEvent with a heuristic stage and an arc_position
+            spread evenly 0-100 across the chapter).
+        That way every AI-spawned chapter shows up in the planner
+        with arc-positioned beats the user can tweak — not just a
+        flat scene-list of strings.
+
         Args:
-            data: Dictionary with chapter fields
+            data: Dictionary with chapter + chapter-planning fields.
+                Accepts both ``description`` and ``synopsis`` (alias),
+                lists or single strings for any list field, and
+                ignores unknown keys.
 
         Returns:
-            Tuple of (element_type, element_name) or None
+            Tuple of (element_type, element_name) or None.
         """
         from datetime import datetime
-        from src.models.project import ChapterPlanning
+        from src.models.project import ChapterPlanning, StoryEvent
 
         title = data.get('title', '').strip()
         if not title:
@@ -4511,10 +4746,52 @@ class MainWindow(QMainWindow):
         next_number = len(self.current_project.manuscript.chapters) + 1
         chapter_id = f"chapter_{datetime.now().strftime('%Y%m%d%H%M%S')}_{next_number}"
 
-        # Create chapter planning
+        # Coerce list-or-str into list[str]; drop empties.
+        def _as_str_list(value):
+            if value is None or value == "":
+                return []
+            if isinstance(value, list):
+                return [str(v).strip() for v in value
+                        if str(v).strip()]
+            return [s.strip() for s in str(value).splitlines()
+                    if s.strip()]
+
+        # ``synopsis`` is what the plot AI emits; fall back to
+        # ``description`` for the General Assistant convention. If
+        # the AI also gave a ``goal`` (one-line "what the chapter
+        # accomplishes"), fold it into the description so the
+        # planner pane reads naturally.
+        description = (data.get('description')
+                       or data.get('synopsis') or '').strip()
+        goal = (data.get('goal') or '').strip()
+        if goal:
+            description = (
+                f"{description}\n\nGoal: {goal}".strip()
+                if description else f"Goal: {goal}")
+
+        # Build the event list the chapter planner displays on its
+        # arc visual. Prefer explicit ``events`` (richer), fall
+        # back to deriving from ``scene_list``.
+        scene_list = _as_str_list(data.get('scene_list'))
+        events = self._build_chapter_planner_events(
+            data.get('events'), scene_list, chapter_id)
+
         planning = ChapterPlanning(
-            description=data.get('description', ''),
-            pov_character=data.get('pov_character', ''),
+            description=description,
+            outline=(data.get('outline') or '').strip(),
+            pov_character=(data.get('pov_character') or '').strip(),
+            scene_list=scene_list,
+            events=events,
+            characters_featured=_as_str_list(
+                data.get('characters_featured')),
+            locations=_as_str_list(data.get('locations')),
+            themes=_as_str_list(data.get('themes')),
+            tone=(data.get('tone') or '').strip(),
+            voice=(data.get('voice') or '').strip(),
+            style=(data.get('style') or '').strip(),
+            pacing=(data.get('pacing') or '').strip(),
+            timeline_position=(
+                data.get('timeline_position') or '').strip(),
         )
 
         chapter = Chapter(
@@ -4527,7 +4804,16 @@ class MainWindow(QMainWindow):
         )
 
         self.current_project.manuscript.chapters.append(chapter)
-        print(f"Created chapter: {title} (Chapter {next_number})")
+        # Surface what landed so it's clear in the console which
+        # plot-plan fields the AI provided vs which were defaulted.
+        filled = sum(1 for v in (
+            planning.description, planning.scene_list,
+            planning.themes, planning.characters_featured,
+            planning.locations, planning.tone, planning.voice,
+            planning.style, planning.pacing,
+            planning.pov_character) if v)
+        print(f"Created chapter: {title} (Chapter {next_number}) "
+              f"with {filled} plan field(s) populated")
 
         # Refresh manuscript editor to show the new chapter
         if hasattr(self, 'manuscript_editor'):
