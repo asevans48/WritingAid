@@ -97,6 +97,35 @@ _PLOT_AI_SYSTEM = (
     "DO NOT invent chapter/event/promise titles that aren't in the "
     "context — if a beat needs a name that doesn't exist, say "
     "'(no event for this yet — want me to add one?)'.\n\n"
+    "BUILDING CHAPTERS FROM REFERENCED EVENTS:\n"
+    "When the user names a plot event (or close to its name) and "
+    "asks you to build a chapter (or chapters) around it / them, "
+    "the system surfaces those events for you in a "
+    "``REFERENCED EVENTS`` block at the top of the prompt — "
+    "matched by substring or fuzzy similarity against the event "
+    "titles in the project. Read that block FIRST. When it's "
+    "present:\n"
+    "  1. Acknowledge which events you matched (use their exact "
+    "titles from the block).\n"
+    "  2. Discuss in prose how the chapter(s) should weave the "
+    "events — POV, scene order, the through-line, what the "
+    "chapter accomplishes for the plot.\n"
+    "  3. Emit a <suggest_chapter> block per chapter (cap at 2 "
+    "per reply) with a scene_list that walks through the "
+    "referenced beats in order. Each scene in scene_list should "
+    "either BE one of the referenced events (matched by stage / "
+    "intent) or BRIDGE between them. The chapter's "
+    "characters_featured should include the events' "
+    "related_characters; tone / pacing should match the events' "
+    "stage (climax-tier events → tense pacing, etc.).\n"
+    "  4. If multiple referenced events span what looks like more "
+    "than one chapter (e.g. they cover two different acts, or are "
+    "tonally far apart), say so in prose and propose 2 chapters "
+    "rather than cramming them.\n"
+    "  5. If the user asks to build chapters but no REFERENCED "
+    "EVENTS block is present, ask which events they mean — point "
+    "them to the STORY EVENTS list (or the PLOT MAP) and offer "
+    "2-3 candidates from there as starting points.\n\n"
     "PROPOSING NEW PROJECT ELEMENTS:\n"
     "When the discussion makes it clear the project would benefit "
     "from a new element, you may propose it inline by emitting an "
@@ -250,6 +279,108 @@ _SUGGEST_TAG_RX = {
 }
 
 
+def _find_referenced_events(question: str, project,
+                              fuzzy_threshold: float = 0.78
+                              ) -> list:
+    """Find PlotEvents the user referenced by name in their question.
+
+    The plot AI gets asked things like "build a chapter around the
+    Glassworks confrontation" or "covers Marcus learns of the
+    betrayal and Lena breaks publicly". Without this matcher the
+    model has to scan the (possibly long) STORY EVENTS context block
+    to figure out which events the user means; with it, we hand the
+    model an explicit ``REFERENCED EVENTS`` block at the top of the
+    prompt naming the matched events with their stage / act /
+    related characters.
+
+    Two-tier matching:
+      1. **Substring match** (case-insensitive) — high confidence
+         (1.0). "the Glassworks confrontation" matches a PlotEvent
+         titled "Glassworks confrontation" inside it.
+      2. **Fuzzy match** — slides the event title across the question
+         as an n-gram and computes ``SequenceMatcher.ratio()``.
+         ``fuzzy_threshold`` is the minimum ratio. 0.78 is calibrated
+         to catch typos and small wording shifts ("Lena breaks" vs
+         "Lena's breaking", "Marcus' confrontation" vs "Marcus
+         confrontation") while rejecting unrelated text.
+
+    Both pyramid events and subplot events are searched. Returned
+    list is deduped by event id, sorted by confidence descending,
+    and capped at 8 to avoid prompt bloat when the user references
+    half the plot map.
+    """
+    if not question or project is None:
+        return []
+    sp = getattr(project, 'story_planning', None)
+    if sp is None:
+        return []
+    # Collect every PlotEvent across pyramid + subplots.
+    candidates = []
+    fp = getattr(sp, 'freytag_pyramid', None)
+    if fp is not None:
+        for ev in (getattr(fp, 'events', None) or []):
+            candidates.append(('pyramid', ev))
+    for sub in (getattr(sp, 'subplots', None) or []):
+        for ev in (getattr(sub, 'events', None) or []):
+            candidates.append((f"subplot:{sub.title}", ev))
+    if not candidates:
+        return []
+
+    q_lower = question.lower()
+    q_words = question.split()
+    matches = []  # [(event, score, source)]
+
+    from difflib import SequenceMatcher
+
+    def _ngrams(words, n):
+        if n <= 0 or len(words) < n:
+            return
+        for i in range(len(words) - n + 1):
+            yield " ".join(words[i:i + n])
+
+    for source, ev in candidates:
+        title = (getattr(ev, 'title', '') or '').strip()
+        if not title:
+            continue
+        title_lower = title.lower()
+        # Tier 1: substring (case-insensitive).
+        if title_lower in q_lower:
+            matches.append((ev, 1.0, source))
+            continue
+        # Tier 2: fuzzy ratio against best matching window of the
+        # same word count as the title (±1).
+        title_words = title_lower.split()
+        n = len(title_words)
+        if n == 0:
+            continue
+        best = 0.0
+        for window_n in (n, n - 1, n + 1):
+            if window_n <= 0:
+                continue
+            for ngram in _ngrams(q_words, window_n):
+                ratio = SequenceMatcher(
+                    None, title_lower, ngram.lower()).ratio()
+                if ratio > best:
+                    best = ratio
+        if best >= fuzzy_threshold:
+            matches.append((ev, best, source))
+
+    # Dedupe by id, prefer higher score.
+    seen = set()
+    out = []
+    for ev, score, source in sorted(matches, key=lambda x: -x[1]):
+        eid = getattr(ev, 'id', None)
+        if eid in seen:
+            continue
+        seen.add(eid)
+        out.append({
+            'event': ev,
+            'score': score,
+            'source': source,
+        })
+    return out[:8]
+
+
 def _response_has_unclosed_suggest(text: str) -> bool:
     """True when ANY <suggest_*> tag is open without a close.
 
@@ -371,6 +502,21 @@ def _build_plot_ai_user_block(question: str, ctx: dict) -> str:
     parts = []
     if ctx.get('project_name'):
         parts.append(f"PROJECT: {ctx['project_name']}")
+
+    # ── Referenced events (high priority) ────────────────────
+    # When the user named one or more plot events in their question
+    # (exact or fuzzy match), surface them right after the project
+    # name so the model anchors its reply to those specific beats.
+    # This is the hook that lets the user say "build a chapter
+    # around the Glassworks confrontation" and have the AI know
+    # exactly which event in the plot map they mean.
+    if ctx.get('referenced_events'):
+        parts.append(
+            "\n=== REFERENCED EVENTS (the user named these — "
+            "anchor your reply to THESE specific beats; if they "
+            "asked you to build chapters, the chapters should "
+            "cover these events) ===\n"
+            f"{ctx['referenced_events']}")
 
     # ── Structural plot scaffolding ──────────────────────────
     # Each block is a separate context key now (see
@@ -1460,6 +1606,19 @@ class PlotManagerWidget(QWidget):
              "2-3 themes the book is implicitly making — emit a "
              "<suggest_theme> block for the first one so I can "
              "formalise it."),
+            ("Build chapter from event(s)",
+             "I want to build a chapter (or set of chapters) "
+             "around specific plot events. Replace the placeholder "
+             "below with the event name(s) — exact or close — and "
+             "I'll match them. Then propose chapters with "
+             "scene_list, characters_featured, themes, tone, "
+             "voice, pacing per chapter as <suggest_chapter> "
+             "blocks I can one-click add.\n\n"
+             "Build a chapter (or chapters if needed) around: "
+             "<event name 1>, <event name 2>, …\n\n"
+             "Walk me through which events you matched, the "
+             "through-line, POV, and pacing in prose first. Then "
+             "emit the <suggest_chapter> block(s)."),
         )
 
     def set_ai_context_provider(self, provider):

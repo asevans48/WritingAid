@@ -3655,6 +3655,64 @@ class MainWindow(QMainWindow):
                 self.manuscript_editor, '_llm_client', None)
         except Exception:
             base['llm_client'] = None
+        # Find any plot events the user named (or close to it) in
+        # their question — the user-block builder renders these as
+        # a high-priority "REFERENCED EVENTS" block at the top of
+        # the prompt so the model knows exactly which events to
+        # build a chapter around.
+        if question:
+            try:
+                from src.ui.plot.plot_manager import (
+                    _find_referenced_events,
+                )
+                refs = _find_referenced_events(
+                    question, self.current_project)
+                if refs:
+                    lines = []
+                    for r in refs:
+                        ev = r['event']
+                        score = r.get('score', 0)
+                        source = r.get('source', '')
+                        title = (getattr(ev, 'title', '')
+                                 or '(untitled)')
+                        stage = (getattr(ev, 'stage', '')
+                                 or '?')
+                        act = getattr(ev, 'act', None)
+                        intensity = getattr(ev, 'intensity', None)
+                        chars = (getattr(
+                            ev, 'related_characters', [])
+                                 or [])
+                        desc = (getattr(ev, 'description', '')
+                                or '').strip()
+                        head = f"  - {title}"
+                        if score < 1.0:
+                            head += (
+                                f"  [fuzzy match {score:.2f}]")
+                        meta = []
+                        if act:
+                            meta.append(f"act {act}")
+                        if stage and stage != '?':
+                            meta.append(stage)
+                        if intensity is not None:
+                            meta.append(f"intensity {intensity}")
+                        if source.startswith('subplot:'):
+                            meta.append(
+                                f"in subplot: "
+                                f"{source.split(':', 1)[1]}")
+                        if meta:
+                            head += f"  ({', '.join(meta)})"
+                        lines.append(head)
+                        if chars:
+                            lines.append(
+                                f"      characters: "
+                                f"{', '.join(str(c) for c in chars)}")
+                        if desc:
+                            lines.append(
+                                f"      description: "
+                                f"{desc[:240]}")
+                    base['referenced_events'] = "\n".join(lines)
+            except Exception as e:
+                print(f"[plot-ai] reference matching failed: {e}")
         return base
 
     def _push_characters_to_plot_widget(self) -> None:
@@ -4746,13 +4804,43 @@ class MainWindow(QMainWindow):
         next_number = len(self.current_project.manuscript.chapters) + 1
         chapter_id = f"chapter_{datetime.now().strftime('%Y%m%d%H%M%S')}_{next_number}"
 
-        # Coerce list-or-str into list[str]; drop empties.
+        # Coerce list-or-str into list[str]; drop empties. The AI
+        # sometimes nests structured beat dicts inside what should
+        # be a plain string list (e.g. scene_list emitted as
+        # ``[{"text": "opening", "description": "Marcus arrives"},
+        #   ...]``). When that happens, pull the human-readable
+        # field instead of letting Python stringify the whole dict
+        # as ``"{'text': 'opening', 'description': 'Marcus arrives'}"``
+        # — which was landing on the chapter arc as the literal beat
+        # name and looked broken to the user.
         def _as_str_list(value):
             if value is None or value == "":
                 return []
             if isinstance(value, list):
-                return [str(v).strip() for v in value
-                        if str(v).strip()]
+                out = []
+                for v in value:
+                    if isinstance(v, dict):
+                        # Prefer ``text`` (StoryEvent shape), then
+                        # ``title``, then ``name`` — fall back to a
+                        # joined "head: body" so we don't lose the
+                        # body text when only ``description`` is
+                        # populated.
+                        head = (v.get('text') or v.get('title')
+                                or v.get('name') or '').strip()
+                        body = (v.get('description')
+                                or v.get('summary') or '').strip()
+                        if head and body:
+                            out.append(f"{head}: {body}")
+                        elif head:
+                            out.append(head)
+                        elif body:
+                            out.append(body)
+                        # Empty dict → silently drop.
+                    else:
+                        s = str(v).strip()
+                        if s:
+                            out.append(s)
+                return out
             return [s.strip() for s in str(value).splitlines()
                     if s.strip()]
 
