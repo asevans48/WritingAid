@@ -390,6 +390,134 @@ _SPEECH_STYLE_MAP = {
 }
 
 
+# ── Dialog craft ──────────────────────────────────────────────
+# Dialog-tag rules are injected into the rephrase prompt whenever
+# the text being rephrased contains spoken dialog. Sourced from the
+# canonical craft books (Sol Stein, Lisa Cron, Renni Browne) — the
+# rules where teachers and pro editors actually agree, not the
+# noisier "rules" that vary by school.
+
+_DIALOG_TAG_RULES = (
+    "DIALOG TAG RULES (apply when the rephrasing contains spoken "
+    "dialog):\n"
+    "• Default to 'said' — it's invisible to readers, which is "
+    "what you want; the dialog itself should carry the meaning.\n"
+    "• Acceptable substitutes for 'said' are limited to verbs that "
+    "describe HOW the line was vocalized: 'whispered', "
+    "'shouted', 'muttered', 'asked' (when it's a question). Use "
+    "sparingly — once or twice per scene at most.\n"
+    "• Don't use verbs that describe a character's MOOD or "
+    "INTENT instead of speech — i.e. avoid 'argued', 'snapped', "
+    "'sneered', 'demanded', 'pleaded', 'insisted' as tags. The "
+    "dialog itself should reveal the mood; the tag should not "
+    "label it.\n"
+    "• Avoid speech-act verbs that aren't actually speech: "
+    "'smiled', 'laughed', 'grimaced', 'frowned' do not vocalize "
+    "words. Use them as action beats instead (a separate "
+    "sentence: 'He smiled. \"Of course.\"').\n"
+    "• Cut adverbs from tags entirely: NOT 'said angrily', NOT "
+    "'whispered softly'. If the tone needs reinforcing, do it "
+    "with an action beat or with the word choice in the dialog "
+    "itself.\n"
+    "• Action beats can REPLACE tags entirely: 'She set down "
+    "the cup. \"That was not the deal.\"' — the action both "
+    "attributes the line and deepens the moment.\n"
+    "• In two-character exchanges, drop tags after the first "
+    "two lines once the rhythm is established. Re-anchor with a "
+    "tag or beat every 4-6 lines so the reader doesn't lose "
+    "track.\n"
+    "• Tag placement: 'Marcus said' (name + verb) reads cleanly. "
+    "'said Marcus' (verb + name) sounds dated and stilted unless "
+    "the dialog needs the inversion for rhythm.\n"
+    "• When the speaker is identified by an action beat in the "
+    "same paragraph as the dialog, no tag is needed at all."
+)
+
+# Quick heuristic — does this text contain dialog the rules should
+# apply to? Looks for paired straight or smart quotes around speech.
+# Em-dashes (— for speech in some traditions) are also accepted
+# when they appear at the start of a paragraph and there's a
+# spoken-style continuation. Not perfect but cheap; the rules are
+# advisory anyway, so a false positive only adds craft guidance.
+_DIALOG_QUOTE_PATTERNS = (
+    r'"[^"]+"',          # straight double quotes
+    r'“[^”]+”',   # smart double quotes
+    r'‘[^’]+’',   # smart single quotes (BrE dialog)
+)
+
+
+def _text_contains_dialog(text: str) -> bool:
+    """True when ``text`` has at least one quoted spoken line.
+
+    Used to decide whether to inject dialog-tag craft rules into the
+    rephrase prompt. Cheap regex check — no NLP. False positives
+    (e.g. quoted thought) are acceptable; the rules don't break
+    anything when applied to non-dialog.
+    """
+    if not text:
+        return False
+    import re
+    for pat in _DIALOG_QUOTE_PATTERNS:
+        if re.search(pat, text):
+            return True
+    return False
+
+
+def _extract_quoted_lines(text: str) -> List[str]:
+    """Pull out each quoted spoken line in ``text``.
+
+    Returns the inner content of each quote (without the quote
+    characters themselves), in the order they appear. Multi-speaker
+    detection uses this to know how many distinct lines need
+    attributing — and the multi-speaker analysis prompt feeds the
+    LLM the same list to map each line to a speaker.
+    """
+    if not text:
+        return []
+    import re
+    out: List[str] = []
+    for pat in _DIALOG_QUOTE_PATTERNS:
+        # Capture inside the quotes only — strip the marks for a
+        # clean attribution prompt.
+        inner = re.compile(pat[1:-1] + "(?<!\\\\)",  # placeholder
+                            re.DOTALL)
+        # Simpler: explicit per-pattern capture.
+    # Per-quote-style explicit extraction (cleaner than the
+    # generic placeholder approach above):
+    patterns = [
+        (r'"([^"]+)"', '"'),
+        (r'“([^”]+)”', '“'),
+        (r'‘([^’]+)’', '‘'),
+    ]
+    seen_spans = []
+    for pat, _q in patterns:
+        for m in re.finditer(pat, text, re.DOTALL):
+            span = (m.start(), m.end())
+            # Avoid double-counting if patterns overlap.
+            if any(s[0] <= span[0] < s[1] for s in seen_spans):
+                continue
+            seen_spans.append(span)
+            inner = m.group(1).strip()
+            if inner:
+                out.append(inner)
+    # Order by source position so the list reads top-to-bottom.
+    seen_spans.sort()
+    out_sorted = []
+    for span in seen_spans:
+        # Re-extract from original text by slice so order matches
+        # source even when patterns matched in different order.
+        snippet = text[span[0]:span[1]]
+        # Strip the matching quote marks from ends.
+        for ql, qr in (('"', '"'), ('“', '”'),
+                        ("‘", "’")):
+            if snippet.startswith(ql) and snippet.endswith(qr):
+                inner = snippet[len(ql):-len(qr)].strip()
+                if inner:
+                    out_sorted.append(inner)
+                break
+    return out_sorted or out
+
+
 def _build_character_voice_rules(character_context: str) -> str:
     """Convert character traits and profile into concrete writing directives.
 
@@ -2911,7 +3039,9 @@ For each option, briefly explain what makes it different from the original."""
         context: str = "",
         num_options: int = 4,
         pov: str = "",                       # narrative point of view
-        character_context: str = "",         # POV character details
+        character_context: str = "",         # SPEAKER character details (single-speaker)
+        pov_character_context: str = "",     # POV character details (when ≠ speaker)
+        multi_speaker_attributions: Optional[List[dict]] = None,
         scene_description: str = "",         # what's happening in the scene
         surrounding_before: str = "",        # text before the selection
         surrounding_after: str = "",         # text after the selection
@@ -2927,7 +3057,28 @@ For each option, briefly explain what makes it different from the original."""
             context: Optional context about the text (character, scene, etc.)
             num_options: Number of options to generate if no styles specified
             pov: Narrative point of view (e.g. "First person (I/me)")
-            character_context: Detailed POV character info (personality, backstory, etc.)
+            character_context: Profile of the SPEAKING character — whose
+                voice the dialog or thought-text should sound like. For
+                a passage that's narration with no dialog, this is the
+                same as the POV character.
+            pov_character_context: Optional. Profile of the POV
+                character when DIFFERENT from the speaker. Plot scenes
+                often have dialog spoken by character A while the
+                reader is anchored in character B's POV — narration
+                stays in B's voice (filtered through their senses,
+                priors, biases) but dialog must sound like A. When
+                this kwarg is empty, the model treats POV and speaker
+                as the same person (the legacy behavior).
+            multi_speaker_attributions: Optional list of speaker
+                attributions when the rephrase text contains lines
+                from MULTIPLE characters. Each entry is a dict:
+                ``{"speaker_name": str, "character_context": str,
+                "lines": [str], "evidence": str}``. When provided,
+                the agent emits a DIALOG ATTRIBUTION + VOICES block
+                pairing each speaker's voice rules with their
+                attributed lines so the rephrase keeps each voice
+                distinct. Takes priority over ``character_context``
+                when present.
             scene_description: User's description of the scene context
             surrounding_before: Text immediately before the selection in the document
             surrounding_after: Text immediately after the selection in the document
@@ -3035,10 +3186,120 @@ For each option, briefly explain what makes it different from the original."""
                 f"Adjust pronouns, verb forms, and perspective accordingly.\n"
             )
 
-        # Character POV context — convert traits into concrete writing directives
+        # Multi-speaker dialog — when provided, this takes priority
+        # over the single-speaker ``character_context`` because the
+        # agent needs to keep each speaker's voice distinct. Each
+        # attribution carries the speaker's name, profile, the
+        # specific lines they say, and the evidence that ties them
+        # to those lines. We render the section first so the model
+        # reads "this is multi-speaker, here's who says what" before
+        # the voice-rules sections.
+        multi_speaker_note = ""
+        attributions = (multi_speaker_attributions or [])
+        if attributions and len(attributions) >= 2:
+            sections = []
+            for i, att in enumerate(attributions, 1):
+                name = (att.get('speaker_name') or '').strip() or '?'
+                profile = (att.get('character_context')
+                           or '').strip()
+                lines = att.get('lines') or []
+                evidence = (att.get('evidence') or '').strip()
+                voice_rules = _build_character_voice_rules(profile)
+                lines_block = "\n".join(
+                    f"      - \"{line}\"" for line in lines
+                    if str(line).strip())
+                if not lines_block:
+                    lines_block = "      (no specific lines attributed)"
+                section = (
+                    f"SPEAKER {i}: {name}\n"
+                    f"  Profile:\n    "
+                    f"{profile.replace(chr(10), chr(10) + '    ')}\n"
+                    f"  Their lines in this passage:\n"
+                    f"{lines_block}\n"
+                    f"  Voice rules (apply to THEIR lines only):\n"
+                    f"    {voice_rules.replace(chr(10), chr(10) + '    ')}")
+                if evidence:
+                    section += (
+                        f"\n  Why we attributed these lines: "
+                        f"{evidence}")
+                sections.append(section)
+            multi_speaker_note = (
+                "\nDIALOG ATTRIBUTION + VOICES — this passage has "
+                "MULTIPLE speakers. Each speaker's voice rules apply "
+                "ONLY to their attributed lines. Do not blend voices "
+                "across speakers; the whole point of distinct "
+                "characters is that their lines should sound "
+                "different.\n\n"
+                + "\n\n".join(sections)
+                + "\n\nWHEN REPHRASING:\n"
+                "• Match each line back to its speaker (use the "
+                "lines + evidence above) and apply that speaker's "
+                "voice rules to that line specifically.\n"
+                "• Narration between dialog (action beats, scene "
+                "description) stays in the POV character's voice — "
+                "see POV CHARACTER below if a profile is given for "
+                "them, otherwise use neutral narrative prose.\n"
+                "• If a quoted line in the original could plausibly "
+                "be either speaker, pick the speaker whose profile "
+                "+ established lines makes the line MOST consistent "
+                "and note your reasoning in the explanation.\n"
+            )
+
+        # Character voice — convert traits into concrete writing
+        # directives. Two distinct profiles can apply:
+        #   * speaker  — whose voice the text should sound like
+        #     (driver of dialog phrasing + thought-voice)
+        #   * pov      — whose lens the narration is filtered through
+        #     (driver of which details get noticed, priors, biases)
+        # When the user only provides one, treat it as both. When
+        # they differ, the model gets BOTH profiles + a clear rule
+        # for which voice rules apply to which slice of the text.
+        # Multi-speaker takes priority over the single-speaker path
+        # — when ``multi_speaker_attributions`` is set we suppress
+        # the single ``character_context`` block (the speakers are
+        # already covered above).
+        if multi_speaker_note:
+            character_context = ""
         character_context = character_context.strip() if character_context else ""
+        pov_character_context = (
+            pov_character_context.strip()
+            if pov_character_context else "")
         char_note = ""
-        if character_context:
+        speaker_and_pov_differ = bool(
+            character_context and pov_character_context
+            and character_context != pov_character_context)
+
+        if speaker_and_pov_differ:
+            speaker_rules = _build_character_voice_rules(
+                character_context)
+            pov_rules = _build_character_voice_rules(
+                pov_character_context)
+            char_note = (
+                "\nVOICE — two distinct people are involved in this "
+                "passage. Apply each profile to the right slice of "
+                "the text:\n\n"
+                "SPEAKING CHARACTER (whose voice the dialog and "
+                "thought-text must sound like):\n"
+                f"{character_context}\n\n"
+                "Speaker voice rules (apply to dialog content + "
+                "first-person thought):\n"
+                f"{speaker_rules}\n\n"
+                "POV CHARACTER (whose lens the narration is "
+                "filtered through — notices, priors, biases):\n"
+                f"{pov_character_context}\n\n"
+                "POV voice rules (apply to NARRATION only — what "
+                "the POV character notices, how they describe it, "
+                "what they react to):\n"
+                f"{pov_rules}\n\n"
+                "RULE: dialog inside quotes uses the SPEAKER's "
+                "voice — their vocabulary, rhythm, hedges, "
+                "directness. Narration outside quotes uses the "
+                "POV's voice — what THEY notice and how THEY "
+                "describe it. Don't bleed the speaker's voice "
+                "into narration unless the POV character is "
+                "echoing them mentally.\n"
+            )
+        elif character_context:
             voice_rules = _build_character_voice_rules(character_context)
             char_note = (
                 f"\nCHARACTER VOICE — this text belongs to a specific character. "
@@ -3046,6 +3307,25 @@ For each option, briefly explain what makes it different from the original."""
                 f"CHARACTER PROFILE:\n{character_context}\n\n"
                 f"VOICE RULES (follow these strictly):\n{voice_rules}\n"
             )
+        elif pov_character_context:
+            # Only POV given (no separate speaker) — treat POV as
+            # the voice driver, same shape as the legacy path.
+            voice_rules = _build_character_voice_rules(
+                pov_character_context)
+            char_note = (
+                f"\nCHARACTER VOICE — this text belongs to a "
+                f"specific character.\n\n"
+                f"CHARACTER PROFILE:\n{pov_character_context}\n\n"
+                f"VOICE RULES (follow these strictly):\n{voice_rules}\n"
+            )
+
+        # Dialog craft — inject the dialog-tag rules whenever the
+        # text actually contains dialog. The rules apply equally
+        # whether the speaker == POV or differs; they're about HOW
+        # to attribute speech, not WHO the speaker is.
+        dialog_note = ""
+        if _text_contains_dialog(text):
+            dialog_note = "\n" + _DIALOG_TAG_RULES + "\n"
 
         # Scene and surrounding text context — helps the model understand what's happening
         scene_note = ""
@@ -3084,7 +3364,7 @@ EXPLANATION: [brief explanation]""")
         prompt = f"""Please rephrase the following text in {len(styles)} different ways:
 
 Original text: "{text}"
-{context_str}{tone_note}{pov_note}{char_note}{scene_note}
+{context_str}{tone_note}{pov_note}{multi_speaker_note}{char_note}{dialog_note}{scene_note}
 Generate these variations:
 {style_instructions}
 

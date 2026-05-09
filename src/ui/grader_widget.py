@@ -8,17 +8,21 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QPushButton, QLabel, QTextEdit, QTextBrowser, QComboBox, QGroupBox,
     QMessageBox, QCheckBox, QLineEdit, QProgressBar,
-    QScrollArea, QFileDialog
+    QScrollArea, QFileDialog, QListWidget, QListWidgetItem,
+    QRadioButton, QButtonGroup, QTabWidget,
+    QSizePolicy,
 )
 from PyQt6.QtCore import pyqtSignal, QThread, Qt, QUrl
 
 from src.ai.chapter_analysis_agent import (
-    ChapterAnalysisAgent, ChapterAnalysis, CritiqueContext,
-    SuggestionType, LineItemSuggestion
+    CritiqueContext, SuggestionType,
+    ReportType, GENRE_PROFILES, resolve_genre_profile,
+    ReportSection, ChapterReport, CritiqueReport,
+    CritiqueOrchestrator,
 )
+from src.ui.rating_bar import RatingBar
 from src.config.ai_config import get_ai_config
 from src.ai.craft_explanations import CRAFT_EXPLANATIONS
-from src.ui.enhanced_text_editor import ProWritingAnalyzer, WritingStats
 
 if TYPE_CHECKING:
     from src.models.project import WriterProject
@@ -296,139 +300,139 @@ def get_critique_metadata_store() -> CritiqueMetadataStore:
 
 
 class CritiqueWorker(QThread):
-    """Background worker for critique operation."""
-    finished = pyqtSignal(object)  # ChapterAnalysis or dict with line_suggestions
+    """Background worker driving the report-driven critique flow.
+
+    Pulls an LLM client (cloud or local) using the same selection
+    logic the chat path uses, builds a CritiqueOrchestrator, and
+    runs the selected reports across the supplied chapter set.
+    Emits ``finished(CritiqueReport)`` on success.
+    """
+    finished = pyqtSignal(object)  # CritiqueReport
     error = pyqtSignal(str)
     progress = pyqtSignal(str)
 
     def __init__(
         self,
-        text: str,
-        title: str,
+        chapters: List[Dict[str, Any]],
+        report_types: List[ReportType],
+        genre_key: str,
         critique_context: Optional[CritiqueContext],
-        focus_areas: Optional[List[SuggestionType]],
-        detailed: bool = True,
-        line_by_line: bool = False,
         manuscript_context: str = "",
-        chapter_synopsis: str = ""
+        chapter_synopses: Optional[Dict[str, str]] = None,
+        story_planning: Optional[Any] = None,
+        rag_provider: Optional[Any] = None,
+        force_dashboard: bool = False,
     ):
         super().__init__()
-        self.text = text
-        self.title = title
+        self.chapters = chapters
+        self.report_types = report_types
+        self.genre_key = genre_key
         self.critique_context = critique_context
-        self.focus_areas = focus_areas
-        self.detailed = detailed
-        self.line_by_line = line_by_line
         self.manuscript_context = manuscript_context
-        self.chapter_synopsis = chapter_synopsis
+        self.chapter_synopses = chapter_synopses or {}
+        self.story_planning = story_planning
+        self.rag_provider = rag_provider
+        self.force_dashboard = force_dashboard
+
+    def _build_llm(self) -> Optional[Any]:
+        """Construct an LLM client using the saved AI settings.
+
+        Returns ``None`` when AI is disabled or no provider is
+        configured — the orchestrator interprets ``None`` as
+        dashboard mode (no narrative).
+        """
+        from src.ai.llm_client import LLMClient, LLMProvider, HuggingFaceConfig
+        ai_config = get_ai_config()
+        settings = ai_config.get_settings()
+        if ai_config.is_ai_disabled():
+            return None
+        prefer_local = settings.get("prefer_local_model", False)
+        enable_local = settings.get("enable_local_models", False)
+        local_model_id = settings.get("local_model_id", "")
+        if prefer_local and enable_local and local_model_id:
+            is_mlx_model = "mlx" in local_model_id.lower()
+            hf_config = HuggingFaceConfig(
+                model_id=local_model_id,
+                use_local=True,
+                device=settings.get("local_model_device", "auto"),
+                quantization=settings.get(
+                    "local_model_quantization", "none")
+                if settings.get("local_model_quantization") != "none"
+                else None,
+                trust_remote_code=settings.get(
+                    "local_model_trust_remote_code", False),
+            )
+            provider = (LLMProvider.MLX_LOCAL if is_mlx_model
+                        else LLMProvider.HUGGINGFACE_LOCAL)
+            return LLMClient(provider=provider, hf_config=hf_config)
+        default_provider = settings.get("default_llm", "claude")
+        api_key = ai_config.get_api_key(default_provider)
+        if not api_key:
+            return None
+        provider_map = {
+            "claude": LLMProvider.CLAUDE,
+            "chatgpt": LLMProvider.CHATGPT,
+            "openai": LLMProvider.CHATGPT,
+            "gemini": LLMProvider.GEMINI,
+        }
+        return LLMClient(
+            provider=provider_map.get(default_provider, LLMProvider.CLAUDE))
 
     def run(self):
-        """Run critique analysis."""
+        """Drive the orchestrator on the worker thread."""
         try:
-            self.progress.emit("Initializing critique model...")
+            self.progress.emit("Initializing critique…")
+            llm = None
+            if not self.force_dashboard:
+                llm = self._build_llm()
+                if llm is None:
+                    self.progress.emit(
+                        "No LLM configured — running dashboard mode.")
+                else:
+                    # Honour the per-task model override the same way the
+                    # chat path does; critique is plot/structural analysis.
+                    try:
+                        from src.ai.task_llm import build_task_llm_override
+                        override = build_task_llm_override("plot")
+                        if override is not None:
+                            self.progress.emit(
+                                "Using your plot-task model for critique…")
+                            llm = override
+                    except Exception:
+                        pass
+            orchestrator = CritiqueOrchestrator(
+                primary_llm=llm,
+                project=self._project_proxy(),
+                rag_provider=self.rag_provider,
+                chapter_synopses=self.chapter_synopses,
+            )
 
-            # Get LLM client based on settings (same logic as ChatWorker)
-            from src.ai.llm_client import LLMClient, LLMProvider, HuggingFaceConfig
-            ai_config = get_ai_config()
-            settings = ai_config.get_settings()
+            def progress_cb(msg: str):
+                self.progress.emit(msg)
 
-            # Check if AI is disabled
-            if ai_config.is_ai_disabled():
-                self.error.emit("AI features are disabled. Enable them in Settings > AI Settings.")
-                return
-
-            # Check if local models are preferred and configured
-            prefer_local = settings.get("prefer_local_model", False)
-            enable_local = settings.get("enable_local_models", False)
-            local_model_id = settings.get("local_model_id", "")
-
-            if prefer_local and enable_local and local_model_id:
-                # Use local model - detect if it's an MLX model
-                is_mlx_model = "mlx" in local_model_id.lower()
-
-                hf_config = HuggingFaceConfig(
-                    model_id=local_model_id,
-                    use_local=True,
-                    device=settings.get("local_model_device", "auto"),
-                    quantization=settings.get("local_model_quantization", "none") if settings.get("local_model_quantization") != "none" else None,
-                    trust_remote_code=settings.get("local_model_trust_remote_code", False)
-                )
-
-                # Use MLX provider for MLX models, HuggingFace for others
-                provider = LLMProvider.MLX_LOCAL if is_mlx_model else LLMProvider.HUGGINGFACE_LOCAL
-                llm = LLMClient(
-                    provider=provider,
-                    hf_config=hf_config
-                )
-            else:
-                # Use cloud provider
-                default_provider = settings.get("default_llm", "claude")
-                api_key = ai_config.get_api_key(default_provider)
-
-                if not api_key:
-                    self.error.emit(f"No API key configured for {default_provider}. Please add your API key in Settings > AI Settings, or enable local models.")
-                    return
-
-                # Map provider name to enum
-                provider_map = {
-                    "claude": LLMProvider.CLAUDE,
-                    "chatgpt": LLMProvider.CHATGPT,
-                    "openai": LLMProvider.CHATGPT,
-                    "gemini": LLMProvider.GEMINI
-                }
-                llm = LLMClient(provider=provider_map.get(default_provider, LLMProvider.CLAUDE))
-
-            # Create agent. ``primary_llm`` is the settings-based default
-            # (cloud or local). ``llm_override`` honours the per-task
-            # ``model_for_plot`` preference when one is configured —
-            # critique is plot/structural analysis, so it routes to the
-            # plot-trained model the same way the chat path does.
-            from src.ai.task_llm import build_task_llm_override
-            plot_override = build_task_llm_override("plot")
-            if plot_override is not None:
-                self.progress.emit(
-                    "Using your plot-task model for critique...")
-            agent = ChapterAnalysisAgent(primary_llm=llm)
-
-            if self.line_by_line:
-                # Line-by-line analysis mode using two-stage approach
-                # Pass progress callback to get detailed status updates
-                def progress_update(msg: str):
-                    self.progress.emit(msg)
-
-                line_suggestions = agent.analyze_lines(
-                    text=self.text,
-                    critique_context=self.critique_context,
-                    progress_callback=progress_update,
-                    manuscript_context=self.manuscript_context,
-                    chapter_synopsis=self.chapter_synopsis,
-                    llm_override=plot_override,
-                )
-                self.progress.emit("Complete!")
-                # Return as dict to distinguish from ChapterAnalysis
-                self.finished.emit({
-                    "type": "line_by_line",
-                    "suggestions": line_suggestions
-                })
-            else:
-                # Standard chapter analysis
-                self.progress.emit("Analyzing text...")
-                self.progress.emit("Generating critique...")
-                analysis = agent.analyze_chapter(
-                    chapter_text=self.text,
-                    chapter_title=self.title,
-                    detailed=self.detailed,
-                    critique_context=self.critique_context,
-                    focus_areas=self.focus_areas,
-                    manuscript_context=self.manuscript_context,
-                    chapter_synopsis=self.chapter_synopsis,
-                    llm_override=plot_override,
-                )
-                self.progress.emit("Complete!")
-                self.finished.emit(analysis)
-
-        except Exception as e:
+            report = orchestrator.run(
+                chapters=self.chapters,
+                report_types=self.report_types,
+                genre_key_or_text=self.genre_key,
+                manuscript_context=self.manuscript_context,
+                critique_context=self.critique_context,
+                progress_cb=progress_cb,
+            )
+            self.progress.emit("Complete.")
+            self.finished.emit(report)
+        except Exception as e:  # pragma: no cover — defensive
             self.error.emit(str(e))
+
+    def _project_proxy(self):
+        """Lightweight stand-in passed to PlotAnalyzer for promises lookup."""
+        if self.story_planning is None:
+            return None
+
+        class _Proxy:
+            pass
+        proxy = _Proxy()
+        proxy.story_planning = self.story_planning
+        return proxy
 
 
 class GraderWidget(QWidget):
@@ -446,11 +450,15 @@ class GraderWidget(QWidget):
         self._current_chapter_text = ""
         self._current_chapter_title = ""
         self._worker: Optional[CritiqueWorker] = None
-        self._last_analysis: Optional[ChapterAnalysis] = None
-        self._last_stats: Optional[WritingStats] = None
+        self._last_report: Optional[CritiqueReport] = None
         self._metadata_store = get_critique_metadata_store()
         self._content_provider: Optional[callable] = None  # Callback to get fresh content
         self._init_ui()
+        # Auto-sync genre dropdown from the Style/Genre free-text
+        # field — typing "hard-boiled noir" auto-selects Thriller, etc.
+        self.style_edit.editingFinished.connect(self._sync_genre_from_style)
+        # Set initial scope visibility (Single chapter is the default).
+        self._on_scope_changed()
 
     def _init_ui(self):
         """Initialize user interface."""
@@ -465,75 +473,133 @@ class GraderWidget(QWidget):
         layout.setSpacing(10)
 
         # Header
-        header = QLabel("Writing Critique & Feedback")
+        header = QLabel("Writing Critique & Reports")
         header.setStyleSheet("font-size: 18px; font-weight: bold; padding: 5px;")
         layout.addWidget(header)
 
         description = QLabel(
-            "Get comprehensive feedback on your writing with line-item suggestions "
-            "for style, tone, plot, characters, worldbuilding, and more."
+            "Pick a scope (one chapter, several, or the whole manuscript), "
+            "choose which reports to run, and the critique engine produces "
+            "an embellished narrative report when an LLM is configured — "
+            "or a metrics dashboard when one isn't."
         )
         description.setWordWrap(True)
         description.setStyleSheet("padding: 5px; color: #666;")
         layout.addWidget(description)
 
-        # Content Selection
-        content_group = QGroupBox("Content to Critique")
-        content_layout = QVBoxLayout()
+        # ── Scope ────────────────────────────────────────────────
+        scope_group = QGroupBox("Scope")
+        scope_outer = QVBoxLayout()
+        scope_radio_row = QHBoxLayout()
+        self.scope_radio_group = QButtonGroup(self)
+        self.scope_single_radio = QRadioButton("Current chapter")
+        self.scope_multi_radio = QRadioButton("Selected chapters")
+        self.scope_manuscript_radio = QRadioButton("Full manuscript")
+        self.scope_custom_radio = QRadioButton("Custom text")
+        self.scope_single_radio.setChecked(True)
+        for i, rb in enumerate([
+            self.scope_single_radio, self.scope_multi_radio,
+            self.scope_manuscript_radio, self.scope_custom_radio,
+        ]):
+            self.scope_radio_group.addButton(rb, i)
+            rb.toggled.connect(self._on_scope_changed)
+            scope_radio_row.addWidget(rb)
+        scope_radio_row.addStretch()
+        scope_outer.addLayout(scope_radio_row)
 
-        # Content type
-        type_layout = QHBoxLayout()
-        type_layout.addWidget(QLabel("Content:"))
-        self.type_combo = QComboBox()
-        self.type_combo.addItems(["Current Chapter", "Custom Text"])
-        self.type_combo.currentTextChanged.connect(self._on_type_changed)
-        type_layout.addWidget(self.type_combo)
-        type_layout.addStretch()
-        content_layout.addLayout(type_layout)
-
-        # Current chapter info
+        # Current chapter info (for Single scope)
         self.chapter_info_label = QLabel("No chapter selected")
-        self.chapter_info_label.setStyleSheet("color: #666; font-style: italic; padding: 5px;")
-        content_layout.addWidget(self.chapter_info_label)
+        self.chapter_info_label.setStyleSheet(
+            "color: #666; font-style: italic; padding: 5px;")
+        scope_outer.addWidget(self.chapter_info_label)
 
-        # Custom text input
+        # Multi-select chapter picker (for Selected chapters scope)
+        self.chapter_picker = QListWidget()
+        self.chapter_picker.setSelectionMode(
+            QListWidget.SelectionMode.MultiSelection)
+        self.chapter_picker.setMaximumHeight(140)
+        self.chapter_picker.setVisible(False)
+        scope_outer.addWidget(self.chapter_picker)
+
+        # Custom-text fallback (for Custom text scope)
         self.custom_text_edit = QTextEdit()
-        self.custom_text_edit.setPlaceholderText("Paste text to critique here...")
+        self.custom_text_edit.setPlaceholderText(
+            "Paste text to critique here…")
         self.custom_text_edit.setMaximumHeight(150)
         self.custom_text_edit.setVisible(False)
-        content_layout.addWidget(self.custom_text_edit)
+        scope_outer.addWidget(self.custom_text_edit)
 
-        content_group.setLayout(content_layout)
-        layout.addWidget(content_group)
+        # Manuscript info label (for Full manuscript scope)
+        self.manuscript_info_label = QLabel("")
+        self.manuscript_info_label.setStyleSheet(
+            "color: #666; font-style: italic; padding: 5px;")
+        self.manuscript_info_label.setVisible(False)
+        scope_outer.addWidget(self.manuscript_info_label)
 
-        # Focus Areas (checkboxes)
-        focus_group = QGroupBox("Focus Areas (select what to prioritize)")
-        focus_layout = QGridLayout()
+        scope_group.setLayout(scope_outer)
+        layout.addWidget(scope_group)
 
-        self.focus_checkboxes = {}
-        focus_items = [
-            (SuggestionType.SHOW_DONT_TELL, "Show Don't Tell"),
-            (SuggestionType.PACING, "Pacing"),
-            (SuggestionType.DIALOGUE, "Dialogue"),
-            (SuggestionType.DESCRIPTION, "Description"),
-            (SuggestionType.CHARACTER_VOICE, "Character Voice"),
-            (SuggestionType.PLOT, "Plot"),
-            (SuggestionType.WORLDBUILDING, "Worldbuilding"),
-            (SuggestionType.STYLE, "Style"),
-            (SuggestionType.TONE, "Tone"),
-            (SuggestionType.VOICE, "Voice"),
-            (SuggestionType.TENSION, "Tension"),
-            (SuggestionType.CLARITY, "Clarity"),
+        # ── Reports + Genre ──────────────────────────────────────
+        reports_group = QGroupBox("Reports to run")
+        reports_outer = QVBoxLayout()
+
+        # Genre selector row
+        genre_row = QHBoxLayout()
+        genre_row.addWidget(QLabel("Genre profile:"))
+        self.genre_combo = QComboBox()
+        for key, profile in GENRE_PROFILES.items():
+            self.genre_combo.addItem(profile.name, key)
+        self.genre_combo.setToolTip(
+            "Genre tunes pacing / voice / dialog thresholds. "
+            "Auto-fills from the Style/Genre field below if it matches "
+            "a known genre.")
+        genre_row.addWidget(self.genre_combo)
+        genre_row.addStretch()
+
+        # Force-dashboard mode (skip the LLM even when one is configured)
+        self.force_dashboard_check = QCheckBox("Dashboard only (skip LLM narrative)")
+        self.force_dashboard_check.setToolTip(
+            "Run the deterministic metrics+findings dashboard without "
+            "calling the LLM, even if one is configured.")
+        genre_row.addWidget(self.force_dashboard_check)
+        reports_outer.addLayout(genre_row)
+
+        # Report-type checkbox grid
+        reports_grid = QGridLayout()
+        self.report_checkboxes: Dict[ReportType, QCheckBox] = {}
+        report_items = [
+            (ReportType.PACING, "Pacing", "Genre-aware sentence-rhythm analysis."),
+            (ReportType.VOICE, "Writer's Voice", "Diction, syntax habits, voice consistency."),
+            (ReportType.TENSION, "Tension & Stakes", "Moment-to-moment friction; what hangs over the chapter."),
+            (ReportType.PLOT, "Plot & Promises", "What changes; promise tracking; structural concerns."),
+            (ReportType.DIALOG, "Dialog", "Density, tag hygiene, voice differentiation, subtext."),
+            (ReportType.STYLE, "Sentence Style", "Passive, adverbs, clichés, echoes, readability."),
         ]
-
-        for i, (stype, label) in enumerate(focus_items):
+        for i, (rt, label, tooltip) in enumerate(report_items):
             cb = QCheckBox(label)
-            cb.setChecked(True)  # Default all checked
-            self.focus_checkboxes[stype] = cb
-            focus_layout.addWidget(cb, i // 4, i % 4)
+            cb.setChecked(True)
+            cb.setToolTip(tooltip)
+            self.report_checkboxes[rt] = cb
+            reports_grid.addWidget(cb, i // 3, i % 3)
+        reports_outer.addLayout(reports_grid)
 
-        focus_group.setLayout(focus_layout)
-        layout.addWidget(focus_group)
+        # Select-all / clear shortcuts
+        select_row = QHBoxLayout()
+        all_btn = QPushButton("All")
+        all_btn.setStyleSheet(
+            "QPushButton { padding: 3px 8px; font-size: 11px; }")
+        all_btn.clicked.connect(self._select_all_reports)
+        none_btn = QPushButton("None")
+        none_btn.setStyleSheet(
+            "QPushButton { padding: 3px 8px; font-size: 11px; }")
+        none_btn.clicked.connect(self._select_no_reports)
+        select_row.addWidget(all_btn)
+        select_row.addWidget(none_btn)
+        select_row.addStretch()
+        reports_outer.addLayout(select_row)
+
+        reports_group.setLayout(reports_outer)
+        layout.addWidget(reports_group)
 
         # Writing Context
         context_group = QGroupBox("Writing Context (helps AI understand your intent)")
@@ -669,41 +735,15 @@ class GraderWidget(QWidget):
         context_group.setLayout(context_layout)
         layout.addWidget(context_group)
 
-        # Critique Options
-        options_layout = QHBoxLayout()
-
-        self.detailed_check = QCheckBox("Detailed Analysis")
-        self.detailed_check.setChecked(True)
-        self.detailed_check.setToolTip("Detailed analysis provides more line-item suggestions")
-        options_layout.addWidget(self.detailed_check)
-
-        options_layout.addStretch()
-
-        # Quick Stats button (local analysis, no AI)
-        self.quick_stats_btn = QPushButton("Quick Stats")
-        self.quick_stats_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #10b981;
-                color: white;
-                padding: 10px 20px;
-                border-radius: 4px;
-                font-weight: bold;
-                font-size: 14px;
-            }
-            QPushButton:hover { background-color: #059669; }
-            QPushButton:disabled { background-color: #9ca3af; }
-        """)
-        self.quick_stats_btn.setToolTip("Fast local analysis: readability, echoes, sticky sentences, adverbs, clichés (no AI)")
-        self.quick_stats_btn.clicked.connect(self._get_quick_stats)
-        options_layout.addWidget(self.quick_stats_btn)
-
-        # Critique button
-        self.critique_btn = QPushButton("Get AI Critique")
+        # ── Run row ──────────────────────────────────────────────
+        run_row = QHBoxLayout()
+        run_row.addStretch()
+        self.critique_btn = QPushButton("Run Critique")
         self.critique_btn.setStyleSheet("""
             QPushButton {
                 background-color: #6366f1;
                 color: white;
-                padding: 10px 20px;
+                padding: 10px 22px;
                 border-radius: 4px;
                 font-weight: bold;
                 font-size: 14px;
@@ -711,31 +751,11 @@ class GraderWidget(QWidget):
             QPushButton:hover { background-color: #4f46e5; }
             QPushButton:disabled { background-color: #9ca3af; }
         """)
-        self.critique_btn.clicked.connect(self._get_critique)
-        options_layout.addWidget(self.critique_btn)
-
-        # Line-by-Line Critique button
-        self.line_by_line_btn = QPushButton("Line-by-Line")
-        self.line_by_line_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #8b5cf6;
-                color: white;
-                padding: 10px 20px;
-                border-radius: 4px;
-                font-weight: bold;
-                font-size: 14px;
-            }
-            QPushButton:hover { background-color: #7c3aed; }
-            QPushButton:disabled { background-color: #9ca3af; }
-        """)
-        self.line_by_line_btn.setToolTip(
-            "Analyze each line individually, providing reasoning for suggested edits.\n"
-            "Best for detailed revision work."
-        )
-        self.line_by_line_btn.clicked.connect(self._get_line_by_line_critique)
-        options_layout.addWidget(self.line_by_line_btn)
-
-        layout.addLayout(options_layout)
+        self.critique_btn.setToolTip(
+            "Run the selected reports across the chosen scope.")
+        self.critique_btn.clicked.connect(self._run_reports)
+        run_row.addWidget(self.critique_btn)
+        layout.addLayout(run_row)
 
         # Progress
         self.progress_bar = QProgressBar()
@@ -748,16 +768,27 @@ class GraderWidget(QWidget):
         self.status_label.setVisible(False)
         layout.addWidget(self.status_label)
 
-        # Results Section
+        # ── Results: tabbed ──────────────────────────────────────
         results_group = QGroupBox("Critique Results")
         results_layout = QVBoxLayout()
 
-        self.results_display = QTextBrowser()
-        self.results_display.setOpenExternalLinks(False)  # Handle links ourselves
-        self.results_display.setOpenLinks(False)
-        self.results_display.anchorClicked.connect(self._handle_link_click)
-        self.results_display.setMinimumHeight(300)
-        results_layout.addWidget(self.results_display)
+        self.results_tabs = QTabWidget()
+        self.results_tabs.setMinimumHeight(360)
+        self.results_tabs.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        # The Summary tab is permanent; per-report tabs are added on
+        # each run.
+        self._summary_browser = QTextBrowser()
+        self._summary_browser.setOpenExternalLinks(False)
+        self._summary_browser.setOpenLinks(False)
+        self._summary_browser.anchorClicked.connect(self._handle_link_click)
+        self._summary_browser.setHtml(
+            "<p style='color:#888'>No critique run yet. Pick a scope, "
+            "select reports, and click <b>Run Critique</b>.</p>")
+        self.results_tabs.addTab(self._summary_browser, "Summary")
+        # Backwards-compat alias used by older helpers (e.g. _quick_stats).
+        self.results_display = self._summary_browser
+        results_layout.addWidget(self.results_tabs)
 
         # Export and save/load buttons
         export_layout = QHBoxLayout()
@@ -829,6 +860,26 @@ class GraderWidget(QWidget):
             self._project_path = str(project.project_path)
         else:
             self._project_path = ""
+        # Refresh chapter picker and manuscript info so the multi /
+        # manuscript scopes are immediately usable.
+        self._populate_chapter_list()
+
+    def _sync_genre_from_style(self):
+        """Update the Genre dropdown when the Style/Genre field changes.
+
+        Uses ``resolve_genre_profile`` so common synonyms ("hard-boiled
+        noir" → thriller, "epic fantasy" → fantasy) auto-select the
+        right profile. Leaves the dropdown alone if the user has
+        already picked something more specific than what the text
+        resolves to.
+        """
+        text = self.style_edit.text().strip()
+        if not text:
+            return
+        profile = resolve_genre_profile(text)
+        idx = self.genre_combo.findData(profile.key)
+        if idx >= 0:
+            self.genre_combo.setCurrentIndex(idx)
 
     def set_current_chapter(self, text: str, title: str):
         """Set the current chapter content for critique."""
@@ -932,130 +983,219 @@ class GraderWidget(QWidget):
             except Exception as e:
                 print(f"Error refreshing content: {e}")
 
-    def _on_type_changed(self, content_type: str):
-        """Handle content type change."""
-        is_custom = content_type == "Custom Text"
-        self.custom_text_edit.setVisible(is_custom)
-        self.chapter_info_label.setVisible(not is_custom)
+    def _on_scope_changed(self, _checked: bool = False):
+        """Show/hide scope-dependent inputs based on the selected radio.
 
-    def _get_critique(self):
-        """Get AI critique of the content."""
-        # Refresh content from manuscript editor to ensure we have latest text
-        content_type = self.type_combo.currentText()
-        if content_type != "Custom Text":
+        Single → chapter-info label only.
+        Selected chapters → multi-select chapter picker.
+        Full manuscript → manuscript info label.
+        Custom text → free-text editor.
+        """
+        is_single = self.scope_single_radio.isChecked()
+        is_multi = self.scope_multi_radio.isChecked()
+        is_manu = self.scope_manuscript_radio.isChecked()
+        is_custom = self.scope_custom_radio.isChecked()
+        self.chapter_info_label.setVisible(is_single)
+        self.chapter_picker.setVisible(is_multi)
+        self.custom_text_edit.setVisible(is_custom)
+        self.manuscript_info_label.setVisible(is_manu)
+        if is_multi or is_manu:
+            self._populate_chapter_list()
+
+    def _select_all_reports(self):
+        for cb in self.report_checkboxes.values():
+            cb.setChecked(True)
+
+    def _select_no_reports(self):
+        for cb in self.report_checkboxes.values():
+            cb.setChecked(False)
+
+    def _populate_chapter_list(self):
+        """Refresh the chapter picker + manuscript info from the current project."""
+        self.chapter_picker.clear()
+        if (not self.project or not self.project.manuscript
+                or not self.project.manuscript.chapters):
+            self.manuscript_info_label.setText(
+                "No chapters loaded for this project.")
+            return
+        chapters = self.project.manuscript.chapters
+        total_words = 0
+        for i, ch in enumerate(chapters):
+            wc = ch.word_count or len((ch.content or "").split())
+            total_words += wc
+            label = f"{ch.number:02d}. {ch.title} ({wc:,} words)"
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, i)  # index in chapters
+            self.chapter_picker.addItem(item)
+            # Pre-select the current chapter when first populating
+            if (self._current_chapter_title
+                    and ch.title == self._current_chapter_title):
+                item.setSelected(True)
+        self.manuscript_info_label.setText(
+            f"{len(chapters)} chapter(s), {total_words:,} words total. "
+            "Reports run chapter by chapter.")
+
+    def _get_chapters_for_run(self) -> List[Dict[str, Any]]:
+        """Return [{title, text, index}] based on the selected scope."""
+        # Pull the latest content for the current chapter
+        if (self.scope_single_radio.isChecked()
+                or self.scope_custom_radio.isChecked()):
             self._refresh_content()
 
-        # Get content
-        if content_type == "Custom Text":
-            text = self.custom_text_edit.toPlainText()
-            title = "Custom Text"
-            if not text.strip():
-                QMessageBox.warning(self, "No Content", "Please enter text to critique.")
-                return
-        else:
-            if not self._current_chapter_text:
-                QMessageBox.warning(
-                    self, "No Chapter",
-                    "No chapter selected. Please select a chapter in the manuscript editor first."
-                )
-                return
-            text = self._current_chapter_text
-            title = self._current_chapter_title
+        if self.scope_custom_radio.isChecked():
+            text = self.custom_text_edit.toPlainText().strip()
+            if not text:
+                return []
+            return [{"title": "Custom Text", "text": text, "index": 0}]
 
-        # Build critique context
-        critique_context = CritiqueContext(
+        if self.scope_single_radio.isChecked():
+            if not self._current_chapter_text:
+                return []
+            return [{
+                "title": self._current_chapter_title or "Current Chapter",
+                "text": self._current_chapter_text,
+                "index": 0,
+            }]
+
+        if (not self.project or not self.project.manuscript
+                or not self.project.manuscript.chapters):
+            return []
+        chapters = self.project.manuscript.chapters
+
+        if self.scope_manuscript_radio.isChecked():
+            indices = list(range(len(chapters)))
+        else:  # scope_multi_radio
+            indices = []
+            for i in range(self.chapter_picker.count()):
+                item = self.chapter_picker.item(i)
+                if item.isSelected():
+                    indices.append(item.data(Qt.ItemDataRole.UserRole))
+
+        results: List[Dict[str, Any]] = []
+        for idx in indices:
+            if 0 <= idx < len(chapters):
+                ch = chapters[idx]
+                content = ch.content or ""
+                # Fall back to disk if content wasn't preloaded.
+                if not content and self._project_path:
+                    try:
+                        from pathlib import Path
+                        proj_dir = Path(self._project_path).parent
+                        ch.load_content_from_file(proj_dir)
+                        content = ch.content or ""
+                    except Exception as e:
+                        print(f"[critique] failed to load content for "
+                              f"{ch.title}: {e}")
+                if content.strip():
+                    results.append({
+                        "title": ch.title or f"Chapter {ch.number}",
+                        "text": content,
+                        "index": idx,
+                    })
+        return results
+
+    def _collect_critique_context(self) -> Optional[CritiqueContext]:
+        """Gather the context fields into a CritiqueContext object."""
+        ctx = CritiqueContext(
             style=self.style_edit.text().strip(),
             tone=self.tone_edit.text().strip(),
             voice=self.voice_edit.text().strip(),
             plot_goals=self.plot_edit.toPlainText().strip(),
             characters=self.characters_edit.toPlainText().strip(),
             worldbuilding=self.worldbuilding_edit.toPlainText().strip(),
-            additional_instructions=self.additional_edit.toPlainText().strip()
+            additional_instructions=self.additional_edit.toPlainText().strip(),
         )
+        # All-empty → return None so the agent skips the AUTHOR CONTEXT
+        # block in prompts.
+        if not any([
+            ctx.style, ctx.tone, ctx.voice, ctx.plot_goals, ctx.characters,
+            ctx.worldbuilding, ctx.additional_instructions,
+        ]):
+            return None
+        return ctx
 
-        # Get selected focus areas
-        focus_areas = [
-            stype for stype, cb in self.focus_checkboxes.items()
+    def _make_rag_provider(self):
+        """Build a RAG provider callable bound to the main window's RAG.
+
+        Returns ``(query, source_types) → str`` or ``None`` if RAG isn't
+        available. The orchestrator calls this once per chapter per
+        report so the model only sees report-relevant chunks.
+        """
+        try:
+            mw = self.window()
+            if mw is not None and hasattr(mw, "_rag_top_chunks_per_type"):
+                return lambda query, source_types: (
+                    mw._rag_top_chunks_per_type(
+                        query=query,
+                        source_types=source_types,
+                        top_k=6,
+                        max_chars_per_chunk=600,
+                        max_total_chars=2500,
+                    )
+                )
+        except Exception as e:
+            print(f"[critique] RAG provider unavailable: {e}")
+        return None
+
+    def _build_chapter_synopses(self) -> Dict[str, str]:
+        """Map chapter title → planning synopsis for PlotAnalyzer."""
+        synopses: Dict[str, str] = {}
+        if not self.project or not self.project.manuscript:
+            return synopses
+        for ch in self.project.manuscript.chapters:
+            if hasattr(ch, "planning") and ch.planning:
+                if ch.planning.description:
+                    synopses[ch.title] = ch.planning.description[:400]
+                elif ch.planning.outline:
+                    synopses[ch.title] = ch.planning.outline[:400]
+        return synopses
+
+    def _run_reports(self):
+        """Entry point for the new Reports flow."""
+        chapters = self._get_chapters_for_run()
+        if not chapters:
+            QMessageBox.warning(
+                self, "Nothing to critique",
+                "No content found for the selected scope. Choose a "
+                "chapter, select chapters from the picker, or paste "
+                "custom text.")
+            return
+        report_types = [
+            rt for rt, cb in self.report_checkboxes.items()
             if cb.isChecked()
         ]
+        if not report_types:
+            QMessageBox.warning(
+                self, "No reports selected",
+                "Select at least one report to run.")
+            return
+        critique_context = self._collect_critique_context()
+        ms_context, _ = self._build_manuscript_context()
+        chapter_synopses = self._build_chapter_synopses()
+        rag_provider = self._make_rag_provider()
+        # Genre key — prefer the dropdown selection; the dropdown is
+        # auto-synced from the Style/Genre field elsewhere.
+        genre_key = self.genre_combo.currentData() or "default"
 
-        # Show progress
+        # Show progress, lock the run button.
         self.progress_bar.setVisible(True)
         self.status_label.setVisible(True)
+        self.status_label.setText("Starting critique…")
         self.critique_btn.setEnabled(False)
 
-        # Build manuscript context from project data
-        ms_context, ch_synopsis = self._build_manuscript_context()
+        story_planning = (
+            self.project.story_planning if self.project else None)
 
-        # Start worker
         self._worker = CritiqueWorker(
-            text=text,
-            title=title,
+            chapters=chapters,
+            report_types=report_types,
+            genre_key=genre_key,
             critique_context=critique_context,
-            focus_areas=focus_areas if focus_areas else None,
-            detailed=self.detailed_check.isChecked(),
             manuscript_context=ms_context,
-            chapter_synopsis=ch_synopsis
-        )
-        self._worker.finished.connect(self._on_critique_finished)
-        self._worker.error.connect(self._on_critique_error)
-        self._worker.progress.connect(self._on_critique_progress)
-        self._worker.start()
-
-    def _get_line_by_line_critique(self):
-        """Get line-by-line AI critique with reasoning for each edit."""
-        # Refresh content from manuscript editor to ensure we have latest text
-        content_type = self.type_combo.currentText()
-        if content_type != "Custom Text":
-            self._refresh_content()
-
-        # Get content
-        if content_type == "Custom Text":
-            text = self.custom_text_edit.toPlainText()
-            title = "Custom Text"
-            if not text.strip():
-                QMessageBox.warning(self, "No Content", "Please enter text to critique.")
-                return
-        else:
-            if not self._current_chapter_text:
-                QMessageBox.warning(
-                    self, "No Chapter",
-                    "No chapter selected. Please select a chapter in the manuscript editor first."
-                )
-                return
-            text = self._current_chapter_text
-            title = self._current_chapter_title
-
-        # Build critique context
-        critique_context = CritiqueContext(
-            style=self.style_edit.text().strip(),
-            tone=self.tone_edit.text().strip(),
-            voice=self.voice_edit.text().strip(),
-            plot_goals=self.plot_edit.toPlainText().strip(),
-            characters=self.characters_edit.toPlainText().strip(),
-            worldbuilding=self.worldbuilding_edit.toPlainText().strip(),
-            additional_instructions=self.additional_edit.toPlainText().strip()
-        )
-
-        # Show progress
-        self.progress_bar.setVisible(True)
-        self.status_label.setVisible(True)
-        self.critique_btn.setEnabled(False)
-        self.line_by_line_btn.setEnabled(False)
-
-        # Build manuscript context from project data
-        ms_context, ch_synopsis = self._build_manuscript_context()
-
-        # Start worker in line-by-line mode
-        self._worker = CritiqueWorker(
-            text=text,
-            title=title,
-            critique_context=critique_context,
-            focus_areas=None,  # Line-by-line doesn't use focus areas
-            detailed=True,
-            line_by_line=True,  # Enable line-by-line mode
-            manuscript_context=ms_context,
-            chapter_synopsis=ch_synopsis
+            chapter_synopses=chapter_synopses,
+            story_planning=story_planning,
+            rag_provider=rag_provider,
+            force_dashboard=self.force_dashboard_check.isChecked(),
         )
         self._worker.finished.connect(self._on_critique_finished)
         self._worker.error.connect(self._on_critique_error)
@@ -1067,601 +1207,650 @@ class GraderWidget(QWidget):
         self.status_label.setText(message)
 
     def _on_critique_finished(self, result):
-        """Handle critique completion.
-
-        Args:
-            result: Either a ChapterAnalysis object or a dict with line-by-line results
-        """
+        """Handle CritiqueReport arrival from the worker."""
         self.progress_bar.setVisible(False)
         self.status_label.setVisible(False)
         self.critique_btn.setEnabled(True)
-        self.line_by_line_btn.setEnabled(True)
-
-        # Check if this is a line-by-line result (dict) or standard analysis
-        if isinstance(result, dict) and result.get("type") == "line_by_line":
-            # Line-by-line results - convert to ChapterAnalysis for storage
-            suggestions = result.get("suggestions", [])
-
-            # Store as ChapterAnalysis for save/export compatibility
-            self._last_analysis = ChapterAnalysis(
-                overall_assessment="Line-by-line analysis",
-                strengths=[],
-                areas_for_improvement=[],
-                line_item_suggestions=suggestions,
-                pacing_notes="",
-                character_consistency_notes="",
-                estimated_cost=0.0
-            )
-
-            html = self._format_line_by_line_html(suggestions)
-            progress_html = self._get_progress_comparison(self._last_analysis)
-            if progress_html:
-                html += progress_html
-            self.results_display.setHtml(html)
-        else:
-            # Standard ChapterAnalysis
-            self._last_analysis = result
-            html = self._format_analysis_html(result)
-            progress_html = self._get_progress_comparison(result)
-            if progress_html:
-                html += progress_html
-            self.results_display.setHtml(html)
-
-        # Enable save/export buttons
+        if not isinstance(result, CritiqueReport):
+            QMessageBox.warning(
+                self, "Critique",
+                "Unexpected result shape from critique worker.")
+            return
+        self._last_report = result
+        self._render_critique_report(result)
         self.save_critique_btn.setEnabled(True)
         self.export_btn.setEnabled(True)
-        self.saved_critique_label.setText("")  # Clear any previous status
+        self.saved_critique_label.setText("")
 
     def _on_critique_error(self, error: str):
-        """Handle critique error."""
+        """Handle worker error."""
         self.progress_bar.setVisible(False)
         self.status_label.setVisible(False)
         self.critique_btn.setEnabled(True)
-        self.line_by_line_btn.setEnabled(True)
+        QMessageBox.critical(
+            self, "Critique Failed",
+            f"Failed to generate critique:\n\n{error}")
 
-        QMessageBox.critical(self, "Critique Failed", f"Failed to generate critique:\n\n{error}")
+    # ── Report rendering ─────────────────────────────────────────
 
-    def _format_analysis_html(self, analysis: ChapterAnalysis) -> str:
-        """Format analysis results as HTML."""
-        html = """
-        <style>
-            h2 { color: #1f2937; margin-top: 15px; margin-bottom: 8px; }
-            h3 { color: #374151; margin-top: 12px; margin-bottom: 6px; }
-            .strength { color: #059669; }
-            .improvement { color: #dc2626; }
-            .suggestion { background-color: #f3f4f6; padding: 10px; margin: 8px 0; border-radius: 4px; }
-            .priority-high { border-left: 3px solid #dc2626; }
-            .priority-medium { border-left: 3px solid #f59e0b; }
-            .priority-low { border-left: 3px solid #6b7280; }
-            .quote { color: #6b7280; font-style: italic; }
-            .type { font-weight: bold; color: #6366f1; }
-            .location-link { display: inline-block; background-color: #8b5cf6; color: white; padding: 2px 8px; border-radius: 4px; font-weight: bold; font-size: 11px; margin-right: 8px; cursor: pointer; text-decoration: none; }
-            .location-link:hover { background-color: #7c3aed; }
-        </style>
+    REPORT_TAB_LABELS = {
+        ReportType.PACING: "Pacing",
+        ReportType.VOICE: "Voice",
+        ReportType.TENSION: "Tension",
+        ReportType.PLOT: "Plot",
+        ReportType.DIALOG: "Dialog",
+        ReportType.STYLE: "Style",
+    }
+
+    REPORT_STYLE_BLOCK = """
+    <style>
+        body { font-family: -apple-system, sans-serif; }
+        h2 { color: #1f2937; margin-top: 14px; margin-bottom: 6px; }
+        h3 { color: #374151; margin-top: 12px; margin-bottom: 4px; }
+        h4 { color: #4b5563; margin: 8px 0 4px; font-size: 13px; }
+        .chapter-block { background:#f8fafc; border:1px solid #e2e8f0;
+                         border-radius:6px; padding:10px 12px; margin:10px 0; }
+        .chapter-title { font-weight:600; color:#1f2937; font-size:14px; }
+        .chapter-meta { color:#6b7280; font-size:11px; }
+        .summary { color:#1f2937; margin:6px 0; }
+        .narrative { color:#1f2937; margin:8px 0;
+                     padding:10px; background:#fff; border-left:3px solid #6366f1;
+                     border-radius:4px; white-space:pre-wrap; }
+        .findings, .suggestions { margin:6px 0; }
+        .findings li { color:#dc2626; margin:2px 0; }
+        .findings li.ok { color:#059669; }
+        .suggestions li { color:#0369a1; margin:2px 0; }
+        .metric-table { font-size:12px; border-collapse:collapse; margin:6px 0; }
+        .metric-table td { padding:2px 8px; border-bottom:1px solid #f1f5f9; }
+        .metric-table td:first-child { color:#6b7280; }
+        .metric-table td:last-child { color:#1f2937; font-weight:500; }
+        .badge { display:inline-block; padding:2px 8px; border-radius:10px;
+                 font-size:11px; font-weight:600; margin-right:6px; }
+        .badge-llm { background:#ede9fe; color:#5b21b6; }
+        .badge-dash { background:#fef3c7; color:#92400e; }
+        .badge-genre { background:#e0f2fe; color:#075985; }
+        .empty { color:#888; padding:8px; }
+    </style>
+    """
+
+    def _clear_report_tabs(self):
+        """Drop everything except the permanent Summary tab."""
+        while self.results_tabs.count() > 1:
+            self.results_tabs.removeTab(1)
+
+    def _render_critique_report(self, report: CritiqueReport):
+        """Render a CritiqueReport into the tabbed results pane.
+
+        Each per-report tab gets the rendered HTML on top + a rating
+        bar at the bottom so the author can mark the report excellent
+        / good / poor / bad and save it to the training database.
+
+        The Summary tab also gets its own rating bar — the overall
+        narrative is independently rateable.
         """
+        self._clear_report_tabs()
+        # Summary tab — rebuild it as a Widget so we can attach a
+        # rating bar at the bottom alongside the existing browser.
+        self._refresh_summary_tab(report)
+        # Per-report tabs
+        for rt in self.REPORT_TAB_LABELS.keys():
+            sections = [
+                s for c in report.chapters for s in c.sections
+                if s.report_type == rt
+            ]
+            if not sections:
+                continue
+            tab = QWidget()
+            tab_layout = QVBoxLayout(tab)
+            tab_layout.setContentsMargins(0, 0, 0, 0)
+            tab_layout.setSpacing(4)
 
-        # Overall Assessment
-        html += f"<h2>Overall Assessment</h2><p>{analysis.overall_assessment}</p>"
+            browser = QTextBrowser()
+            browser.setOpenExternalLinks(False)
+            browser.setOpenLinks(False)
+            browser.anchorClicked.connect(self._handle_link_click)
+            browser.setHtml(self._format_report_tab_html(rt, sections, report))
+            tab_layout.addWidget(browser)
 
-        # Strengths
-        if analysis.strengths:
-            html += "<h2 class='strength'>Strengths</h2><ul>"
-            for s in analysis.strengths:
-                html += f"<li class='strength'>{s}</li>"
-            html += "</ul>"
+            # Per-report rating bar — captures the user's judgment of
+            # this analysis specifically (so e.g. a great pacing report
+            # but a weak voice report can be rated independently).
+            rating_bar = RatingBar(
+                label=f"Rate this {self.REPORT_TAB_LABELS[rt]} report:",
+                compact=False)
+            rating_bar.rated.connect(
+                lambda value, rt=rt, sections=sections, report=report:
+                    self._persist_critique_rating(
+                        rating_bar, value, rt, sections, report))
+            tab_layout.addWidget(rating_bar)
 
-        # Areas for Improvement
-        if analysis.areas_for_improvement:
-            html += "<h2 class='improvement'>Areas for Improvement</h2><ul>"
-            for a in analysis.areas_for_improvement:
-                html += f"<li>{a}</li>"
-            html += "</ul>"
+            self.results_tabs.addTab(tab, self.REPORT_TAB_LABELS[rt])
 
-        # Line-Item Suggestions
-        if analysis.line_item_suggestions:
-            show_tips = get_ai_config().get_settings().get("show_craft_tips", True)
-            html += "<h2>Line-Item Suggestions</h2>"
-            html += "<p style='color: #6b7280; font-size: 12px;'>Click location badges to navigate to the text.</p>"
-            for idx, suggestion in enumerate(analysis.line_item_suggestions):
-                priority_class = f"priority-{suggestion.priority}"
-                example_html = ""
-                if suggestion.example_fix:
-                    example_html = f"<div style='background-color: #ecfdf5; padding: 8px; margin: 8px 0; border-radius: 4px; border-left: 3px solid #10b981;'><strong style='color: #059669;'>Example:</strong> <em>\"{suggestion.example_fix}\"</em></div>"
+    def _refresh_summary_tab(self, report: CritiqueReport):
+        """Replace the Summary tab content with browser + overall rating bar."""
+        # Build a fresh tab widget for index 0
+        new_tab = QWidget()
+        layout = QVBoxLayout(new_tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        self._summary_browser = QTextBrowser()
+        self._summary_browser.setOpenExternalLinks(False)
+        self._summary_browser.setOpenLinks(False)
+        self._summary_browser.anchorClicked.connect(self._handle_link_click)
+        self._summary_browser.setHtml(self._format_summary_html(report))
+        layout.addWidget(self._summary_browser)
 
-                # Create clickable location link
-                # Use line number if available, otherwise paragraph number
-                if suggestion.line_number and suggestion.line_number > 0:
-                    location_link = f"<a href='goto:line:{suggestion.line_number}' class='location-link'>Line {suggestion.line_number}</a>"
-                elif suggestion.paragraph_number and suggestion.paragraph_number > 0:
-                    location_link = f"<a href='goto:para:{suggestion.paragraph_number}' class='location-link'>Para {suggestion.paragraph_number}</a>"
-                else:
-                    location_link = ""
+        rating_bar = RatingBar(
+            label="Rate this critique overall:",
+            compact=False)
+        rating_bar.rated.connect(
+            lambda value: self._persist_critique_rating(
+                rating_bar, value, None, None, report))
+        layout.addWidget(rating_bar)
 
-                learning_links = self._learning_links_html(suggestion, idx, show_tips)
+        # Replace the existing Summary tab if present, otherwise insert.
+        if self.results_tabs.count() == 0:
+            self.results_tabs.addTab(new_tab, "Summary")
+        else:
+            # Remove the old summary tab (always at index 0)
+            self.results_tabs.removeTab(0)
+            self.results_tabs.insertTab(0, new_tab, "Summary")
+            self.results_tabs.setCurrentIndex(0)
+        # Keep the back-compat alias
+        self.results_display = self._summary_browser
 
-                html += f"""
-                <div class='suggestion {priority_class}'>
-                    {location_link}
-                    <span class='type'>[{suggestion.suggestion_type.value.replace('_', ' ').title()}]</span>
-                    <span style='float: right; font-size: 11px;'>Priority: {suggestion.priority.upper()}</span><br>
-                    <span class='quote'>"{suggestion.original_text}"</span><br>
-                    <strong>Suggestion:</strong> {suggestion.suggestion}<br>
-                    {example_html}
-                    <em>Why:</em> {suggestion.explanation}
-                    {learning_links}
-                </div>
-                """
+    def _persist_critique_rating(
+        self,
+        rating_bar: RatingBar,
+        value: str,
+        rt: 'Optional[ReportType]',
+        sections: 'Optional[List[ReportSection]]',
+        report: CritiqueReport,
+    ):
+        """Log critique ratings to the rephrase database for training.
 
-        # Pacing Notes
-        if analysis.pacing_notes:
-            html += f"<h2>Pacing Notes</h2><p>{analysis.pacing_notes}</p>"
+        For per-report tabs, this writes ONE row per chapter section
+        — pairing the actual LLM prompt the analyzer sent (captured on
+        ``section.prompt`` at execute time) with the report content
+        the model produced (narrative + findings + suggestions). The
+        rows go to the dedicated ``SOURCE_CRITIQUE`` bucket so the
+        trainer can filter / weight them independently.
 
-        # Character Consistency
-        if analysis.character_consistency_notes:
-            html += f"<h2>Character Consistency</h2><p>{analysis.character_consistency_notes}</p>"
-
-        # Cost estimate
-        if analysis.estimated_cost > 0:
-            html += f"<p style='color: #6b7280; font-size: 11px; margin-top: 20px;'>Estimated API cost: ${analysis.estimated_cost:.4f}</p>"
-
-        return html
-
-    def _format_line_by_line_html(self, suggestions: List[LineItemSuggestion]) -> str:
-        """Format line-by-line suggestions as HTML.
-
-        Args:
-            suggestions: List of LineItemSuggestion objects from line-by-line analysis
-
-        Returns:
-            HTML formatted string for display
+        For the Summary (overall) tab, a single row is written using
+        the cross-chapter rollup as the output and a constructed
+        instruction as the source — the overall narrative is built
+        from per-section summaries, not from a single LLM call, so
+        there's no captured prompt for it.
         """
-        html = """
-        <style>
-            h2 { color: #1f2937; margin-top: 15px; margin-bottom: 8px; }
-            .line-item { background-color: #f8fafc; padding: 12px; margin: 10px 0; border-radius: 6px; border: 1px solid #e2e8f0; }
-            .line-number { display: inline-block; background-color: #8b5cf6; color: white; padding: 2px 8px; border-radius: 4px; font-weight: bold; font-size: 12px; margin-right: 8px; cursor: pointer; }
-            .line-number:hover { background-color: #7c3aed; }
-            a.goto-link { color: white; text-decoration: none; }
-            .issue-type { display: inline-block; background-color: #6366f1; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-left: 8px; }
-            .priority-high { border-left: 4px solid #dc2626; }
-            .priority-medium { border-left: 4px solid #f59e0b; }
-            .priority-low { border-left: 4px solid #6b7280; }
-            .original-text { color: #374151; font-style: italic; margin: 8px 0; padding: 8px; background-color: #fff; border-radius: 4px; border-left: 3px solid #d1d5db; }
-            .reasoning { color: #4b5563; margin: 8px 0; }
-            .reasoning-label { color: #7c3aed; font-weight: bold; }
-            .suggestion-text { color: #059669; margin: 8px 0; }
-            .suggestion-label { color: #059669; font-weight: bold; }
-            .priority-tag { float: right; font-size: 11px; color: #6b7280; }
-            .no-suggestions { color: #059669; padding: 20px; text-align: center; font-size: 16px; }
-        </style>
-        """
-
-        if not suggestions:
-            html += """
-            <h2>Line-by-Line Analysis</h2>
-            <div class='no-suggestions'>
-                ✓ No lines flagged for revision. The text appears well-crafted for its intended style and purpose.
-            </div>
-            """
-            return html
-
-        show_tips = get_ai_config().get_settings().get("show_craft_tips", True)
-        html += f"<h2>Line-by-Line Analysis</h2>"
-        html += f"<p style='color: #6b7280; font-size: 13px; margin-bottom: 15px;'>{len(suggestions)} line(s) flagged for potential revision. Click line numbers to navigate.</p>"
-
-        for idx, suggestion in enumerate(suggestions):
-            priority_class = f"priority-{suggestion.priority}"
-            line_num = suggestion.line_number if suggestion.line_number else 0
-
-            # Make line number clickable
-            if line_num > 0:
-                line_num_display = f"<a href='goto:line:{line_num}' class='goto-link'>Line {line_num}</a>"
-            else:
-                line_num_display = "Section"
-
-            # Get issue type display
-            issue_type = suggestion.suggestion_type.value.replace('_', ' ').title()
-
-            example_html = ""
-            if suggestion.example_fix:
-                example_html = f"""
-                <div style='background-color: #ecfdf5; padding: 10px; margin: 8px 0; border-radius: 4px; border-left: 3px solid #10b981;'>
-                    <span style='color: #059669; font-weight: bold;'>Example revision:</span><br>
-                    <em style='color: #065f46;'>"{suggestion.example_fix}"</em>
-                </div>
-                """
-
-            learning_links = self._learning_links_html(suggestion, idx, show_tips)
-
-            html += f"""
-            <div class='line-item {priority_class}'>
-                <span class='line-number'>{line_num_display}</span>
-                <span class='issue-type'>{issue_type}</span>
-                <span class='priority-tag'>Priority: {suggestion.priority.upper()}</span>
-
-                <div class='original-text'>"{suggestion.original_text}"</div>
-
-                <div class='reasoning'>
-                    <span class='reasoning-label'>Why this line needs attention:</span><br>
-                    {suggestion.reasoning if suggestion.reasoning else suggestion.explanation}
-                </div>
-
-                <div class='suggestion-text'>
-                    <span class='suggestion-label'>Consider:</span> {suggestion.suggestion}
-                </div>
-                {example_html}
-                {learning_links}
-            </div>
-            """
-
-        return html
-
-    def _learning_links_html(self, suggestion: 'LineItemSuggestion', idx: int, show_craft_tips: bool) -> str:
-        """Return HTML for 'Learn about' and 'Ask about this' links."""
-        parts = []
-        if show_craft_tips and suggestion.suggestion_type in CRAFT_EXPLANATIONS:
-            type_val = suggestion.suggestion_type.value
-            type_display = type_val.replace('_', ' ').title()
-            parts.append(
-                f"<a href='crafttip:{type_val}' style='font-size: 11px; color: #2563eb; "
-                f"text-decoration: none;'>Learn about {type_display}</a>"
-            )
-        parts.append(
-            f"<a href='askabout:{idx}' style='font-size: 11px; color: #6366f1; "
-            f"text-decoration: none;'>Ask about this</a>"
-        )
-        return (
-            "<div style='margin-top: 6px; padding-top: 4px; "
-            "border-top: 1px solid #e5e7eb;'>"
-            + " &nbsp;&middot;&nbsp; ".join(parts)
-            + "</div>"
+        from src.data.rephrase_database import (
+            get_rephrase_database, is_collection_enabled, SOURCE_CRITIQUE,
         )
 
-    def _get_progress_comparison(self, current_analysis: 'ChapterAnalysis') -> str:
-        """Compare current critique type counts with the most recent saved critique.
+        # Save toggle off → just acknowledge in the bar; no DB write.
+        if not rating_bar.is_save_enabled():
+            rating_bar.set_status(f"Rated {value} (not saved)", ok=True)
+            return
 
-        Returns HTML string with comparison, or empty string if no previous data.
-        """
-        if not self._project_path or not self._current_chapter_title:
-            return ""
+        if not is_collection_enabled():
+            rating_bar.set_status(
+                "Rated. Enable data collection in Creative OS "
+                "settings to save for training.", ok=False)
+            return
 
         try:
-            latest = self._metadata_store.get_critique(
-                self._project_path, self._current_chapter_title
-            )
-            if not latest or "data" not in latest:
-                return ""
+            db = get_rephrase_database()
+            saved = 0
+            if rt is None or not sections:
+                # Summary tab — write one row for the overall rollup.
+                # No real LLM prompt was used (the orchestrator
+                # synthesised the summary from per-section data), so
+                # we construct an instruction that mirrors what the
+                # rollup is. Tagged ``critique_kind=overall`` and
+                # ``prompt_kind=synthesised`` so the trainer can
+                # down-weight or skip if it only wants real prompts.
+                if report.has_llm:
+                    source_text = (
+                        f"Write a manuscript-level rollup of per-chapter "
+                        f"critiques. Genre profile: {report.genre.name} — "
+                        f"{report.genre.notes}\n\n"
+                        + "\n\n".join(
+                            f"Chapter: {c.chapter_title}\n"
+                            + "\n".join(
+                                f"  - [{s.report_type.value}] "
+                                f"{(s.summary or '').strip()}"
+                                for s in c.sections)
+                            for c in report.chapters))
+                    prompt_kind = "real_synthesised"
+                else:
+                    source_text = (
+                        f"Summarise this critique report at manuscript "
+                        f"level. Genre profile: {report.genre.name}. "
+                        f"{len(report.chapters)} chapter(s).")
+                    prompt_kind = "dashboard_synthesised"
+                output_text = report.overall_summary or "(no summary)"
+                notes = (
+                    f"critique_kind=overall genre={report.genre.key} "
+                    f"chapters={len(report.chapters)} "
+                    f"has_llm={report.has_llm} prompt_kind={prompt_kind}")
+                if output_text and output_text != "(no summary)":
+                    db.log(
+                        source_text=source_text,
+                        output_text=output_text,
+                        source_type=SOURCE_CRITIQUE,
+                        rating=value,
+                        accepted=value in ("excellent", "good"),
+                        notes=notes,
+                        project_path=self._project_path,
+                        genre=report.genre.key,
+                    )
+                    saved = 1
+            else:
+                # Per-report tab — one row per chapter section. Each
+                # row is a real (prompt, output) pair when the LLM
+                # narrative ran, or a (synthesised_instruction,
+                # findings) pair when in dashboard mode.
+                for s in sections:
+                    output_pieces = []
+                    if s.narrative:
+                        output_pieces.append(s.narrative)
+                    if s.findings:
+                        output_pieces.append(
+                            "Findings:\n"
+                            + "\n".join(f"- {f}" for f in s.findings))
+                    if s.suggestions:
+                        output_pieces.append(
+                            "Suggested actions:\n"
+                            + "\n".join(f"- {x}" for x in s.suggestions))
+                    output_text = "\n\n".join(p for p in output_pieces if p)
+                    if not output_text.strip():
+                        continue
 
-            prev_counts = latest["data"].get("suggestion_type_counts", {})
-            if not prev_counts:
-                return ""
-        except Exception:
-            return ""
+                    # Prefer the captured LLM prompt; fall back to a
+                    # synthesised instruction when no LLM was used.
+                    if s.prompt and s.prompt.strip():
+                        source_text = s.prompt
+                        prompt_kind = "real"
+                    else:
+                        source_text = (
+                            f"Produce a {rt.value} critique of this "
+                            f"chapter for the {report.genre.name} genre. "
+                            f"Use the metrics provided as ground truth, "
+                            f"name specific issues with quoted phrases, "
+                            f"and end with concrete next-revision "
+                            f"actions.\n\n"
+                            f"Chapter: {s.chapter_title}\n"
+                            f"Metrics:\n"
+                            + "\n".join(f"- {k}: {v}"
+                                        for k, v in s.metrics.items()))
+                        prompt_kind = "dashboard_synthesised"
+                    notes = (
+                        f"critique_kind={rt.value} "
+                        f"genre={report.genre.key} "
+                        f"chapter_title={s.chapter_title} "
+                        f"chapters={len(report.chapters)} "
+                        f"has_llm={report.has_llm} "
+                        f"prompt_kind={prompt_kind}")
+                    db.log(
+                        source_text=source_text,
+                        output_text=output_text,
+                        source_type=SOURCE_CRITIQUE,
+                        rating=value,
+                        accepted=value in ("excellent", "good"),
+                        notes=notes,
+                        project_path=self._project_path,
+                        genre=report.genre.key,
+                    )
+                    saved += 1
+            label = (f"{rt.value} critique" if rt
+                     else "overall critique")
+            rating_bar.set_status(
+                f"Saved {saved} row(s) as {value} for training",
+                ok=True)
+            print(f"[critique] rated {label} as {value} "
+                  f"(persisted {saved} rows to SOURCE_CRITIQUE)")
+        except Exception as e:
+            rating_bar.set_status(f"Save failed: {e}", ok=False)
 
-        # Count current suggestion types
-        current_counts: Dict[str, int] = {}
-        for s in current_analysis.line_item_suggestions:
-            key = s.suggestion_type.value
-            current_counts[key] = current_counts.get(key, 0) + 1
-
-        # Build comparison
-        improvements = []
-        regressions = []
-        for type_key in sorted(set(list(prev_counts.keys()) + list(current_counts.keys()))):
-            prev = prev_counts.get(type_key, 0)
-            curr = current_counts.get(type_key, 0)
-            display = type_key.replace('_', ' ').title()
-            if curr < prev:
-                improvements.append(f"{prev - curr} fewer {display} issues")
-            elif curr > prev:
-                regressions.append(f"{curr - prev} new {display} issues")
-
-        if not improvements and not regressions:
-            return ""
-
-        html = (
-            "<div style='background-color: #f0fdf4; border: 1px solid #bbf7d0; "
-            "border-radius: 6px; padding: 10px; margin: 10px 0;'>"
-            "<strong style='color: #166534;'>Progress vs. Last Critique:</strong><br>"
+    def _format_summary_html(self, report: CritiqueReport) -> str:
+        """Build the Summary tab — manuscript rollup + per-chapter highlights."""
+        mode_badge = (
+            '<span class="badge badge-llm">LLM narrative</span>'
+            if report.has_llm
+            else '<span class="badge badge-dash">Dashboard mode</span>')
+        genre_badge = (
+            f'<span class="badge badge-genre">{report.genre.name}</span>')
+        n_chapters = len(report.chapters)
+        total_words = sum(c.word_count for c in report.chapters)
+        lines = [self.REPORT_STYLE_BLOCK]
+        lines.append(
+            f"<h2>Critique Summary</h2>"
+            f"<p>{mode_badge}{genre_badge}"
+            f"<span style='color:#6b7280; font-size:11px;'>"
+            f"{n_chapters} chapter{'s' if n_chapters != 1 else ''}, "
+            f"{total_words:,} words</span></p>"
         )
-        for imp in improvements:
-            html += f"<span style='color: #059669;'>&#9650; {imp}</span><br>"
-        for reg in regressions:
-            html += f"<span style='color: #dc2626;'>&#9660; {reg}</span><br>"
-        html += "</div>"
-        return html
+        lines.append(
+            f"<p style='color:#4b5563;'>"
+            f"<em>{report.genre.notes}</em></p>")
+        if report.overall_summary:
+            lines.append(
+                f"<h3>Overall</h3>"
+                f"<div class='narrative'>{self._escape_html(report.overall_summary)}</div>")
+        # Per-chapter rollup
+        for c in report.chapters:
+            lines.append(
+                f"<div class='chapter-block'>"
+                f"<div class='chapter-title'>{self._escape_html(c.chapter_title)}</div>"
+                f"<div class='chapter-meta'>{c.word_count:,} words · "
+                f"{len(c.sections)} report section(s)</div>")
+            for s in c.sections:
+                lines.append(
+                    f"<div style='margin-top:6px;'>"
+                    f"<strong>{self.REPORT_TAB_LABELS.get(s.report_type, s.report_type.value)}:</strong> "
+                    f"{self._escape_html(s.summary or '(no summary)')}</div>")
+            lines.append("</div>")
+        return "\n".join(lines)
+
+    def _format_report_tab_html(
+        self,
+        rt: ReportType,
+        sections: List[ReportSection],
+        report: CritiqueReport,
+    ) -> str:
+        """Build a single per-report tab — one chapter block per section."""
+        lines = [self.REPORT_STYLE_BLOCK]
+        title = self.REPORT_TAB_LABELS.get(rt, rt.value.title())
+        lines.append(
+            f"<h2>{title} — {report.genre.name}</h2>"
+            f"<p style='color:#6b7280; font-size:11px;'>"
+            f"{len(sections)} chapter section(s).</p>")
+        for s in sections:
+            lines.append(self._format_section_html(s))
+        return "\n".join(lines)
+
+    def _format_section_html(self, section: ReportSection) -> str:
+        """Render one ReportSection as a chapter-block HTML."""
+        parts = [
+            f"<div class='chapter-block'>"
+            f"<div class='chapter-title'>{self._escape_html(section.chapter_title)}</div>"
+        ]
+        if section.summary:
+            parts.append(
+                f"<div class='summary'>{self._escape_html(section.summary)}</div>")
+        if section.narrative:
+            parts.append(
+                f"<h4>Narrative</h4>"
+                f"<div class='narrative'>{self._escape_html(section.narrative)}</div>")
+        if section.findings:
+            parts.append("<h4>Findings</h4><ul class='findings'>")
+            for f in section.findings:
+                ok = "Risk:" not in f and "exceed" not in f.lower() and "below" not in f.lower()
+                cls = " class='ok'" if ok else ""
+                parts.append(
+                    f"<li{cls}>{self._escape_html(f)}</li>")
+            parts.append("</ul>")
+        if section.suggestions:
+            parts.append("<h4>Suggested actions</h4><ul class='suggestions'>")
+            for s in section.suggestions:
+                parts.append(f"<li>{self._escape_html(s)}</li>")
+            parts.append("</ul>")
+        if section.metrics:
+            parts.append("<h4>Metrics</h4><table class='metric-table'>")
+            for k, v in section.metrics.items():
+                if isinstance(v, float):
+                    val = f"{v:.2f}"
+                elif isinstance(v, list):
+                    val = ", ".join(str(x) for x in v)
+                else:
+                    val = str(v)
+                parts.append(
+                    f"<tr><td>{self._escape_html(k.replace('_', ' '))}</td>"
+                    f"<td>{self._escape_html(val)}</td></tr>")
+            parts.append("</table>")
+        parts.append("</div>")
+        return "\n".join(parts)
+
+    @staticmethod
+    def _escape_html(text: Any) -> str:
+        """Minimal HTML escape; preserves newlines for narrative blocks."""
+        if text is None:
+            return ""
+        s = str(text)
+        return (s.replace("&", "&amp;")
+                 .replace("<", "&lt;")
+                 .replace(">", "&gt;")
+                 .replace("\n", "<br>"))
+
+    # ── Save / Load / Export for CritiqueReport ──────────────────
 
     def _save_critique_results(self):
-        """Save the current critique results for later reference."""
-        if not self._last_analysis:
-            QMessageBox.warning(self, "No Critique", "No critique results to save.")
+        """Persist the most recent CritiqueReport into the metadata store."""
+        if not self._last_report:
+            QMessageBox.warning(
+                self, "No Critique", "No critique results to save.")
             return
-
         if not self._project_path:
-            QMessageBox.warning(self, "No Project", "Please save your project first.")
+            QMessageBox.warning(
+                self, "No Project", "Please save your project first.")
             return
-
-        chapter_title = self._current_chapter_title or "Custom Text"
-
-        # Serialize the analysis
-        critique_data = self._serialize_analysis(self._last_analysis)
-
-        # Determine critique type
-        critique_type = "line_by_line" if self._last_analysis.line_item_suggestions and \
-            any(s.line_number for s in self._last_analysis.line_item_suggestions) else "general"
-
-        # Save it
+        chapter_title = (
+            self._last_report.chapters[0].chapter_title
+            if self._last_report.chapters else "Custom Text")
+        critique_data = self._serialize_report(self._last_report)
         critique_id = self._metadata_store.save_critique(
             self._project_path,
             chapter_title,
             critique_data,
-            critique_type
+            critique_type="reports",
         )
-
         self.saved_critique_label.setText(f"✓ Saved ({critique_id})")
 
     def _load_critique_results(self):
-        """Load a previously saved critique."""
+        """Load a previously saved CritiqueReport from the metadata store."""
         if not self._project_path:
-            QMessageBox.warning(self, "No Project", "Please open a project first.")
+            QMessageBox.warning(
+                self, "No Project", "Please open a project first.")
             return
-
-        chapter_title = self._current_chapter_title or "Custom Text"
-
-        # Get list of saved critiques
-        critiques = self._metadata_store.list_critiques(self._project_path, chapter_title)
-
-        if not critiques:
-            QMessageBox.information(
-                self, "No Saved Critiques",
-                f"No saved critiques found for '{chapter_title}'."
-            )
-            return
-
-        # Show selection dialog
         from PyQt6.QtWidgets import QInputDialog
         from datetime import datetime
-
-        # Format options for display
-        options = []
-        for c in critiques:
-            try:
-                dt = datetime.fromisoformat(c["timestamp"])
-                formatted_time = dt.strftime("%b %d, %Y %I:%M %p")
-            except (ValueError, KeyError):
-                formatted_time = c.get("timestamp", "Unknown time")
-
-            options.append(f"{formatted_time} ({c['type']})")
-
+        # Aggregate critiques across chapters so the picker can show
+        # everything saved for this project at once.
+        all_entries: List[tuple] = []  # (label, chapter_title, id)
+        if (self.project and self.project.manuscript
+                and self.project.manuscript.chapters):
+            chapter_titles = [c.title for c in self.project.manuscript.chapters]
+        else:
+            chapter_titles = []
+        if self._current_chapter_title:
+            chapter_titles.append(self._current_chapter_title)
+        chapter_titles.extend(["Custom Text"])
+        seen = set()
+        for ct in chapter_titles:
+            if ct in seen:
+                continue
+            seen.add(ct)
+            for c in self._metadata_store.list_critiques(
+                    self._project_path, ct):
+                try:
+                    dt = datetime.fromisoformat(c["timestamp"])
+                    pretty = dt.strftime("%b %d, %Y %I:%M %p")
+                except (ValueError, KeyError):
+                    pretty = c.get("timestamp", "?")
+                all_entries.append(
+                    (f"[{ct}] {pretty} ({c.get('type', '?')})",
+                     ct, c["id"]))
+        if not all_entries:
+            QMessageBox.information(
+                self, "No Saved Critiques",
+                "No saved critiques found for this project.")
+            return
+        # Most recent first
+        all_entries.sort(key=lambda e: e[2], reverse=True)
+        labels = [e[0] for e in all_entries]
         selected, ok = QInputDialog.getItem(
-            self,
-            "Load Critique",
+            self, "Load Critique",
             "Select a saved critique to load:",
-            options,
-            0,  # Default to most recent
-            False  # Not editable
-        )
-
+            labels, 0, False)
         if not ok or not selected:
             return
-
-        # Get the critique ID from selection
-        selected_idx = options.index(selected)
-        critique_id = critiques[selected_idx]["id"]
-
-        # Load the critique
-        critique_entry = self._metadata_store.get_critique(
-            self._project_path,
-            chapter_title,
-            critique_id
-        )
-
-        if not critique_entry or "data" not in critique_entry:
-            QMessageBox.warning(self, "Load Failed", "Could not load the selected critique.")
+        idx = labels.index(selected)
+        _, ct, cid = all_entries[idx]
+        entry = self._metadata_store.get_critique(
+            self._project_path, ct, cid)
+        if not entry or "data" not in entry:
+            QMessageBox.warning(
+                self, "Load Failed",
+                "Could not load the selected critique.")
             return
-
-        # Deserialize and display
         try:
-            analysis = self._deserialize_analysis(critique_entry["data"])
-            self._last_analysis = analysis
-            self._display_analysis(analysis)
+            report = self._deserialize_report(entry["data"])
+            self._last_report = report
+            self._render_critique_report(report)
             self.save_critique_btn.setEnabled(True)
             self.export_btn.setEnabled(True)
-
-            # Show load status
             try:
-                dt = datetime.fromisoformat(critique_entry["timestamp"])
-                formatted_time = dt.strftime("%b %d %I:%M %p")
+                dt = datetime.fromisoformat(entry["timestamp"])
+                pretty = dt.strftime("%b %d %I:%M %p")
             except (ValueError, KeyError):
-                formatted_time = "unknown time"
-
-            self.saved_critique_label.setText(f"Loaded from {formatted_time}")
+                pretty = "unknown time"
+            self.saved_critique_label.setText(f"Loaded from {pretty}")
         except Exception as e:
-            QMessageBox.warning(self, "Load Failed", f"Error loading critique: {e}")
+            QMessageBox.warning(
+                self, "Load Failed", f"Error loading critique: {e}")
 
-    def _serialize_analysis(self, analysis: ChapterAnalysis) -> Dict[str, Any]:
-        """Serialize a ChapterAnalysis to a dictionary for storage."""
-        # Count suggestion types for progress tracking
-        type_counts: Dict[str, int] = {}
-        for s in analysis.line_item_suggestions:
-            key = s.suggestion_type.value
-            type_counts[key] = type_counts.get(key, 0) + 1
-
+    def _serialize_report(self, report: CritiqueReport) -> Dict[str, Any]:
+        """Convert a CritiqueReport to a JSON-safe dict."""
         return {
-            "overall_assessment": analysis.overall_assessment,
-            "strengths": analysis.strengths,
-            "areas_for_improvement": analysis.areas_for_improvement,
-            "pacing_notes": analysis.pacing_notes,
-            "character_consistency_notes": analysis.character_consistency_notes,
-            "estimated_cost": analysis.estimated_cost,
-            "suggestion_type_counts": type_counts,
-            "line_item_suggestions": [
+            "schema_version": 2,
+            "genre_key": report.genre.key,
+            "has_llm": report.has_llm,
+            "overall_summary": report.overall_summary,
+            "estimated_cost": report.estimated_cost,
+            "chapters": [
                 {
-                    "line_number": s.line_number,
-                    "paragraph_number": s.paragraph_number,
-                    "suggestion_type": s.suggestion_type.value,
-                    "original_text": s.original_text,
-                    "suggestion": s.suggestion,
-                    "explanation": s.explanation,
-                    "priority": s.priority,
-                    "reasoning": s.reasoning,
-                    "example_fix": s.example_fix
+                    "chapter_title": c.chapter_title,
+                    "chapter_index": c.chapter_index,
+                    "word_count": c.word_count,
+                    "sections": [
+                        {
+                            "report_type": s.report_type.value,
+                            "summary": s.summary,
+                            "narrative": s.narrative,
+                            "metrics": s.metrics,
+                            "findings": s.findings,
+                            "suggestions": s.suggestions,
+                        }
+                        for s in c.sections
+                    ],
                 }
-                for s in analysis.line_item_suggestions
-            ]
+                for c in report.chapters
+            ],
         }
 
-    def _deserialize_analysis(self, data: Dict[str, Any]) -> ChapterAnalysis:
-        """Deserialize a ChapterAnalysis from a dictionary."""
-        suggestions = []
-        for s in data.get("line_item_suggestions", []):
-            try:
-                stype = SuggestionType(s["suggestion_type"])
-            except (ValueError, KeyError):
-                stype = SuggestionType.STYLE
-
-            suggestions.append(LineItemSuggestion(
-                line_number=s.get("line_number"),
-                paragraph_number=s.get("paragraph_number", 1),
-                suggestion_type=stype,
-                original_text=s.get("original_text", ""),
-                suggestion=s.get("suggestion", ""),
-                explanation=s.get("explanation", ""),
-                priority=s.get("priority", "medium"),
-                reasoning=s.get("reasoning", ""),
-                example_fix=s.get("example_fix", "")
+    def _deserialize_report(self, data: Dict[str, Any]) -> CritiqueReport:
+        """Rehydrate a CritiqueReport from saved JSON."""
+        genre_key = data.get("genre_key", "default")
+        genre = (GENRE_PROFILES.get(genre_key)
+                 or GENRE_PROFILES["default"])
+        chapters: List[ChapterReport] = []
+        for c in data.get("chapters", []):
+            sections = []
+            for s in c.get("sections", []):
+                try:
+                    rt = ReportType(s.get("report_type", "style"))
+                except ValueError:
+                    rt = ReportType.STYLE
+                sections.append(ReportSection(
+                    report_type=rt,
+                    chapter_title=c.get("chapter_title", ""),
+                    chapter_index=c.get("chapter_index", 0),
+                    summary=s.get("summary", ""),
+                    narrative=s.get("narrative", ""),
+                    metrics=s.get("metrics", {}) or {},
+                    findings=s.get("findings", []) or [],
+                    suggestions=s.get("suggestions", []) or [],
+                ))
+            chapters.append(ChapterReport(
+                chapter_title=c.get("chapter_title", ""),
+                chapter_index=c.get("chapter_index", 0),
+                word_count=c.get("word_count", 0),
+                sections=sections,
             ))
-
-        return ChapterAnalysis(
-            overall_assessment=data.get("overall_assessment", ""),
-            strengths=data.get("strengths", []),
-            areas_for_improvement=data.get("areas_for_improvement", []),
-            line_item_suggestions=suggestions,
-            pacing_notes=data.get("pacing_notes", ""),
-            character_consistency_notes=data.get("character_consistency_notes", ""),
-            estimated_cost=data.get("estimated_cost", 0.0)
+        return CritiqueReport(
+            chapters=chapters,
+            genre=genre,
+            overall_summary=data.get("overall_summary", ""),
+            has_llm=data.get("has_llm", False),
+            estimated_cost=data.get("estimated_cost", 0.0),
         )
-
-    def _display_analysis(self, analysis: ChapterAnalysis):
-        """Display a ChapterAnalysis in the results area."""
-        # Check if this is line-by-line (has line numbers) or general analysis
-        has_line_numbers = any(
-            s.line_number and s.line_number > 0
-            for s in analysis.line_item_suggestions
-        )
-
-        if has_line_numbers:
-            # Display as line-by-line analysis
-            html = self._format_line_by_line_html(analysis.line_item_suggestions)
-        else:
-            # Display as general analysis
-            html = self._format_analysis_html(analysis)
-
-        self.results_display.setHtml(html)
 
     def _export_critique(self):
-        """Export critique results to file."""
-        if not self._last_analysis:
+        """Export the current CritiqueReport to a Markdown file."""
+        if not self._last_report:
             QMessageBox.warning(self, "No Critique", "No critique to export.")
             return
-
-        # Get save path
+        first_title = (
+            self._last_report.chapters[0].chapter_title
+            if self._last_report.chapters else "custom")
+        suggested_name = (
+            f"critique_{first_title or 'custom'}.md".replace(" ", "_"))
         file_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Export Critique",
-            f"critique_{self._current_chapter_title or 'custom'}.md",
-            "Markdown (*.md);;Text (*.txt)"
-        )
-
+            self, "Export Critique", suggested_name,
+            "Markdown (*.md);;Text (*.txt)")
         if not file_path:
             return
-
         try:
-            content = self._format_analysis_markdown(self._last_analysis)
             with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(content)
-            QMessageBox.information(self, "Export Complete", f"Critique exported to:\n{file_path}")
+                f.write(self._format_report_markdown(self._last_report))
+            QMessageBox.information(
+                self, "Export Complete",
+                f"Critique exported to:\n{file_path}")
         except Exception as e:
-            QMessageBox.critical(self, "Export Failed", f"Failed to export critique:\n{e}")
+            QMessageBox.critical(
+                self, "Export Failed",
+                f"Failed to export critique:\n{e}")
 
-    def _format_analysis_markdown(self, analysis: ChapterAnalysis) -> str:
-        """Format analysis as Markdown."""
-        md = f"# Writing Critique\n\n"
-
-        md += f"## Overall Assessment\n\n{analysis.overall_assessment}\n\n"
-
-        if analysis.strengths:
-            md += "## Strengths\n\n"
-            for s in analysis.strengths:
-                md += f"- {s}\n"
-            md += "\n"
-
-        if analysis.areas_for_improvement:
-            md += "## Areas for Improvement\n\n"
-            for a in analysis.areas_for_improvement:
-                md += f"- {a}\n"
-            md += "\n"
-
-        if analysis.line_item_suggestions:
-            md += "## Line-Item Suggestions\n\n"
-            for suggestion in analysis.line_item_suggestions:
-                md += f"### [{suggestion.suggestion_type.value.replace('_', ' ').title()}] - {suggestion.priority.upper()} priority\n\n"
-                md += f"> \"{suggestion.original_text}\"\n\n"
-                md += f"**Suggestion:** {suggestion.suggestion}\n\n"
-                if suggestion.example_fix:
-                    md += f"**Example revision:** \"{suggestion.example_fix}\"\n\n"
-                md += f"*Why:* {suggestion.explanation}\n\n"
-                md += "---\n\n"
-
-        if analysis.pacing_notes:
-            md += f"## Pacing Notes\n\n{analysis.pacing_notes}\n\n"
-
-        if analysis.character_consistency_notes:
-            md += f"## Character Consistency\n\n{analysis.character_consistency_notes}\n\n"
-
-        return md
-
-    def _get_quick_stats(self):
-        """Get quick local statistics (ProWritingAid-style analysis without AI)."""
-        # Refresh content from manuscript editor to ensure we have latest text
-        content_type = self.type_combo.currentText()
-        if content_type != "Custom Text":
-            self._refresh_content()
-
-        # Get content
-        if content_type == "Custom Text":
-            text = self.custom_text_edit.toPlainText()
-            if not text.strip():
-                QMessageBox.warning(self, "No Content", "Please enter text to analyze.")
-                return
-        else:
-            if not self._current_chapter_text:
-                QMessageBox.warning(
-                    self, "No Chapter",
-                    "No chapter selected. Please select a chapter in the manuscript editor first."
-                )
-                return
-            text = self._current_chapter_text
-
-        # Run local analysis
-        analyzer = ProWritingAnalyzer()
-        stats = analyzer.analyze(text)
-
-        # Format and display report
-        html = """
-        <style>
-            h2 { color: #1f2937; margin-top: 15px; margin-bottom: 8px; }
-        </style>
-        <h2>📊 Writing Statistics Report</h2>
-        <p style='color: #666;'>Local analysis - no AI required. Similar to ProWritingAid reports.</p>
-        """
-        html += analyzer.format_report(stats)
-
-        self.results_display.setHtml(html)
-        self.export_btn.setEnabled(True)
-
-        # Store stats for potential export
-        self._last_stats = stats
+    def _format_report_markdown(self, report: CritiqueReport) -> str:
+        """Render a CritiqueReport as Markdown for export."""
+        out = ["# Writing Critique Report",
+               "",
+               f"**Genre profile:** {report.genre.name} — {report.genre.notes}",
+               f"**Mode:** "
+               + ("LLM-narrative" if report.has_llm else "Dashboard"),
+               ""]
+        if report.overall_summary:
+            out.extend(["## Overall Summary", "",
+                        report.overall_summary, ""])
+        for c in report.chapters:
+            out.append(f"## {c.chapter_title}")
+            out.append(
+                f"*{c.word_count:,} words · "
+                f"{len(c.sections)} report section(s)*\n")
+            for s in c.sections:
+                label = self.REPORT_TAB_LABELS.get(
+                    s.report_type, s.report_type.value.title())
+                out.append(f"### {label}")
+                if s.summary:
+                    out.append(s.summary + "\n")
+                if s.narrative:
+                    out.append(s.narrative + "\n")
+                if s.findings:
+                    out.append("**Findings:**\n")
+                    out.extend([f"- {f}" for f in s.findings])
+                    out.append("")
+                if s.suggestions:
+                    out.append("**Suggested actions:**\n")
+                    out.extend([f"- {x}" for x in s.suggestions])
+                    out.append("")
+                if s.metrics:
+                    out.append("**Metrics:**\n")
+                    for k, v in s.metrics.items():
+                        if isinstance(v, float):
+                            out.append(f"- {k}: {v:.2f}")
+                        else:
+                            out.append(f"- {k}: {v}")
+                    out.append("")
+        return "\n".join(out)
 
     # Context persistence methods
 
@@ -1995,20 +2184,10 @@ class GraderWidget(QWidget):
                 )
                 QMessageBox.information(self, f"Craft Tip: {title}", msg)
 
-        # Handle askabout:IDX links — send to Chapter Focus chat
-        elif url_str.startswith("askabout:"):
-            try:
-                idx = int(url_str.split(":")[1])
-                if self._last_analysis and idx < len(self._last_analysis.line_item_suggestions):
-                    s = self._last_analysis.line_item_suggestions[idx]
-                    self.ask_about_suggestion.emit(
-                        s.suggestion_type.value,
-                        s.original_text,
-                        s.suggestion,
-                        s.explanation
-                    )
-            except (ValueError, IndexError):
-                pass
+        # Note: the legacy ``askabout:`` and line-item link handlers
+        # were removed when the old line-by-line flow was replaced
+        # with the report-driven critique. The current report HTML
+        # doesn't emit those links.
 
     def load_data(self, data):
         """Load grader data (placeholder for future use)."""

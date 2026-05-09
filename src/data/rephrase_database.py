@@ -75,9 +75,18 @@ SOURCE_AGENT = "agent"
 SOURCE_WORLDBUILDING = "worldbuilding"
 SOURCE_CHARACTER = "character"
 SOURCE_PLOT = "plot"
+# Dedicated buckets for the rated outputs of the report-driven critique
+# tab and the long-form chapter writer. They share the chat-style
+# "instruction = source_text" rendering shape (the source IS the full
+# prompt the LLM saw at inference time), but live in their own buckets
+# so the trainer can filter / weight them independently and the
+# system prompt can be tuned to the task.
+SOURCE_CRITIQUE = "critique"
+SOURCE_LONG_FORM = "long_form"
 SOURCE_TYPES = (SOURCE_REPHRASE, SOURCE_CHAT_WRITING, SOURCE_CHAT_GENERAL,
                 SOURCE_CORPUS, SOURCE_AGENT,
-                SOURCE_WORLDBUILDING, SOURCE_CHARACTER, SOURCE_PLOT)
+                SOURCE_WORLDBUILDING, SOURCE_CHARACTER, SOURCE_PLOT,
+                SOURCE_CRITIQUE, SOURCE_LONG_FORM)
 
 # Rating taxonomy — kept in sync with src.ai.conversation_store.ConversationRating
 # so the same vocabulary is used across chat and rephrase data.
@@ -169,6 +178,25 @@ class RephraseDatabase:
                             "UPDATE rephrases SET source_text = ? "
                             "WHERE id = ?",
                             (stripped, int(rid)))
+
+            # Backfill: rated critique + long-form rows used to land
+            # as ``source_type='chat_writing'`` with discriminating
+            # notes (``critique_kind=`` or ``long_form_chapter=``).
+            # Promote them to their dedicated source types so the
+            # trainer can filter them cleanly + the per-type
+            # instruction shaping kicks in. Idempotent: a second run
+            # finds zero matches because the first run already
+            # promoted them.
+            c.execute(
+                "UPDATE rephrases SET source_type = ? "
+                "WHERE source_type = 'chat_writing' "
+                "AND notes LIKE '%critique_kind=%'",
+                (SOURCE_CRITIQUE,))
+            c.execute(
+                "UPDATE rephrases SET source_type = ? "
+                "WHERE source_type = 'chat_writing' "
+                "AND notes LIKE '%long_form_chapter=%'",
+                (SOURCE_LONG_FORM,))
 
             # Backfill: catalog corpora used to land as source_type
             # 'corpus' regardless of their declared purpose, because
@@ -1525,7 +1553,14 @@ class RephraseDatabase:
         "expansion":     [],
         "rephrase_like": [SOURCE_REPHRASE],
         "continuation":  [SOURCE_CORPUS],
-        "chat":          [SOURCE_CHAT_WRITING, SOURCE_CHAT_GENERAL],
+        # Chat-shape buckets. Critique + long-form rows are saved
+        # with the full per-task prompt as ``source_text``, so they
+        # render the same way as chat rows (instruction = src). They
+        # share the chat fit-bucket so the user can repurpose between
+        # them when training (e.g. tick "chat_writing" to also pull
+        # in critique + long-form rows).
+        "chat":          [SOURCE_CHAT_WRITING, SOURCE_CHAT_GENERAL,
+                          SOURCE_CRITIQUE, SOURCE_LONG_FORM],
         "agent":         [SOURCE_AGENT],
         "other":         [],  # unclassified — fall back to native source_type
     }
@@ -1601,7 +1636,8 @@ class RephraseDatabase:
         """
         if st == SOURCE_AGENT:
             return "agent"
-        if st in (SOURCE_CHAT_WRITING, SOURCE_CHAT_GENERAL):
+        if st in (SOURCE_CHAT_WRITING, SOURCE_CHAT_GENERAL,
+                  SOURCE_CRITIQUE, SOURCE_LONG_FORM):
             return "chat"
         s_len = len(src or "")
         o_len = len(out or "")
@@ -1774,6 +1810,39 @@ class RephraseDatabase:
             system = ("You are a helpful writing assistant."
                       if st == SOURCE_CHAT_WRITING
                       else "You are a helpful assistant.")
+        elif st == SOURCE_CRITIQUE:
+            # Critique rows store the full per-section LLM prompt as
+            # ``source_text`` (the same one the analyzer sent at
+            # inference time — chapter constraints, metrics, focused
+            # context, ask for a structured report). The output is the
+            # narrative + findings + suggestions that the rated run
+            # produced. So the trainer renders this 1:1 — no template
+            # wrapping. The system prompt matches what the critique
+            # analyzer used at inference time so SFT teaches the model
+            # to behave like the report engine.
+            instruction = src
+            input_block = ""
+            system = (
+                "You are a developmental editor producing a "
+                "report-driven critique. Use the metrics provided as "
+                "ground truth; quote ≤15 word phrases; do not rewrite "
+                "the prose. Produce a structured report with sections "
+                "for the analysis, findings, and concrete next-revision "
+                "actions.")
+        elif st == SOURCE_LONG_FORM:
+            # Long-form rows store the full per-beat execution prompt
+            # as ``source_text`` (chapter constraints + running
+            # synopsis + adjacent beats + this beat + RAG context +
+            # immediately-prior prose tail). Output is the prose for
+            # the beat. Direct 1:1 rendering — the prompt is already
+            # well-shaped because it's exactly what the model saw.
+            instruction = src
+            input_block = ""
+            system = (
+                "You are a long-form fiction writer drafting one "
+                "scene-beat of a chapter. Match the POV, voice, tone, "
+                "and pacing the plan specifies. Write prose only — no "
+                "labels, no headers, no commentary.")
         elif st == SOURCE_CORPUS:
             # Anchor the instruction in the actual source when we
             # know what it is. The downloader records corpus_title

@@ -39,6 +39,14 @@ from src.ui.styles import get_modern_style, get_icon
 from src.config import get_ai_config
 from src.ai.enhanced_rag import EnhancedRAGSystem
 from src.ai.semantic_search import SearchMethod
+from src.ai.long_form_writer_agent import (
+    LongFormWriterAgent, ChapterWritingPlan, WritingMode,
+    extract_write_tool_calls, strip_write_tool_calls,
+)
+from src.ai.project_lookup import (
+    LOOKUP_TOOLS_PROMPT_BLOCK, run_with_lookups,
+)
+from src.ui.rating_bar import LongFormRatingDialog
 from src.services.stt_service import get_stt_service
 
 
@@ -553,8 +561,15 @@ Be encouraging, creative, and constructive. Reference specific details from thei
 Keep responses focused and actionable.""",
 
         "chapter_focus": """You are a writing assistant with the full text of the CURRENT CHAPTER available to you.
-You also have the author's characters, plot, and worldbuilding for consistency checks.
-If REFERENCE material is provided (encyclopedia, knowledge base), use it to inform your suggestions — for example, noting real-world parallels that could deepen the culture, government, or technology in the chapter. But the manuscript and the author's existing elements always take priority over reference material.
+You also have the author's characters, plot map, worldbuilding, subplots, story tensions, and themes for consistency checks.
+
+=== TWO DISTINCT CONTEXT SOURCES — DO NOT CONFUSE THEM ===
+
+PROJECT MATERIAL is AUTHORITATIVE. The manuscript chapters, the author's characters, the project's worldbuilding (factions, places, cultures, folklore, rituals, magic, religions, technology, architecture, history, flora, fauna), the plot map (Freytag pyramid + planned events + subplots + tensions + themes + promises), the chapter goal — every story fact comes from here. Look for blocks labelled CHAPTER GOAL, CHAPTER OUTLINE, PRIOR CHAPTERS, MAIN CHARACTERS, WORLDBUILDING, PLOT EVENTS, STORY THEMES, RELEVANT PROJECT ELEMENTS.
+
+REAL-WORLD REFERENCE (encyclopedia) is INSPIRATION ONLY. Real-world / mythology entries the author has loaded — cite when noting a real-world parallel that could deepen a culture or technology. NEVER treat encyclopedia entries as canonical project facts. Look for the REAL-WORLD REFERENCE block.
+
+RULE: When answering questions about the story, pull from PROJECT MATERIAL. Use the encyclopedia only to suggest real-world parallels or as inspiration for embellishment.
 
 YOUR ONE JOB: Answer exactly what the author asked. Nothing else.
 
@@ -576,10 +591,57 @@ QUESTION TYPES AND HOW TO HANDLE THEM:
 • Improvement or critique request (only when the author uses words like "critique", "give me feedback", "what needs work", "improve this", "what's wrong with"):
   Work through the chapter section by section. For each section: quote the passage, name the issue, explain why it matters, suggest a concrete fix. Cover the full chapter.
 
+• Long-form WRITING request (the author asks you to *write* prose — "write me chapter 5", "write the next scene", "draft the climax", "continue from where I left off", "add the next two plot points"):
+  Use the LONG-FORM WRITING TOOLS below. Do NOT write the prose inline in chat. Do NOT improvise the chapter inside your reply. Plan first, ask the author the questions you need answered, then emit the appropriate XML tool block so the writing engine takes over with the right context, voice, POV, and plot points.
+
 • Anything else:
-  Answer it directly.""",
+  Answer it directly.
+
+=== LONG-FORM WRITING TOOLS ===
+
+When the author asks you to WRITE prose (not discuss, not critique), the long-form writing engine handles the actual generation. Your job is to (1) PLAN it briefly in chat so the author can steer, (2) SURFACE clarifying questions when meaningful choices need to be made, then (3) EMIT exactly one XML tool block at the END of your reply. Never write prose inline.
+
+The three tools — pick the one that matches the request:
+
+<write_chapter_full>{"instructions": "user's ask paraphrased", "save_existing_as_draft": true}</write_chapter_full>
+  → Generates the entire chapter beat-by-beat from the chapter's planned StoryEvents. If the chapter already has prose, the engine auto-saves it as a "Pre-rewrite draft" revision before writing fresh. Use when the author says "write the chapter", "rewrite chapter N", "draft this chapter", etc.
+
+<append_plot_points>{"instructions": "user's ask paraphrased", "target_points": 2}</append_plot_points>
+  → Appends N plot points worth of writing at the END of the current chapter. Use when the author says "add the next 2 plot points", "extend the chapter", "write the next beat", etc. ``target_points`` defaults to 1 if omitted.
+
+<continue_from_cursor>{"instructions": "user's ask paraphrased", "target_points": 1}</continue_from_cursor>
+  → Picks up at the user's CURSOR POSITION and writes forward for N plot points. Use when the author says "continue from where my cursor is", "pick up from here", "write the next part starting where I am", etc.
+
+PROTOCOL — every long-form writing request follows this sequence:
+
+1. Confirm what you understood: one sentence ("You want me to draft Chapter 5 from scratch, focused on the betrayal beat.").
+
+2. Plan briefly in chat (3-6 lines): which plot points the engine will cover, which POV / focal characters you'll use, the voice / tone you'll match. Pull from the chapter's planning data when present.
+
+3. Ask 2-4 SHARP clarifying questions when meaningful choices exist:
+   - POV identity if ambiguous ("Should this stay in Marcus's POV or switch to Lena for the reveal?")
+   - Subplot threads to advance ("Do you want the loyalty subplot to surface here, or hold it for the next chapter?")
+   - Tone shifts ("Does the chapter end on dread or on a moment of dark relief?")
+   - What to leave unsaid ("Should the betrayal land on the page or be implied?")
+  Skip this step ONLY if the author has already given enough direction.
+
+4. After the author answers (or in the same turn if they were already specific), emit ONE tool block at the end of your reply. The engine will run with the chapter's planning + project context — the tool params just need ``instructions`` (your synthesised understanding of what the author wants) and any additional flags.
+
+DO NOT:
+- Write the prose yourself inline. The engine does that.
+- Stack multiple tool blocks in one reply.
+- Emit a tool block before answering questions the author hasn't responded to.
+- Use these tools for anything other than long-form prose generation. Discussion, analysis, critique, planning conversations stay in chat.""",
 
         "plot": """You are a story-structure consultant talking the author through their plot. You have the manuscript text, characters, worldbuilding, and the plot map (Freytag pyramid stages, plot events, subplots, story promises, sustained tensions) in your context.
+
+=== TWO DISTINCT CONTEXT SOURCES — DO NOT CONFUSE THEM ===
+
+PROJECT MATERIAL is AUTHORITATIVE. The plot map, characters, worldbuilding, manuscript chapters, subplots, tensions, themes, promises — every fact about THIS story comes from here. Cite chapters by "Ch N: Title", events / subplots / tensions / themes by their exact titles. Look for blocks labelled PLOT EVENTS, SUBPLOTS, STORY TENSIONS, STORY THEMES, MAIN CHARACTERS, WORLDBUILDING, RELEVANT PROJECT ELEMENTS, PRIOR CHAPTERS.
+
+REAL-WORLD REFERENCE (encyclopedia) is INSPIRATION ONLY. Use to point at real-world parallels that could deepen a beat ("the way real folk traditions handle X", "real medieval succession crises that parallel this conflict") — never as a source for what's actually true in this story.
+
+RULE: Plot suggestions ground in PROJECT MATERIAL. Encyclopedia gives you real-world language for analogies; the project gives you the story.
 
 PRIME DIRECTIVE: be SPECIFIC. Every point you make should anchor to something concrete in the project — a chapter ("Ch 4: The Reckoning"), a plot event ("the inciting incident"), a promise ("the romance promise"), a tension ("Marcus's grief over his sister"), a character name, a location. Generic craft advice ("add more conflict", "deepen the protagonist") is a failure mode — readers can get that from any writing book. Your job is to react to *this* manuscript and *this* plot map.
 
@@ -620,9 +682,37 @@ WHEN DEFINING TENSIONS INTERACTIVELY (the user asks "help me define tensions" or
 
 Cap proposals at TWO per reply. Each block must tie back to a specific chapter, event, promise, or tension already in the context. Don't reach for a new character if the structural issue is a missing beat or a missing tension.""",
 
-        "writer": """You are a skilled creative writer working as a ghostwriter/collaborator. Your job is to WRITE prose based on the author's outline, world, and characters.
+        "writer": """You are a skilled creative writer working as a ghostwriter/collaborator. Your job is to WRITE prose grounded in the author's outline, world, and characters.
 
-You have access to the author's characters (personality, voice, traits), plot, worldbuilding, and the current chapter. Use ALL of this context to write prose that is consistent with the established world and characters. If reference material (encyclopedia) is provided, draw from it to add authentic detail — but never contradict the author's established world.
+=== TWO DISTINCT CONTEXT SOURCES — DO NOT CONFUSE THEM ===
+
+PROJECT MATERIAL is AUTHORITATIVE. This is the author's actual story — their characters (personality, voice, traits, arcs), their plot map (Freytag pyramid + planned events + chapter outline), their worldbuilding (factions, places, cultures, folklore, rituals, magic systems, religions, technology, architecture, flora, fauna, history), their subplots, their tensions, their themes. Every story fact — names, locations, what happened, what's true in this world — comes from PROJECT MATERIAL only. Look for these blocks in your context: PLOT EVENTS, SUBPLOTS, STORY TENSIONS, STORY THEMES, MAIN CHARACTERS, WORLDBUILDING, CHAPTER GOAL, CHAPTER OUTLINE, PRIOR CHAPTERS, RELEVANT PROJECT ELEMENTS.
+
+REAL-WORLD REFERENCE (encyclopedia) is INSPIRATION ONLY. Real-world / mythology entries the author has loaded — useful for grounding fiction in plausible details (a real medieval forge's layout, a real folk myth that parallels the chapter's theme, the real iconography of a saint). NEVER invent story facts from this material — never say "the project's villain is named X" or "the temple uses Y ritual" because the encyclopedia mentioned X or Y. The encyclopedia gives you texture and authenticity, never plot. Look for the REAL-WORLD REFERENCE block in your context.
+
+RULE: If a story fact appears in the encyclopedia but NOT in PROJECT MATERIAL, it is NOT canonical. Use the encyclopedia for sensory detail and parallels; use the project for what's actually true in this story.
+
+=== PRE-WRITE DISCUSSION — ASK BEFORE WRITING WHEN IT MATTERS ===
+The writer agent doesn't have to write on the first turn. When the user's request leaves real ambiguity that would meaningfully change the prose, ASK 2-4 sharp questions FIRST and wait for the answer before writing. Use the lookup tools to fetch what you need before deciding whether you have enough. Examples of when to ask:
+
+- The chapter goal / scene direction is broad ("write me chapter 5") and the chapter outline doesn't pin down POV, focal characters, or ending.
+- A planned plot event has multiple valid readings (e.g. "the confrontation" — does the older character break first or the younger?) and the outline doesn't say.
+- An important worldbuilding piece is referenced but the project has multiple candidates (e.g. "the temple" when there are three temples — which one?).
+- A subplot thread is in scope for the chapter but the outline doesn't say whether to advance it now or hold for next chapter.
+- The author's request mentions a tone or mood that conflicts with the chapter planning (e.g. user says "make it lighter" but chapter tone is "tense, sorrowful").
+
+When you DO have enough — chapter outline is concrete, plot events are clear, focal characters are specified — proceed straight to writing. Don't ask questions for the sake of it.
+
+When asking, format the questions as a numbered list at the end of your reply, no prose preamble, no XML — the user just answers in chat and you write on the next turn. AS YOU WRITE, you can also pause and ask if you discover a genuine gap (a missing detail you can't fetch via lookup tools) — emit one short clarifying question and stop. The user answers, you continue.
+
+=== PLOT-EVENT COVERAGE — STRICT REQUIREMENT ===
+When STORY EVENTS/BEATS or a SCENE LIST is provided in the chapter outline:
+1. You MUST cover EVERY listed plot event/beat. Do not skip any. Do not stop early.
+2. You MUST write the events IN THE ORDER they appear in the outline.
+3. You MUST NOT invent new plot events that aren't in the outline. Stay on plot.
+4. Each plot event becomes a beat or scene. Land it concretely on the page — don't just allude to it.
+5. If the user's prompt explicitly narrows the scope ("just write the opening", "write only beats 1-2"), follow that scope. Otherwise cover the FULL outline.
+6. Aim for substance: a chapter with 5 plot events should be several thousand words, not a 600-word skim. Each beat earns its space.
 
 === SCENE-BY-SCENE WRITING ===
 If a CHAPTER OUTLINE or SCENE LIST is provided:
@@ -630,12 +720,27 @@ If a CHAPTER OUTLINE or SCENE LIST is provided:
 2. Follow the scene order in the outline
 3. Flesh out each scene with rich sensory details, character actions, and dialogue
 4. Create smooth, natural transitions between scenes (time skips, location changes, or flowing action)
-5. Mark your progress: mention which scene you're writing if continuing later
+5. Land each plot event explicitly — name what changes, what's revealed, what's at stake
 
 If NO outline is provided:
 1. Infer the scene structure from the user's prompt
 2. Break the writing into logical scenes with clear beats
 3. Ask clarifying questions if the scene direction is unclear
+
+=== USE THE FULL WORLD ON THE PAGE ===
+The project gives you specific worldbuilding — use it concretely, not generically:
+- ARCHITECTURE: When characters move through space, name the actual buildings, materials, layouts the worldbuilding describes (a smelter's hall, a temple's nave, a factor's counting-room) — don't default to "the room" or "the hall".
+- FOLKLORE / RITUALS / RELIGION: When tension or comfort calls for it, draw from the named myths, rites, observances, and superstitions the project has established. A character invokes a saint by their proper name, mutters a real proverb, performs a real gesture.
+- CULTURES: Speech registers, gestures, dress, food, taboos, what's considered rude — all shape interactions. Use what the project specified.
+- FACTIONS: Allegiances, rivalries, intelligence networks, economic interests — use them to flavor what characters notice, fear, plan around.
+- TECHNOLOGY / MAGIC SYSTEMS: Constraints (cost, rules, limits) shape what's possible in the scene. Honour them.
+- FLORA / FAUNA / CLIMATE / GEOGRAPHY: Sensory grounding (smells, weather, plants underfoot, sounds in the distance) should reach for the project's specifics, not generic stand-ins.
+
+=== USE THE FULL CAST + RELATIONSHIPS ===
+- Characters speak in their established voice (cadence, vocabulary, idioms). When in doubt, look at their personality + voice notes in the context block.
+- Surface STORY TENSIONS on the page — what's eroding between two characters, what's looming, what they're not saying. The tension list tells you what pressure to keep on whom.
+- Subplot threads can be advanced by even one well-placed line — when a subplot is in scope for this chapter, find the moment to thread it.
+- Themes should land through choice and consequence, not stated as a moral.
 
 === POINT OF VIEW - STRICT REQUIREMENT ===
 You MUST follow the specified NARRATIVE POV exactly. This is non-negotiable.
@@ -698,26 +803,40 @@ Between scenes, use:
 - Emotional bridges: End one scene with an emotion, begin next with its consequence
 - Action continuity: End mid-action, resume with result
 
-=== OUTPUT FORMAT - CRITICAL ===
-Output ONLY the prose content. Do NOT include:
-- Chapter titles, headers, or "Chapter X" labels
-- Scene numbers, scene headings, or "Scene X" labels
-- The prompts or instructions you were given
-- Metadata, notes, or author commentary
-- Preambles like "Here's the scene..." or "I'll write..."
-- Closing remarks like "Let me know if you want more..."
+=== OUTPUT FORMAT — CRITICAL ===
+Your reply has TWO sections, in this exact order:
 
-Just write the prose exactly as it would appear in the final manuscript.
+1. PROSE — the actual scene text. No chapter titles, no "Chapter X" or "Scene X" labels, no preambles ("Here's the scene…"), no closing remarks ("Let me know if…"), no metadata. Just the prose exactly as it would appear in the final manuscript.
+
+2. SUMMARY BLOCK — at the very end, a single XML block summarising what you wrote. The reader (the author) uses this to check coverage at a glance:
+
+<writing_summary>
+PLOT EVENTS COVERED:
+- [Event title]: [one sentence on how you landed it]
+- [Event title]: [one sentence on how you landed it]
+…
+KEY CHANGES IN THIS SCENE:
+- [What changed for the characters / world / plot, 2-4 bullets]
+WORLDBUILDING SURFACED:
+- [Specific named element used, 1-3 bullets]
+SUBPLOTS / TENSIONS ADVANCED:
+- [Which threads moved + how, 1-3 bullets — or "none" if not applicable]
+WORD COUNT: [approximate]
+</writing_summary>
+
+The summary is required. Write it after the prose. Do not put the summary inside the prose. Do not skip the summary.
 
 When asked to write:
-- Produce actual prose, not summaries
-- Write at least several paragraphs per scene
-- End at a natural scene break or beat
+- Produce actual prose, not synopses
+- Cover EVERY plot event in the outline (in order). A 5-beat chapter is several thousand words; a single beat is several hundred.
+- End the prose at a natural scene break or beat
+- Then emit the SUMMARY BLOCK
 
 When asked to continue:
 - Pick up exactly where the text ends
 - If mid-scene, complete it before transitioning
-- Maintain narrative momentum"""
+- Maintain narrative momentum
+- Still emit the SUMMARY BLOCK at the end"""
     }
 
     def __init__(self, message: str, context: dict = None, mode: str = "general"):
@@ -727,94 +846,159 @@ When asked to continue:
         self.mode = mode
 
     def _build_context_prompt(self) -> str:
-        """Build comprehensive context from project data."""
-        parts = []
+        """Build comprehensive context from project data.
 
-        # Project info
+        For writer + chapter_focus modes the layout is **chapter-first**
+        — the current chapter (goal, planning, prior content, prior
+        chapter ending) leads, then story-wide context follows as
+        SUPPORTING material. This keeps the model anchored on the
+        chapter it's actually working on and prevents the broad
+        story-wide blocks from drowning out the chapter's own data.
+
+        Cross-block dedupe rules in chapter-focused modes:
+          * ``plot_summary`` is suppressed when per-block plot keys
+            (plot_events / plot_subplots / etc.) are present — they
+            cover the same material in finer-grained form.
+          * Broad ``characters`` block is suppressed when
+            ``rag_focused_characters`` fires — the focused subset is
+            the relevant slice for THIS scene.
+          * Broad ``worldbuilding`` block is suppressed when
+            ``rag_focused_worldbuilding`` fires.
+          * ``chapter_synopsis`` is suppressed when it duplicates
+            ``chapter_planning.description`` (same source).
+          * ``project_index`` is suppressed when ``existing_elements``
+            is present — the latter is a tighter names-only list and
+            the model doesn't need both.
+        """
+        is_writer = (self.mode == "writer")
+        is_chapter_focused = self.mode in ("writer", "chapter_focus")
+
+        # ── Per-mode block budgets ────────────────────────────────
+        # Writer mode produces long-form prose, so its blocks get
+        # larger budgets — but with chapter-first ordering and dedupe
+        # rules, the supporting material lands tighter overall.
+        plot_summary_budget    = 3000 if is_writer else 2000
+        plot_freytag_budget    = 3000 if is_writer else 2500
+        plot_events_budget     = 6000 if is_writer else 4000
+        plot_subplots_budget   = 6000 if is_writer else 4000
+        plot_promises_budget   = 4000 if is_writer else 3000
+        plot_tensions_budget   = 5000 if is_writer else 3500
+        plot_themes_budget     = 4000 if is_writer else 3500
+        plot_map_budget        = 10000 if is_writer else 8000
+        characters_budget      = 8000 if is_writer else 4000
+        worldbuilding_budget   = 10000 if is_writer else 4000
+        rag_context_budget     = 3000 if is_writer else 1500
+
+        # ── Header — project identity (always at top) ─────────────
+        header_parts = []
         if self.context.get('project_name'):
-            parts.append(f"PROJECT: {self.context['project_name']}")
+            header_parts.append(f"PROJECT: {self.context['project_name']}")
             if self.context.get('project_description'):
-                parts.append(f"Description: {self.context['project_description'][:300]}")
+                header_parts.append(
+                    f"Description: "
+                    f"{self.context['project_description'][:300]}")
+
+        # ── Story-wide supporting context (deduped) ───────────────
+        # Built into its own list so we can render it AFTER the
+        # chapter section in chapter-focused modes — supplementing
+        # the chapter's own data, not competing with it.
+        story_parts: list = []
 
         # Existing element names — helps AI avoid creating duplicates
         if self.context.get('existing_elements'):
-            parts.append(f"\nEXISTING ELEMENTS (use these exact names — do NOT create duplicates):\n{self.context['existing_elements']}")
+            story_parts.append(
+                f"\nEXISTING ELEMENTS (use these exact names — do "
+                f"NOT create duplicates):\n"
+                f"{self.context['existing_elements']}")
 
-        # Project index — complete catalog of manuscript, characters, worldbuilding
+        # Project index — full catalog. In chapter-focused modes,
+        # ``existing_elements`` already covers the names-list need;
+        # the full index is heavy duplication. Drop it there.
         if self.context.get('project_index'):
-            parts.append(f"\nPROJECT INDEX (everything in the project):\n{self.context['project_index']}")
+            if not (is_chapter_focused and
+                    self.context.get('existing_elements')):
+                story_parts.append(
+                    f"\nPROJECT INDEX (everything in the project):"
+                    f"\n{self.context['project_index']}")
 
-        # === PRIMARY CONTEXT (always included, highest priority) ===
-        # These come from the author's own work and are the source of truth.
-
-        # Focused element — full details of a specific element the user asked about
+        # Focused element — full details of a specific element the
+        # user asked about (rare; only when explicit reference)
         if self.context.get('focused_element'):
-            parts.append(f"\n{self.context['focused_element']}")
+            story_parts.append(f"\n{self.context['focused_element']}")
 
-        # Plot/Story planning
-        if self.context.get('plot_summary'):
-            parts.append(f"\nPLOT OUTLINE:\n{self.context['plot_summary'][:2000]}")
+        # Plot scaffolding. ``plot_summary`` is the top-level digest
+        # built from story_planning; the per-block keys (events,
+        # subplots, etc.) are finer-grained renderings of the SAME
+        # material. Skip the digest when per-blocks are present.
+        per_block_plot_keys = (
+            'plot_freytag', 'plot_events', 'plot_subplots',
+            'plot_promises', 'plot_tensions', 'plot_themes')
+        has_per_block_plot = any(
+            self.context.get(k) for k in per_block_plot_keys)
+        if (self.context.get('plot_summary')
+                and not has_per_block_plot):
+            story_parts.append(
+                f"\nPLOT OUTLINE:\n"
+                f"{self.context['plot_summary'][:plot_summary_budget]}")
 
-        # Structured plot scaffolding — emitted by _build_chat_context
-        # for plot mode as separate keys per concept (Freytag, events,
-        # subplots, promises, tensions, themes) so each renders with
-        # its own per-block budget instead of being silently truncated
-        # when stuffed into a single ``plot_map`` aggregate. Each
-        # heading exactly matches what the system prompt tells the
-        # model to cite.
         if self.context.get('plot_freytag'):
-            parts.append(f"\nFREYTAG PYRAMID:\n"
-                          f"{self.context['plot_freytag'][:2500]}")
+            story_parts.append(
+                f"\nFREYTAG PYRAMID:\n"
+                f"{self.context['plot_freytag'][:plot_freytag_budget]}")
         if self.context.get('plot_events'):
-            parts.append(f"\nPLOT EVENTS:\n"
-                          f"{self.context['plot_events'][:4000]}")
+            story_parts.append(
+                f"\nPLOT EVENTS:\n"
+                f"{self.context['plot_events'][:plot_events_budget]}")
         if self.context.get('plot_subplots'):
-            parts.append(
+            story_parts.append(
                 f"\nSUBPLOTS (secondary storylines tied to the main "
-                f"plot):\n{self.context['plot_subplots'][:4000]}")
+                f"plot):\n"
+                f"{self.context['plot_subplots'][:plot_subplots_budget]}")
         if self.context.get('plot_promises'):
-            parts.append(
+            story_parts.append(
                 f"\nSTORY PROMISES (commitments to the reader):\n"
-                f"{self.context['plot_promises'][:3000]}")
+                f"{self.context['plot_promises'][:plot_promises_budget]}")
         if self.context.get('plot_tensions'):
-            parts.append(
+            story_parts.append(
                 f"\nSTORY TENSIONS (sustained dramatic forces — "
                 f"name them when proposing beats):\n"
-                f"{self.context['plot_tensions'][:3500]}")
+                f"{self.context['plot_tensions'][:plot_tensions_budget]}")
         if self.context.get('plot_themes'):
-            parts.append(
+            story_parts.append(
                 f"\nSTORY THEMES (what the book is about underneath "
                 f"its events — every plot suggestion should reinforce "
                 f"or explicitly reckon with one):\n"
-                f"{self.context['plot_themes'][:3500]}")
-        # Aggregate fallback for surfaces that haven't been split yet,
-        # only when none of the dedicated keys above fired.
-        if (self.context.get('plot_map')
-                and not any(self.context.get(k) for k in (
-                    'plot_freytag', 'plot_events', 'plot_subplots',
-                    'plot_promises', 'plot_tensions',
-                    'plot_themes'))):
-            parts.append(
+                f"{self.context['plot_themes'][:plot_themes_budget]}")
+        # plot_map fallback only when no per-block keys fired
+        if (self.context.get('plot_map') and not has_per_block_plot):
+            story_parts.append(
                 f"\nPLOT MAP (author's intended structure):\n"
-                f"{self.context['plot_map'][:8000]}")
+                f"{self.context['plot_map'][:plot_map_budget]}")
 
-        # Characters — personality, backstory, traits, speaking style.
-        # Bumped from 2000 → 4000 chars so a project with 10+
-        # characters doesn't have its cast list cut in half.
-        if self.context.get('characters'):
-            parts.append(f"\nMAIN CHARACTERS:\n"
-                          f"{self.context['characters'][:4000]}")
+        # Characters: in chapter-focused modes, prefer the
+        # rag_focused subset (relevant for THIS scene) over the
+        # broad roster (full cast). Include the broad roster ONLY
+        # when there's no focused subset OR we're in a discussion
+        # mode where cross-cutting reference is useful.
+        has_focused_chars = bool(
+            self.context.get('rag_focused_characters'))
+        if (self.context.get('characters') and
+                not (is_chapter_focused and has_focused_chars)):
+            story_parts.append(
+                f"\nMAIN CHARACTERS:\n"
+                f"{self.context['characters'][:characters_budget]}")
 
-        # Worldbuilding — factions, cultures, magic, places, etc.
-        # Same bump from 2000 → 4000 for the same reason.
-        if self.context.get('worldbuilding'):
-            parts.append(f"\nWORLDBUILDING:\n"
-                          f"{self.context['worldbuilding'][:4000]}")
+        has_focused_world = bool(
+            self.context.get('rag_focused_worldbuilding'))
+        if (self.context.get('worldbuilding') and
+                not (is_chapter_focused and has_focused_world)):
+            story_parts.append(
+                f"\nWORLDBUILDING:\n"
+                f"{self.context['worldbuilding'][:worldbuilding_budget]}")
 
-        # === SECONDARY CONTEXT (RAG results — enriches with specifics) ===
-        # Plot mode sets per-source-type RAG selections (top-K most
-        # relevant entries per source type) — render those as a
-        # focused block before the mixed rag_context fallback.
+        # RAG-focused per-type slices (typically populated by plot
+        # mode but writer/chapter_focus benefit too). When present
+        # in chapter-focused modes they replace the broad blocks.
         rag_focused = []
         if self.context.get('rag_focused_characters'):
             rag_focused.append(
@@ -834,26 +1018,62 @@ When asked to continue:
                 f"question:\n"
                 f"{self.context['rag_focused_chapters']}")
         if rag_focused:
-            parts.append(
+            story_parts.append(
                 "\n=== RAG-FOCUSED CONTEXT (selected for THIS "
                 "question — prefer citing these specific items) "
                 "===\n" + "\n\n".join(rag_focused))
 
-        # Includes relevant worldbuilding entries, character details, and
-        # encyclopedia/knowledge base if enabled. Supplements primary context.
+        # PROJECT RAG — characters / worldbuilding / chapters /
+        # subplots / plot scaffolding the author has actually built.
+        # AUTHORITATIVE. Encyclopedia entries are in the SEPARATE
+        # reference block below.
         if self.context.get('rag_context'):
-            parts.append(
-                f"\nRELEVANT REFERENCE (from project data"
-                f"{' & encyclopedia' if self.context.get('kb_enabled') else ''}):\n"
-                f"{self.context['rag_context'][:1500]}"
-            )
+            story_parts.append(
+                f"\nRELEVANT PROJECT ELEMENTS (your story's "
+                f"AUTHORITATIVE material — characters, "
+                f"worldbuilding, chapters, subplots, plot beats. "
+                f"Pull names, voices, and details from here):\n"
+                f"{self.context['rag_context'][:rag_context_budget]}")
 
-        # Current chapter context
+        # REFERENCE RAG — encyclopedia / real-world / mythology.
+        if self.context.get('reference_context'):
+            story_parts.append(
+                f"\nREAL-WORLD REFERENCE (encyclopedia — use ONLY "
+                f"to inspire authentic real-world details, "
+                f"mythology, parallels. NOT a source for plot, "
+                f"characters, locations, or worldbuilding facts; "
+                f"those come from PROJECT ELEMENTS above):\n"
+                f"{self.context['reference_context'][:rag_context_budget]}")
+
+        # The chapter-section assembly that follows mutates ``parts``.
+        # In chapter-focused modes we want chapter-first ordering, so
+        # we route the chapter blocks through a separate list and
+        # compose at the end. Other modes use the historical order
+        # (project header → story → chapter) by appending story_parts
+        # directly to ``parts`` here.
+        parts: list = list(header_parts)
+        if not is_chapter_focused:
+            parts.extend(story_parts)
+        chapter_parts: list = []
+        # For chapter-focused modes, "parts" temporarily aliases
+        # chapter_parts so the existing chapter-block code below
+        # writes into the chapter list. We swap back after.
+        chapter_emit = chapter_parts if is_chapter_focused else parts
+
+        # ── CHAPTER SECTION (writes into chapter_emit) ────────────
+        # In chapter-focused modes this list is composed FIRST in the
+        # final prompt; in other modes it follows the story-wide
+        # blocks (the historical order). Either way, the assembly
+        # logic is the same — only the destination list differs.
+        chapter_planning = self.context.get('chapter_planning')
+        chapter_goal_text = (
+            (chapter_planning or {}).get('description', '') or '').strip()
+
         if self.context.get('current_chapter_title'):
             chapter_header = f"CURRENT CHAPTER: {self.context['current_chapter_title']}"
             if self.context.get('chapter_number') and self.context.get('total_chapters'):
                 chapter_header += f" (Chapter {self.context['chapter_number']} of {self.context['total_chapters']})"
-            parts.append(f"\n{chapter_header}")
+            chapter_emit.append(f"\n{chapter_header}")
 
             if self.context.get('prev_chapter_title') or self.context.get('next_chapter_title'):
                 nav = []
@@ -861,55 +1081,82 @@ When asked to continue:
                     nav.append(f"Previous: \"{self.context['prev_chapter_title']}\"")
                 if self.context.get('next_chapter_title'):
                     nav.append(f"Next: \"{self.context['next_chapter_title']}\"")
-                parts.append("  " + " | ".join(nav))
+                chapter_emit.append("  " + " | ".join(nav))
 
-            # Chapter synopsis (from planning data or heuristic)
-            if self.context.get('chapter_synopsis'):
-                parts.append(f"\n=== CHAPTER SYNOPSIS ===\n{self.context['chapter_synopsis']}")
+            # CHAPTER GOAL — author's stated intent for the chapter.
+            # Rendered ONCE here; the redundant "Chapter Goal:" line
+            # that used to live inside the OUTLINE block is removed
+            # (it duplicated this exact text).
+            if chapter_goal_text:
+                chapter_emit.append(
+                    "\n=== CHAPTER GOAL (the chapter's "
+                    "intended purpose — what it's meant to "
+                    "accomplish) ===\n" + chapter_goal_text)
 
-            # Highlighted section when the user referenced a specific part
+            # Chapter synopsis. ``_get_chapter_synopsis`` returns
+            # ``planning.description[:500]`` when it's set — i.e. the
+            # SAME text we just rendered as CHAPTER GOAL. Suppress
+            # the synopsis when it's a substring of the goal (or
+            # vice-versa) so the model doesn't read the same line
+            # twice. Heuristic strip: render only when synopsis adds
+            # information beyond the goal.
+            synopsis = (self.context.get('chapter_synopsis') or '').strip()
+            if synopsis and not (
+                    chapter_goal_text and
+                    (synopsis in chapter_goal_text
+                     or chapter_goal_text in synopsis)):
+                chapter_emit.append(
+                    f"\n=== CHAPTER SYNOPSIS ===\n{synopsis}")
+
+            # PRIOR CHAPTERS — story-so-far rundown.
+            if self.context.get('previous_chapters_summary'):
+                chapter_emit.append(
+                    "\n=== PRIOR CHAPTERS (story so far) ===\n"
+                    + self.context['previous_chapters_summary'])
+
+            # Section focus when the user referenced a specific part
             if self.context.get('section_reference'):
                 sr = self.context['section_reference']
-                parts.append(
-                    f"\n=== SECTION FOCUS: {sr['description']} ===\n{sr['text']}"
-                )
+                chapter_emit.append(
+                    f"\n=== SECTION FOCUS: {sr['description']} ===\n"
+                    f"{sr['text']}")
 
-            # Chapter planning/outline (critical for writer mode)
-            if self.context.get('chapter_planning'):
-                planning = self.context['chapter_planning']
-                parts.append("\n=== CHAPTER OUTLINE (Follow this scene-by-scene) ===")
+            # Chapter planning/outline.
+            if chapter_planning:
+                planning = chapter_planning
+                chapter_emit.append("\n=== CHAPTER OUTLINE (Follow this scene-by-scene) ===")
 
-                if planning.get('description'):
-                    parts.append(f"Chapter Goal: {planning['description']}")
+                # Skip the redundant ``Chapter Goal:`` line — already
+                # rendered as the dedicated CHAPTER GOAL block above.
 
                 if planning.get('pov_character'):
-                    parts.append(f"POV Character: {planning['pov_character']}")
+                    chapter_emit.append(f"POV Character: {planning['pov_character']}")
 
                 if planning.get('scene_list'):
-                    parts.append("\nSCENE LIST (write in order):")
+                    chapter_emit.append("\nSCENE LIST (write in order):")
                     for i, scene in enumerate(planning['scene_list'], 1):
-                        parts.append(f"  {i}. {scene}")
+                        chapter_emit.append(f"  {i}. {scene}")
 
                 if planning.get('events'):
-                    parts.append("\nSTORY EVENTS/BEATS:")
+                    chapter_emit.append("\nSTORY EVENTS/BEATS:")
                     for event in planning['events']:
                         status = "✓" if event.get('completed') else "○"
-                        parts.append(f"  {status} {event['text']}")
+                        chapter_emit.append(f"  {status} {event['text']}")
                         if event.get('description'):
-                            parts.append(f"      {event['description'][:150]}")
+                            chapter_emit.append(f"      {event['description'][:150]}")
 
                 if planning.get('outline') and not planning.get('scene_list'):
                     # Fallback to text outline if no scene list
-                    parts.append(f"\nOUTLINE:\n{planning['outline'][:1000]}")
+                    chapter_emit.append(f"\nOUTLINE:\n{planning['outline'][:1000]}")
 
                 if planning.get('characters_featured'):
-                    parts.append(f"\nFeatured Characters: {', '.join(planning['characters_featured'])}")
+                    chapter_emit.append(f"\nFeatured Characters: {', '.join(planning['characters_featured'])}")
 
                 if planning.get('locations'):
-                    parts.append(f"Locations: {', '.join(planning['locations'])}")
+                    chapter_emit.append(f"Locations: {', '.join(planning['locations'])}")
 
                 if planning.get('themes'):
-                    parts.append(f"Themes: {', '.join(planning['themes'])}")
+                    chapter_emit.append(f"Themes: {', '.join(planning['themes'])}")
 
                 # Writing style metadata (critical for writer mode)
                 style_parts = []
@@ -923,8 +1170,8 @@ When asked to continue:
                     style_parts.append(f"Pacing: {planning['pacing']}")
 
                 if style_parts:
-                    parts.append("\n=== WRITING STYLE (Follow these guidelines) ===")
-                    parts.extend(style_parts)
+                    chapter_emit.append("\n=== WRITING STYLE (Follow these guidelines) ===")
+                    chapter_emit.extend(style_parts)
 
             # Writer mode: POV settings (override chapter defaults if specified)
             if self.mode == "writer":
@@ -934,8 +1181,8 @@ When asked to continue:
 
                 if char_pov:
                     pov_parts.append(f"Character POV: {char_pov}")
-                elif planning and planning.get('pov_character'):
-                    pov_parts.append(f"Character POV: {planning['pov_character']} (from chapter)")
+                elif chapter_planning and chapter_planning.get('pov_character'):
+                    pov_parts.append(f"Character POV: {chapter_planning['pov_character']} (from chapter)")
 
                 if narrative_pov:
                     pov_map = {
@@ -947,40 +1194,54 @@ When asked to continue:
                     pov_parts.append(f"Narrative POV: {pov_map.get(narrative_pov, narrative_pov)}")
 
                 if pov_parts:
-                    parts.append("\n=== POINT OF VIEW ===\n" + "\n".join(pov_parts))
+                    chapter_emit.append("\n=== POINT OF VIEW ===\n" + "\n".join(pov_parts))
 
             # Writer mode: Preceding text for continuity
             if self.mode == "writer" and self.context.get('preceding_text'):
-                parts.append(f"\n=== TEXT IMMEDIATELY BEFORE CURSOR (continue from here) ===\n{self.context['preceding_text']}")
+                chapter_emit.append(f"\n=== TEXT IMMEDIATELY BEFORE CURSOR (continue from here) ===\n{self.context['preceding_text']}")
 
                 if self.context.get('content_before_summary'):
-                    parts.append(f"\n{self.context['content_before_summary']}")
+                    chapter_emit.append(f"\n{self.context['content_before_summary']}")
 
             # Previous chapter ending for continuity
             if self.context.get('previous_chapter_ending'):
-                parts.append(f"\n=== PREVIOUS CHAPTER ENDING (for continuity) ===\n...{self.context['previous_chapter_ending']}")
+                chapter_emit.append(f"\n=== PREVIOUS CHAPTER ENDING (for continuity) ===\n...{self.context['previous_chapter_ending']}")
 
             # Current chapter content
             if self.context.get('current_chapter_content'):
                 content = self.context['current_chapter_content']
-                # For chapter_focus mode, include as much of the chapter as possible.
-                # If a section was already highlighted above, still show the full chapter
-                # so the AI can reference surrounding context.
-                MAX_CHAPTER_CHARS = 15000  # ~3 000 words — covers most chapters
+                MAX_CHAPTER_CHARS = 15000
                 if len(content) <= MAX_CHAPTER_CHARS:
-                    parts.append(f"\n=== CURRENT CHAPTER CONTENT ===\n{content}")
+                    chapter_emit.append(f"\n=== CURRENT CHAPTER CONTENT ===\n{content}")
                 else:
-                    # Very long chapter: show beginning and end; the SECTION FOCUS block
-                    # above already contains the highlighted portion.
                     half = MAX_CHAPTER_CHARS // 2
-                    parts.append(
+                    chapter_emit.append(
                         f"\n=== CURRENT CHAPTER CONTENT (abridged — chapter is very long) ==="
                         f"\n{content[:half]}"
                         f"\n\n…[middle of chapter omitted for length]…\n\n"
-                        f"{content[-half:]}"
-                    )
+                        f"{content[-half:]}")
 
+        # ── Compose final prompt with chapter-first ordering ──────
+        # In chapter-focused modes the chapter section leads, then a
+        # short header introduces the supporting material so the
+        # model knows the role of each block.
+        if is_chapter_focused and chapter_parts:
+            parts.append(
+                "\n=== CHAPTER FOCUS (the active chapter — your "
+                "primary subject; everything below SUPPORTS this) ===")
+            parts.extend(chapter_parts)
+            if story_parts:
+                parts.append(
+                    "\n=== STORY-WIDE SUPPORTING CONTEXT (supplements "
+                    "the chapter focus above; reference as needed, "
+                    "do NOT repeat back) ===")
+                parts.extend(story_parts)
+        elif is_chapter_focused:
+            # No chapter context — just emit story_parts so the writer
+            # / chapter_focus modes still get their material.
+            parts.extend(story_parts)
 
+        # ── Tail blocks (referenced chapter, all_chapters, excerpts) ─
         # Referenced chapter (user asked about a specific chapter by name/number)
         if self.context.get('referenced_chapter'):
             ref = self.context['referenced_chapter']
@@ -989,10 +1250,14 @@ When asked to continue:
                 f"{ref['content']}"
             )
 
-        # All chapters summary (for cross-chapter questions)
+        # All chapters summary (for cross-chapter questions). Skip in
+        # chapter-focused modes when previous_chapters_summary already
+        # rendered — they overlap heavily (chapter-by-chapter rundown).
         if self.context.get('all_chapters'):
-            chapters_info = self.context['all_chapters'][:1500]
-            parts.append(f"\nMANUSCRIPT CHAPTERS:\n{chapters_info}")
+            if not (is_chapter_focused
+                    and self.context.get('previous_chapters_summary')):
+                chapters_info = self.context['all_chapters'][:1500]
+                parts.append(f"\nMANUSCRIPT CHAPTERS:\n{chapters_info}")
 
         # Chapter excerpts (opening + closing of each). Plot discussion
         # in particular needs these so the model can quote and cite
@@ -1226,19 +1491,214 @@ When asked to continue:
             if self.mode == "writer" and self.context.get('current_chapter_content'):
                 system_prompt += "\n\nIMPORTANT: Write prose that seamlessly continues or fits with the existing chapter content above."
 
-            # Generate response (with conversation history for multi-turn context)
-            response = llm.generate_text(
-                prompt=self.message,
-                system_prompt=system_prompt,
-                max_tokens=settings.get("max_tokens", 2000),
-                temperature=settings.get("temperature", 0.7),
-                conversation_history=self.context.get('conversation_history') or []
-            )
+            # Generate response (with conversation history for multi-turn context).
+            # Writer mode produces long-form prose that needs to cover every
+            # planned plot event — give it a much larger token budget than
+            # the default 2000 (which capped earlier outputs at 600-700
+            # words because the model also spent budget on the summary
+            # block + ran cautious about length). For local models we also
+            # auto-continue on truncation so the model doesn't strand the
+            # author with a half-written scene.
+            base_max_tokens = int(settings.get("max_tokens", 2000) or 2000)
+            if self.mode == "writer":
+                # 6000 tokens ≈ 4500 words — enough for a multi-beat
+                # chapter scene + the summary block. Honor user-set
+                # max_tokens when they've raised it past 6000.
+                effective_max_tokens = max(base_max_tokens, 6000)
+                effective_continue = True
+            else:
+                effective_max_tokens = base_max_tokens
+                effective_continue = False
+
+            # Project-lookup tools: writer / chapter_focus / plot modes
+            # all benefit from agentic per-element fetches that
+            # complement the RAG baseline. Append the tool docs to
+            # the system prompt and route through the pre-flight
+            # lookup loop so <lookup_*> tags are dispatched
+            # transparently and results are fed back to the model
+            # before it produces the final response.
+            lookup_modes = {"writer", "chapter_focus", "plot"}
+            uses_lookups = self.mode in lookup_modes
+            if uses_lookups:
+                system_prompt = (
+                    f"{system_prompt}\n\n{'='*60}\n"
+                    f"{LOOKUP_TOOLS_PROMPT_BLOCK}")
+
+            history = self.context.get('conversation_history') or []
+            if uses_lookups:
+                response, _lookup_log = run_with_lookups(
+                    llm=llm,
+                    prompt=self.message,
+                    system_prompt=system_prompt,
+                    project=self.context.get('_project'),
+                    rag_search=self.context.get('_rag_search'),
+                    max_tokens=effective_max_tokens,
+                    temperature=settings.get("temperature", 0.7),
+                    conversation_history=history,
+                    max_lookup_rounds=2,
+                    continue_if_truncated=effective_continue,
+                )
+            else:
+                response = llm.generate_text(
+                    prompt=self.message,
+                    system_prompt=system_prompt,
+                    max_tokens=effective_max_tokens,
+                    temperature=settings.get("temperature", 0.7),
+                    conversation_history=history,
+                    continue_if_truncated=effective_continue,
+                )
 
             self.finished.emit(response, system_prompt)
 
         except Exception as e:
             self.error.emit(f"Error: {str(e)}")
+
+
+class LongFormWriterWorker(QThread):
+    """Background worker that drives a LongFormWriterAgent end-to-end.
+
+    Emits per-beat progress as the agent writes plot point by plot
+    point so the UI can stream prose into the editor. Builds its own
+    LLM client + RAG provider using the same selection logic the
+    chat path uses, so the user's configured plot-task model is
+    honoured when set.
+    """
+    finished = pyqtSignal(object, str)  # (ChapterWritingPlan, full_prose)
+    error = pyqtSignal(str)
+    progress = pyqtSignal(str)
+    plan_ready = pyqtSignal(object)     # ChapterWritingPlan (post-plan, pre-execute)
+    # (index, beat_title, prose, prompt) — prompt is the actual LLM
+    # input for this beat so callers can persist (prompt, prose) as
+    # training data.
+    point_written = pyqtSignal(int, str, str, str)
+
+    def __init__(
+        self,
+        chapter,
+        instructions: str,
+        mode: WritingMode,
+        existing_text: str = "",
+        prior_text: str = "",
+        target_points: int = 0,
+        project=None,
+        rag_provider=None,
+        skip_questions: bool = False,
+        preplanned: Optional['ChapterWritingPlan'] = None,
+    ):
+        super().__init__()
+        self.chapter = chapter
+        self.instructions = instructions
+        self.mode = mode
+        self.existing_text = existing_text
+        self.prior_text = prior_text
+        self.target_points = target_points
+        self.project = project
+        self.rag_provider = rag_provider
+        self.skip_questions = skip_questions
+        self.preplanned = preplanned
+
+    def _build_llm(self):
+        """Build the LLM client following the same logic as ChatWorker."""
+        from src.ai.llm_client import LLMClient, LLMProvider, HuggingFaceConfig
+        ai_config = get_ai_config()
+        if ai_config.is_ai_disabled():
+            return None
+        settings = ai_config.get_settings()
+        prefer_local = settings.get("prefer_local_model", False)
+        enable_local = settings.get("enable_local_models", False)
+        local_model_id = settings.get("local_model_id", "")
+        if prefer_local and enable_local and local_model_id:
+            is_mlx_model = "mlx" in local_model_id.lower()
+            hf_config = HuggingFaceConfig(
+                model_id=local_model_id,
+                use_local=True,
+                device=settings.get("local_model_device", "auto"),
+                quantization=settings.get(
+                    "local_model_quantization", "none")
+                if settings.get("local_model_quantization") != "none"
+                else None,
+                trust_remote_code=settings.get(
+                    "local_model_trust_remote_code", False),
+            )
+            provider = (LLMProvider.MLX_LOCAL if is_mlx_model
+                        else LLMProvider.HUGGINGFACE_LOCAL)
+            return LLMClient(provider=provider, hf_config=hf_config)
+        default_provider = settings.get("default_llm", "claude")
+        api_key = ai_config.get_api_key(default_provider)
+        if not api_key:
+            return None
+        provider_map = {
+            "claude": LLMProvider.CLAUDE,
+            "chatgpt": LLMProvider.CHATGPT,
+            "openai": LLMProvider.CHATGPT,
+            "gemini": LLMProvider.GEMINI,
+        }
+        return LLMClient(
+            provider=provider_map.get(default_provider, LLMProvider.CLAUDE))
+
+    def run(self):
+        try:
+            self.progress.emit("Building writing engine…")
+            llm = self._build_llm()
+            if llm is None:
+                self.error.emit(
+                    "Long-form writing requires a configured LLM. "
+                    "Enable a model in Settings > AI Settings.")
+                return
+            agent = LongFormWriterAgent(
+                primary_llm=llm,
+                project=self.project,
+                rag_provider=self.rag_provider,
+            )
+            if self.preplanned is not None:
+                plan = self.preplanned
+                self.progress.emit(
+                    f"Resuming with preplanned chapter "
+                    f"({len(plan.plot_points)} beats)…")
+            else:
+                self.progress.emit("Planning chapter beats…")
+                plan = agent.plan_chapter(
+                    chapter=self.chapter,
+                    instructions=self.instructions,
+                    mode=self.mode,
+                    existing_text=self.existing_text,
+                    target_points=self.target_points,
+                )
+            self.plan_ready.emit(plan)
+
+            # If the plan posed questions and the caller didn't say
+            # skip, surface them and stop here. The UI will collect
+            # answers and re-launch the worker with preplanned=plan
+            # (with answers merged) and skip_questions=True.
+            if plan.questions and not self.skip_questions:
+                self.progress.emit(
+                    f"Plan ready — {len(plan.questions)} clarifying "
+                    "question(s) for the author.")
+                self.finished.emit(plan, "")  # empty prose = waiting on Q&A
+                return
+
+            if not plan.plot_points:
+                self.error.emit(
+                    "Planner did not produce any plot points. Add events "
+                    "to the chapter's planning data and try again.")
+                return
+
+            def progress_cb(msg: str):
+                self.progress.emit(msg)
+
+            def on_point(i: int, point, prose: str, prompt: str = ""):
+                self.point_written.emit(i, point.title, prose, prompt)
+
+            full_prose = agent.execute_plan(
+                plan=plan,
+                progress_cb=progress_cb,
+                prior_text=self.prior_text,
+                on_point_written=on_point,
+            )
+            self.progress.emit("Done.")
+            self.finished.emit(plan, full_prose)
+        except Exception as e:  # pragma: no cover — defensive
+            self.error.emit(f"Long-form writing failed: {e}")
 
 
 class MainWindow(QMainWindow):
@@ -2182,28 +2642,98 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"Project summary setup failed: {e}")
 
-    def _get_rag_context(self, query: str, max_tokens: int = 2000) -> str:
+    # Source-type taxonomy. PROJECT sources are the author's own
+    # story material — characters, worldbuilding, chapters, subplots,
+    # plot scaffolding — and they are AUTHORITATIVE. REFERENCE sources
+    # are real-world / mythology lookups that ground fiction in
+    # plausible facts but never define story facts. Mixing them in
+    # the same RAG dump made the model treat encyclopedia entries as
+    # canonical project plot data, which it isn't. We split the
+    # retrieval calls so the two streams land in distinct context
+    # keys (rag_context vs reference_context) with very different
+    # framing in the system prompt.
+    PROJECT_SOURCE_TYPES = (
+        "character", "chapter", "chapter_content",
+        "chapter_key_point", "chapter_planning",
+        "subplot", "worldbuilding", "place", "faction",
+        "culture", "myth", "religion", "technology",
+        "historical_event", "flora", "fauna",
+        "star_system", "military", "economy",
+        "political_system", "plot", "plot_event",
+        "themes", "promise",
+    )
+    REFERENCE_SOURCE_TYPES = ("encyclopedia",)
+
+    def _get_rag_context(self, query: str, max_tokens: int = 2000,
+                         project_only: bool = True) -> str:
         """Get RAG-enhanced context for a query.
 
         Args:
-            query: User's question or request
-            max_tokens: Maximum tokens for context
+            query: User's question or request.
+            max_tokens: Maximum tokens for context.
+            project_only: When True (default), filter the RAG search
+                to PROJECT source types so encyclopedia hits don't
+                bleed into the project-data stream. Use the dedicated
+                ``_get_reference_rag_context`` method to fetch
+                encyclopedia entries separately.
 
         Returns:
-            Relevant context from project data
+            Relevant context from project data (or reference data
+            when ``project_only=False`` and no project filter applies).
         """
         if not self._rag_initialized or not self._rag_system:
             return ""
 
         try:
-            context = self._rag_system.get_context_for_ai(
-                query=query,
-                max_tokens=max_tokens,
-                method=SearchMethod.HYBRID
-            )
+            if project_only:
+                # Use the per-type chunker filtered to project sources
+                # so encyclopedia entries are excluded from this stream.
+                context = self._rag_top_chunks_per_type(
+                    query=query,
+                    source_types=list(self.PROJECT_SOURCE_TYPES),
+                    top_k=8,
+                    max_chars_per_chunk=600,
+                    max_total_chars=max_tokens * 4,
+                )
+            else:
+                context = self._rag_system.get_context_for_ai(
+                    query=query,
+                    max_tokens=max_tokens,
+                    method=SearchMethod.HYBRID,
+                )
             return context if context else ""
         except Exception as e:
             print(f"RAG context retrieval failed: {e}")
+            return ""
+
+    def _get_reference_rag_context(self, query: str,
+                                     max_tokens: int = 1200) -> str:
+        """Get encyclopedia-only RAG context (real-world reference).
+
+        Returns hits from REFERENCE_SOURCE_TYPES so callers can label
+        them distinctly from project material. Empty string when the
+        knowledge base is disabled or RAG isn't initialised.
+        """
+        if not self._rag_initialized or not self._rag_system:
+            return ""
+        try:
+            from src.config.ai_config import get_ai_config
+            kb_enabled = get_ai_config().get_settings().get(
+                "enable_knowledge_base", True)
+            if not kb_enabled:
+                return ""
+        except Exception:
+            pass
+        try:
+            return self._rag_top_chunks_per_type(
+                query=query,
+                source_types=list(self.REFERENCE_SOURCE_TYPES),
+                top_k=5,
+                max_chars_per_chunk=500,
+                max_total_chars=max_tokens * 4,
+            ) or ""
+        except Exception as e:
+            print(f"Reference RAG retrieval failed: {e}")
             return ""
 
     def _rag_top_chunks_per_type(self, query: str,
@@ -2755,6 +3285,23 @@ class MainWindow(QMainWindow):
         self._debug_context = dict(context)
         self._debug_start_time = time.time()
 
+        # Inject the project + a RAG search callable into context so
+        # the worker's pre-flight lookup loop has what it needs to
+        # dispatch the model's <lookup_*> tool calls. Both are
+        # process-internal references — they never leak into the
+        # prompt because ``_build_context_prompt`` only reads the
+        # string keys (plot_events, characters, etc.).
+        context['_project'] = self.current_project
+        if (hasattr(self, "_rag_top_chunks_per_type")
+                and getattr(self, "_rag_initialized", False)):
+            context['_rag_search'] = lambda q, st: (
+                self._rag_top_chunks_per_type(
+                    query=q, source_types=st,
+                    top_k=6, max_chars_per_chunk=600,
+                    max_total_chars=2500))
+        else:
+            context['_rag_search'] = None
+
         # Start background worker with mode
         self._chat_worker = ChatWorker(message, context, mode)
         self._chat_worker.finished.connect(self._on_chat_response)
@@ -3020,12 +3567,26 @@ class MainWindow(QMainWindow):
             if ai_sum_parts:
                 context['ai_summary'] = "\n".join(ai_sum_parts)
 
-        # Use RAG for ALL modes to retrieve relevant project + encyclopedia context
+        # Project RAG (characters / worldbuilding / chapters / subplots
+        # / plot scaffolding) — the AUTHORITATIVE story material.
+        # Encyclopedia hits land in a SEPARATE context key so the
+        # model can never confuse real-world reference data with the
+        # author's actual project plot.
         if user_message and self._rag_initialized:
             rag_tokens = 1500 if mode == "general" else 1000
-            rag_context = self._get_rag_context(user_message, max_tokens=rag_tokens)
+            rag_context = self._get_rag_context(
+                user_message, max_tokens=rag_tokens, project_only=True)
             if rag_context:
                 context['rag_context'] = rag_context
+
+            # Reference RAG (encyclopedia) — real-world / mythology
+            # grounding. Only fetched for modes where prose-writing
+            # or world-discussion benefits from real-world parallels.
+            if mode in ("writer", "chapter_focus", "plot", "general"):
+                reference = self._get_reference_rag_context(
+                    user_message, max_tokens=1000)
+                if reference:
+                    context['reference_context'] = reference
 
         # Track whether knowledge base is enabled (for labeling in the prompt)
         try:
@@ -3034,11 +3595,13 @@ class MainWindow(QMainWindow):
         except Exception:
             context['kb_enabled'] = False
 
-        # For chapter_focus, plot and writer modes, additional RAG if not already set.
-        # Plot mode benefits from RAG since the user is asking structural questions
-        # that may reference characters/places by name buried deep in worldbuilding.
-        if mode in ("chapter_focus", "writer", "plot") and not context.get('rag_context') and user_message and self._rag_initialized:
-            rag_context = self._get_rag_context(user_message, max_tokens=1200)
+        # Backstop project RAG fetch for chapter_focus / writer / plot
+        # modes when the broader pass returned nothing.
+        if (mode in ("chapter_focus", "writer", "plot")
+                and not context.get('rag_context')
+                and user_message and self._rag_initialized):
+            rag_context = self._get_rag_context(
+                user_message, max_tokens=1200, project_only=True)
             if rag_context:
                 context['rag_context'] = rag_context
 
@@ -3604,6 +4167,44 @@ class MainWindow(QMainWindow):
                             # Last 500 chars of previous chapter
                             context['previous_chapter_ending'] = prev_ch.content[-500:]
 
+            # Story-so-far summary — a digested rundown of every prior
+            # chapter so the writer + chapter-focus discussions have
+            # continuity beyond just the immediately-previous ending.
+            # Built only for modes that actually need it (writer +
+            # chapter_focus + plot) since it's not free to assemble.
+            if (mode in ("writer", "chapter_focus", "plot")
+                    and hasattr(self, 'manuscript_editor')
+                    and self.manuscript_editor.current_chapter_editor):
+                open_id = (
+                    self.manuscript_editor
+                        .current_chapter_editor.chapter.id)
+                summary_lines = []
+                for ch in all_chapters:
+                    if ch.id == open_id:
+                        break
+                    # Prefer the planner's description (author intent);
+                    # fall back to the first sentence of content as a
+                    # last-resort heuristic so an unplanned chapter
+                    # still appears in the rundown.
+                    summary = ""
+                    if (hasattr(ch, 'planning')
+                            and ch.planning
+                            and ch.planning.description):
+                        summary = ch.planning.description.strip()
+                    elif ch.content:
+                        first = ch.content.strip().split('\n\n', 1)[0]
+                        summary = first[:200].strip()
+                    if summary:
+                        summary_lines.append(
+                            f"Ch {ch.number} — {ch.title}: {summary}")
+                    else:
+                        summary_lines.append(
+                            f"Ch {ch.number} — {ch.title}: "
+                            f"(no synopsis recorded)")
+                if summary_lines:
+                    context['previous_chapters_summary'] = (
+                        "\n".join(summary_lines))
+
         return context
 
     def _build_plot_ai_context(self, question: str = "") -> dict:
@@ -3850,6 +4451,32 @@ class MainWindow(QMainWindow):
         if getattr(self, '_pending_mode', '') == 'writer' and hasattr(self, '_pending_insert_mode'):
             self._handle_writer_response(response)
         else:
+            # First: detect long-form writing tool tags (chapter_focus mode).
+            # When the model emitted one, strip it from the visible message
+            # and dispatch to the long-form writer engine.
+            write_calls = extract_write_tool_calls(response)
+            if write_calls:
+                # Show the conversational part (with the XML stripped)
+                cleaned = strip_write_tool_calls(response)
+                self.chat_widget.add_message(
+                    "Assistant",
+                    cleaned or "(starting long-form writing…)",
+                    system_prompt=system_prompt,
+                    original_response=response,
+                )
+                pending_msg = getattr(self, '_pending_chat_message', '')
+                if pending_msg:
+                    self._chat_history.append(
+                        {"role": "user", "content": pending_msg})
+                    self._chat_history.append(
+                        {"role": "assistant", "content": cleaned})
+                    self._compact_chat_history()
+                self._pending_chat_message = ""
+                # Only honour the FIRST tool call in a reply (stack of
+                # writes in one turn would interleave editor mutations).
+                self._dispatch_long_form_writing(write_calls[0])
+                return
+
             # Check for and handle element creation blocks in general mode
             display_response, created_elements = self._parse_and_create_elements(response)
 
@@ -3879,11 +4506,55 @@ class MainWindow(QMainWindow):
                 # Refresh relevant UI widgets
                 self._refresh_project_widgets()
 
+    @staticmethod
+    def _split_writer_response(response: str) -> tuple:
+        """Separate the prose from the trailing <writing_summary> block.
+
+        Writer mode now requires the model to emit a structured summary
+        of which plot events it covered. We strip the summary tag from
+        the prose that lands in the editor and surface the summary
+        text in the chat as confirmation.
+
+        Also strips model-specific channel / chat-format tokens that
+        sometimes leak through from local models (Harmony, ChatML,
+        Llama 3, Mistral [INST], thinking-block wrappers). Without
+        the strip, a leaky local-model run dumps
+        ``<|channel|>thought<|channel|>`` spam into the editor.
+
+        Returns ``(prose, summary_text)`` — ``summary_text`` is empty
+        when the model didn't emit a tag (older prompt + back-compat).
+        """
+        import re as _re
+        from src.ai.output_sanitizer import strip_meta_tokens
+        if not response:
+            return "", ""
+        m = _re.search(
+            r"<writing_summary>\s*(.*?)\s*</writing_summary>",
+            response,
+            _re.DOTALL | _re.IGNORECASE,
+        )
+        if not m:
+            return strip_meta_tokens(response), ""
+        summary = strip_meta_tokens(m.group(1))
+        # Drop the summary tag (and any whitespace around it) from
+        # the prose. Tolerate the model emitting multiple tags by
+        # stripping all occurrences.
+        prose = _re.sub(
+            r"\s*<writing_summary>.*?</writing_summary>\s*",
+            "\n\n",
+            response,
+            flags=_re.DOTALL | _re.IGNORECASE,
+        )
+        prose = strip_meta_tokens(prose)
+        return prose, summary
+
     def _handle_writer_response(self, response: str):
         """Handle AI response in writer mode - insert into editor.
 
-        Args:
-            response: The AI-generated text to insert
+        Splits the response into prose (lands in the editor) and the
+        ``<writing_summary>`` block (surfaces in the chat as a coverage
+        confirmation so the author can see at a glance which plot
+        events the model claims to have covered).
         """
         insert_mode = getattr(self, '_pending_insert_mode', 'insert_at_cursor')
 
@@ -3893,24 +4564,42 @@ class MainWindow(QMainWindow):
             return
 
         editor = self.manuscript_editor.current_chapter_editor.editor
-        word_count = len(response.split())
+        # Degeneration guard — when the raw model output is mostly
+        # meta-token spam (Harmony / ChatML / etc. leakage from a
+        # mis-configured local model), surface a clear error in the
+        # chat instead of inserting whatever residual the sanitiser
+        # leaves into the manuscript.
+        from src.ai.output_sanitizer import is_degenerate_output
+        if is_degenerate_output(response):
+            self.chat_widget.add_message(
+                "Assistant",
+                "Writer aborted — the model returned mostly "
+                "internal channel / format tokens (e.g. "
+                "`<|channel|>thought`) instead of prose. This usually "
+                "means the local model's chat template doesn't match "
+                "its training format. Try switching models, "
+                "disabling the agentic-lookup loop, or shortening the "
+                "prompt. Nothing was inserted into the chapter.")
+            return
+        prose, summary = self._split_writer_response(response)
+        word_count = len(prose.split())
 
         try:
             if insert_mode == 'replace_selection':
                 # Replace selected text
                 cursor = editor.textCursor()
                 if cursor.hasSelection():
-                    cursor.insertText(response)
+                    cursor.insertText(prose)
                     action = "replaced selection"
                 else:
                     # Fallback to insert at cursor if no selection
-                    cursor.insertText(response)
+                    cursor.insertText(prose)
                     action = "inserted at cursor"
 
             elif insert_mode == 'insert_at_cursor':
                 # Insert at current cursor position
                 cursor = editor.textCursor()
-                cursor.insertText(response)
+                cursor.insertText(prose)
                 action = "inserted at cursor"
 
             elif insert_mode == 'append_to_chapter':
@@ -3921,31 +4610,324 @@ class MainWindow(QMainWindow):
                 current_text = editor.toPlainText()
                 if current_text and not current_text.endswith('\n\n'):
                     cursor.insertText('\n\n')
-                cursor.insertText(response)
+                cursor.insertText(prose)
                 action = "appended to chapter"
 
             elif insert_mode == 'replace_chapter':
                 # Replace entire chapter content
-                editor.setPlainText(response)
+                editor.setPlainText(prose)
                 action = "replaced chapter"
 
             else:
                 # Fallback
                 cursor = editor.textCursor()
-                cursor.insertText(response)
+                cursor.insertText(prose)
                 action = "inserted"
 
-            # Show confirmation in chat (not the full text)
-            self.chat_widget.add_message(
-                "Assistant",
-                f"Done! {word_count} words {action}."
-            )
+            # Show confirmation in chat. When the model emitted a
+            # summary block, surface it so the author can audit plot
+            # coverage at a glance without scrolling the editor.
+            confirm_msg = f"Done — {word_count:,} words {action}."
+            if summary:
+                confirm_msg += "\n\n" + summary
+            else:
+                confirm_msg += (
+                    "\n\n(No <writing_summary> block in the response — "
+                    "ask the model to retry if you want a coverage "
+                    "checklist.)")
+            self.chat_widget.add_message("Assistant", confirm_msg)
 
             # Show status bar notification
             self.statusBar().showMessage(f"Writer: {word_count} words {action}", 5000)
 
         except Exception as e:
             self.chat_widget.add_message("Assistant", f"Error inserting text: {str(e)}")
+
+    # ── Long-form writing dispatch ────────────────────────────────────
+
+    def _dispatch_long_form_writing(self, call: dict):
+        """Route a parsed long-form writing tool call to the agent.
+
+        Handles the three tool variants — full chapter, append plot
+        points, continue from cursor. Auto-saves the existing chapter
+        as a "Pre-rewrite draft" revision when full-chapter mode runs
+        on a non-empty chapter, then kicks off the worker.
+        """
+        tool = call.get("tool", "")
+        params = call.get("params", {}) or {}
+        instructions = params.get("instructions") or params.get("focus") or ""
+
+        if not (hasattr(self, 'manuscript_editor')
+                and self.manuscript_editor.current_chapter_editor):
+            self.chat_widget.add_message(
+                "Assistant",
+                "I can't run long-form writing — no chapter is open. "
+                "Open a chapter in the manuscript editor first.")
+            return
+
+        chapter_editor = self.manuscript_editor.current_chapter_editor
+        chapter = chapter_editor.chapter
+        editor = chapter_editor.editor
+        existing_text = editor.toPlainText() or ""
+        cursor = editor.textCursor()
+        cursor_pos = cursor.position()
+
+        # Pick mode + initial cursor / prior-text setup based on tool
+        if tool == "write_chapter_full":
+            mode = WritingMode.FULL_CHAPTER
+            prior_text = ""
+            target_points = int(params.get("target_points", 0) or 0)
+            existing_for_planner = existing_text  # planner sees what's there to know it's a rewrite
+            # Auto-save existing content as a draft revision before
+            # we start writing fresh, but only if there IS content.
+            if existing_text.strip() and params.get(
+                    "save_existing_as_draft", True):
+                if not self._snapshot_chapter_as_draft(chapter):
+                    self.chat_widget.add_message(
+                        "Assistant",
+                        "Could not save the current chapter as a draft "
+                        "revision. Aborting to protect your work.")
+                    return
+        elif tool == "append_plot_points":
+            mode = WritingMode.APPEND_POINTS
+            prior_text = existing_text
+            target_points = int(params.get("target_points", 1) or 1)
+            existing_for_planner = existing_text
+        elif tool == "continue_from_cursor":
+            mode = WritingMode.FROM_CURSOR
+            # Prior text is everything BEFORE the cursor; we throw away
+            # what comes after for planning purposes (the user can fold
+            # it back in manually if they want).
+            prior_text = existing_text[:cursor_pos]
+            target_points = int(params.get("target_points", 1) or 1)
+            existing_for_planner = prior_text
+        else:
+            self.chat_widget.add_message(
+                "Assistant", f"Unknown long-form tool: {tool}")
+            return
+
+        # Stash state for the response handlers
+        self._long_form_state = {
+            "tool": tool,
+            "mode": mode,
+            "chapter_editor": chapter_editor,
+            "cursor_pos": cursor_pos,
+            "prior_text": prior_text,
+            "instructions": instructions,
+            "params": params,
+            "target_points": target_points,
+            "existing_for_planner": existing_for_planner,
+            "first_insertion": True,
+            "plan": None,
+            # Beats accumulator: each entry is (title, description, prose).
+            # Drives the per-beat rating dialog after completion.
+            "beats_written": [],
+        }
+
+        # Build the RAG provider — same wrapper the critique flow uses
+        rag_provider = None
+        if hasattr(self, "_rag_top_chunks_per_type") and self._rag_initialized:
+            rag_provider = lambda q, st: self._rag_top_chunks_per_type(
+                query=q, source_types=st,
+                top_k=6, max_chars_per_chunk=600,
+                max_total_chars=2500,
+            )
+
+        # Kick off the worker
+        self._long_form_worker = LongFormWriterWorker(
+            chapter=chapter,
+            instructions=instructions,
+            mode=mode,
+            existing_text=existing_for_planner,
+            prior_text=prior_text,
+            target_points=target_points,
+            project=self.current_project,
+            rag_provider=rag_provider,
+        )
+        self._long_form_worker.progress.connect(
+            self._on_long_form_progress)
+        self._long_form_worker.plan_ready.connect(
+            self._on_long_form_plan_ready)
+        self._long_form_worker.point_written.connect(
+            self._on_long_form_point_written)
+        self._long_form_worker.finished.connect(
+            self._on_long_form_finished)
+        self._long_form_worker.error.connect(
+            self._on_long_form_error)
+        self._long_form_worker.start()
+        self.statusBar().showMessage("Long-form writing: planning…", 5000)
+
+    def _snapshot_chapter_as_draft(self, chapter) -> bool:
+        """Save the chapter's current content as a "Pre-rewrite draft" revision.
+
+        Then create a fresh blank revision so the AI's new prose lands
+        in a separate revision and the pre-rewrite draft is preserved.
+        Returns True on success.
+        """
+        from datetime import datetime
+        from pathlib import Path
+        try:
+            project_dir = None
+            if (self.current_project and self.current_project.project_path):
+                project_dir = Path(self.current_project.project_path).parent
+            stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+            chapter.add_revision(
+                notes=f"Pre-rewrite draft ({stamp}) — autosaved before AI rewrite",
+                project_dir=project_dir,
+            )
+            chapter.create_blank_revision(
+                project_dir=project_dir,
+                notes=f"AI rewrite ({stamp})",
+            )
+            self.statusBar().showMessage(
+                f"Saved current chapter as Pre-rewrite draft revision",
+                4000,
+            )
+            return True
+        except Exception as e:
+            print(f"[long_form] failed to snapshot chapter as draft: {e}")
+            return False
+
+    def _on_long_form_progress(self, msg: str):
+        """Surface long-form writer progress via status bar."""
+        self.statusBar().showMessage(msg, 3000)
+
+    def _on_long_form_plan_ready(self, plan):
+        """Plan is ready — store it on the active state.
+
+        If the plan poses clarifying questions, we surface them in the
+        chat and stop here. The user answers in chat; their answer
+        comes back through the normal chat path; the model emits the
+        write tool again with the answers folded into instructions.
+        """
+        if not hasattr(self, "_long_form_state") or not self._long_form_state:
+            return
+        self._long_form_state["plan"] = plan
+
+    def _on_long_form_point_written(
+        self, index: int, title: str, prose: str, prompt: str = ""):
+        """Insert a freshly-written beat into the editor as it lands.
+
+        ``prompt`` carries the actual LLM input the agent used for this
+        beat — full chapter constraints, running synopsis, RAG
+        context, and the beat brief. Persisting (prompt, prose) gives
+        the trainer a real instruction → completion pair instead of
+        a synthesised stub.
+        """
+        if not hasattr(self, "_long_form_state") or not self._long_form_state:
+            return
+        state = self._long_form_state
+        # Capture the beat for the rating dialog. Pull description from
+        # the plan when available (the worker only emits the title in
+        # this signal to keep the payload small).
+        plan = state.get("plan")
+        description = ""
+        if plan and 0 <= index < len(plan.plot_points):
+            description = plan.plot_points[index].description or ""
+        state.setdefault("beats_written", []).append(
+            (title, description, prose, prompt))
+        chapter_editor = state.get("chapter_editor")
+        if not chapter_editor or not prose.strip():
+            return
+        editor = chapter_editor.editor
+        cursor = editor.textCursor()
+        if state.get("first_insertion"):
+            # Position the cursor at the right spot the FIRST time only.
+            # Subsequent beats just continue from where we left off.
+            mode = state["mode"]
+            if mode == WritingMode.FULL_CHAPTER:
+                editor.setPlainText("")  # blank canvas
+                cursor = editor.textCursor()
+                cursor.movePosition(cursor.MoveOperation.End)
+            elif mode == WritingMode.APPEND_POINTS:
+                cursor.movePosition(cursor.MoveOperation.End)
+                current = editor.toPlainText()
+                if current and not current.endswith("\n\n"):
+                    cursor.insertText("\n\n")
+            elif mode == WritingMode.FROM_CURSOR:
+                cursor.setPosition(state.get("cursor_pos", 0))
+            state["first_insertion"] = False
+        else:
+            # For subsequent beats, separate with a paragraph break
+            cursor.insertText("\n\n")
+        cursor.insertText(prose)
+        editor.setTextCursor(cursor)
+        # Update the stored cursor pos so the next insert continues
+        state["cursor_pos"] = cursor.position()
+        self.statusBar().showMessage(
+            f"Wrote beat {index + 1}: {title}", 3000)
+
+    def _on_long_form_finished(self, plan, full_prose: str):
+        """Handle worker completion — either a Q&A pause or full prose."""
+        if not hasattr(self, "_long_form_state"):
+            self._long_form_state = {}
+        # Q&A pause: plan has questions and no prose was generated.
+        if plan and getattr(plan, "questions", None) and not full_prose:
+            self._long_form_state["plan"] = plan
+            qs = "\n".join(f"  {i+1}. {q}"
+                           for i, q in enumerate(plan.questions))
+            beats = (f"\n\nThe plan covers {len(plan.plot_points)} beat(s):"
+                     + "".join(f"\n  • {p.title}"
+                               for p in plan.plot_points[:8]))
+            if len(plan.plot_points) > 8:
+                beats += f"\n  • …and {len(plan.plot_points) - 8} more"
+            self.chat_widget.add_message(
+                "Assistant",
+                "Plan ready. Answer these questions and I'll draft "
+                f"the prose:{beats}\n\n{qs}\n\n"
+                "Reply with your answers and the engine will pick up.")
+            return
+        # Full execution finished.
+        if full_prose:
+            word_count = len(full_prose.split())
+            beats_count = len(plan.plot_points) if plan else 0
+            self.chat_widget.add_message(
+                "Assistant",
+                f"Done. Drafted {beats_count} beat(s), {word_count:,} words "
+                f"into the chapter. Rate the draft when you've had a "
+                f"chance to read it — the rating window is open.")
+            self.statusBar().showMessage(
+                f"Long-form writing: {word_count:,} words drafted", 5000)
+            # Surface the rating dialog so the user can mark the draft
+            # excellent / good / poor / bad and (optionally) save it
+            # as training data — one row per beat.
+            beats = list(self._long_form_state.get("beats_written") or [])
+            if beats:
+                chapter_title = (
+                    plan.chapter_title if plan else "Untitled Chapter")
+                genre = (plan.genre if plan and plan.genre
+                         else (
+                             self.current_project.prose_profile.genre
+                             if self.current_project
+                             else ""))
+                project_path = (
+                    str(self.current_project.project_path)
+                    if (self.current_project
+                        and self.current_project.project_path)
+                    else "")
+                summary = (
+                    f"{beats_count} beat(s), ~{word_count:,} words. "
+                    f"Genre: {genre or 'unspecified'}.")
+                self._long_form_rating_dialog = LongFormRatingDialog(
+                    chapter_title=chapter_title,
+                    beats=beats,
+                    plan_summary=summary,
+                    project_path=project_path,
+                    genre=genre,
+                    voice=(plan.voice_notes if plan else ""),
+                    pov=(plan.pov if plan else ""),
+                    parent=self,
+                )
+                self._long_form_rating_dialog.show()
+                self._long_form_rating_dialog.raise_()
+        # Clear state
+        self._long_form_state = {}
+
+    def _on_long_form_error(self, error: str):
+        """Surface long-form writer errors in chat."""
+        self.chat_widget.add_message(
+            "Assistant", f"Long-form writing error: {error}")
+        self._long_form_state = {}
 
     def _on_chat_error(self, error: str):
         """Handle AI chat error."""

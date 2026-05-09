@@ -23,6 +23,8 @@ class RephraseWorker(QThread):
     def __init__(self, agent: RephrasingAgent, text: str, styles: List[RephraseStyle],
                  tones: List[RephraseTone], custom_tone: str = "",
                  pov: str = "", character_context: str = "",
+                 pov_character_context: str = "",
+                 multi_speaker_attributions: list = None,
                  scene_description: str = "", surrounding_before: str = "",
                  surrounding_after: str = ""):
         super().__init__()
@@ -33,6 +35,17 @@ class RephraseWorker(QThread):
         self.custom_tone = custom_tone
         self.pov = pov
         self.character_context = character_context
+        # POV character profile (when distinct from the speaker).
+        # Defaults empty so existing callers keep working — the
+        # agent treats empty == "POV is the speaker".
+        self.pov_character_context = pov_character_context
+        # Per-line speaker attributions — populated when the
+        # rephrase target contains lines from multiple characters.
+        # When set, takes priority over character_context (the
+        # speakers are already covered with full profiles + line
+        # attributions in this list).
+        self.multi_speaker_attributions = (
+            multi_speaker_attributions or [])
         self.scene_description = scene_description
         self.surrounding_before = surrounding_before
         self.surrounding_after = surrounding_after
@@ -61,6 +74,9 @@ class RephraseWorker(QThread):
                 custom_tone=self.custom_tone,
                 pov=self.pov,
                 character_context=self.character_context,
+                pov_character_context=self.pov_character_context,
+                multi_speaker_attributions=(
+                    self.multi_speaker_attributions),
                 scene_description=self.scene_description,
                 surrounding_before=self.surrounding_before,
                 surrounding_after=self.surrounding_after,
@@ -109,6 +125,13 @@ class RephraseDialog(QDialog):
         self.result: Optional[RephraseResult] = None
         self.worker: Optional[RephraseWorker] = None
         self._refinement_history: List[str] = []  # Chat history for refinements
+        # Edit tracking: when the user types into preview_edit, this
+        # flips True so we can warn before clobbering the edit on
+        # option-switch and so Use Selected logs the edited text
+        # rather than the original. Reset to False each time we
+        # programmatically populate the preview (option-switch).
+        self._preview_dirty: bool = False
+        self._original_option_text: str = ""  # what was in preview before edits
 
         self._init_ui()
         self._init_agent()
@@ -466,11 +489,49 @@ class RephraseDialog(QDialog):
         preview_layout = QVBoxLayout(preview_widget)
         preview_layout.setContentsMargins(0, 0, 0, 0)
 
-        preview_label = QLabel("<b>Preview & Edit:</b>")
-        preview_layout.addWidget(preview_label)
+        # Header row for the preview pane: title + edit-state badge +
+        # Reset button. Makes it explicit that the preview is
+        # editable and gives a one-click way to undo an edit.
+        preview_header = QHBoxLayout()
+        preview_header.setContentsMargins(0, 0, 0, 0)
+        preview_label = QLabel(
+            "<b>Preview & Edit</b> "
+            "<span style='color:#9ca3af;font-size:11px;'>"
+            "— click in the box below to tweak before saving"
+            "</span>")
+        preview_header.addWidget(preview_label)
+        preview_header.addStretch()
+        # Edit-state badge: hidden until the user types; flips to
+        # "✏️ edited" so the user knows their edit will be saved
+        # (instead of the original option text).
+        self._edit_badge = QLabel("")
+        self._edit_badge.setStyleSheet(
+            "background: #fef3c7; color: #92400e; "
+            "border-radius: 3px; padding: 1px 6px; font-size: 10px;")
+        self._edit_badge.setVisible(False)
+        preview_header.addWidget(self._edit_badge)
+        # Reset-to-original button — appears when the preview is
+        # dirty so the user can revert without re-clicking the row.
+        self._reset_edit_btn = QPushButton("↺ Reset")
+        self._reset_edit_btn.setToolTip(
+            "Restore the option's original text (drops your edits).")
+        self._reset_edit_btn.setStyleSheet(
+            "QPushButton { padding: 2px 8px; font-size: 10px; "
+            " border: 1px solid #d1d5db; border-radius: 3px; "
+            " background: white; color: #374151; }"
+            "QPushButton:hover { border-color: #6b7280; }")
+        self._reset_edit_btn.setVisible(False)
+        self._reset_edit_btn.clicked.connect(self._reset_preview_edit)
+        preview_header.addWidget(self._reset_edit_btn)
+        preview_layout.addLayout(preview_header)
 
         self.preview_edit = QTextEdit()
-        self.preview_edit.setPlaceholderText("Select an option to preview and edit...")
+        self.preview_edit.setPlaceholderText(
+            "Select an option to preview. You can edit the text "
+            "directly in this box — your edits override the "
+            "selected option when you click Use.")
+        self.preview_edit.textChanged.connect(
+            self._on_preview_text_changed)
         preview_layout.addWidget(self.preview_edit)
 
         self.style_label = QLabel("")
@@ -874,6 +935,50 @@ class RephraseDialog(QDialog):
         print(f"🎨 Styles: {[s.value for s in styles]}")
         pov = self._get_selected_pov()
         character_context = self._get_selected_characters_context()
+        # When the chapter has a configured POV character that
+        # differs from the speaker we just detected, ship the POV
+        # character's profile separately so the agent can apply
+        # speaker rules to dialog and POV rules to narration. The
+        # auto-detect speaker pipeline always produces the speaker;
+        # the chapter's planning.pov_character is the narration
+        # anchor. They're often the same person; when they're not,
+        # the agent now handles both correctly.
+        pov_character_context = self._build_pov_character_context(
+            speaker_context=character_context)
+
+        # Multi-speaker detection: when the rephrase text has 2+
+        # quoted lines, run a speaker-attribution LLM call so the
+        # agent can keep each speaker's voice distinct. Falls back
+        # to the single-speaker path silently when there's nothing
+        # multi-speaker to detect or no LLM available.
+        multi_speaker_attributions: list = []
+        try:
+            from src.ai.rephrasing_agent import (
+                _text_contains_dialog, _extract_quoted_lines,
+            )
+            if (_text_contains_dialog(self.original_text)
+                    and len(_extract_quoted_lines(
+                        self.original_text)) >= 2):
+                multi_speaker_attributions = (
+                    self._detect_multi_speaker_attributions())
+                if multi_speaker_attributions:
+                    print(
+                        f"🗣  Multi-speaker dialog detected: "
+                        f"{[a['speaker_name'] for a in multi_speaker_attributions]}")
+                    # Surface the detection result in the UI so the
+                    # user sees who got attributed which lines
+                    # before the rephrase fires.
+                    bits = [
+                        f"<b>{a['speaker_name']}</b> "
+                        f"({len(a['lines'])} line"
+                        f"{'s' if len(a['lines']) != 1 else ''})"
+                        for a in multi_speaker_attributions]
+                    self.detect_status_label.setText(
+                        "Multi-speaker dialog: " + ", ".join(bits))
+                    self.detect_status_label.setVisible(True)
+        except Exception as e:
+            print(f"[multi-speaker] detection failed: {e}")
+
         scene_description = self.scene_desc_edit.text().strip()
 
         # Genre cue prepended to scene description so the LLM sees
@@ -958,6 +1063,9 @@ class RephraseDialog(QDialog):
             custom_tone=custom_tone,
             pov=pov,
             character_context=character_context,
+            pov_character_context=pov_character_context,
+            multi_speaker_attributions=(
+                multi_speaker_attributions),
             scene_description=scene_description,
             surrounding_before=self.surrounding_before,
             surrounding_after=self.surrounding_after,
@@ -1002,17 +1110,122 @@ class RephraseDialog(QDialog):
         )
 
     def _on_option_selected(self, row: int):
-        """Handle option selection."""
+        """Handle option selection.
+
+        If the user has already edited the preview when they pick a
+        different option, ask whether to discard the edit before
+        clobbering it. Without the confirm, work would silently
+        disappear when the user moused over to compare options. We
+        also reset the dirty flag so the freshly-loaded option
+        starts un-edited.
+        """
         if row < 0 or not self.result or row >= len(self.result.options):
+            # Suppress textChanged side-effects while we clear.
+            self._loading_preview = True
             self.preview_edit.clear()
+            self._loading_preview = False
             self.style_label.clear()
             self.use_btn.setEnabled(False)
+            self._set_preview_dirty(False)
             return
 
+        # Confirm before discarding an in-progress edit.
+        if self._preview_dirty:
+            from PyQt6.QtWidgets import QMessageBox
+            current = self.preview_edit.toPlainText().strip()
+            original = (self._original_option_text or '').strip()
+            if current and current != original:
+                resp = QMessageBox.question(
+                    self,
+                    "Discard your edit?",
+                    "You've edited the preview text. Switching to "
+                    "another option will replace your edit.\n\n"
+                    "Discard the edit and load the new option?",
+                    QMessageBox.StandardButton.Yes
+                    | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Cancel)
+                if resp != QMessageBox.StandardButton.Yes:
+                    # Bounce the selection back to whatever option
+                    # the edit came from. Find it by matching the
+                    # original text against the options list.
+                    self._loading_preview = True
+                    try:
+                        self._restore_previous_selection()
+                    finally:
+                        self._loading_preview = False
+                    return
+
         option = self.result.options[row]
-        self.preview_edit.setPlainText(option.text)
+        # Programmatic populate — silence the dirty signal.
+        self._loading_preview = True
+        try:
+            self.preview_edit.setPlainText(option.text)
+        finally:
+            self._loading_preview = False
+        self._original_option_text = option.text
         self.style_label.setText(f"Style: {option.style} | Tone: {option.tone} — {option.explanation}")
         self.use_btn.setEnabled(True)
+        self._set_preview_dirty(False)
+
+    def _restore_previous_selection(self):
+        """Re-select the option whose text matches what's currently
+        in the preview's saved-original. Called when the user
+        cancels the discard-edit confirm so they don't end up with
+        the new option highlighted but their old edit shown."""
+        if not self.result:
+            return
+        target = (self._original_option_text or '').strip()
+        for i, opt in enumerate(self.result.options):
+            if opt.text.strip() == target:
+                self.options_list.blockSignals(True)
+                try:
+                    self.options_list.setCurrentRow(i)
+                finally:
+                    self.options_list.blockSignals(False)
+                return
+
+    def _on_preview_text_changed(self):
+        """Track whether the preview has been edited.
+
+        Suppressed while we programmatically setPlainText (the
+        ``_loading_preview`` flag) so option-switches don't trip
+        the dirty flag falsely.
+        """
+        if getattr(self, '_loading_preview', False):
+            return
+        if not self.result:
+            return
+        current = self.preview_edit.toPlainText()
+        is_dirty = current.strip() != (
+            self._original_option_text or '').strip()
+        if is_dirty != self._preview_dirty:
+            self._set_preview_dirty(is_dirty)
+
+    def _set_preview_dirty(self, dirty: bool) -> None:
+        """Flip the dirty flag and update the badge / button label."""
+        self._preview_dirty = dirty
+        if dirty:
+            self._edit_badge.setText("✏️ edited")
+            self._edit_badge.setVisible(True)
+            self._reset_edit_btn.setVisible(True)
+            if hasattr(self, 'use_btn'):
+                self.use_btn.setText("✓ Use My Edited Version")
+        else:
+            self._edit_badge.setVisible(False)
+            self._reset_edit_btn.setVisible(False)
+            if hasattr(self, 'use_btn'):
+                self.use_btn.setText("Use Selected")
+
+    def _reset_preview_edit(self) -> None:
+        """Restore the preview to the originally-loaded option text."""
+        if self._original_option_text is None:
+            return
+        self._loading_preview = True
+        try:
+            self.preview_edit.setPlainText(self._original_option_text)
+        finally:
+            self._loading_preview = False
+        self._set_preview_dirty(False)
 
     def _on_rating_clicked(self, value: str):
         """Track which rating button is active (radio-button behavior).
@@ -1044,24 +1257,61 @@ class RephraseDialog(QDialog):
                     print(f"[Rephrase] could not log negative: {e}")
 
     def _use_selected(self):
-        """Use the selected/edited text and (if opted in) log the pair."""
-        self.selected_text = self.preview_edit.toPlainText()
-        # Capture for transfer-learning DB before closing — opt-in via OS settings
+        """Use the selected/edited text and (if opted in) log the pair.
+
+        Three cases the rating + edit combination can produce:
+          1. Rated + un-edited → log the option's original text at
+             that rating.
+          2. Rated + edited → log the EDITED text at that rating
+             (the edit is what the user actually wants saved).
+          3. Un-rated (anything → "good" by default) + un-edited or
+             edited → log whichever text is in preview_edit.
+
+        In every case, the saved row reflects what's in the
+        preview box at click time. The original (un-edited) option
+        is ALSO logged separately as a "good" reference sample
+        when it differs from the edit, so the training data
+        captures the contrast (this is the same kind of signal
+        DPO/preference training looks for).
+        """
+        edited = self.preview_edit.toPlainText()
+        was_edited = bool(self._preview_dirty)
+        original_option = self._original_option_text or ''
+        self.selected_text = edited
+        # If the user accepted without explicitly rating, treat it as
+        # 'good' — they liked it enough to use it.
+        rating = self._selected_rating
+        if rating in ("neutral", ""):
+            rating = "good"
         try:
-            # If the user accepted without explicitly rating, treat it as
-            # 'good' — they liked it enough to use it.
-            rating = self._selected_rating
-            if rating in ("neutral", ""):
-                rating = "good"
+            # Primary log: the text the user actually committed to.
             self._log_to_rephrase_db(
-                self.original_text, self.selected_text,
-                accepted=True, rating=rating)
+                self.original_text, edited,
+                accepted=True, rating=rating,
+                was_edited=was_edited)
+            # Secondary log: when the user edited the option, also
+            # log the un-edited original at a neutral rating so the
+            # training data has both versions as a comparison
+            # signal. Skip when they're identical (no edit) or when
+            # the original option text matches the source text
+            # (would log a no-op).
+            if (was_edited
+                    and original_option.strip()
+                    and original_option.strip() != edited.strip()
+                    and original_option.strip()
+                        != self.original_text.strip()):
+                self._log_to_rephrase_db(
+                    self.original_text, original_option,
+                    accepted=False, rating="neutral",
+                    was_edited=False)
         except Exception as e:
             print(f"[Rephrase] could not log to DB: {e}")
         self.accept()
 
     def _log_to_rephrase_db(self, source: str, output: str,
-                            accepted: bool = True, rating: str = "good"):
+                            accepted: bool = True,
+                            rating: str = "good",
+                            was_edited: bool = False):
         """Persist this rephrase pair so the user can later fine-tune a
         model on it. Only runs if collection is enabled in settings.
 
@@ -1069,6 +1319,10 @@ class RephraseDialog(QDialog):
             accepted: True if the user inserted this back into their text.
             rating: One of excellent / good / neutral / poor / bad. Negative
                 ratings (poor, bad) become DPO 'rejected' samples.
+            was_edited: True when the saved ``output`` was edited by
+                the user from the original AI suggestion. Stamped
+                into the row's style field as a tag so training-data
+                selection can prefer human-edited examples.
         """
         from src.data.rephrase_database import (
             get_rephrase_database, is_collection_enabled,
@@ -1085,6 +1339,12 @@ class RephraseDialog(QDialog):
             if 0 <= row < len(self.result.options):
                 opt = self.result.options[row]
                 style = f"{opt.style}/{opt.tone}".strip("/")
+        # Tag rows that were edited so training pipelines can
+        # weight or filter on human-touched examples. Appended to
+        # the style field rather than a new schema column to keep
+        # the rephrase DB migration-free.
+        if was_edited:
+            style = (style + " | edited").strip(" |")
 
         # Genre — the user's explicit dropdown pick wins. Falls back
         # to the project's prose_profile genre if the dropdown is on
@@ -1304,6 +1564,282 @@ class RephraseDialog(QDialog):
         except Exception as e:
             print(f"Speaker detection for rephrase failed: {e}")
             return ""
+
+    def _detect_multi_speaker_attributions(self) -> list:
+        """Try to map each quoted line in the rephrase text to a
+        speaker, with their character profile.
+
+        Returns ``[]`` when:
+          * The text has fewer than 2 quoted lines (no point — the
+            single-speaker path handles 0 or 1 line).
+          * No LLM is available for the detection call.
+          * The detection call fails or returns nothing parseable.
+
+        Otherwise returns a list of dicts the agent's
+        ``multi_speaker_attributions`` kwarg expects:
+            [{"speaker_name": str, "character_context": str,
+              "lines": [str], "evidence": str}, ...]
+
+        One entry per UNIQUE speaker, with all of that speaker's
+        attributed lines collected together.
+        """
+        from src.ai.rephrasing_agent import _extract_quoted_lines
+        quoted = _extract_quoted_lines(self.original_text)
+        if len(quoted) < 2:
+            return []
+
+        # Build a passage with surrounding context — needed to
+        # disambiguate "he said" / "she said" tags that the
+        # rephrase selection alone wouldn't resolve.
+        sel_pos = -1
+        if self.chapter_content:
+            sel_pos = self.chapter_content.find(self.original_text)
+        if sel_pos >= 0:
+            start = max(0, sel_pos - 1500)
+            end = min(len(self.chapter_content),
+                       sel_pos + len(self.original_text) + 800)
+            passage = self.chapter_content[start:end]
+        else:
+            passage = (self.surrounding_before[-1200:]
+                       + self.original_text
+                       + self.surrounding_after[:600])
+
+        # Reuse the agent's LLM client (avoids re-initialising one).
+        llm = None
+        if hasattr(self.agent, 'llm_client') and self.agent.llm_client:
+            llm = self.agent.llm_client
+        if llm is None:
+            try:
+                llm = self._get_or_build_llm()
+            except Exception:
+                llm = None
+        if llm is None:
+            print("[multi-speaker] no LLM available — skipping")
+            return []
+
+        chars_ref = ""
+        if self.project and hasattr(self.project, 'characters'):
+            chars_ref = "\n".join(
+                f"- {c.name} ({c.character_type})"
+                for c in self.project.characters)
+
+        # Format the quoted lines as a numbered list so the model
+        # can refer to each by index in its reply.
+        numbered_lines = "\n".join(
+            f"{i+1}. \"{q}\""
+            for i, q in enumerate(quoted))
+
+        system_prompt = (
+            "You map each quoted line to its speaker using ONLY "
+            "evidence in the passage. Be conservative — if a line "
+            "is genuinely ambiguous, mark it 'unknown' rather than "
+            "guessing. The output is consumed by another model and "
+            "must follow the format exactly.\n\n"
+            "OUTPUT FORMAT — one block per quoted line, in order:\n"
+            "  LINE 1: <full line text>\n"
+            "  SPEAKER: <name or 'unknown'>\n"
+            "  EVIDENCE: <one short phrase from the passage that "
+            "ties this line to this speaker, or 'inferred from "
+            "alternation' / 'inferred from action beat' / "
+            "'unclear'>\n\n"
+            "  LINE 2: …\n"
+            "  …")
+
+        prompt = (
+            f"PASSAGE (with the rephrase target inside it):\n"
+            f"...{passage}...\n\n"
+            f"QUOTED LINES IN THE REPHRASE TARGET (map each to "
+            f"its speaker):\n{numbered_lines}\n\n")
+        if chars_ref:
+            prompt += (
+                f"Known characters in the project (reference only "
+                f"— a speaker may also be a minor character not "
+                f"listed here):\n{chars_ref}\n\n")
+        prompt += "Map each line to its speaker now."
+
+        try:
+            response = llm.generate_text(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                max_tokens=600,
+                temperature=0.1,
+                task_type="multi_speaker_detect")
+        except Exception as e:
+            print(f"[multi-speaker] LLM call failed: {e}")
+            return []
+
+        # Parse the LINE/SPEAKER/EVIDENCE blocks.
+        import re
+        per_line: list = []  # [(line_text, speaker, evidence)]
+        cur = {}
+        for raw in response.splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            m = re.match(r'LINE\s*\d+\s*:\s*(.+)$',
+                         line, re.IGNORECASE)
+            if m:
+                if cur.get('line'):
+                    per_line.append(
+                        (cur['line'],
+                         cur.get('speaker', '').strip(),
+                         cur.get('evidence', '').strip()))
+                cur = {'line': m.group(1).strip().strip('"“”')}
+                continue
+            m = re.match(r'SPEAKER\s*:\s*(.+)$', line,
+                         re.IGNORECASE)
+            if m:
+                cur['speaker'] = m.group(1).strip()
+                continue
+            m = re.match(r'EVIDENCE\s*:\s*(.+)$', line,
+                         re.IGNORECASE)
+            if m:
+                cur['evidence'] = m.group(1).strip()
+                continue
+        if cur.get('line'):
+            per_line.append(
+                (cur['line'],
+                 cur.get('speaker', '').strip(),
+                 cur.get('evidence', '').strip()))
+
+        # Group by speaker so each character gets one entry with
+        # all their attributed lines.
+        by_speaker: dict = {}
+        for line_text, speaker, evidence in per_line:
+            if not speaker or speaker.lower() in ('unknown', '?'):
+                continue
+            key = speaker.strip()
+            if key not in by_speaker:
+                by_speaker[key] = {
+                    'speaker_name': key,
+                    'lines': [],
+                    'evidence_bits': [],
+                    'character_context': '',
+                }
+            by_speaker[key]['lines'].append(line_text)
+            if evidence:
+                by_speaker[key]['evidence_bits'].append(evidence)
+
+        if len(by_speaker) < 2:
+            # Not actually multi-speaker — fall back to single path.
+            return []
+
+        # Look each speaker up in the project's characters and
+        # build their full profile. Unknown characters get a
+        # minimal profile so the agent at least has the name.
+        chars_by_name = {}
+        if self.project and hasattr(self.project, 'characters'):
+            chars_by_name = {
+                c.name.lower(): c
+                for c in self.project.characters}
+
+        results = []
+        for name, info in by_speaker.items():
+            ch = chars_by_name.get(name.lower())
+            if ch is None:
+                # Try fuzzy contains match.
+                for cand_name, cand in chars_by_name.items():
+                    if (name.lower() in cand_name
+                            or cand_name in name.lower()):
+                        ch = cand
+                        break
+            if ch is not None:
+                profile = self._build_character_context_from_obj(ch)
+            else:
+                profile = (
+                    f"Name: {name}\n"
+                    f"(Speaker not in the project's character "
+                    f"roster — voice rules will rely on their "
+                    f"attributed lines + general dialog craft.)")
+            info['character_context'] = profile
+            info['evidence'] = " | ".join(
+                info.pop('evidence_bits') or [])
+            results.append(info)
+        return results
+
+    def _get_or_build_llm(self):
+        """Build an LLM client from settings — used by the
+        multi-speaker detector when the agent doesn't already
+        have one cached."""
+        from src.config.ai_config import get_ai_config
+        from src.ai.llm_client import (
+            LLMClient, LLMProvider, HuggingFaceConfig)
+        cfg = get_ai_config()
+        s = cfg.get_settings()
+        if (s.get("prefer_local_model", False)
+                and s.get("enable_local_models", False)
+                and s.get("local_model_id")):
+            mid = s["local_model_id"]
+            is_mlx = "mlx" in mid.lower()
+            hf = HuggingFaceConfig(
+                model_id=mid, use_local=True,
+                device=s.get("local_model_device", "auto"),
+                quantization=(
+                    s.get("local_model_quantization")
+                    if s.get("local_model_quantization") not in (
+                        "none", None) else None),
+                trust_remote_code=s.get(
+                    "local_model_trust_remote_code", False))
+            provider = (LLMProvider.MLX_LOCAL if is_mlx
+                        else LLMProvider.HUGGINGFACE_LOCAL)
+            return LLMClient(provider=provider, hf_config=hf)
+        provider_name = s.get("default_llm", "claude").lower()
+        api_key = cfg.get_api_key(provider_name)
+        if not api_key:
+            return None
+        provider_enum = {
+            "claude": LLMProvider.CLAUDE,
+            "chatgpt": LLMProvider.CHATGPT,
+            "openai": LLMProvider.CHATGPT,
+            "gemini": LLMProvider.GEMINI,
+        }.get(provider_name, LLMProvider.CLAUDE)
+        return LLMClient(
+            provider=provider_enum, api_key=api_key,
+            model=cfg.get_model(provider_name))
+
+    def _build_pov_character_context(
+            self, speaker_context: str = "") -> str:
+        """Return the chapter's POV character profile when it
+        differs from the speaker.
+
+        Returns an empty string when:
+          * The chapter has no configured POV character.
+          * The POV character matches whoever is in
+            ``speaker_context`` (no point sending two copies).
+          * No project / chapter is loaded.
+
+        The agent treats empty as 'POV is the speaker' and applies
+        a single set of voice rules — that's the legacy behavior
+        and the right default for narration-only or
+        single-character scenes. The dual-context path only fires
+        when the user has dialog from someone other than the POV
+        character, which is the case the user asked us to handle
+        properly.
+        """
+        if not self.chapter:
+            return ""
+        pov_name = (
+            getattr(getattr(self.chapter, 'planning', None),
+                    'pov_character', '') or '').strip()
+        if not pov_name:
+            return ""
+        # Don't bother shipping POV separately if the speaker
+        # context already names this character — the dual-profile
+        # path would just be redundant copies.
+        if pov_name and (
+                f"Name: {pov_name}" in speaker_context
+                or pov_name.lower() in speaker_context.lower()[:200]):
+            return ""
+        # Find the matching Character object on the project.
+        if not self.project or not hasattr(self.project, 'characters'):
+            return ""
+        for c in self.project.characters:
+            if c.name.lower() == pov_name.lower():
+                return self._build_character_context_from_obj(c)
+        # POV character is named but not in the cast — return what
+        # we know so the model still has SOMETHING to anchor
+        # narration to.
+        return f"Name: {pov_name}\n(POV character — full profile not in cast list)"
 
     def _build_character_context_from_obj(self, c) -> str:
         """Build character context string from a Character object."""

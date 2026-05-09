@@ -83,6 +83,53 @@ def _response_has_unclosed_suggest_event(text: str) -> bool:
     return opens > closes
 
 
+def _extract_theme_suggestions(reply: str):
+    """Pull <suggest_theme> blocks out of a model reply.
+
+    Mirrors ``_extract_event_suggestions``. Each block is a JSON dict
+    with ``title`` (required) + optional ``description``, ``statement``,
+    ``motifs`` (list). Returns ``(cleaned_text, [suggestions])``.
+    """
+    import re
+    import json
+    cleaned = reply
+    suggestions = []
+    pattern = re.compile(
+        r"<suggest_theme>\s*(.*?)\s*</suggest_theme>",
+        re.DOTALL | re.IGNORECASE)
+    for m in pattern.finditer(reply):
+        raw = m.group(1).strip()
+        data = None
+        try:
+            normalized = re.sub(r",\s*}", "}", raw)
+            normalized = re.sub(r",\s*]", "]", normalized)
+            data = json.loads(normalized)
+        except Exception:
+            data = None
+        suggestions.append({"data": data, "raw": raw})
+    cleaned = pattern.sub("", cleaned)
+    # Strip orphan unclosed <suggest_theme> from cleaned text — same
+    # truncation-tolerance logic as event suggestions.
+    orphan_open = re.compile(
+        r"<suggest_theme>(?:(?!</suggest_theme>).)*$",
+        re.DOTALL | re.IGNORECASE)
+    cleaned = orphan_open.sub("", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned, suggestions
+
+
+def _response_has_unclosed_suggest_theme(text: str) -> bool:
+    """True when <suggest_theme> tags outnumber </suggest_theme>."""
+    if not text:
+        return False
+    import re
+    opens = len(re.findall(
+        r"<suggest_theme>", text, re.IGNORECASE))
+    closes = len(re.findall(
+        r"</suggest_theme>", text, re.IGNORECASE))
+    return opens > closes
+
+
 def _truncation_continuation_prompt(partial: str) -> str:
     """Build a continuation prompt for the planner AI.
 
@@ -891,6 +938,28 @@ class ChapterPlannerWidget(QWidget):
         chars_locs_layout.addWidget(locs_group)
 
         description_layout.addLayout(chars_locs_layout)
+
+        # Themes row — chapter-level thematic threads. The Plan AI can
+        # propose themes via <suggest_theme> blocks, and the writer +
+        # research agents pull these into the brief so each scene has
+        # something to land thematically.
+        themes_group = QGroupBox("Themes")
+        themes_group.setStyleSheet("QGroupBox { font-size: 11px; }")
+        themes_outer = QVBoxLayout(themes_group)
+        themes_outer.setContentsMargins(4, 8, 4, 4)
+        self.themes_edit = QLineEdit()
+        self.themes_edit.setPlaceholderText(
+            "Themes for this chapter, comma-separated "
+            "(e.g. \"loyalty has a cost, inheritance survives refusal\")")
+        self.themes_edit.setStyleSheet("font-size: 11px;")
+        self.themes_edit.setToolTip(
+            "Thematic threads the chapter should land. The writer "
+            "agent uses these to anchor scenes; the research brief "
+            "surfaces them under THEMES TO LAND. Ask the Plan AI to "
+            "propose themes — it can emit <suggest_theme> blocks.")
+        self.themes_edit.textChanged.connect(self._on_plan_changed)
+        themes_outer.addWidget(self.themes_edit)
+        description_layout.addWidget(themes_group)
 
         # Writing Style Metadata section
         style_group = QGroupBox("Writing Style (for AI Writer)")
@@ -1871,6 +1940,9 @@ class ChapterPlannerWidget(QWidget):
         locs = planning_data.get('locations', [])
         self.locations_edit.setText(', '.join(locs) if locs else '')
 
+        themes = planning_data.get('themes', [])
+        self.themes_edit.setText(', '.join(themes) if themes else '')
+
         # Notes (organized by subject)
         notes_raw = planning_data.get('notes', [])
         if isinstance(notes_raw, str):
@@ -2001,6 +2073,10 @@ class ChapterPlannerWidget(QWidget):
         locs_text = self.locations_edit.text().strip()
         locs = [l.strip() for l in locs_text.split(',') if l.strip()] if locs_text else []
 
+        themes_text = self.themes_edit.text().strip()
+        themes = [t.strip() for t in themes_text.split(',')
+                  if t.strip()] if themes_text else []
+
         # Get events
         events = [widget.get_data() for widget in self._event_widgets]
 
@@ -2022,7 +2098,7 @@ class ChapterPlannerWidget(QWidget):
             'pov_character': self.pov_edit.text(),
             'timeline_position': self.timeline_edit.text(),
             'scene_list': [],  # Could be expanded later
-            'themes': [],  # Could be expanded later
+            'themes': themes,
             # Writing style metadata
             'tone': self.tone_edit.text(),
             'voice': self.voice_edit.text(),
@@ -2443,6 +2519,20 @@ Rules for suggestions:
 - Use character names from the CHARACTERS context — don't invent characters.
 - The block goes inline in your reply; the rest of your reply stays normal prose so the user can read your reasoning before clicking Add.
 
+WHEN THE DISCUSSION CALLS FOR THEMES:
+You may also propose chapter-level themes the writing AI will use to anchor its prose (the writer + research agents pull these into the brief under THEMES TO LAND). Use this exact tag and JSON shape:
+
+  <suggest_theme>{{"title":"short theme label","description":"what the theme is about (1-2 sentences)","statement":"the argument the chapter makes (one sentence — e.g. 'loyalty has a cost when the cost is named')","motifs":["recurring image","phrase","object"]}}</suggest_theme>
+
+Rules for theme suggestions:
+- Suggest themes when the user asks "what is this chapter about underneath?", "what should this chapter say?", "give me themes to land", "what theme connects these beats?", or when reviewing the chapter outline reveals a thematic thread that's not yet named.
+- ``title`` is a short label (2-5 words) that becomes the entry in the chapter's themes field.
+- ``statement`` is the chapter's argument — what point the events make. Specific over generic ("Inheritance survives refusal" beats "Family is hard").
+- ``motifs`` (optional) are the recurring images/phrases/objects that signal the theme on the page.
+- Themes should grow out of the events / characters / tensions actually in scope for this chapter. Don't invent themes the chapter has no chance to land.
+- Cap at 3 theme suggestions per reply (themes earn their space; don't dilute by stacking five).
+- Same inline placement as event blocks — the rest of your reply explains your reasoning.
+
 Respond conversationally otherwise — quotes from the project, references to specific characters or plot events by name, and concrete actionable advice the user can adopt or refine."""
 
         self._set_processing(True)
@@ -2468,16 +2558,23 @@ Respond conversationally otherwise — quotes from the project, references to sp
                 self._append_to_chat(
                     "error", "Failed to get response.")
                 return
-            cleaned, suggestions = _extract_event_suggestions(
+            # Strip event suggestions first, then theme suggestions
+            # from the same reply so the user-visible text never
+            # contains either tag.
+            cleaned, event_suggestions = _extract_event_suggestions(
                 reply_text)
+            cleaned, theme_suggestions = _extract_theme_suggestions(
+                cleaned)
             if cleaned:
                 self._append_to_chat("assistant", cleaned)
             self._ai_history.append({
                 "role": "assistant",
                 "content": cleaned or reply_text,
             })
-            for s in suggestions:
+            for s in event_suggestions:
                 self._add_event_suggestion_card(s)
+            for s in theme_suggestions:
+                self._add_theme_suggestion_card(s)
 
         def on_response(response: str):
             print(f"\n[ChapterPlanner] on_response: "
@@ -2487,15 +2584,16 @@ Respond conversationally otherwise — quotes from the project, references to sp
                 return
             request_state['accumulated'] += response
             full = request_state['accumulated']
-            # If the model left an unclosed <suggest_event>, loop a
-            # continuation request — but cap rounds so a perpetually
-            # broken response can't spin forever.
-            if (_response_has_unclosed_suggest_event(full)
+            # If the model left ANY unclosed suggestion tag (event or
+            # theme), loop a continuation request — but cap rounds so
+            # a perpetually broken response can't spin forever.
+            if ((_response_has_unclosed_suggest_event(full)
+                 or _response_has_unclosed_suggest_theme(full))
                     and request_state['rounds']
                         < request_state['max_rounds']):
                 request_state['rounds'] += 1
                 print(f"[ChapterPlanner] response cut off mid-"
-                      f"<suggest_event> — requesting continuation "
+                      f"suggestion — requesting continuation "
                       f"(round {request_state['rounds']}/"
                       f"{request_state['max_rounds']})")
                 # Show the user we're still working so a long
@@ -2758,6 +2856,157 @@ Respond conversationally otherwise — quotes from the project, references to sp
             except Exception as e:
                 _replace_with_banner(
                     f"✗ Couldn't add — {self._html_escape(str(e))}",
+                    "#b91c1c")
+
+        def on_skip():
+            _replace_with_banner("— Skipped —", "#6b7280")
+
+        add_btn.clicked.connect(on_add)
+        skip_btn.clicked.connect(on_skip)
+        self._event_suggestions_layout.addWidget(card)
+
+    def _add_theme_suggestion_card(self, suggestion: dict):
+        """Render an Add / Skip card for one <suggest_theme>.
+
+        ``suggestion['data']`` is ``{title: str, description: str,
+        statement: str, motifs: [str]}`` (all but ``title`` optional).
+        Accepting appends the title to the chapter's themes field
+        (comma-separated, deduped). The fuller fields show in the
+        card so the user can copy them into the project's structured
+        Theme list manually if they want a richer record.
+        """
+        from PyQt6.QtWidgets import QHBoxLayout, QFrame
+        card = QFrame()
+        card.setStyleSheet(
+            "QFrame { background-color: #fdf4ff; "
+            "border: 1px solid #f5d0fe; border-radius: 6px; }")
+        v = QVBoxLayout(card)
+        v.setContentsMargins(8, 6, 8, 6)
+        v.setSpacing(4)
+
+        kind_label = QLabel(
+            "<span style='background:#f3e8ff;color:#7e22ce;"
+            "padding:1px 6px;border-radius:3px;font-size:10px;"
+            "font-weight:600;'>+ THEME</span> suggestion")
+        kind_label.setStyleSheet("font-size: 11px;")
+        v.addWidget(kind_label)
+
+        data = suggestion.get('data')
+        if data:
+            title = (data.get('title') or '(unnamed theme)').strip()
+            description = (data.get('description') or '').strip()
+            statement = (data.get('statement') or '').strip()
+            motifs = data.get('motifs') or []
+            summary_html = (
+                f"<span style='font-size:13px;'>"
+                f"<b>{self._html_escape(title)}</b></span>")
+            if description:
+                summary_html += (
+                    f"<br/><span style='color:#475569;font-size:11px;'>"
+                    f"{self._html_escape(description)}</span>")
+            if statement:
+                summary_html += (
+                    f"<br/><span style='color:#7e22ce;font-size:11px;"
+                    f"font-style:italic;'>"
+                    f"statement: {self._html_escape(statement)}</span>")
+            if isinstance(motifs, list) and motifs:
+                motif_text = ", ".join(
+                    str(m) for m in motifs[:6] if m)
+                if motif_text:
+                    summary_html += (
+                        f"<br/><span style='color:#9ca3af;"
+                        f"font-size:10px;'>"
+                        f"motifs: {self._html_escape(motif_text)}</span>")
+            summary = QLabel(summary_html)
+            summary.setWordWrap(True)
+            summary.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse)
+            v.addWidget(summary)
+        else:
+            err = QLabel(
+                "<i>(couldn't parse the AI's theme JSON; raw text "
+                "below — copy if you'd like to add it manually)</i>")
+            err.setStyleSheet("color: #b91c1c; font-size: 11px;")
+            err.setWordWrap(True)
+            v.addWidget(err)
+            raw = QLabel(
+                f"<pre style='font-size:10px;color:#374151;"
+                f"white-space:pre-wrap;'>"
+                f"{self._html_escape(suggestion.get('raw', ''))}"
+                f"</pre>")
+            raw.setWordWrap(True)
+            v.addWidget(raw)
+
+        action_row_w = QWidget()
+        action_row = QHBoxLayout(action_row_w)
+        action_row.setContentsMargins(0, 0, 0, 0)
+        action_row.setSpacing(6)
+        action_row.addStretch()
+
+        skip_btn = QPushButton("✕ Skip")
+        skip_btn.setStyleSheet(
+            "QPushButton { padding: 4px 12px; font-size: 11px; "
+            " border: 1px solid #d1d5db; border-radius: 4px; "
+            " background: white; color: #374151; }"
+            "QPushButton:hover { border-color: #6b7280; }")
+        action_row.addWidget(skip_btn)
+
+        add_btn = QPushButton("➕ Add to chapter")
+        add_btn.setStyleSheet(
+            "QPushButton { background-color: #9333ea; color: white; "
+            " padding: 4px 14px; border-radius: 4px; font-size: 11px;"
+            " font-weight: 600; }"
+            "QPushButton:hover { background-color: #7e22ce; }"
+            "QPushButton:disabled { background-color: #d8b4fe; }")
+        add_btn.setEnabled(bool(data))
+        if not data:
+            add_btn.setToolTip(
+                "Can't add — the AI's JSON didn't parse.")
+        action_row.addWidget(add_btn)
+        v.addWidget(action_row_w)
+
+        def _replace_with_banner(html: str, color: str):
+            banner = QLabel(html)
+            banner.setStyleSheet(
+                f"color: {color}; font-size: 11px; padding: 2px 0;")
+            banner.setWordWrap(True)
+            v.replaceWidget(action_row_w, banner)
+            add_btn.setEnabled(False)
+            skip_btn.setEnabled(False)
+            action_row_w.hide()
+            action_row_w.deleteLater()
+
+        def on_add():
+            if not data:
+                return
+            title = (data.get('title') or '').strip()
+            if not title:
+                _replace_with_banner(
+                    "✗ Skipped: theme title was empty.", "#b91c1c")
+                return
+            # Append to the comma-separated themes_edit field, deduped
+            # (case-insensitive). The textChanged signal triggers
+            # _on_plan_changed → save logic, so this persists.
+            try:
+                current = (self.themes_edit.text() or "").strip()
+                existing = [t.strip() for t in current.split(",")
+                            if t.strip()]
+                if title.lower() in {t.lower() for t in existing}:
+                    _replace_with_banner(
+                        f"✓ Already in chapter: "
+                        f"<b>{self._html_escape(title)}</b>",
+                        "#15803d")
+                    return
+                existing.append(title)
+                self.themes_edit.setText(", ".join(existing))
+                _replace_with_banner(
+                    f"✓ <b>Added theme</b> — "
+                    f"{self._html_escape(title)}",
+                    "#15803d")
+            except Exception as e:
+                _replace_with_banner(
+                    f"✗ Couldn't add — "
+                    f"{self._html_escape(str(e))}",
                     "#b91c1c")
 
         def on_skip():

@@ -19,6 +19,12 @@ just happened, what CONTINUITY constraints apply, what THEMES should
 land". The writer call then only needs the manuscript anchors
 (literal chapter text + previous-chapter ending) plus this brief.
 
+The research pass also has the agentic project lookup tools wired
+in (``LOOKUP_TOOLS_PROMPT_BLOCK`` + ``run_with_lookups``) so when the
+context dump is sparse the librarian can actively fetch what it needs
+— a character profile, a chapter's themes, a worldbuilding entry —
+instead of producing a hollow brief.
+
 Architectural shape
 -------------------
 This is the shape we expect to add for any "retrieve then act"
@@ -38,6 +44,7 @@ from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from src.ai.llm_client import LLMClient
+    from src.models.project import WriterProject
 
 
 _RESEARCH_SYSTEM = (
@@ -129,7 +136,19 @@ def _fallback_brief(writing_request: str, ctx: dict) -> str:
             "- Open tensions in play: see STORY TENSIONS context")
 
     lines.append("\nTHEMES TO LAND:")
-    if ctx.get('plot_themes'):
+    # Prefer chapter-level themes when present (they're scope-specific
+    # for THIS scene); fall back to project-level themes; emit "(none
+    # applicable)" only when both are empty.
+    chapter_themes = []
+    cp = ctx.get('chapter_planning') or {}
+    if isinstance(cp, dict):
+        ct = cp.get('themes') or []
+        if isinstance(ct, list):
+            chapter_themes = [str(t).strip() for t in ct if str(t).strip()]
+    if chapter_themes:
+        for t in chapter_themes[:6]:
+            lines.append(f"- {t}")
+    elif ctx.get('plot_themes'):
         themes = ctx['plot_themes'][:300]
         lines.append(f"- {themes}")
     else:
@@ -162,7 +181,7 @@ def _assemble_research_user_block(writing_request: str,
     # Plot scaffolding (small, always relevant)
     for key, label in (
         ('plot_freytag', 'FREYTAG STAGES'),
-        ('plot_themes', 'STORY THEMES'),
+        ('plot_themes', 'STORY THEMES (project-level)'),
         ('plot_promises', 'STORY PROMISES'),
         ('plot_tensions', 'STORY TENSIONS'),
         ('plot_subplots', 'SUBPLOTS'),
@@ -170,22 +189,42 @@ def _assemble_research_user_block(writing_request: str,
         if ctx.get(key):
             parts.append(f"\n{label}:\n{ctx[key][:1500]}")
 
-    # Use RAG-focused chars/world if available — they're already
-    # narrowed for this question. Fall back to the broad lists.
+    # Chapter-level themes — these are scope-specific for THIS scene
+    # and override project-level themes when present. Surfacing them
+    # explicitly keeps the THEMES TO LAND section of the brief
+    # populated even when the project-level list is empty.
+    cp = ctx.get('chapter_planning') or {}
+    if isinstance(cp, dict):
+        ch_themes = cp.get('themes') or []
+        if isinstance(ch_themes, list) and ch_themes:
+            parts.append(
+                "\nCHAPTER-LEVEL THEMES (scope: this chapter — "
+                "surface in the THEMES TO LAND section):\n"
+                + "\n".join(f"- {str(t).strip()}"
+                            for t in ch_themes if str(t).strip()))
+
+    # Characters: include the RAG-focused selection when present AND
+    # the broader roster as a backstop. Earlier code only used one or
+    # the other, which left the brief blind when RAG returned a thin
+    # focused set or when the focused key wasn't populated at all.
     if ctx.get('rag_focused_characters'):
         parts.append(
             f"\nCHARACTERS (RAG-focused for this scene):\n"
             f"{ctx['rag_focused_characters'][:2500]}")
-    elif ctx.get('characters'):
-        parts.append(f"\nCHARACTERS:\n{ctx['characters'][:2500]}")
+    if ctx.get('characters'):
+        parts.append(f"\nCHARACTERS (full roster):\n"
+                     f"{ctx['characters'][:2500]}")
 
+    # Worldbuilding: same dual-include pattern — the focused slice
+    # PLUS the full block, capped per slot.
     if ctx.get('rag_focused_worldbuilding'):
         parts.append(
             f"\nWORLDBUILDING (RAG-focused for this scene):\n"
             f"{ctx['rag_focused_worldbuilding'][:2500]}")
-    elif ctx.get('worldbuilding'):
+    if ctx.get('worldbuilding'):
         parts.append(
-            f"\nWORLDBUILDING:\n{ctx['worldbuilding'][:2500]}")
+            f"\nWORLDBUILDING (full set):\n"
+            f"{ctx['worldbuilding'][:2500]}")
 
     # POV settings the writer must respect.
     pov_bits = []
@@ -224,7 +263,10 @@ class ResearchAgent:
         Args:
             writing_request: The user's write prompt verbatim.
             ctx: The context dict main_window.ChatWorker would have
-                used. We don't mutate it.
+                used. We don't mutate it. Recognised "private" keys:
+                  - ``_project``  : WriterProject (for lookup tools)
+                  - ``_rag_search``: callable for search_project /
+                    semantic fallback inside lookups
             llm: Optional per-call LLM override. Falls back to the
                 instance ``self.llm``.
             max_tokens: Cap on the brief — 600 words ≈ 700 tokens
@@ -242,18 +284,54 @@ class ResearchAgent:
             writing_request, ctx)
         if client is None:
             return _fallback_brief(writing_request, ctx)
+
+        # Route through the agentic-lookup loop so the librarian can
+        # fetch character profiles / worldbuilding entries / chapter
+        # themes on demand when the context dump is sparse. Falls
+        # through to a plain ``generate_text`` when the model emits
+        # no lookup tags.
         try:
-            brief = client.generate_text(
+            from src.ai.project_lookup import (
+                run_with_lookups, LOOKUP_TOOLS_PROMPT_BLOCK)
+            sys_prompt = (
+                f"{_RESEARCH_SYSTEM}\n\n{'=' * 60}\n"
+                f"{LOOKUP_TOOLS_PROMPT_BLOCK}")
+            brief, _log = run_with_lookups(
+                llm=client,
                 prompt=user_block,
-                system_prompt=_RESEARCH_SYSTEM,
+                system_prompt=sys_prompt,
+                project=ctx.get('_project'),
+                rag_search=ctx.get('_rag_search'),
                 max_tokens=max_tokens,
                 temperature=temperature,
+                max_lookup_rounds=2,
             )
         except Exception as e:
-            print(f"[research] LLM call failed: {e}; "
-                  f"using deterministic fallback brief")
+            print(f"[research] lookup-augmented call failed: {e}; "
+                  f"falling back to plain generate_text")
+            try:
+                brief = client.generate_text(
+                    prompt=user_block,
+                    system_prompt=_RESEARCH_SYSTEM,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+            except Exception as e2:
+                print(f"[research] plain LLM call also failed: {e2}; "
+                      f"using deterministic fallback brief")
+                return _fallback_brief(writing_request, ctx)
+        # Strip model-specific channel / chat-format tokens that
+        # leak through from local models (Harmony, ChatML, etc.).
+        # When the brief comes back as mostly meta-token spam we
+        # fall back to the deterministic skeleton so writer mode
+        # has SOMETHING to ground in.
+        from src.ai.output_sanitizer import (
+            strip_meta_tokens, is_degenerate_output)
+        if is_degenerate_output(brief or ""):
+            print("[research] LLM output was degenerate "
+                  "(mostly meta-token spam); using fallback brief")
             return _fallback_brief(writing_request, ctx)
-        cleaned = (brief or "").strip()
+        cleaned = strip_meta_tokens(brief or "").strip()
         if not cleaned:
             return _fallback_brief(writing_request, ctx)
         return cleaned
