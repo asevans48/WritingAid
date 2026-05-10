@@ -783,6 +783,12 @@ class ChapterPlannerWidget(QWidget):
     # so the receiver can route to outline-mode chat with focused
     # beat context.
     beat_ai_help_requested = pyqtSignal(str, str, str, str)
+    # Emitted when the user clicks "Clear Plot Arc" and confirms.
+    # The receiver (MainWindow) is responsible for wiping the
+    # current chapter's planning.events + planning.outline AND
+    # blanking the AI-Assistant outline panel — the planner widget
+    # only owns its own UI state.
+    events_cleared = pyqtSignal()
     _ai_response_ready = pyqtSignal(object)  # Internal signal for thread-safe callback delivery
 
     def __init__(self, parent=None):
@@ -897,6 +903,29 @@ class ChapterPlannerWidget(QWidget):
         events_actions.addWidget(self.reorder_events_btn)
 
         events_actions.addStretch()
+
+        # Clear Plot Arc — destructive: drops every beat AND blanks
+        # the AI-Assistant outline panel for this chapter. Lives at
+        # the right of the row + uses red styling so the user can't
+        # confuse it with the additive "Generate" / "Auto-Order"
+        # actions on the left.
+        self.clear_events_btn = QPushButton("Clear Plot Arc")
+        self.clear_events_btn.setToolTip(
+            "Remove every beat from this chapter's plot arc and "
+            "drop the matching outline. The chapter prose is left "
+            "untouched.")
+        self.clear_events_btn.setStyleSheet(
+            "QPushButton { font-size: 11px; padding: 3px 8px; "
+            " color: #b91c1c; border: 1px solid #fecaca; "
+            " border-radius: 3px; background: #fef2f2; } "
+            "QPushButton:hover { background: #fee2e2; "
+            " border-color: #fca5a5; } "
+            "QPushButton:disabled { color: #9ca3af; "
+            " background: transparent; border-color: #e5e7eb; }")
+        self.clear_events_btn.clicked.connect(
+            self._on_clear_events_clicked)
+        events_actions.addWidget(self.clear_events_btn)
+
         events_layout.addLayout(events_actions)
 
         self.tab_widget.addTab(events_tab, "Events")
@@ -1848,6 +1877,89 @@ class ChapterPlannerWidget(QWidget):
                 self._renumber_events()
                 self._on_plan_changed()
                 break
+
+    def update_events(self, events) -> None:
+        """Replace ONLY the visible events list — leave every other
+        planning field (description, POV, characters, notes, etc.)
+        alone.
+
+        Used by MainWindow after the AI-Assistant outline panel
+        rewrites ``chapter.planning.events`` directly. Without this
+        refresh, the planner widget stays out of sync, and the next
+        ``save_to_model`` (fired on chapter switch / autosave) would
+        read the stale planner UI and clobber the freshly-written
+        events with an empty list.
+
+        Accepts a list of either ``StoryEvent`` instances or dicts.
+        """
+        # Tear down existing event widgets.
+        for widget in self._event_widgets[:]:
+            widget.deleteLater()
+        self._event_widgets.clear()
+
+        for i, event in enumerate(events or []):
+            if hasattr(event, "model_dump"):
+                data = event.model_dump()
+            elif isinstance(event, dict):
+                data = event
+            else:
+                # Fallback: pull common fields off the object.
+                data = {
+                    "id": getattr(event, "id", None),
+                    "text": getattr(event, "text", "") or "",
+                    "description": getattr(event, "description", "") or "",
+                    "completed": getattr(event, "completed", False),
+                    "stage": getattr(event, "stage", "rising"),
+                    "arc_position": getattr(event, "arc_position", -1),
+                    "order": getattr(event, "order", i),
+                }
+            self._add_event_item(
+                text=data.get("text", "") or "",
+                description=data.get("description", "") or "",
+                completed=data.get("completed", False),
+                stage=data.get("stage", "rising"),
+                arc_position=data.get("arc_position", -1),
+                event_id=data.get("id"),
+                order=i,
+            )
+        self._update_arc_widget()
+
+    def _on_clear_events_clicked(self):
+        """Clear every beat after a confirmation prompt.
+
+        Wipes this widget's event list AND emits ``events_cleared``
+        so MainWindow can blank the chapter's planning.events,
+        planning.outline, and the AI-Assistant outline panel.
+        Chapter prose is intentionally left alone.
+        """
+        if not self._event_widgets:
+            QMessageBox.information(
+                self, "Nothing to clear",
+                "This chapter has no plot arc beats yet.")
+            return
+        reply = QMessageBox.question(
+            self, "Clear plot arc?",
+            "Remove every beat from this chapter's plot arc and "
+            "drop the matching outline?\n\n"
+            "The chapter's prose stays untouched. This can't be "
+            "undone — re-generate or rebuild beats afterwards.",
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        # Tear down the event widgets.
+        for w in self._event_widgets[:]:
+            w.deleteLater()
+        self._event_widgets.clear()
+        self._update_arc_widget()
+        # Notify listeners — MainWindow handles the cross-widget
+        # cleanup (planning.events / planning.outline / panel).
+        # Emit plan_changed too so the standard
+        # "planning content changed" wiring (autosave, dirty
+        # marker, etc.) still kicks in.
+        self.events_cleared.emit()
+        self._on_plan_changed()
 
     def _renumber_events(self):
         """Update order numbers for all events."""

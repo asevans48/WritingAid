@@ -819,14 +819,23 @@ class Chapter(BaseModel):
         # prose. When ``planning.outline`` is empty but the legacy
         # ``chapter.plan`` has content, preserve the legacy file as-is
         # for back-compat (don't clobber).
+        # When BOTH planning.outline and the legacy plan field are
+        # empty, the user has explicitly cleared the outline (e.g.
+        # via "Clear Plot Arc" in the chapter planner). Truncate the
+        # on-disk plan.md so the next load doesn't re-hydrate
+        # planning.outline from a stale file.
         outline_text = (self.planning.outline or "").strip()
+        plan_path = project_dir / self.folder_path / "plan.md"
         if outline_text:
             self.plan = outline_text  # keep legacy field in sync
-            plan_path = project_dir / self.folder_path / "plan.md"
             plan_path.write_text(outline_text, encoding='utf-8')
         elif self.plan:
-            plan_path = project_dir / self.folder_path / "plan.md"
             plan_path.write_text(self.plan, encoding='utf-8')
+        else:
+            # Explicit clear — write an empty file so the on-disk
+            # state matches the in-memory cleared state.
+            if plan_path.exists():
+                plan_path.write_text("", encoding='utf-8')
 
         # Update legacy file_path to point to active revision for compat
         active_rev = self._get_active_revision()

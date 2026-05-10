@@ -3595,11 +3595,19 @@ class MainWindow(QMainWindow):
         # chat focused on that beat.
         self.manuscript_editor.beat_ai_help_requested.connect(
             self._handle_beat_ai_help_requested)
+        # When the user clicks "Clear Plot Arc" + confirms, drop
+        # the chapter's events + outline AND blank the AI-Assistant
+        # outline panel for that chapter.
+        self.manuscript_editor.events_cleared.connect(
+            self._handle_chapter_events_cleared)
         # Auto-sync new beats from the outline panel into
         # chapter.planning.events whenever the panel changes — this
         # is what "slots a user-created beat into the plan" means.
         self.chat_widget.outline_panel.outline_changed.connect(
             self._sync_panel_beats_to_planning_events)
+        # Per-beat ✨ AI-help button on a card → route to outline chat.
+        self.chat_widget.outline_panel.beat_ai_help_requested.connect(
+            self._handle_panel_beat_ai_help)
 
         # Update grader widget when switching to Critique tab
         self.tab_widget.currentChanged.connect(self._on_tab_changed)
@@ -5327,6 +5335,21 @@ class MainWindow(QMainWindow):
         beat_state.setdefault("rounds_for_beat", 0)
         beat_state.setdefault(
             "max_rounds", self._WRITER_MAX_ROUNDS_PER_BEAT)
+        # DEFENSIVE PER-BEAT RESET. If the round counter is still
+        # carrying state from a PRIOR beat (because the prose
+        # handler / advance path missed the reset, or the model
+        # returned questions in a state where in_progress was
+        # transiently False), reset to 0 here. Without this the
+        # counter accumulates across beats and the round cap fires
+        # after only 2-3 beats of work.
+        cur_beat_no_for_counter = (
+            beat_state.get("current_beat_number")
+            or (beat_state.get("current_idx", 0) + 1))
+        last_counter_beat = beat_state.get("_round_counter_beat_no")
+        if last_counter_beat != cur_beat_no_for_counter:
+            beat_state["rounds_for_beat"] = 0
+            beat_state["_round_counter_beat_no"] = (
+                cur_beat_no_for_counter)
         beat_state["rounds_for_beat"] += 1
         rounds = beat_state["rounds_for_beat"]
         cap = beat_state["max_rounds"]
@@ -5763,6 +5786,11 @@ class MainWindow(QMainWindow):
             s.setdefault("rounds_for_beat", 0)
             s.setdefault(
                 "max_rounds", self._OUTLINE_MAX_ROUNDS_PER_BEAT)
+            # Defensive per-beat reset: same logic as writer mode.
+            last_counter_beat = s.get("_round_counter_beat_no")
+            if last_counter_beat != beat_no:
+                s["rounds_for_beat"] = 0
+                s["_round_counter_beat_no"] = beat_no
             s["rounds_for_beat"] += 1
             rounds = s["rounds_for_beat"]
             cap = s["max_rounds"]
@@ -6116,6 +6144,29 @@ class MainWindow(QMainWindow):
             lines.append("")
         return "\n".join(lines).rstrip() + "\n"
 
+    def _handle_panel_beat_ai_help(
+            self,
+            beat_title: str,
+            beat_body_md: str,
+            beat_stage: str) -> None:
+        """Forward an outline-panel ✨ click into the chat router.
+
+        Reuses ``_handle_beat_ai_help_requested`` (originally wired
+        to the chapter planner's per-event ✨) so both entry points
+        produce the same focused-prompt staging.
+        """
+        ce = getattr(self.manuscript_editor,
+                     "current_chapter_editor", None)
+        chapter_id = (getattr(ce.chapter, "id", "")
+                      if ce and getattr(ce, "chapter", None)
+                      else "")
+        self._handle_beat_ai_help_requested(
+            event_id="",
+            event_text=beat_title,
+            event_description=beat_body_md,
+            event_stage=beat_stage,
+            chapter_id=chapter_id)
+
     def _handle_beat_ai_help_requested(
             self,
             event_id: str,
@@ -6170,116 +6221,254 @@ class MainWindow(QMainWindow):
 
     def _sync_panel_beats_to_planning_events(
             self, outline_text: str) -> None:
-        """Slot user-created panel beats into chapter.planning.events.
+        """Reconcile chapter.planning.events with the panel's beats.
 
         Triggered on every outline_panel.outline_changed signal.
-        Parses the panel's beats; for each beat heading whose
-        title doesn't match an existing StoryEvent (case-insensitive
-        title compare), inserts a new StoryEvent at the right
-        position in chapter.planning.events. Position is derived
-        from the ``Beat N:`` number when present; otherwise the
-        beat is appended.
+        Performs a FULL reconciliation: the panel's beat order +
+        membership becomes the events list. For each panel beat:
 
-        Existing events are NEVER deleted or reordered — this is
-        an additive sync. The user can edit/delete events through
-        the planner widget's add/edit/remove controls.
+          * Title matches an existing event (case-insensitive,
+            stripping the ``Beat N:`` prefix) → reuse the event,
+            preserving its id, description, stage, completed.
+          * Title is new → create a new StoryEvent.
+          * Existing event whose title isn't in the panel → drop.
+
+        This is what lets ↑/↓ reorder and × delete in the panel
+        flow into the chapter plot arc. Existing event ids and
+        descriptions are preserved when possible so AI work on a
+        beat survives a rename or reorder.
         """
-        ce = getattr(self.manuscript_editor,
-                     'current_chapter_editor', None)
-        if ce is None or not getattr(ce, 'chapter', None):
+        # Target the chapter the PANEL is bound to, NOT the
+        # manuscript editor's current chapter. The two diverge
+        # during the flush-on-switch race: when the user clicks
+        # a different chapter while a panel-edit autosave is
+        # pending, panel.load_chapter flushes via outline_changed,
+        # but by then manuscript_editor.current_chapter_editor has
+        # already been swapped to the new chapter. Using the
+        # current editor would write the OLD chapter's beats into
+        # the NEW chapter's events list. The panel's bound id is
+        # always the chapter the outline_text actually belongs to.
+        panel = getattr(self.chat_widget, 'outline_panel', None)
+        if panel is None:
             return
-        chapter = ce.chapter
+        target_id = panel.current_chapter_id()
+        if not target_id or not self.current_project:
+            return
+        chapter = None
+        manuscript = getattr(self.current_project, 'manuscript', None)
+        for ch in (getattr(manuscript, 'chapters', None) or []):
+            if getattr(ch, 'id', None) == target_id:
+                chapter = ch
+                break
+        if chapter is None:
+            return
         if (not hasattr(chapter, 'planning')
                 or chapter.planning is None):
             return
-        events = list(getattr(chapter.planning, 'events', []) or [])
+        existing_events = list(
+            getattr(chapter.planning, 'events', []) or [])
 
-        # Parse panel beats.
         from src.ui.outline_panel import _parse_beats
         _, panel_beats = _parse_beats(outline_text or "")
         if not panel_beats:
+            # Empty panel doesn't wipe events — defensive against
+            # transient parse glitches. The user can clear events
+            # via the planner widget directly.
             return
 
         import re as _re
         from src.models.project import StoryEvent
         import uuid as _uuid
 
+        # Stage names that _events_to_outline_markdown appends to
+        # the heading as ``— <stage>``. We strip exactly these (and
+        # nothing else) when extracting the bare title — otherwise
+        # the stage suffix becomes part of the saved event text and
+        # accumulates / corrupts the AI-generated beat name on every
+        # round-trip through the panel.
+        _STAGE_SLUGS = {
+            "exposition", "rising", "climax",
+            "falling", "resolution",
+        }
+
+        def _strip_stage_suffix(title: str) -> str:
+            """Drop a trailing ``— <known-stage>`` from a beat title."""
+            m = _re.match(
+                r"^(.*?)\s+[—\-]\s+(\w+)\s*$",
+                title or "")
+            if m and m.group(2).lower() in _STAGE_SLUGS:
+                return m.group(1).rstrip()
+            return title
+
         def _norm(s: str) -> str:
             t = (s or "").strip().lower()
             t = _re.sub(
                 r"^beat\s+\d+\s*[:\-—]\s*", "", t)
-            t = _re.sub(r"\s+[—\-]\s+\w+$", "", t)
+            t = _strip_stage_suffix(t)
             return t.strip()
 
-        existing_norms = {
-            _norm(getattr(ev, "text", "") or "")
-            for ev in events
+        # Build a lookup of existing events by normalised title so
+        # we can preserve their ids/descriptions on rename.
+        by_norm = {
+            _norm(getattr(ev, "text", "") or ""): ev
+            for ev in existing_events
         }
-        added_count = 0
-        for pb in panel_beats:
-            # Try to extract a "Beat N:" prefix for placement.
-            m = _re.match(
-                r"^beat\s+(\d+)\s*[:\-—]?\s*(.*)$",
-                pb.title.strip(), _re.IGNORECASE)
-            if m:
-                try:
-                    beat_no = int(m.group(1))
-                    bare_title = m.group(2).strip() or pb.title
-                except Exception:
-                    beat_no = None
-                    bare_title = pb.title
-            else:
-                beat_no = None
-                bare_title = pb.title
-            norm_title = _norm(bare_title)
-            if not norm_title:
-                continue
-            if norm_title in existing_norms:
-                continue
-            # Description from the body (one paragraph max, capped).
-            body = "\n".join(pb.body_lines).strip()
-            desc = body.split("\n\n", 1)[0][:500] if body else ""
-            new_event = StoryEvent(
-                id=_uuid.uuid4().hex[:8],
-                text=bare_title.strip(),
-                description=desc,
-                stage="rising",
-                completed=pb.checked)
-            # Insert at position derived from beat_no; otherwise
-            # append. Beat numbers are 1-based; index = N - 1.
-            if beat_no is not None and 1 <= beat_no <= len(events) + 1:
-                insert_idx = beat_no - 1
-                events.insert(insert_idx, new_event)
-            else:
-                events.append(new_event)
-            existing_norms.add(norm_title)
-            added_count += 1
 
-        if added_count > 0:
-            try:
-                chapter.planning.events = events
-            except Exception as e:
-                print(
-                    f"[outline-sync] failed to write events: {e}")
-                return
-            # Refresh the planner widget if it's currently bound to
-            # this chapter (so the user sees the new beats).
-            try:
-                planner = ce.planner_widget
-                if hasattr(planner, "load_data"):
-                    planner.load_data(chapter.planning)
-            except Exception:
-                pass
-            # Quiet autosave so the new event persists.
-            try:
-                self._auto_save_project()
-            except Exception:
-                pass
+        new_events = []
+        for pb in panel_beats:
+            # Strip ``Beat N:`` prefix from the title.
+            m = _re.match(
+                r"^beat\s+\d+\s*[:\-—]?\s*(.*)$",
+                pb.title.strip(), _re.IGNORECASE)
+            bare_title = (m.group(1).strip() if m
+                          else pb.title.strip())
+            # Then drop the optional ``— <stage>`` suffix that the
+            # panel renderer adds. event.text must be the clean AI
+            # name so it's preserved verbatim across save/reload.
+            bare_title = _strip_stage_suffix(bare_title).strip()
+            if not bare_title:
+                # Skip empty-titled beats — common right after a
+                # "+ Add Beat" click before the user has typed.
+                continue
+            norm = _norm(bare_title)
+            existing = by_norm.pop(norm, None)
+            if existing is not None:
+                # Preserve id, description, stage; refresh title
+                # (in case of trivial casing change) + completed
+                # (sync from panel checkbox).
+                existing.text = bare_title
+                existing.completed = pb.checked
+                new_events.append(existing)
+            else:
+                body = "\n".join(pb.body_lines).strip()
+                desc = (body.split("\n\n", 1)[0][:500]
+                        if body else "")
+                new_events.append(StoryEvent(
+                    id=_uuid.uuid4().hex[:8],
+                    text=bare_title,
+                    description=desc,
+                    stage="rising",
+                    completed=pb.checked))
+
+        # Anything left in by_norm = events the panel deleted.
+        # by_norm contents are dropped silently.
+        deleted_count = len(by_norm)
+        added_count = sum(
+            1 for ev in new_events
+            if not any(
+                getattr(e, "id", "") == ev.id
+                for e in existing_events))
+        reordered = (
+            [getattr(e, "id", "") for e in existing_events]
+            != [getattr(e, "id", "") for e in new_events])
+
+        if (added_count == 0
+                and deleted_count == 0
+                and not reordered):
+            # No-op — panel + events already match.
+            return
+
+        try:
+            chapter.planning.events = new_events
+        except Exception as e:
             print(
-                f"[outline-sync] slotted {added_count} new "
-                f"beat(s) into chapter.planning.events "
-                f"(now {len(events)} total)",
-                flush=True)
+                f"[outline-sync] failed to write events: {e}")
+            return
+        # Refresh the planner widget — but ONLY if the chapter we
+        # just wrote events into is the one the manuscript editor
+        # is currently displaying. During the flush-on-switch race
+        # the panel writes to the OLD chapter while the editor has
+        # already moved to the NEW one; refreshing the planner with
+        # the OLD chapter's data would clobber the NEW chapter's
+        # display.
+        #
+        # CRITICAL: this refresh is required for save persistence,
+        # not just visual sync. ChapterEditor.save_to_model reads
+        # the events list from the planner widget UI on every
+        # autosave (which fires immediately below) — without the
+        # refresh the planner UI is stale (still showing the
+        # pre-AI-write state, often empty), so save_to_model would
+        # write that empty list back to chapter.planning.events,
+        # silently undoing the AI's outline → events sync.
+        try:
+            ce = getattr(self.manuscript_editor,
+                         'current_chapter_editor', None)
+            live_chapter = (
+                getattr(ce, 'chapter', None) if ce else None)
+            if (live_chapter is not None
+                    and getattr(live_chapter, 'id', None) == target_id):
+                planner = ce.planner_widget
+                if hasattr(planner, "update_events"):
+                    planner.update_events(chapter.planning.events)
+        except Exception:
+            pass
+        try:
+            self._auto_save_project()
+        except Exception:
+            pass
+        print(
+            f"[outline-sync] reconciled events: "
+            f"+{added_count} added, -{deleted_count} removed, "
+            f"reordered={reordered}, total={len(new_events)}",
+            flush=True)
+
+    def _handle_chapter_events_cleared(self, chapter_id: str) -> None:
+        """Drop a chapter's plot arc + outline after user confirmed.
+
+        Wired to ManuscriptEditor.events_cleared. The planner widget
+        has already torn down its own event widgets; this handler
+        is responsible for the cross-widget cleanup the planner
+        can't reach on its own:
+
+          * ``chapter.planning.events`` → []
+          * ``chapter.planning.outline`` → ""
+          * the AI-Assistant OutlinePanel → blanked, but only when
+            it's bound to the same chapter
+          * a project autosave so the cleared state survives close
+        """
+        if not chapter_id or not self.current_project:
+            return
+        manuscript = getattr(
+            self.current_project, 'manuscript', None)
+        chapters = getattr(manuscript, 'chapters', None) or []
+        target = next(
+            (ch for ch in chapters
+             if getattr(ch, 'id', None) == chapter_id),
+            None)
+        if target is None:
+            return
+        if not hasattr(target, 'planning') or target.planning is None:
+            return
+        try:
+            target.planning.events = []
+            target.planning.outline = ''
+            # Mirror to the legacy plan field so per-chapter plan.md
+            # gets rewritten (empty) on next save_content_to_file.
+            if hasattr(target, 'plan'):
+                target.plan = ''
+        except Exception as e:
+            print(f"[clear-plot-arc] failed to clear: {e}")
+            return
+        # Blank the AI-Assistant outline panel — but ONLY when the
+        # panel is currently bound to the same chapter the user
+        # just cleared. Calling set_outline_text on a panel bound
+        # to a different chapter would cross-write.
+        try:
+            panel = getattr(
+                self.chat_widget, 'outline_panel', None)
+            if (panel is not None
+                    and panel.current_chapter_id() == chapter_id):
+                panel.set_outline_text('')
+        except Exception:
+            pass
+        try:
+            self._auto_save_project()
+        except Exception:
+            pass
+        print(
+            f"[clear-plot-arc] chapter={chapter_id} events + "
+            "outline cleared, panel blanked",
+            flush=True)
 
     def _on_outline_panel_edited(self, outline_text: str) -> None:
         """Persist outline-panel edits back to chapter.planning.outline.
@@ -6327,10 +6516,13 @@ class MainWindow(QMainWindow):
             print(f"[outline-panel] failed to persist outline: {e}")
             return
         # Trigger a quiet autosave so the edit isn't lost on close.
-        # Only when this is the live-open chapter; otherwise leave
-        # the project dirty for the next regular save tick.
-        if live_id == target_id:
-            self._auto_save_project()
+        # Always autosave — even when the panel is flushing edits
+        # for a chapter the user has already navigated away from
+        # (the flush-on-switch race). Skipping the save in that
+        # case meant the in-memory edit was correct but the disk
+        # copy stayed stale, so the edit silently disappeared on
+        # the next project open.
+        self._auto_save_project()
 
     def _load_project_into_ui(self):
         """Load current project data into UI widgets."""
@@ -9465,8 +9657,19 @@ class MainWindow(QMainWindow):
             pending_msg = getattr(self, "_pending_chat_message", "") or ""
             # Round-cap check first — if we've already burned 4 rounds
             # on this beat, force the write next turn instead of
-            # asking again.
+            # asking again. Defensive per-beat reset before the bump
+            # so the counter doesn't carry over from a prior beat
+            # (which would let the cap fire after only 2-3 beats).
             if per_beat_active:
+                cur_beat_no_for_counter = (
+                    beat_state.get("current_beat_number")
+                    or (beat_state.get("current_idx", 0) + 1))
+                last_counter_beat = beat_state.get(
+                    "_round_counter_beat_no")
+                if last_counter_beat != cur_beat_no_for_counter:
+                    beat_state["rounds_for_beat"] = 0
+                    beat_state["_round_counter_beat_no"] = (
+                        cur_beat_no_for_counter)
                 beat_state["rounds_for_beat"] += 1
                 rounds = beat_state["rounds_for_beat"]
                 cap = beat_state["max_rounds"]

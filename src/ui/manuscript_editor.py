@@ -181,14 +181,32 @@ class ChapterEditor(QWidget):
     # to route the request into the outline-mode chat.
     # (event_id, event_text, event_description, event_stage, chapter_id)
     beat_ai_help_requested = pyqtSignal(str, str, str, str, str)
+    # Bubbled up from the planner widget when the user clicks
+    # "Clear Plot Arc" + confirms. Carries the chapter id so
+    # MainWindow can find the right chapter without leaning on
+    # current_chapter_editor (avoids the same flush-on-switch race
+    # that was corrupting outline writes).
+    events_cleared = pyqtSignal(str)  # chapter_id
     _prose_analysis_ready = pyqtSignal(str)  # Signal to deliver prose analysis result to main thread
     _character_analysis_ready = pyqtSignal(str)
     _world_analysis_ready = pyqtSignal(str)
     _plot_analysis_ready = pyqtSignal(str)
 
-    def __init__(self, chapter: Chapter, project=None, manuscript: Optional[Manuscript] = None):
-        """Initialize chapter editor."""
-        super().__init__()
+    def __init__(self, chapter: Chapter, project=None,
+                 manuscript: Optional[Manuscript] = None,
+                 parent=None):
+        """Initialize chapter editor.
+
+        ``parent`` MUST be passed when the editor is going to be
+        added to a container — without it, Qt treats the widget as
+        a top-level window on construction. On macOS, when the host
+        app is in fullscreen mode, this transient top-level state
+        triggers a Spaces switch (the writer drops to the desktop
+        Space + launcher comes forward). Passing parent at
+        construction keeps the widget inside the host window's
+        hierarchy from the start.
+        """
+        super().__init__(parent)
         self.chapter = chapter
         self.project = project
         self.manuscript = manuscript
@@ -585,6 +603,14 @@ class ChapterEditor(QWidget):
         # route them into the outline chat.
         self.planner_widget.beat_ai_help_requested.connect(
             self._on_beat_ai_help_requested)
+        # Bubble "Clear Plot Arc" up — tag with our chapter id so
+        # MainWindow finds the right chapter without depending on
+        # current_chapter_editor (the cross-chapter race we hit on
+        # outline writes applies here too if the user manages to
+        # click clear during a chapter switch).
+        self.planner_widget.events_cleared.connect(
+            lambda: self.events_cleared.emit(
+                getattr(self.chapter, "id", "") or ""))
         self.right_panel.addTab(self.planner_widget, "Planner")
 
         from src.ui.feedback_widget import FeedbackWidget
@@ -3481,8 +3507,21 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
         except RuntimeError:
             return  # Planner gone, but content is already saved above
 
-        # Update the planning object
-        self.chapter.planning.outline = planning_data.get('outline', '')
+        # Update the planning object.
+        #
+        # NOTE: do NOT overwrite ``planning.outline`` from the
+        # planner widget. The AI Assistant's OutlinePanel is the
+        # canonical writer for that field (via outline_changed →
+        # MainWindow._on_outline_panel_edited). The planner widget
+        # also synthesises an outline string from its events list
+        # for back-compat, but that string is in a different format
+        # (``## <stage>`` headers + ``- text``) than the panel's
+        # checklist source (``## [ ] Beat N: Title``). Letting it
+        # win on save_to_model corrupts the panel-edited outline
+        # every time the user switches chapters — the next sync
+        # would load that mangled text back into the panel.
+        # If planning.outline is empty (legacy data), the read-side
+        # in _sync_outline_panel_to_chapter derives it from events.
         self.chapter.planning.description = planning_data.get('description', '')
         # Convert notes dicts back to NoteSubject objects
         notes_raw = planning_data.get('notes', [])
@@ -3557,6 +3596,11 @@ class ManuscriptEditor(QWidget):
     # (event_id, event_text, event_description, event_stage,
     # chapter_id) so MainWindow can route to the outline chat.
     beat_ai_help_requested = pyqtSignal(str, str, str, str, str)
+    # Re-emitted from the active ChapterEditor when the user clicks
+    # "Clear Plot Arc" + confirms. Carries the chapter id so the
+    # MainWindow handler can target the right chapter even if the
+    # user has since clicked away.
+    events_cleared = pyqtSignal(str)
 
     def __init__(self, project=None):
         """Initialize manuscript editor."""
@@ -4467,14 +4511,20 @@ class ManuscriptEditor(QWidget):
         if new_chapter_id == self._current_chapter_id and self.current_chapter_editor:
             return
 
-        # Save previous chapter and notify memory manager
+        # Save previous chapter and notify memory manager. The
+        # chapter_switched signal is intentionally NOT emitted here:
+        # listeners (notably MainWindow._sync_outline_panel_to_chapter)
+        # read self.current_chapter_editor.chapter, which at this
+        # point is still the OLD chapter — emitting now would load
+        # the previous chapter's outline back into the panel and the
+        # panel would stay stuck on it (no later emit ever happens).
+        # The single emit at the end of this method (post-setup)
+        # covers both autosave AND sync correctly.
         if self.current_chapter_editor and self._current_chapter_id:
             self.current_chapter_editor.save_to_model()
             self._update_total_word_count()
             # Notify memory manager of chapter exit (saves state, marks for re-analysis if changed)
             self.memory_manager.on_chapter_exit(self._current_chapter_id, save_content=True)
-            # Emit signal to trigger project auto-save
-            self.chapter_switched.emit()
 
         # Load selected chapter
         chapter_id = current.data(Qt.ItemDataRole.UserRole)
@@ -4516,7 +4566,14 @@ class ManuscriptEditor(QWidget):
             self._clear_editor()
 
             self._current_chapter_id = chapter_id
-            self.current_chapter_editor = ChapterEditor(chapter, self.project, manuscript=self.manuscript)
+            # Pass the editor_container as parent at construction so
+            # the new widget is never a transient top-level — see
+            # ChapterEditor.__init__ docstring for the macOS-fullscreen
+            # Spaces-switch failure this prevents.
+            self.current_chapter_editor = ChapterEditor(
+                chapter, self.project,
+                manuscript=self.manuscript,
+                parent=self.editor_container)
             self.current_chapter_editor.content_changed.connect(self._on_content_changed)
             self.current_chapter_editor.content_changed.connect(self.content_changed.emit)
             self.current_chapter_editor.annotations_changed.connect(self.annotations_changed.emit)
@@ -4528,7 +4585,37 @@ class ManuscriptEditor(QWidget):
             # rewire on each chapter switch).
             self.current_chapter_editor.beat_ai_help_requested.connect(
                 self.beat_ai_help_requested.emit)
+            # Same pattern for "Clear Plot Arc" — bubble up so the
+            # MainWindow handler runs at the same level as the
+            # outline-panel sync wiring.
+            self.current_chapter_editor.events_cleared.connect(
+                self.events_cleared.emit)
             self.editor_layout.addWidget(self.current_chapter_editor)
+
+            # Notify listeners NOW (after the new chapter is fully
+            # in place) so they read self.current_chapter_editor.chapter
+            # as the NEW chapter — most importantly
+            # MainWindow._sync_outline_panel_to_chapter, which loads
+            # planning.outline into the AI Assistant outline panel.
+            # This single emit also covers the previous-chapter
+            # autosave (project save is chapter-agnostic and the
+            # OLD chapter's content was already written into the
+            # model via save_to_model() above).
+            self.chapter_switched.emit()
+
+            # Hand focus to the new chapter's prose editor so the
+            # user can keep typing immediately after switching
+            # chapters. Deferred via QTimer.singleShot(0, ...) so
+            # the focus call lands AFTER Qt finishes laying out the
+            # new editor — calling setFocus mid-rebuild on macOS
+            # can race with Cocoa's window-activation logic.
+            editor_widget = getattr(
+                self.current_chapter_editor, "editor", None)
+            if editor_widget is not None:
+                QTimer.singleShot(
+                    0,
+                    lambda w=editor_widget: w.setFocus(
+                        Qt.FocusReason.OtherFocusReason))
 
             # Preload adjacent chapters in background for faster navigation
             self.memory_manager.preload_adjacent(chapter_id, count=1)
