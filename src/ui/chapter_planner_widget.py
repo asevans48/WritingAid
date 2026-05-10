@@ -262,6 +262,7 @@ class StoryEventWidget(QWidget):
 
     changed = pyqtSignal()
     delete_requested = pyqtSignal(str)  # event_id
+    ai_help_requested = pyqtSignal(str)  # event_id - per-beat AI help
     arc_position_changed = pyqtSignal(str, int)  # event_id, position
     drag_started = pyqtSignal(str)  # event_id - for drag and drop reordering
 
@@ -372,6 +373,32 @@ class StoryEventWidget(QWidget):
         self.arc_slider.setToolTip("Position on arc")
         self.arc_slider.valueChanged.connect(self._on_arc_changed)
         layout.addWidget(self.arc_slider)
+
+        # AI-help button — sends THIS beat to the AI Assistant
+        # (outline mode) for clarification questions / refinement.
+        # Lives next to the delete button so the per-beat actions
+        # cluster on the right edge.
+        ai_btn = QPushButton("✨")
+        ai_btn.setMinimumWidth(24)
+        ai_btn.setMaximumWidth(28)
+        ai_btn.setToolTip(
+            "Ask the AI Assistant to help with this beat "
+            "(opens outline mode focused on this beat).")
+        ai_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 12px;
+                padding: 2px;
+                border: none;
+                background: transparent;
+            }
+            QPushButton:hover {
+                background-color: #ede9fe;
+                border-radius: 3px;
+            }
+        """)
+        ai_btn.clicked.connect(
+            lambda: self.ai_help_requested.emit(self.event_id))
+        layout.addWidget(ai_btn)
 
         # Delete button with visible icon
         delete_btn = QPushButton("🗑")
@@ -751,6 +778,11 @@ class ChapterPlannerWidget(QWidget):
 
     plan_changed = pyqtSignal()  # Emitted when any planning content changes
     check_requested = pyqtSignal(str, str)  # plan, chapter_content - for consistency check
+    # User clicked the per-beat ✨ AI-help button on a StoryEventWidget.
+    # Carries (event_id, event_text, event_description, event_stage)
+    # so the receiver can route to outline-mode chat with focused
+    # beat context.
+    beat_ai_help_requested = pyqtSignal(str, str, str, str)
     _ai_response_ready = pyqtSignal(object)  # Internal signal for thread-safe callback delivery
 
     def __init__(self, parent=None):
@@ -1777,6 +1809,8 @@ class ChapterPlannerWidget(QWidget):
         item = StoryEventWidget(event_id, text, description, completed, stage, arc_position, order)
         item.changed.connect(self._on_plan_changed)
         item.delete_requested.connect(self._remove_event_item)
+        item.ai_help_requested.connect(
+            self._on_event_ai_help_requested)
         item.arc_position_changed.connect(self._on_event_arc_changed)
         item.drag_started.connect(self._on_event_drag)
 
@@ -1784,6 +1818,26 @@ class ChapterPlannerWidget(QWidget):
         self.events_list_layout.addWidget(item)
         self._renumber_events()
         self._on_plan_changed()
+
+    def _on_event_ai_help_requested(self, event_id: str) -> None:
+        """User clicked the ✨ button on a StoryEventWidget.
+
+        Forwards the event's title + description + stage up via
+        ``beat_ai_help_requested`` so MainWindow can route to the
+        outline-mode chat with this beat as the engine-locked focus.
+        """
+        for w in self._event_widgets:
+            if w.event_id != event_id:
+                continue
+            data = w.get_data() if hasattr(w, "get_data") else {}
+            text = (data.get("text")
+                    or w.text_edit.text() if hasattr(w, "text_edit")
+                    else "")
+            desc = (data.get("description") or "")
+            stage = (data.get("stage") or "")
+            self.beat_ai_help_requested.emit(
+                event_id, text, desc, stage)
+            return
 
     def _remove_event_item(self, event_id: str):
         """Remove a story event."""

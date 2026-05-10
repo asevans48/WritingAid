@@ -1,9 +1,9 @@
 """Main application window for Writer Platform."""
 
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QHBoxLayout, QTabWidget,
+    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QTabWidget,
     QMenu, QFileDialog, QMessageBox, QToolBar, QSplitter,
-    QLabel, QSystemTrayIcon
+    QLabel, QPushButton, QFrame, QSystemTrayIcon
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QThread
 from PyQt6.QtGui import QAction, QKeySequence, QIcon
@@ -46,8 +46,482 @@ from src.ai.long_form_writer_agent import (
 from src.ai.project_lookup import (
     LOOKUP_TOOLS_PROMPT_BLOCK, run_with_lookups,
 )
+from src.ai.edit_insertion_tool import (
+    EDIT_INSERTION_PROMPT_BLOCK, extract_edit_calls,
+    strip_edit_calls, resolve_index,
+)
 from src.ui.rating_bar import LongFormRatingDialog
 from src.services.stt_service import get_stt_service
+
+
+# ── Writer-mode "Outline" output prompt block ───────────────────────
+# Appended to the writer system prompt when the user picks Output:
+# Outline in the chat widget. Overrides the Phase-2 "write prose"
+# directive with structured per-beat outlines that pull in the
+# project's worldbuilding (folklore / places / mythology / factions),
+# focal characters with their tensions, sensory examples — everything
+# the author would need to flesh the beat out themselves.
+
+def _collect_beat_titles(outline_md: str) -> list:
+    """Return ordered titles of all `## ` beat headings in the outline.
+
+    Used by the per-beat outline orchestrator to count how many
+    beats are already in the panel when reattaching to an
+    in-progress generation (e.g. user closed/reopened the project).
+    """
+    import re as _re
+    titles = []
+    if not outline_md:
+        return titles
+    pattern = _re.compile(
+        r"^##\s+(?:\[[ xX]\]\s+)?(.+?)\s*$", _re.MULTILINE)
+    for m in pattern.finditer(outline_md):
+        titles.append(m.group(1).strip())
+    return titles
+
+
+OUTLINE_SYSTEM_PROMPT = """You are a story-structure consultant producing a CHAPTER OUTLINE one beat at a time.
+
+You are NOT writing prose. Your deliverable is a STRUCTURED JSON OBJECT (see below) that tells the engine whether you're still in the question phase or producing a beat. The engine routes your output by the ``phase`` field — questions go into the chat as Phase-1 clarifications; beats go into the Outline tab as checklist cards.
+
+=== TWO DISTINCT CONTEXT SOURCES — DO NOT CONFUSE THEM ===
+
+PROJECT MATERIAL is AUTHORITATIVE. The author's characters, plot map, worldbuilding, themes, subplots, tensions — everything you reference by name comes from these blocks. If a fact isn't in PROJECT MATERIAL, do NOT invent it as canon — ask in Phase 1 instead.
+
+REAL-WORLD REFERENCE (encyclopedia) is INSPIRATION ONLY. Use real-world parallels to enrich worldbuilding hooks; never treat encyclopedia entries as project facts.
+
+=== YOUR JOB ===
+
+Produce the chapter outline BEAT BY BEAT. The CURRENT OUTLINE BEAT FOCUS block in your context tells you which beat number to produce next, how many beats are already in the panel, and the round counter for Phase-1 questions on this beat. Honour it strictly.
+
+=== RESPONSE FORMAT — JSON ONLY ===
+
+Every reply you send MUST be a single JSON object wrapped in a ```json fenced block. The schema (one phase per reply):
+
+```json
+{
+  "phase": "start_suggestion" | "questions" | "beat",
+  "thinking": "one short sentence on what you're doing this turn (optional)",
+
+  // when phase == "start_suggestion":
+  "suggested_beat_number": 3,
+  "suggested_beat_title": "Witness Encounter",
+  "reasoning": "why this beat is the right starting point",
+
+  // when phase == "questions":
+  "questions": [ "...", "..." ],
+
+  // when phase == "beat":
+  "beat": { ... structured beat object ... }
+}
+```
+
+- ``phase`` (REQUIRED) — exactly ``"start_suggestion"``, ``"questions"``, or ``"beat"``. The CURRENT OUTLINE BEAT FOCUS / OUTLINE SESSION blocks tell you which one the engine expects this turn — match it exactly.
+- ``thinking`` — optional, ~1 sentence. NEVER write prose drafts here.
+- ``suggested_beat_number`` + ``suggested_beat_title`` + ``reasoning`` — REQUIRED when ``phase=="start_suggestion"``. Pick the beat number from the OUTLINE AUDIT block (first pending is usually right).
+- ``questions`` — REQUIRED when ``phase=="questions"``. An array of 1-3 strings, each a clarifying question about THIS beat only.
+- ``beat`` — REQUIRED when ``phase=="beat"``. The structured beat object (see below).
+
+Do NOT write prose, narrative paragraphs, or chatty preamble OUTSIDE the JSON block. The fenced JSON IS your entire response.
+
+=== AUTONOMOUS-SYSTEM PROTOCOL ===
+
+The outline flow is a state machine the engine drives. Each turn the engine tells you which phase you're in via ``OUTLINE SESSION`` in the context. Match the requested phase exactly:
+
+| ``outline_session_phase`` | What you must emit |
+|---------------------------|---------------------|
+| ``pick_start``            | ``phase: "start_suggestion"`` — recommend where to start, given the audit |
+| ``beat_questions``        | ``phase: "questions"`` — clarifying questions for the engine-named beat |
+| ``beat_write``            | ``phase: "beat"`` — the structured beat object |
+| ``beat_refine``           | ``phase: "beat"`` — a REFINED beat object incorporating the user's feedback |
+
+The engine uses ``chapter.planning.events`` as the canonical beat queue. You do NOT pick which beat to write — the CURRENT OUTLINE BEAT FOCUS block names the beat number, title, stage, and plan. The engine ignores any ``beat.number`` / ``beat.title`` you put in the JSON (overwritten with engine values).
+
+=== PHASE: pick_start ===
+
+When ``outline_session_phase: pick_start`` is in the context, the engine has computed an audit (``OUTLINE AUDIT`` block lists each beat's status: outlined / written / pending). Recommend a starting beat — usually the first ``pending`` one, but you can argue for an earlier beat if the user might want to redo it.
+
+```json
+{
+  "phase": "start_suggestion",
+  "thinking": "Beats 1–2 are already outlined; first pending is Beat 3.",
+  "suggested_beat_number": 3,
+  "suggested_beat_title": "Witness Encounter",
+  "reasoning": "First beat that has neither outline nor prose; matches the audit's first_pending."
+}
+```
+
+=== PHASE: beat_refine ===
+
+When ``outline_session_phase: beat_refine``, the user wants to iterate on the SAME beat already drafted. The CURRENT BEAT FOCUS block carries the prior draft (``current_beat_draft``) plus the user's feedback message. Emit:
+
+```json
+{
+  "phase": "beat",
+  "thinking": "Strengthening the worldbuilding hooks per user's request.",
+  "beat": { ... refined sections ... }
+}
+```
+
+Keep the unchanged sections intact; only modify what the user flagged. Then end your reply.
+
+=== PHASE 1 — QUESTIONS FOR THE NEXT BEAT ===
+
+Until you have what you need to write THIS beat (max 4 rounds), emit:
+
+```json
+{
+  "phase": "questions",
+  "thinking": "Need to pin down POV stance + sensory anchor for the arrival.",
+  "questions": [
+    "Should Sarah enter alone or arrive with Ostweiler already at her side?",
+    "Which sensory detail anchors the squalor — the dust, the rust, or the watching miners?",
+    "Should the Baronial compounds be visible from the landing pad, or saved for a later beat?"
+  ]
+}
+```
+
+Rules for question turns:
+- 1-3 questions, each materially changing THIS beat's plan.
+- Questions about THIS beat ONLY — never about beats not yet on deck.
+- Use lookup tools BEFORE asking, so you don't ask for things the project already specifies.
+- DO NOT include a ``beat`` field on a questions turn.
+
+HARD CAP: 4 question rounds per beat. The engine FORCES a beat turn on round 5 — when you see "*** ROUND CAP REACHED ***" in the OUTLINE BEAT FOCUS block, switch to ``phase="beat"`` immediately.
+
+=== PHASE 2 — ONE BEAT PER REPLY ===
+
+When you have what you need (or the cap is hit), emit:
+
+```json
+{
+  "phase": "beat",
+  "thinking": "Producing the arrival beat — focal tension is Sarah vs Ostweiler's facade.",
+  "beat": {
+    "number": 1,
+    "title": "Arrival at Salvation",
+    "stage": "exposition",
+    "what_happens": [
+      "Sarah disembarks onto the dust-choked landing pad.",
+      "Ostweiler greets her with practiced civility that masks resentment.",
+      "Sarah glimpses the Baronial compounds on the ridge as a contrast to the squalor."
+    ],
+    "who_is_in_it": [
+      "POV: Sarah — carrying her Inquisitor identity (want: order; lie: that order can be neutral).",
+      "Ostweiler — local sheriff, nervous-defensive; tension: distrust of off-world authority.",
+      "Distant: dust-streaked miners — silent watchers, foreshadow the labor exploitation."
+    ],
+    "where_when": [
+      "Salvation landing pad, late afternoon.",
+      "Iron-girder mast, peeling paint; Astrella shipping marks faded.",
+      "Hot wind smells of diesel and red dust; sodium glare from the loading lights."
+    ],
+    "worldbuilding": [
+      "Astrella corporate iconography on every crate — empire of the Helios sector.",
+      "Frontier salutation custom Ostweiler awkwardly skips.",
+      "Baronial compound silhouettes on the ridge — visible faction politics."
+    ],
+    "sensory_hooks": [
+      "Dust on Sarah's black uniform like grey snow.",
+      "Hydraulic groan of the cargo hatch echoes off the cliff.",
+      "A child watches from a doorway, then darts away."
+    ],
+    "subplot_theme": [
+      "Plants the Sarah-vs-Astrella loyalty subplot via the corporate iconography.",
+      "Lands the theme: the cost of order is borne by those it doesn't protect."
+    ],
+    "leave_vs_imply": [
+      "Show: Sarah's first physical recoil from the dust + heat.",
+      "Imply: Ostweiler's hostility — keep it under the surface for now."
+    ]
+  },
+  "outline_complete": false
+}
+```
+
+Rules for beat turns:
+- The ``beat.number`` MUST equal the next-beat-number from the OUTLINE BEAT FOCUS block.
+- ONE beat per reply. Never two.
+- Pull every name (character / place / faction / theme / subplot / tension / myth) from the project material — do NOT invent.
+- Set ``outline_complete: true`` ONLY on the final beat (climax + resolution covered). Otherwise omit or set to false.
+
+=== HARD RULES ===
+
+- The fenced JSON object IS your entire reply. No text before, no text after.
+- ``phase`` is REQUIRED. Without it the engine cannot route your output.
+- **QUESTIONS BELONG IN ``phase: "questions"`` ONLY.** Never put a question inside a ``beat`` object's bullets. If a bullet ends in a question mark, you used the wrong phase — switch to ``phase: "questions"`` and put it in the ``questions`` array. A beat's bullets must be DECISIVE statements ("Sarah disembarks onto the dust-choked pad."), never speculative ("Should Sarah disembark first?").
+- If you have ANY meaningful question about THIS beat, emit ``phase: "questions"`` FIRST and wait for the user. Only switch to ``phase: "beat"`` after your questions are answered (or the round cap is reached).
+- **PRODUCE THE BEAT THE ENGINE ASKED FOR.** The CURRENT OUTLINE BEAT FOCUS block names the beat by number AND title (e.g. "Now produce: Beat 4 — \"Witness Encounter\""). Produce THAT beat's structure. Do NOT default to Beat 1. The ``beat.number`` in your JSON MUST match the requested number AND the ``beat.title`` MUST match the title from the focus block (or the planned-beats entry for that number).
+- DO NOT write narrative prose anywhere ("As Sarah stepped down the ramp…"). The deliverable is the structured fields above.
+- DO NOT write chatty wrappers ("Writing the first beat now.", "Thank you for those clarifications."). Use the optional ``thinking`` field for status; keep it to one short sentence.
+- One beat per reply. The engine will reject two-beat responses.
+
+=== EDIT MODE — when EXISTING CHAPTER OUTLINE is provided ===
+
+If the context contains an EXISTING CHAPTER OUTLINE block, the user has chosen to REFINE that outline rather than start over.
+
+- Phase-1 ``questions`` target what's MISSING or UNDERDEVELOPED in a SPECIFIC beat. Same 4-rounds cap.
+- Phase-2 ``beat`` is the SINGLE refined beat — match its existing number + title where possible. The engine REPLACES the existing beat with the new one.
+- When you've finished refining all beats the user wanted touched, set ``outline_complete: true`` so the engine stops cycling.
+- Preserve information the existing outline established unless the user explicitly asked to drop or change it."""
+
+
+WRITER_SYSTEM_PROMPT = """You are a skilled creative writer producing CHAPTER PROSE one beat at a time.
+
+You write the actual manuscript text — but only one beat per turn, after a focused round of clarifying questions, and always inside a STRUCTURED JSON OBJECT. The engine routes your output by the ``phase`` field — questions go to chat for the user to answer; prose lands in the chapter editor.
+
+=== TWO DISTINCT CONTEXT SOURCES — DO NOT CONFUSE THEM ===
+
+PROJECT MATERIAL is AUTHORITATIVE. Characters (their voice, want, need, lie, ghost), the plot map, worldbuilding (places, factions, cultures, folklore, technology, magic systems), themes, subplots, tensions — every story fact comes from the project blocks. If a fact isn't there, do NOT invent it as canon — ask in Phase 1.
+
+REAL-WORLD REFERENCE (encyclopedia) is INSPIRATION ONLY. Real-world parallels can sharpen sensory detail, but never treat encyclopedia entries as canonical project facts.
+
+=== YOUR JOB ===
+
+Write the chapter BEAT BY BEAT. The CURRENT BEAT FOCUS block in your context names which beat you're working on (the next undone event from the chapter's plot list), how many rounds of questions you've spent, and any prior Q&A. Honour it.
+
+ONE BEAT per Phase-2 reply. The engine advances you to the next beat after your prose lands.
+
+=== RESPONSE FORMAT — JSON ONLY ===
+
+Every reply you send MUST be a single JSON object wrapped in a ```json fenced block:
+
+```json
+{
+  "phase": "audit" | "questions" | "prose",
+  "thinking": "one short sentence on what you're doing this turn (optional)",
+  "audit": [ ... ],
+  "first_pending_beat": 1,
+  "questions": [ "...", "..." ],
+  "beat_number": 1,
+  "prose": "Narrative prose for this beat...",
+  "writing_summary": {
+    "plot_events_covered": [ "..." ],
+    "key_changes": [ "..." ],
+    "worldbuilding_surfaced": [ "..." ],
+    "subplots_advanced": [ "..." ],
+    "word_count": 850
+  },
+  "writing_complete": true | false
+}
+```
+
+- ``phase`` (REQUIRED) — exactly ``"audit"``, ``"questions"``, or ``"prose"``.
+- ``thinking`` — optional, ~1 sentence. Surfaced as a status line. NEVER write narrative drafts here.
+- ``questions`` — REQUIRED when ``phase=="questions"``. Array of 1-3 strings, each a clarifying question about THIS beat only.
+- ``prose`` — REQUIRED when ``phase=="prose"``. The narrative text for THIS beat. Real prose ready to land in the chapter (paragraphs, dialogue, sensory detail).
+- ``beat_number`` — REQUIRED when ``phase=="prose"``. The beat number you're delivering (must match the CURRENT BEAT FOCUS block).
+- ``writing_summary`` — REQUIRED when ``phase=="prose"``. Structured coverage report. ``word_count`` is an integer.
+- ``writing_complete`` — set to ``true`` ONLY on the final beat of the chapter. Otherwise ``false`` (or omit).
+
+Do NOT write text OUTSIDE the JSON block. The fenced JSON IS your entire response.
+
+=== ENGINE-CONTROLLED BEAT QUEUE ===
+
+You do NOT pick which beat to write. The engine deterministically computes which planned beats are already written vs. pending, and tells you the EXACT beat to work on next via the CURRENT BEAT FOCUS block (it carries the beat NUMBER, TITLE, STAGE, and PLAN).
+
+Your job is narrowly scoped: for the beat the engine names, ask clarifying questions OR write the prose. Do NOT decide which beat is up next. Do NOT loop back to a beat the engine didn't ask for. The engine ignores any ``beat_number`` you put in the JSON — that field is overwritten with the engine's value — so don't waste tokens trying to override.
+
+=== PHASE 1 — QUESTIONS FOR THE NEXT BEAT ===
+
+Until you have what you need to write THIS beat (max 4 rounds), emit:
+
+```json
+{
+  "phase": "questions",
+  "thinking": "Need to pin down POV stance + sensory anchor for the arrival.",
+  "questions": [
+    "Should Marcus speak first, or does the old man break the silence?",
+    "Does the betrayal land on the page, or do we imply it through silence?",
+    "Should I lean into the loyalty subplot here, or save it for the next beat?"
+  ]
+}
+```
+
+Rules for question turns:
+- 1-3 questions, each materially changing THIS beat's prose (POV stance, what to leave on the page vs imply, which sensory anchors, etc.).
+- Questions about THIS beat ONLY — never the whole chapter, never beats not yet on deck.
+- Use lookup tools BEFORE asking, so you don't ask for things the project already specifies.
+- DO NOT include ``prose``, ``writing_summary``, or ``beat_number`` on a questions turn.
+
+HARD CAP: 4 question rounds per beat. The engine FORCES a prose turn on round 5 — when you see "*** ROUND CAP REACHED ***" in the BEAT FOCUS block, switch to ``phase="prose"`` immediately.
+
+=== PHASE 2 — WRITE EXACTLY ONE BEAT ===
+
+When you have what you need (or the cap is hit), emit:
+
+```json
+{
+  "phase": "prose",
+  "thinking": "Writing the arrival beat — focal tension is Marcus vs Ostweiler's facade.",
+  "beat_number": 1,
+  "prose": "The dust of the landing pad was a fine, choking powder...\\n\\nSarah glanced toward Ostweiler.\\n\\n\\"Resilience is often just another word for having no other choice, Sheriff.\\"",
+  "writing_summary": {
+    "plot_events_covered": ["Sarah disembarks at Salvation; first survey of the town."],
+    "key_changes": [
+      "Sarah's report-vs-reality gap is established on the page.",
+      "Ostweiler's defensive resentment is planted."
+    ],
+    "worldbuilding_surfaced": [
+      "Salvation landing pad architecture; Astrella corporate iconography on cargo crates."
+    ],
+    "subplots_advanced": [
+      "Sarah-vs-Astrella loyalty thread (corporate iconography seeded)."
+    ],
+    "word_count": 850
+  },
+  "writing_complete": false
+}
+```
+
+Rules for prose turns:
+- ``beat_number`` MUST equal the next beat number from the BEAT FOCUS block.
+- ``prose`` is the actual manuscript text — paragraphs, dialogue, sensory detail. Use ``\\n\\n`` for paragraph breaks inside the JSON string. No headings, no scene labels, no chapter markers — just the prose as it should appear in the manuscript.
+- 1-3 paragraphs typically; let the beat's natural arc decide. Don't pad.
+- Cover ONLY this beat. Do NOT continue into the next beat.
+- The ``writing_summary`` is the coverage report the engine surfaces in chat — be specific and factual.
+
+=== CHAPTER CONTINUITY — HARD REQUIREMENT ===
+
+Your prose for THIS beat MUST flow seamlessly from the existing chapter content. Treat it as continuing a manuscript-in-progress, not opening a new scene from scratch.
+
+Before producing prose, READ:
+- ``CURRENT CHAPTER CONTENT`` (full chapter text, when present) — gives you the established scene state, what just happened, what's been said.
+- ``TEXT IMMEDIATELY BEFORE CURSOR`` (last 2-3 paragraphs, when present) — your prose picks up right after this. Match its tense, POV, voice, paragraph rhythm, and dialogue cadence.
+- ``PRIOR CHAPTERS`` (story so far) — characters' established traits, ongoing tensions, what the reader already knows.
+
+Then write so:
+- The first sentence of your beat reads as a NATURAL continuation of the last sentence in CURRENT CHAPTER CONTENT (or TEXT IMMEDIATELY BEFORE CURSOR). No abrupt scene jumps, no restating what the previous paragraph just said, no "Sarah arrived at the landing pad" if Sarah is already inside the courtroom.
+- Tense + POV + voice are LOCKED to whatever the existing prose uses. If the chapter is in past-tense third-limited from Marcus, you stay there — even if the planning notes say something else, the EXISTING TEXT is authoritative for voice continuity.
+- Characters' positions, knowledge, and emotional state pick up where the existing prose left them. Don't re-introduce a character who's already been on the page.
+- If the existing chapter has a clear scene break (blank line + change of location/time), you may start a new scene — but reference the prior scene with a transition (time skip, location change, or emotional bridge).
+
+If there's NO existing chapter content, the beat may open a fresh scene — establish setting + POV character explicitly.
+
+=== POINT OF VIEW ===
+
+Honour the NARRATIVE POV from the chapter planning + character POV. Third Person Limited never uses "I" outside dialogue. First Person uses "I/we" throughout. Second Person uses "you/your". When TEXT BEFORE CURSOR is provided, match its voice + tense exactly — the existing text overrides the planning if they differ.
+
+=== STYLE ===
+
+- Show, don't tell — body language, sensory cues, dialogue subtext.
+- Honour the chapter's TONE / VOICE / STYLE / PACING from WRITING STYLE.
+- Surface STORY TENSIONS on the page — what's eroding between characters, what's looming, what they're not saying.
+- Use the project's specific worldbuilding (named places, rituals, factions) — never generic stand-ins.
+
+=== HARD RULES ===
+
+- The fenced JSON object IS your entire reply. No text before, no text after.
+- ``phase`` is REQUIRED. Without it the engine cannot route your output.
+- **QUESTIONS BELONG IN ``phase: "questions"`` ONLY.** Never put a question inside ``prose``. Prose is decisive narrative; questions are clarifications. If you have a question, switch phase.
+- **CONTINUITY IS NON-NEGOTIABLE.** Your prose must flow from the END of the existing CURRENT CHAPTER CONTENT (or TEXT IMMEDIATELY BEFORE CURSOR). No scene restarts, no recapping what's already on the page, no POV/tense drift.
+- **PRODUCE THE BEAT THE ENGINE ASKED FOR.** The CURRENT BEAT FOCUS block names the beat by number AND title (e.g. "Beat 4: Witness Encounter"). Produce THAT beat's content. Do NOT default to Beat 1 or to whatever feels easiest. ``beat_number`` in your JSON MUST match the requested number.
+- One beat per reply. The engine will reject two-beat responses.
+- Set ``writing_complete: true`` ONLY on the final beat (last one in the chapter's plot list).
+
+=== EDIT MODE — when EXISTING PROSE is provided in TEXT BEFORE CURSOR ===
+
+Continue from exactly where the existing text ends. Match its voice, tense, and pronouns. If the existing text uses "she/he", continue with "she/he" — do NOT switch to "I"."""
+
+
+OUTLINE_MODE_PROMPT_BLOCK = """=== OUTLINE MODE — PER-BEAT GENERATION ===
+
+The author has selected Outline output. The outline is built BEAT BY BEAT — you produce ONE beat per Phase-2 turn, the engine appends it to the Outline tab, then the next turn produces the next beat. Same orchestration as writing prose; the only difference is the deliverable shape.
+
+The CURRENT OUTLINE BEAT FOCUS block in your context names which beat number to produce next (e.g. "Now producing Beat 3 — 2 already in panel"). Honour it.
+
+────────────────────────────────────────
+PHASE 1 — QUESTIONS FOR THE NEXT BEAT (default per beat)
+────────────────────────────────────────
+
+Until you emit <context_ready/> for this beat (or the round cap is hit), you are in Phase 1 FOR THIS BEAT. NO OUTLINE STRUCTURE.
+
+Phase 1 covers, in order:
+(a) FETCH WHAT YOU NEED — use lookup tools to pull the specific characters / locations / rituals / subplots / tensions this beat will need. Don't ask the user for things the project already specifies.
+(b) ASK 1-3 SHARP QUESTIONS about THIS beat ONLY (where it sits in the arc, who carries it, what changes by the end). Each question must materially change THIS beat's outline. Number them.
+(c) STOP after asking. Do NOT emit the outline structure in the same reply. Do NOT emit <context_ready/> in the same reply. The user answers in chat; you proceed to the next round (or to Phase 2 once you have what you need).
+
+If you genuinely have NO meaningful question for this beat, emit <context_ready/> alone (no outline structure) so the engine moves you to Phase 2 on the next turn.
+
+HARD CAP: 4 question rounds per beat. The engine FORCES Phase 2 on round 5 — when you see "*** ROUND CAP REACHED ***" in the OUTLINE BEAT FOCUS block, produce the beat structure immediately, no more questions.
+
+────────────────────────────────────────
+PHASE 2 — PRODUCE EXACTLY ONE BEAT (only when ready)
+────────────────────────────────────────
+
+Triggered when:
+- You emit <context_ready/> at the top of your reply, OR
+- The OUTLINE BEAT FOCUS block says "ROUND CAP REACHED" — produce immediately, OR
+- The user said "proceed" / "go ahead" — emit <context_ready/> + produce the beat.
+
+In Phase 2, emit ONE beat using this Markdown skeleton, then STOP (no extra prose, no preamble, no `[OUTLINE — REMAINING BEATS]` fence — that fence is only used in legacy single-shot mode):
+
+## [ ] Beat <N>: <beat title> — <stage>
+**WHAT HAPPENS** (the plot beat):
+- 2-4 bullets covering what changes start-to-end. Specific actions, decisions, reveals.
+
+**WHO'S IN IT** (focal characters + tensions to surface):
+- POV character (named) and what they're carrying into the beat (use the project's want / need / lie / ghost).
+- Other focal characters + the specific tension(s) between them (pull from STORY TENSIONS — name them).
+- Beliefs / inner conflicts that surface here.
+
+**WHERE / WHEN** (location with worldbuilding hooks):
+- Specific place name from the project's worldbuilding.
+- Architecture details (from the place's notes).
+- Time of day / season / weather + sensory anchors.
+
+**WORLDBUILDING TO LEAN INTO**:
+- Folklore / mythology to invoke (named).
+- Rituals / customs the beat could touch.
+- Faction politics that colour the moment.
+- Magic / technology constraints if relevant.
+
+**SENSORY HOOKS / CONTENT EXAMPLES**:
+- 2-4 bullets of example imagery, dialogue snippets, gestures.
+
+**SUBPLOT / THEME LANDING**:
+- Subplot threads this beat moves (by name).
+- Theme it lands or complicates.
+- Story promises kept or risked.
+
+**WHAT TO LEAVE ON THE PAGE vs IMPLY**:
+- 1-2 bullets.
+
+After the beat structure, end your reply. Do NOT continue into the next beat in the same response. The engine will advance you to Beat <N+1> on the next user message.
+
+────────────────────────────────────────
+COMPLETION SIGNAL
+────────────────────────────────────────
+
+When you reach the FINAL beat of the chapter (i.e. the chapter outline has reached its natural end — climax + resolution covered, no more beats needed), emit the beat structure as usual AND append a single line on its own:
+
+<outline_complete/>
+
+That tag tells the engine to stop the per-beat loop. The author can then ask you to write the chapter and you'll switch into prose mode using the outline you just produced.
+
+If you are NOT at the final beat, do NOT emit <outline_complete/>. The engine will keep prompting you for the next beat.
+
+────────────────────────────────────────
+RULES
+────────────────────────────────────────
+- ONE BEAT per Phase-2 reply. Never two beats in one reply.
+- Each beat heading MUST start with the GFM task-list marker ``[ ]`` (or ``[x]`` for beats the author has already marked done in EDIT MODE). The Outline tab renders beats as a checklist and the markers track completion.
+- Pull every name (character / place / faction / theme / subplot / tension / myth) from the project material — do NOT invent. If a beat needs something that's not in the project, ask in Phase 1.
+- Use lookup tools BEFORE producing the beat structure so worldbuilding / character / subplot details are concrete, not generic.
+- The beat number you produce MUST match what the OUTLINE BEAT FOCUS block tells you to produce next.
+
+────────────────────────────────────────
+EDIT MODE — when EXISTING CHAPTER OUTLINE is provided
+────────────────────────────────────────
+
+If the context contains an EXISTING CHAPTER OUTLINE block, the user has chosen to REFINE that outline rather than start over. Treat the existing outline as the baseline:
+
+- Phase 1 questions should target what's MISSING or UNDERDEVELOPED in a SPECIFIC beat. Same 4-rounds cap.
+- Phase 2 emits the SINGLE refined beat (matching its existing number + title where possible). The engine REPLACES the existing beat with the new one. Do NOT emit other beats in the same reply.
+- When you've finished refining all beats the user wanted touched, emit <outline_complete/> on its own line so the engine stops cycling.
+- Preserve information the existing outline established unless the user explicitly asked to drop or change it.
+
+If NO EXISTING CHAPTER OUTLINE block is in the context, this is a fresh outline — populate the panel from scratch using the rules above."""
 
 
 class ChatWorker(QThread):
@@ -79,7 +553,26 @@ You help authors with:
 - Providing feedback on specific passages or the overall narrative
 - Suggesting improvements that align with their style and voice
 - Identifying plot holes or inconsistencies across chapters
+- Answering pacing + genre questions using the project's PROSE PROFILE and GENRE PACING TARGETS blocks (see below)
 - CREATING new characters, places, factions, cultures, myths, historical events, technologies, flora, fauna, chapters, climate presets, planets, and star systems when asked
+
+=== PACING + GENRE QUESTIONS ===
+
+When the project has set a genre, your context contains two related blocks at the top:
+- PROSE PROFILE — the author's stated targets (genre, tone, style, voice, freeform notes).
+- GENRE PACING TARGETS — the resolved numeric bands for that genre: average sentence-length window, sentence-variety score floor, dialog share window, passive-voice cap, long-sentence cap (>35 words), and adverb cap. Each is a rule-of-thumb band that healthy genre prose tends to land inside.
+
+When the user asks pacing or genre questions, GROUND YOUR ANSWER in those blocks rather than generic genre lore:
+- "Is my chapter pacing right for thrillers?" → cite the avg-sentence-length window + dialog window + passive cap, then look at the CURRENT CHAPTER CONTENT and judge informally (no need to compute exact stats — that's what the Critique tab is for; here you give a directional read with one or two concrete examples). Recommend the Critique tab if the user wants measured numbers.
+- "What dialog ratio works for literary fiction?" → quote the band + the genre-profile note in one or two sentences.
+- "Why does my prose feel slow?" → reference the long-sentence cap + variety target + adverb cap, point to one or two example sentences from the chapter that work against the band.
+- "Should I shorten my sentences?" → answer in terms of the genre window, the chapter's intent, and the chapter-level Pacing notes (in CHAPTER OUTLINE → WRITING STYLE) if a chapter is open.
+
+If the project has NO genre set, the GENRE PACING TARGETS block falls back to the "default" general-fiction profile — say so explicitly when the user asks ("the project hasn't picked a genre, so I'm using the General Fiction band — set one in the Prose Profile tab to get genre-specific targets").
+
+Also factor in CHAPTER PACING when a chapter is open: the chapter-level pacing note (in WRITING STYLE) describes the pacing INTENT for THIS chapter — a "slow contemplative" beat in a thriller can intentionally widen the window, a "rapid-fire action" beat tightens it. Surface the conflict if you see one.
+
+DO NOT invent genre stats not in the GENRE PACING TARGETS block. Stick to what's there; if the user asks about a metric not listed, say so and suggest running the Critique tab for the full report.
 
 USING THE MANUSCRIPT:
 You have access to the CURRENT CHAPTER content and a PROJECT INDEX of all chapters, characters, and worldbuilding elements. When the user asks about their story, characters, or scenes:
@@ -692,18 +1185,69 @@ REAL-WORLD REFERENCE (encyclopedia) is INSPIRATION ONLY. Real-world / mythology 
 
 RULE: If a story fact appears in the encyclopedia but NOT in PROJECT MATERIAL, it is NOT canonical. Use the encyclopedia for sensory detail and parallels; use the project for what's actually true in this story.
 
-=== PRE-WRITE DISCUSSION — ASK BEFORE WRITING WHEN IT MATTERS ===
-The writer agent doesn't have to write on the first turn. When the user's request leaves real ambiguity that would meaningfully change the prose, ASK 2-4 sharp questions FIRST and wait for the answer before writing. Use the lookup tools to fetch what you need before deciding whether you have enough. Examples of when to ask:
+=== OUTLINE-FIRST RULE — DO NOT SKIP ===
 
-- The chapter goal / scene direction is broad ("write me chapter 5") and the chapter outline doesn't pin down POV, focal characters, or ending.
-- A planned plot event has multiple valid readings (e.g. "the confrontation" — does the older character break first or the younger?) and the outline doesn't say.
-- An important worldbuilding piece is referenced but the project has multiple candidates (e.g. "the temple" when there are three temples — which one?).
-- A subplot thread is in scope for the chapter but the outline doesn't say whether to advance it now or hold for next chapter.
-- The author's request mentions a tone or mood that conflicts with the chapter planning (e.g. user says "make it lighter" but chapter tone is "tense, sorrowful").
+Before any per-beat prose questions, the chapter MUST have an outline (the engine surfaces it as the EXISTING CHAPTER OUTLINE block + populates the WRITING COVERAGE STATUS list of beats from it).
 
-When you DO have enough — chapter outline is concrete, plot events are clear, focal characters are specified — proceed straight to writing. Don't ask questions for the sake of it.
+- If the WRITING COVERAGE STATUS block lists remaining beats → an outline exists. Proceed to PHASED WRITE PROTOCOL below.
+- If NO beats are listed (no outline yet) → the engine has already silently flipped this turn into Outline output mode and appended the OUTLINE MODE block. Produce the outline as instructed there; do NOT ask per-beat prose questions in this turn — there is no beat structure yet to question against. The author will review the outline in the panel and ask you to write the chapter on a follow-up turn.
 
-When asking, format the questions as a numbered list at the end of your reply, no prose preamble, no XML — the user just answers in chat and you write on the next turn. AS YOU WRITE, you can also pause and ask if you discover a genuine gap (a missing detail you can't fetch via lookup tools) — emit one short clarifying question and stop. The user answers, you continue.
+This rule prevents asking detailed prose questions ("should the witness speak first?", "should we linger on the dust?") before any high-level beat plan exists. Beat-level prose questions belong in Phase 1 of the per-beat protocol — they require a beat structure to ground them.
+
+=== PHASED WRITE PROTOCOL — PER BEAT, DO NOT SKIP PHASES ===
+
+Writer mode now runs ONE BEAT AT A TIME. The CURRENT BEAT FOCUS block in your context names the beat you're currently working on; the round counter (R/4) tracks how many Q&A rounds you've spent on it. After the beat is written and inserted, the engine advances you to the next remaining beat with a fresh round counter.
+
+Each beat goes through TWO phases. The engine enforces them.
+
+────────────────────────────────────────
+PHASE 1 — QUESTIONS FOR THE CURRENT BEAT (default per beat)
+────────────────────────────────────────
+
+Until you emit <context_ready/> for the current beat (or the round cap is hit), you are in Phase 1 FOR THIS BEAT. NO PROSE.
+
+Phase 1 covers, in order:
+
+(a) FETCH WHAT YOU NEED for THIS beat — use the LOOKUP TOOLS to pull the specific character voices / locations / rituals / subplots / tensions this beat needs. Don't ask the user for things the project already specifies.
+
+(b) ASK 1-3 SHARP QUESTIONS about THIS beat ONLY. Not the whole chapter. Each question must materially change THIS beat's prose. Number them. Examples:
+- "Should Marcus speak first, or does the old man break the silence?"
+- "Does the betrayal land on the page, or do we imply it through silence?"
+- "Should I lean into the loyalty subplot here, or save it for the next beat?"
+
+DO NOT ask questions about beats that aren't the current beat.
+
+(c) STOP after asking. Do NOT emit prose. Do NOT emit <context_ready/> in the same reply. The user answers in chat; you proceed to the next round (or to Phase 2 once you have what you need).
+
+If you genuinely have NO meaningful question for this beat (rare), emit <context_ready/> alone (no prose) so the engine moves you to Phase 2 on the next turn.
+
+HARD CAP: 4 question rounds per beat. The engine FORCES Phase 2 on round 5 (you'll see "*** ROUND CAP REACHED ***" in the CURRENT BEAT FOCUS block — when you see that, write the prose immediately, no more questions).
+
+────────────────────────────────────────
+PHASE 2 — WRITE THE CURRENT BEAT (only when ready)
+────────────────────────────────────────
+
+Triggered when:
+- You emit <context_ready/> at the top of your reply, OR
+- The CURRENT BEAT FOCUS block says "ROUND CAP REACHED" — write immediately, OR
+- The user said "proceed" / "go ahead" — emit <context_ready/> + write.
+
+In Phase 2:
+- Lead with one short confirmation ("Writing the arrival beat now.").
+- Write prose ONLY for the CURRENT beat (1-3 paragraphs typically). Do NOT write the next beat — the engine will advance you after this one lands.
+- End with the <writing_summary> block. The summary should describe WHAT WAS COVERED IN THIS BEAT (not the whole chapter).
+
+After your prose lands, the engine inserts it at the appropriate position in the chapter and advances you to the next beat. Your NEXT reply starts Phase 1 fresh for the new beat.
+
+────────────────────────────────────────
+WHAT NOT TO DO
+────────────────────────────────────────
+- Do NOT write multiple beats in one reply. Strictly one beat per Phase 2.
+- Do NOT ask questions about beats other than the current one.
+- Do NOT exceed 4 question rounds per beat (the engine forces a write).
+- Do NOT repeat questions you already asked for this beat — the PRIOR Q&A block lists them.
+- Do NOT rewrite already-covered beats (the COVERAGE STATUS block lists what's done).
+- Do NOT ask questions that the project already answers (use lookup tools first).
 
 === PLOT-EVENT COVERAGE — STRICT REQUIREMENT ===
 When STORY EVENTS/BEATS or a SCENE LIST is provided in the chapter outline:
@@ -741,6 +1285,33 @@ The project gives you specific worldbuilding — use it concretely, not generica
 - Surface STORY TENSIONS on the page — what's eroding between two characters, what's looming, what they're not saying. The tension list tells you what pressure to keep on whom.
 - Subplot threads can be advanced by even one well-placed line — when a subplot is in scope for this chapter, find the moment to thread it.
 - Themes should land through choice and consequence, not stated as a moral.
+
+=== WHEN THE BEAT NEEDS SOMETHING NOT IN THE PROJECT ===
+
+If THIS beat genuinely needs a character / place / faction / culture / myth / etc. that does NOT yet exist in the project (a named witness in a courtroom, a tavern the protagonist ducks into, a minor faction the antagonist invokes), do ONE of these:
+
+1. PREFER PHASE 1: ask the user in your questions ("Should I introduce a new neighbour as the witness, or is there an existing character I should pull in?"). Lookup tools first — confirm it isn't already in the project under a different name.
+
+2. PROPOSE A CREATION in Phase 2 ALONGSIDE the prose. Emit the matching ``<create_*>`` block at the END of your reply (after the prose, BEFORE the <writing_summary>). The user clicks Add or Skip; the engine creates the element and refreshes the project widgets. Use the same JSON schema the project's existing entries use (mirror what's in MAIN CHARACTERS / WORLDBUILDING blocks).
+
+Available creation tools:
+
+  <create_character>{...}</create_character>
+  <create_place>{...}</create_place>
+  <create_faction>{...}</create_faction>
+  <create_culture>{...}</create_culture>
+  <create_myth>{...}</create_myth>
+  <create_historical_event>{...}</create_historical_event>
+  <create_technology>{...}</create_technology>
+  <create_flora>{...}</create_flora>
+  <create_fauna>{...}</create_fauna>
+  <create_climate_preset>{...}</create_climate_preset>
+  <create_planet>{...}</create_planet>
+  <create_star_system>{...}</create_star_system>
+
+CAP at TWO ``<create_*>`` blocks per reply — never let creation overwhelm the prose. The prose is the deliverable; creation is bookkeeping for elements you NAMED on the page.
+
+DO NOT spam creates for incidental colour (a passer-by, a tavern keeper with one line). Only emit ``<create_*>`` for elements that have NAME + ROLE you've established on the page or in the next-beat plan. Anonymous walk-ons stay anonymous.
 
 === POINT OF VIEW - STRICT REQUIREMENT ===
 You MUST follow the specified NARRATIVE POV exactly. This is non-negotiable.
@@ -836,7 +1407,58 @@ When asked to continue:
 - Pick up exactly where the text ends
 - If mid-scene, complete it before transitioning
 - Maintain narrative momentum
-- Still emit the SUMMARY BLOCK at the end"""
+- Still emit the SUMMARY BLOCK at the end""",
+
+        "worldbuilding": """You are a worldbuilding consultant talking the author through their fictional world. You have the project's existing characters, plot map, and worldbuilding (factions, places, cultures, myths, religions, technologies, flora, fauna, historical events, climate, planets) in your context.
+
+=== TWO DISTINCT CONTEXT SOURCES — DO NOT CONFUSE THEM ===
+
+PROJECT MATERIAL is AUTHORITATIVE. The project's existing worldbuilding entries, characters, and plot scaffolding define what's CANON in this story. When the author asks about an existing element, your answers come from project material; when they ask to create or extend, you propose additions that are CONSISTENT with what's already there. Look for the blocks labelled MAIN CHARACTERS, WORLDBUILDING, RELEVANT PROJECT ELEMENTS, PROJECT INDEX.
+
+REAL-WORLD REFERENCE (encyclopedia) is INSPIRATION ONLY. Real-world / mythology entries the author has loaded — useful as parallels and grounding when designing fictional cultures, religions, or technologies. NEVER treat encyclopedia entries as project canon; the project's worldbuilding always wins. Use the encyclopedia to suggest "this culture's harvest rite parallels the real-world Slavonic tradition of …" rather than pulling real-world facts in as story facts.
+
+=== YOUR JOB ===
+
+Help the author design, refine, and connect worldbuilding elements:
+
+- DESIGN new elements (factions, places, cultures, myths, religions, technologies, flora, fauna, historical events) when the author asks for them. Use lookup tools first to fetch the surrounding context (related places / factions / cultures / myths) so your design slots in cleanly.
+- DEEPEN existing elements when the author wants more depth — pull the existing record, then propose extensions (rituals for a culture, secret history for a faction, ecology for a region) that don't contradict it.
+- CONNECT elements: identify how a new piece relates to existing ones (rivalries between factions, cultural overlap, shared history) and surface those connections explicitly.
+- AUDIT for consistency when the author asks ("does this faction's ideology match their actions across the chapters?") — pull both sides via lookups.
+
+=== PROPOSING NEW ELEMENTS ===
+
+When the discussion calls for a new worldbuilding element, emit the matching ``<create_*>`` block at the END of your reply (after your reasoning prose). The user clicks Add or Skip; the engine creates the element via the existing creation pipeline.
+
+Available creation tools (each takes a JSON body; see the EXISTING ELEMENTS for the schema your project uses — when in doubt, mirror what's already there):
+
+  <create_character>{...}</create_character>
+  <create_place>{...}</create_place>
+  <create_faction>{...}</create_faction>
+  <create_culture>{...}</create_culture>
+  <create_myth>{...}</create_myth>
+  <create_historical_event>{...}</create_historical_event>
+  <create_technology>{...}</create_technology>
+  <create_flora>{...}</create_flora>
+  <create_fauna>{...}</create_fauna>
+  <create_climate_preset>{...}</create_climate_preset>
+  <create_planet>{...}</create_planet>
+  <create_star_system>{...}</create_star_system>
+
+Cap at TWO ``<create_*>`` blocks per reply. Talk through your reasoning in prose first, THEN emit the blocks at the end so the user can read your thinking before clicking Add.
+
+=== OUTPUT SHAPE ===
+
+- Direct answer first — one or two sentences resolving the request.
+- Then your reasoning, with explicit references to existing project elements by NAME (cite the actual faction / culture / place names from the project, not generic placeholders).
+- When proposing new elements, name how they connect to existing ones ("the Reckoners' new northern chapterhouse sits in the Frostmarch territory, sharing the silent-oath custom from Frostmarch tradition").
+- Lookup tools (when wired) — use them to fetch character voice / faction details / place architecture before designing additions.
+
+=== DO NOT ===
+
+- Do NOT contradict existing project canon. If the author asks for something that conflicts, surface the conflict and ask which way to resolve it.
+- Do NOT invent characters / places / factions that aren't in the project AND aren't part of your proposed creation block. Either it exists in the project (cite it by name) or you're proposing it (emit the create block).
+- Do NOT pull real-world facts in as story facts. Encyclopedia is for parallels and grounding only."""
     }
 
     def __init__(self, message: str, context: dict = None, mode: str = "general"):
@@ -891,12 +1513,111 @@ When asked to continue:
 
         # ── Header — project identity (always at top) ─────────────
         header_parts = []
+
+        # ── PRIORITY DIRECTIVE: outline beat focus at the very top ──
+        # When outline mode has an engine-locked beat, surface it
+        # FIRST so the model sees it before any chapter content,
+        # prior chapters, or PLANNED BEATS list distracts it. The
+        # standard CURRENT OUTLINE BEAT FOCUS block still lands
+        # later as a reminder, but this priority block is what
+        # actually wins the model's attention.
+        ob_top = self.context.get('outline_beat_focus')
+        if (ob_top
+                and self.context.get('writer_output_mode')
+                    == "outline"):
+            cur_no = ob_top.get('next_beat_number')
+            t = (ob_top.get('next_beat_title') or '').strip()
+            stg = (ob_top.get('next_beat_stage') or '').strip()
+            d = (ob_top.get('next_beat_description') or '').strip()
+            staged_titles = (
+                self.context.get('outline_staged_titles') or [])
+            top_lines = [
+                "🔒  ENGINE-LOCKED BEAT — PRODUCE EXACTLY THIS BEAT  🔒",
+                f"Beat {cur_no}: \"{t}\""
+                + (f"  [{stg}]" if stg else ""),
+            ]
+            if d:
+                top_lines.append(
+                    f"Plot plan for THIS beat: {d[:400]}")
+            if staged_titles:
+                top_lines.append(
+                    f"Already drafted (do NOT redo): "
+                    + "; ".join(staged_titles))
+            if cur_no and cur_no != 1:
+                top_lines.append(
+                    f"⚠️  Do NOT produce Beat 1's content "
+                    f"('opening / arrival / first impressions') — "
+                    f"the engine asked for Beat {cur_no}. The body "
+                    f"bullets MUST describe what happens in "
+                    f"\"{t}\", not generic chapter-opening material.")
+            header_parts.append("\n".join(top_lines))
+            header_parts.append("")  # blank line separator
+
         if self.context.get('project_name'):
             header_parts.append(f"PROJECT: {self.context['project_name']}")
             if self.context.get('project_description'):
                 header_parts.append(
                     f"Description: "
                     f"{self.context['project_description'][:300]}")
+
+        # ── Prose profile + genre pacing targets ───────────────────
+        # Surfaces the project's target tone/style/voice/genre AND
+        # the resolved GenreProfile bands (sentence length window,
+        # dialog %, passive cap, etc.) so the chat agent can answer
+        # pacing/genre questions with concrete numbers — "is my
+        # average sentence length on-target for thrillers?",
+        # "what dialog ratio fits literary fiction?", etc.
+        pp = self.context.get('prose_profile') or {}
+        gp = self.context.get('genre_profile') or {}
+        if pp or gp:
+            header_parts.append("")
+            header_parts.append("=== PROSE PROFILE (project-wide target) ===")
+            if pp.get('genre'):
+                header_parts.append(f"Genre: {pp['genre']}")
+            if pp.get('tone'):
+                header_parts.append(f"Tone: {pp['tone']}")
+            if pp.get('style'):
+                header_parts.append(f"Style: {pp['style']}")
+            if pp.get('voice'):
+                header_parts.append(f"Voice: {pp['voice']}")
+            if pp.get('notes'):
+                header_parts.append(f"Notes: {pp['notes'][:300]}")
+            if gp:
+                lo, hi = gp.get('avg_sentence_target', [None, None])
+                dlo, dhi = gp.get('dialog_pct_target', [None, None])
+                header_parts.append(
+                    f"\n=== GENRE PACING TARGETS "
+                    f"({gp.get('name', 'Default')}) ===")
+                header_parts.append(
+                    f"Genre profile: {gp.get('key')} — {gp.get('notes', '')}")
+                if lo is not None and hi is not None:
+                    header_parts.append(
+                        f"Avg sentence length window: "
+                        f"{lo:.0f}–{hi:.0f} words")
+                if 'variety_score_target' in gp:
+                    header_parts.append(
+                        f"Sentence-variety score target: "
+                        f"≥ {gp['variety_score_target']:.0f}/100")
+                if dlo is not None and dhi is not None:
+                    header_parts.append(
+                        f"Dialog share window: {dlo:.0f}%–{dhi:.0f}% "
+                        f"of words inside quotes")
+                if 'passive_pct_max' in gp:
+                    header_parts.append(
+                        f"Passive-voice cap: ≤ "
+                        f"{gp['passive_pct_max']:.0f}% of sentences")
+                if 'long_sentence_pct_max' in gp:
+                    header_parts.append(
+                        f"Long-sentence cap (>35 words): ≤ "
+                        f"{gp['long_sentence_pct_max']:.0f}% of sentences")
+                if 'adverb_pct_max' in gp:
+                    header_parts.append(
+                        f"Adverb cap: ≤ "
+                        f"{gp['adverb_pct_max']:.1f}% of words")
+                header_parts.append(
+                    "These are reference bands — deviations can be "
+                    "intentional. Use them when the user asks how "
+                    "their pacing/style compares to the genre.")
 
         # ── Story-wide supporting context (deduped) ───────────────
         # Built into its own list so we can render it AFTER the
@@ -1108,8 +1829,14 @@ When asked to continue:
                 chapter_emit.append(
                     f"\n=== CHAPTER SYNOPSIS ===\n{synopsis}")
 
-            # PRIOR CHAPTERS — story-so-far rundown.
-            if self.context.get('previous_chapters_summary'):
+            # PRIOR CHAPTERS — story-so-far rundown. Skipped in
+            # outline mode (the model just needs the locked beat's
+            # plot plan; the story-so-far is too easy to lift from
+            # and ends up in the outline as "what already happened").
+            is_outline_mode = (
+                self.context.get('writer_output_mode') == "outline")
+            if (self.context.get('previous_chapters_summary')
+                    and not is_outline_mode):
                 chapter_emit.append(
                     "\n=== PRIOR CHAPTERS (story so far) ===\n"
                     + self.context['previous_chapters_summary'])
@@ -1148,6 +1875,28 @@ When asked to continue:
                 if planning.get('outline') and not planning.get('scene_list'):
                     # Fallback to text outline if no scene list
                     chapter_emit.append(f"\nOUTLINE:\n{planning['outline'][:1000]}")
+
+                # EXISTING CHAPTER OUTLINE — only rendered when the
+                # writer-mode dispatcher set ``existing_outline`` on
+                # the context (i.e. the user picked "Edit existing"
+                # in the outline-already-exists dialog). The OUTLINE
+                # MODE prompt block keys off this block to switch
+                # into refinement vs. fresh-write mode.
+                existing_outline = (
+                    self.context.get('existing_outline') or '').strip()
+                if existing_outline:
+                    chapter_emit.append(
+                        "\n=== EXISTING CHAPTER OUTLINE "
+                        "(refine — do NOT discard) ===\n"
+                        + existing_outline)
+                    action = (self.context.get('outline_action')
+                              or 'edit')
+                    chapter_emit.append(
+                        f"\nUser chose to {action.upper()} this "
+                        f"outline. Phase 2 must emit the COMPLETE "
+                        f"updated outline (every beat, in order) — "
+                        f"the panel replaces its content with what "
+                        f"you produce.")
 
                 if planning.get('characters_featured'):
                     chapter_emit.append(f"\nFeatured Characters: {', '.join(planning['characters_featured'])}")
@@ -1203,12 +1952,22 @@ When asked to continue:
                 if self.context.get('content_before_summary'):
                     chapter_emit.append(f"\n{self.context['content_before_summary']}")
 
-            # Previous chapter ending for continuity
-            if self.context.get('previous_chapter_ending'):
+            # Previous chapter ending for continuity — writer-prose
+            # mode only; outline mode doesn't need it (and shouldn't
+            # echo prior prose into beat structure).
+            if (self.context.get('previous_chapter_ending')
+                    and not is_outline_mode):
                 chapter_emit.append(f"\n=== PREVIOUS CHAPTER ENDING (for continuity) ===\n...{self.context['previous_chapter_ending']}")
 
-            # Current chapter content
-            if self.context.get('current_chapter_content'):
+            # Current chapter content — INCLUDED for full-text writer
+            # mode (continuity), EXCLUDED for outline mode. The model
+            # would otherwise summarise the existing prose into the
+            # outline ("Sarah arrives at the landing pad…") instead
+            # of producing the locked beat's plot plan. The outline
+            # is a structural artifact and must come from the plot
+            # plan, not the manuscript.
+            if (self.context.get('current_chapter_content')
+                    and not is_outline_mode):
                 content = self.context['current_chapter_content']
                 MAX_CHAPTER_CHARS = 15000
                 if len(content) <= MAX_CHAPTER_CHARS:
@@ -1220,6 +1979,309 @@ When asked to continue:
                         f"\n{content[:half]}"
                         f"\n\n…[middle of chapter omitted for length]…\n\n"
                         f"{content[-half:]}")
+
+            # WRITING COVERAGE STATUS — populated for writer mode
+            # so the agent knows what's already on the page vs what
+            # still needs to be written. Drives the phased pre-write
+            # protocol: agent reasons about REMAINING events, asks
+            # questions about THEM, then writes only those.
+            cov = self.context.get('chapter_coverage') or {}
+            if cov and is_chapter_focused:
+                lines = [
+                    "\n=== WRITING COVERAGE STATUS ===",
+                    cov.get("summary", ""),
+                ]
+                # Covered events
+                covered = cov.get("covered_events") or []
+                if covered:
+                    lines.append("\nALREADY COVERED in existing prose:")
+                    for ev in covered[:10]:
+                        stage = ev.get("stage", "")
+                        text = ev.get("text", "(unnamed)")
+                        lines.append(
+                            f"  ✓ [{stage}] {text}"
+                            if stage else f"  ✓ {text}")
+                # Remaining events — the writer agent's actual TODO
+                remaining = cov.get("remaining_events") or []
+                if remaining:
+                    lines.append("\nREMAINING — write THESE only:")
+                    for ev in remaining:
+                        stage = ev.get("stage", "")
+                        text = ev.get("text", "(unnamed)")
+                        desc = (ev.get("description", "") or "")[:200]
+                        head = (f"  ○ [{stage}] {text}"
+                                if stage else f"  ○ {text}")
+                        lines.append(head)
+                        if desc:
+                            lines.append(f"      {desc}")
+                else:
+                    lines.append(
+                        "\n(All planned events appear covered. If "
+                        "the user is asking for new prose, ask them "
+                        "what they want next.)")
+                # Ready-to-write signal
+                ready = self.context.get('writer_ready_to_write')
+                if ready:
+                    lines.append(
+                        "\nSESSION STATE: <context_ready/> already "
+                        "emitted for this chapter — proceed straight "
+                        "to writing the remaining beats unless the "
+                        "user asks otherwise.")
+                else:
+                    lines.append(
+                        "\nSESSION STATE: <context_ready/> NOT yet "
+                        "emitted — you are in the PRE-WRITE phase. "
+                        "Do coverage / lookups / questions before "
+                        "writing prose.")
+                chapter_emit.append("\n".join(lines))
+
+            # CURRENT BEAT FOCUS — writer mode is now per-beat. The
+            # model works on ONE beat at a time, with a hard cap of
+            # 4 question rounds per beat. After the cap (or
+            # <context_ready/>) it writes ONLY that beat's prose;
+            # the engine inserts it and advances to the next beat.
+            cb = self.context.get('writer_current_beat')
+            if cb:
+                audit_status = cb.get('audit_status', 'confirmed')
+                # The absolute beat number from the audit (1-based,
+                # honoured by the model); falls back to the writer's
+                # remaining-beats index when no audit fired.
+                beat_no = cb.get(
+                    'beat_number', cb['index'] + 1)
+                cb_lines = [
+                    "\n=== CURRENT BEAT FOCUS (per-beat protocol) ===",
+                    f"audit_status: \"{audit_status}\"",
+                    f"You are working on Beat {beat_no} "
+                    f"({cb['index'] + 1}/{cb['total']} remaining): "
+                    f"\"{cb['title']}\""
+                    + (f" [{cb['stage']}]" if cb.get('stage') else ""),
+                    f"Question round {cb['rounds_used']}/"
+                    f"{cb['max_rounds']} for this beat.",
+                ]
+                if cb.get('description'):
+                    cb_lines.append(
+                        f"Beat description: {cb['description']}")
+                if audit_status == "pending_request":
+                    cb_lines.append(
+                        "*** FIRST TURN — produce phase=\"audit\" "
+                        "now. Look at the PLANNED BEATS list, "
+                        "any existing outline panel content, and "
+                        "the CURRENT CHAPTER CONTENT. Mark each "
+                        "beat as written / outlined / pending and "
+                        "set first_pending_beat. Do NOT produce "
+                        "phase=questions or phase=prose on this "
+                        "turn. ***")
+                elif cb.get('force_write'):
+                    cb_lines.append(
+                        "*** ROUND CAP REACHED — produce phase=\"prose\" "
+                        "for THIS beat now. Do NOT ask more questions. "
+                        "Use the writer JSON schema. ***")
+                else:
+                    cb_lines.append(
+                        f"Rules: Ask 1-3 SHARP questions about THIS "
+                        f"beat only (not the whole chapter). When you "
+                        f"have what you need OR the user signals "
+                        f"proceed, switch to phase=\"prose\" and write "
+                        f"ONLY this beat's prose. After this beat "
+                        f"lands, the engine advances you to the next "
+                        f"beat with a fresh round counter.")
+                chapter_emit.append("\n".join(cb_lines))
+
+            # CURRENT OUTLINE BEAT FOCUS — only relevant in outline
+            # mode. Tells the model which beat number to produce
+            # next, how many are already in the panel, and the
+            # round counter for Phase-1 questions on this beat.
+            # OUTLINE SESSION block — exposes the autonomous-system
+            # phase + audit so the model picks the right phase tag.
+            session_phase = self.context.get(
+                "outline_session_phase")
+            if session_phase:
+                lines = [
+                    "\n=== OUTLINE SESSION ===",
+                    f"outline_session_phase: \"{session_phase}\"",
+                ]
+                audit = self.context.get("outline_audit") or []
+                if audit and session_phase == "pick_start":
+                    lines.append("\nOUTLINE AUDIT (engine-computed):")
+                    for entry in audit:
+                        lines.append(
+                            f"  Beat {entry.get('beat_number')}: "
+                            f"{entry.get('title') or '?'} — "
+                            f"{entry.get('status')}")
+                if session_phase == "beat_refine":
+                    user_msg = (
+                        self.context.get("user_refine_message")
+                        or "").strip()
+                    if user_msg:
+                        lines.append(
+                            f"\nUSER FEEDBACK FOR THIS BEAT:\n"
+                            f"  {user_msg[:400]}")
+                    draft = self.context.get("current_beat_draft")
+                    if isinstance(draft, dict):
+                        lines.append(
+                            "\nPRIOR DRAFT (refine, don't restart):")
+                        # Compact JSON for the model.
+                        import json as _json
+                        try:
+                            lines.append(
+                                _json.dumps(draft, indent=2)[:1500])
+                        except Exception:
+                            pass
+                chapter_emit.append("\n".join(lines))
+
+            ob = self.context.get('outline_beat_focus')
+            if ob and self.context.get('writer_output_mode') == "outline":
+                audit_status = ob.get('audit_status', 'confirmed')
+                # Build the "Now produce" line — when we know the
+                # specific beat title/stage/description (from the
+                # chapter's planning.events), surface them so the
+                # model produces the RIGHT beat instead of defaulting
+                # to Beat 1's content. Falls back to a number-only
+                # line when no plan exists for that slot.
+                title = (ob.get("next_beat_title") or "").strip()
+                stage = (ob.get("next_beat_stage") or "").strip()
+                desc = (ob.get("next_beat_description") or "").strip()
+                if title:
+                    produce_line = (
+                        f"Now produce: Beat {ob['next_beat_number']} "
+                        f"— \"{title}\""
+                        + (f" [{stage}]" if stage else ""))
+                else:
+                    produce_line = (
+                        f"Now produce: Beat {ob['next_beat_number']}")
+                ob_lines = [
+                    "\n=== CURRENT OUTLINE BEAT FOCUS "
+                    "(per-beat outline) ===",
+                    f"audit_status: \"{audit_status}\"",
+                    f"Beats already in the Outline tab: "
+                    f"{ob['beats_done']}",
+                    produce_line,
+                ]
+                if desc:
+                    ob_lines.append(
+                        f"  Plan from chapter outline: {desc[:300]}")
+                ob_lines += [
+                    f"Question round {ob['rounds_for_beat']}/"
+                    f"{ob['max_rounds']} for this beat.",
+                    f"Hard cap: {ob['max_beats']} beats per chapter "
+                    f"(set outline_complete=true at the final beat).",
+                ]
+                if audit_status == "pending_request":
+                    ob_lines.append(
+                        "*** FIRST TURN — produce phase=\"audit\" "
+                        "now. Look at the PLANNED BEATS list "
+                        "below + any existing outline panel "
+                        "content + any existing chapter prose. "
+                        "Mark each beat as outlined / written / "
+                        "pending and set first_pending_beat. Do "
+                        "NOT produce phase=questions or "
+                        "phase=beat on this turn. ***")
+                if ob.get('rounds_for_beat', 0) >= ob.get(
+                        'max_rounds', 4):
+                    ob_lines.append(
+                        "*** ROUND CAP REACHED — produce the beat "
+                        "structure for THIS beat now. Do NOT ask more "
+                        "questions. Emit phase=beat. ***")
+                chapter_emit.append("\n".join(ob_lines))
+
+            # PLANNED BEATS — listed for both outline + writer modes
+            # so the audit phase has the full beat plan to work from.
+            # The current beat is marked with `→` so the model can
+            # find its target without scanning the whole list.
+            planned = self.context.get('planned_beats') or []
+            if planned:
+                pb_lines = [
+                    "\n=== PLANNED BEATS "
+                    "(→ marks the beat the engine asked you to "
+                    "produce) ==="]
+                for entry in planned:
+                    bn = entry.get('beat_number')
+                    title = entry.get('title') or '(untitled)'
+                    stage = entry.get('stage') or ''
+                    is_current = bool(entry.get('is_current'))
+                    arrow = "→" if is_current else " "
+                    line = f"  {arrow} Beat {bn}: {title}"
+                    if stage:
+                        line += f" — {stage}"
+                    pb_lines.append(line)
+                    desc = entry.get('description') or ''
+                    if desc:
+                        pb_lines.append(f"      {desc[:200]}")
+                chapter_emit.append("\n".join(pb_lines))
+
+            # PRIOR Q&A — writer-mode Phase 1 history so the model
+            # can see EXACTLY which questions it already asked and
+            # what the user answered. Without this, models cycle on
+            # "what POV?" / "which subplot?" turn after turn because
+            # they have no memory of having asked. Combined with the
+            # engine-side cycling detector (which auto-flips ready
+            # if questions repeat), this should fully eliminate the
+            # repeat-question problem the user reported.
+            qa_log = self.context.get('writer_qa_history') or []
+            if qa_log:
+                qa_lines = [
+                    "\n=== PRIOR Q&A IN THIS WRITING SESSION ==="
+                    " (you ALREADY asked these — DO NOT repeat them; "
+                    "if you'd ask them again, you have enough — emit "
+                    "<context_ready/> and proceed):"
+                ]
+                for i, entry in enumerate(qa_log, 1):
+                    asked = entry.get("questions") or []
+                    user_reply = (entry.get("user") or "").strip()
+                    qa_lines.append(f"\nTurn {i}:")
+                    if asked:
+                        qa_lines.append("  Questions you asked:")
+                        for q in asked[:6]:
+                            qa_lines.append(f"    • {q}")
+                    if user_reply:
+                        # Cap so a long user reply doesn't dominate
+                        snippet = user_reply[:400]
+                        qa_lines.append(f"  User answered: {snippet}")
+                chapter_emit.append("\n".join(qa_lines))
+
+            # Recent AI insertions in this chapter — lets the model
+            # answer follow-ups like "edit that scene you just wrote"
+            # by emitting ``<edit_last_insertion>`` with the right
+            # index. Records are listed oldest → newest so the index
+            # the model passes maps to the visible numbering. Only
+            # surfaced for the modes that have the edit tool wired in.
+            recent = (self.context.get('recent_insertions') or []
+                      if is_chapter_focused else [])
+            if recent:
+                lines = ["\n=== RECENT AI INSERTIONS (your prior writes "
+                         "in this chapter — refer back via index when "
+                         "the user asks to edit) ==="]
+                for i, rec in enumerate(recent):
+                    preview = (rec.get("prose") or "").strip()
+                    # Show a short preview so the model can identify
+                    # the insertion without dumping the full prose
+                    # (it's already in CURRENT CHAPTER CONTENT).
+                    if len(preview) > 220:
+                        preview = (preview[:120].rstrip()
+                                    + " … "
+                                    + preview[-80:].lstrip())
+                    summary = (rec.get("summary") or "").strip()
+                    prompt = (rec.get("prompt") or "").strip()
+                    word_n = len((rec.get("prose") or "").split())
+                    lines.append(
+                        f"[{i}] mode={rec.get('mode', '?')} "
+                        f"words={word_n} ts={rec.get('timestamp', '?')}")
+                    if prompt:
+                        lines.append(
+                            f"    user prompt: "
+                            f"{prompt[:150]}")
+                    if summary:
+                        lines.append(
+                            f"    summary: {summary[:200]}")
+                    lines.append(f"    preview: \"{preview}\"")
+                lines.append(
+                    "Reference these by index when the user asks to "
+                    "edit / refine / add tension / continue from one. "
+                    "Emit <edit_last_insertion>{\"index\": N, "
+                    "\"instructions\": \"...\"} where N is the [N] "
+                    "label above (default 0 = oldest, "
+                    f"{len(recent) - 1} = most recent).")
+                chapter_emit.append("\n".join(lines))
 
         # ── Compose final prompt with chapter-first ordering ──────
         # In chapter-focused modes the chapter section leads, then a
@@ -1439,6 +2501,22 @@ When asked to continue:
             # Build system prompt based on mode
             system_prompt = self.SYSTEM_PROMPTS.get(self.mode, self.SYSTEM_PROMPTS["general"])
 
+            # Writer mode now uses dedicated JSON-only prompts that
+            # share the same Phase-1-questions / Phase-2-output
+            # protocol — the only difference is what Phase-2 emits:
+            #   * Outline output  → OUTLINE_SYSTEM_PROMPT (one
+            #     structured beat per reply)
+            #   * Full Text output → WRITER_SYSTEM_PROMPT (one
+            #     beat's prose + writing_summary per reply)
+            # Both prompts force the model to declare its phase via
+            # JSON so questions never leak into the deliverable.
+            if self.mode == "writer":
+                wmode = self.context.get('writer_output_mode')
+                if wmode == "outline":
+                    system_prompt = OUTLINE_SYSTEM_PROMPT
+                else:
+                    system_prompt = WRITER_SYSTEM_PROMPT
+
             # Writer mode: two-pass research → write. The research
             # agent distills the broad project context into a focused
             # brief that names the SPECIFIC characters / world / themes
@@ -1501,11 +2579,24 @@ When asked to continue:
             # author with a half-written scene.
             base_max_tokens = int(settings.get("max_tokens", 2000) or 2000)
             if self.mode == "writer":
-                # 6000 tokens ≈ 4500 words — enough for a multi-beat
-                # chapter scene + the summary block. Honor user-set
-                # max_tokens when they've raised it past 6000.
-                effective_max_tokens = max(base_max_tokens, 6000)
-                effective_continue = True
+                # Outline mode: ONE beat at a time. Cap tightly so
+                # the model can't physically fit a second beat into
+                # its budget — combined with the "ONE beat per
+                # reply" prompt rule + the response-side truncation
+                # safety net, this keeps each Phase-2 turn focused
+                # on a single beat. ~1500 tokens is plenty for one
+                # structured beat (heading + 6 bullet sections).
+                if (self.context.get('writer_output_mode')
+                        == "outline"):
+                    effective_max_tokens = min(
+                        max(base_max_tokens, 1500), 1800)
+                    effective_continue = False
+                else:
+                    # 6000 tokens ≈ 4500 words — enough for a multi-beat
+                    # chapter scene + the summary block. Honor user-set
+                    # max_tokens when they've raised it past 6000.
+                    effective_max_tokens = max(base_max_tokens, 6000)
+                    effective_continue = True
             else:
                 effective_max_tokens = base_max_tokens
                 effective_continue = False
@@ -1517,12 +2608,22 @@ When asked to continue:
             # lookup loop so <lookup_*> tags are dispatched
             # transparently and results are fed back to the model
             # before it produces the final response.
-            lookup_modes = {"writer", "chapter_focus", "plot"}
+            lookup_modes = {"writer", "chapter_focus", "plot", "worldbuilding"}
             uses_lookups = self.mode in lookup_modes
             if uses_lookups:
                 system_prompt = (
                     f"{system_prompt}\n\n{'='*60}\n"
                     f"{LOOKUP_TOOLS_PROMPT_BLOCK}")
+            # Edit-last-insertion tool docs — appended for writer +
+            # chapter_focus so the model knows to emit
+            # ``<edit_last_insertion>`` when the user asks to revise
+            # something it previously wrote (instead of just writing
+            # a new version inline that the engine can't track).
+            if self.mode in ("writer", "chapter_focus"):
+                from src.ai.edit_insertion_tool import (
+                    EDIT_INSERTION_PROMPT_BLOCK as _EIPB)
+                system_prompt = (
+                    f"{system_prompt}\n\n{'='*60}\n{_EIPB}")
 
             history = self.context.get('conversation_history') or []
             if uses_lookups:
@@ -1701,6 +2802,195 @@ class LongFormWriterWorker(QThread):
             self.error.emit(f"Long-form writing failed: {e}")
 
 
+class _InsertionEditWorker(QThread):
+    """One-shot worker that runs an LLM edit pass on a recorded insertion.
+
+    Builds the same LLM client the chat path uses (cloud or local
+    per the user's settings) and emits the raw response. The caller
+    handles meta-token sanitisation + degeneration detection before
+    applying the result to the editor.
+    """
+    finished = pyqtSignal(str)  # raw_response
+    error = pyqtSignal(str)
+
+    def __init__(self, prompt: str, system_prompt: str):
+        super().__init__()
+        self.prompt = prompt
+        self.system_prompt = system_prompt
+
+    def _build_llm(self):
+        """Mirror the LLM-selection logic ChatWorker uses."""
+        from src.ai.llm_client import (
+            LLMClient, LLMProvider, HuggingFaceConfig)
+        ai_config = get_ai_config()
+        if ai_config.is_ai_disabled():
+            return None
+        settings = ai_config.get_settings()
+        prefer_local = settings.get("prefer_local_model", False)
+        enable_local = settings.get("enable_local_models", False)
+        local_model_id = settings.get("local_model_id", "")
+        if prefer_local and enable_local and local_model_id:
+            is_mlx_model = "mlx" in local_model_id.lower()
+            hf_config = HuggingFaceConfig(
+                model_id=local_model_id,
+                use_local=True,
+                device=settings.get("local_model_device", "auto"),
+                quantization=settings.get(
+                    "local_model_quantization", "none")
+                if settings.get("local_model_quantization") != "none"
+                else None,
+                trust_remote_code=settings.get(
+                    "local_model_trust_remote_code", False),
+            )
+            provider = (LLMProvider.MLX_LOCAL if is_mlx_model
+                        else LLMProvider.HUGGINGFACE_LOCAL)
+            return LLMClient(provider=provider, hf_config=hf_config)
+        default_provider = settings.get("default_llm", "claude")
+        api_key = ai_config.get_api_key(default_provider)
+        if not api_key:
+            return None
+        provider_map = {
+            "claude": LLMProvider.CLAUDE,
+            "chatgpt": LLMProvider.CHATGPT,
+            "openai": LLMProvider.CHATGPT,
+            "gemini": LLMProvider.GEMINI,
+        }
+        return LLMClient(
+            provider=provider_map.get(
+                default_provider, LLMProvider.CLAUDE))
+
+    def run(self):
+        try:
+            llm = self._build_llm()
+            if llm is None:
+                self.error.emit(
+                    "Edit aborted — no LLM is configured. Enable a "
+                    "model in Settings > AI Settings.")
+                return
+            response = llm.generate_text(
+                prompt=self.prompt,
+                system_prompt=self.system_prompt,
+                max_tokens=4000,
+                temperature=0.6,
+                continue_if_truncated=True,
+            )
+            self.finished.emit(response or "")
+        except Exception as e:  # pragma: no cover — defensive
+            self.error.emit(f"Edit failed: {e}")
+
+
+class _SidebarContainer(QWidget):
+    """Collapsible host for the right-hand AI Assistant + Outline tabs.
+
+    The chat widget no longer collapses on its own; this container
+    owns the expand/collapse state for the whole sidebar. Collapsed
+    state shows a thin vertical strip with a single expand button
+    so the user can always reclaim the sidebar without hunting for a
+    menu item.
+    """
+
+    EXPANDED_MIN_W = 320
+    EXPANDED_MAX_W = 460
+    COLLAPSED_W = 36
+
+    def __init__(self, content: QWidget) -> None:
+        super().__init__()
+        self.setObjectName("sidebarContainer")
+        self._collapsed = False
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Collapsed-state vertical button. Hidden until the user
+        # collapses; clicking it expands the sidebar back.
+        self.collapsed_btn = QPushButton("◀\nA\nI\n+\nO")
+        self.collapsed_btn.setToolTip(
+            "Show AI Assistant + Outline (Ctrl+\\)")
+        self.collapsed_btn.setStyleSheet(
+            "QPushButton { background-color: #4f46e5; color: white; "
+            " border: none; border-radius: 6px; font-size: 11px; "
+            " font-weight: bold; padding: 8px 4px; min-height: 90px; "
+            " text-align: center; } "
+            "QPushButton:hover { background-color: #4338ca; }")
+        self.collapsed_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.collapsed_btn.clicked.connect(self._expand)
+        self.collapsed_btn.setVisible(False)
+        layout.addWidget(
+            self.collapsed_btn, 0, Qt.AlignmentFlag.AlignTop)
+
+        # Expanded content — header bar with collapse toggle, then
+        # the wrapped tab widget below.
+        self._expanded = QWidget()
+        ex_layout = QVBoxLayout(self._expanded)
+        ex_layout.setContentsMargins(4, 4, 4, 4)
+        ex_layout.setSpacing(4)
+
+        header = QFrame()
+        header.setStyleSheet(
+            "QFrame { background-color: #4f46e5; border-radius: 6px; }")
+        h_layout = QHBoxLayout(header)
+        h_layout.setContentsMargins(10, 4, 10, 4)
+        h_layout.setSpacing(8)
+
+        self._collapse_btn = QPushButton("▶  Hide")
+        self._collapse_btn.setToolTip(
+            "Collapse the sidebar (Ctrl+\\)")
+        self._collapse_btn.setCursor(
+            Qt.CursorShape.PointingHandCursor)
+        self._collapse_btn.setStyleSheet(
+            "QPushButton { background-color: transparent; "
+            " color: white; border: none; font-size: 12px; "
+            " font-weight: 600; padding: 2px; } "
+            "QPushButton:hover { color: #e0e7ff; }")
+        self._collapse_btn.clicked.connect(self._collapse)
+        h_layout.addStretch()
+        h_layout.addWidget(self._collapse_btn)
+
+        ex_layout.addWidget(header)
+        ex_layout.addWidget(content, stretch=1)
+
+        layout.addWidget(self._expanded, stretch=1)
+
+        self.setMinimumWidth(self.EXPANDED_MIN_W)
+        self.setMaximumWidth(self.EXPANDED_MAX_W)
+
+    # ── public API ────────────────────────────────────────────────
+
+    def is_collapsed(self) -> bool:
+        return self._collapsed
+
+    def expand(self) -> None:
+        if self._collapsed:
+            self._expand()
+
+    def collapse(self) -> None:
+        if not self._collapsed:
+            self._collapse()
+
+    def toggle(self) -> None:
+        if self._collapsed:
+            self._expand()
+        else:
+            self._collapse()
+
+    # ── internals ─────────────────────────────────────────────────
+
+    def _collapse(self) -> None:
+        self._collapsed = True
+        self._expanded.setVisible(False)
+        self.collapsed_btn.setVisible(True)
+        self.setMinimumWidth(self.COLLAPSED_W)
+        self.setMaximumWidth(self.COLLAPSED_W + 6)
+
+    def _expand(self) -> None:
+        self._collapsed = False
+        self._expanded.setVisible(True)
+        self.collapsed_btn.setVisible(False)
+        self.setMinimumWidth(self.EXPANDED_MIN_W)
+        self.setMaximumWidth(self.EXPANDED_MAX_W)
+
+
 class MainWindow(QMainWindow):
     """Main application window with all features."""
 
@@ -1723,12 +3013,74 @@ class MainWindow(QMainWindow):
         self._chat_worker: Optional[ChatWorker] = None
         self._pending_mode: str = ""
         self._pending_insert_mode: str = ""
+        self._pending_output_mode: str = "full_text"
+        self._pending_outline_action: str = "populate"
         self._pending_chat_message: str = ""
 
         # Conversation history for multi-turn chat (user+assistant pairs)
         # Max 12 turns kept; older turns are dropped (compaction).
         self._chat_history: list = []
         self._MAX_CHAT_TURNS = 12
+
+        # Writer-insertion registry — records every AI insertion into
+        # the manuscript so the user can refer back ("edit that", "add
+        # more tension to the scene you just wrote") and the engine
+        # can target the exact range with the original prompt as
+        # context. Keyed by chapter_id; each entry is the most recent
+        # ``_MAX_INSERTIONS_PER_CHAPTER`` insertions in chronological
+        # order.
+        self._writer_insertions: Dict[str, list] = {}
+        self._MAX_INSERTIONS_PER_CHAPTER = 8
+
+        # Writer-mode pre-write phase: per-chapter set of IDs the
+        # agent has flagged as "context_ready" by emitting the
+        # <context_ready/> signal. While a chapter ID is NOT in this
+        # set, writer mode is in the PRE-WRITE phase (coverage check,
+        # lookups, clarifying questions; no prose). After the agent
+        # signals ready, writer mode proceeds to write the remaining
+        # beats. Cleared when the user opens a different chapter.
+        self._writer_ready_chapters: set = set()
+        # Per-chapter Q&A log for writer mode's Phase 1. Each entry
+        # records (user_message, assistant_response, questions_asked)
+        # so the engine can: surface a "PRIOR Q&A" block to the
+        # model to prevent duplicate questions, and detect cycling
+        # (model asking the same questions again → force progression).
+        self._writer_qa_log: Dict[str, list] = {}
+
+        # Per-chapter per-beat state for writer mode's per-beat
+        # orchestration. Each entry tracks which remaining beat is
+        # currently in focus, how many Q&A rounds have been spent on
+        # it (hard cap 4), whether a forced write is queued, and the
+        # full list of remaining beats at the start of the session
+        # so progress can be surfaced to the user. Cleared when all
+        # beats are written or the user resets.
+        self._writer_beat_state: Dict[str, dict] = {}
+        self._WRITER_MAX_ROUNDS_PER_BEAT = 4
+
+        # Per-chapter OUTLINE-generation state. Mirrors
+        # _writer_beat_state but for outline-mode runs: tracks how
+        # many beats have been outlined so far, the round counter
+        # for the current beat, and whether the agent has signalled
+        # <outline_complete/>. Drives the same per-beat orchestration
+        # the writer uses, but the deliverable is one BEAT'S OUTLINE
+        # structure (not prose) per Phase-2 turn — see
+        # OUTLINE_MODE_PROMPT_BLOCK.
+        self._outline_beat_state: Dict[str, dict] = {}
+        self._OUTLINE_MAX_ROUNDS_PER_BEAT = 4
+        # Hard cap on the number of beats we'll generate before
+        # giving up if the model never emits <outline_complete/>.
+        self._OUTLINE_MAX_BEATS = 30
+        # Per-chapter OUTLINE SESSION state — autonomous-system
+        # state machine that drives the chat flow:
+        #   await_user_confirm_start → await_user_proceed →
+        #   beat_questions ↔ await_user_answer → beat_drafted ↔
+        #   await_user_refine_or_proceed → … → await_user_apply_choice
+        # Drafted beats accumulate in ``beats_staging`` (the chat
+        # shows their JSON; the panel is NOT touched). The user
+        # picks apply mode at the end (append / replace / overwrite)
+        # and the engine writes everything to the OutlinePanel in
+        # one shot. See _handle_chat_message outline branch.
+        self._outline_session_state: Dict[str, dict] = {}
 
         # RAG system for semantic context retrieval
         self._rag_system: Optional[EnhancedRAGSystem] = None
@@ -1810,14 +3162,50 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(self.grader_widget, f"{get_icon('grader')} Critique")
         self.tab_widget.addTab(self.agent_manager, f"{get_icon('agents')} Publishing")
 
-        # Create collapsible chat widget
+        # Sidebar — chat assistant + chapter outline as stacked
+        # tabs sharing the same right-hand slot. The outline used to
+        # live inside the chat splitter; lifting it to a peer tab
+        # gives it room to breathe and lets the user switch between
+        # talking to the AI and editing the outline without losing
+        # either's vertical real estate.
+        from src.ui.outline_panel import OutlinePanel
         self.chat_widget = ChatWidget()
-        self.chat_widget.setMaximumWidth(400)
-        self.chat_widget.setMinimumWidth(300)
+        self.outline_panel = OutlinePanel()
+        # Expose the panel through chat_widget too so existing call
+        # sites (`self.chat_widget.outline_panel`) keep working
+        # without a sweep — the panel is now hosted in a sibling
+        # tab, but the reference is shared.
+        self.chat_widget.outline_panel = self.outline_panel
+
+        self.sidebar_tabs = QTabWidget()
+        self.sidebar_tabs.setDocumentMode(True)
+        self.sidebar_tabs.setStyleSheet(
+            "QTabWidget::pane { border: 1px solid #e5e7eb; "
+            "  border-radius: 6px; background: white; } "
+            "QTabBar::tab { padding: 6px 12px; "
+            "  font-size: 11px; font-weight: 500; "
+            "  color: #4b5563; background: #f3f4f6; "
+            "  border: 1px solid #e5e7eb; "
+            "  border-bottom: none; "
+            "  border-top-left-radius: 6px; "
+            "  border-top-right-radius: 6px; "
+            "  margin-right: 2px; } "
+            "QTabBar::tab:selected { background: white; "
+            "  color: #4f46e5; } "
+            "QTabBar::tab:hover:!selected { color: #4f46e5; }")
+        self.sidebar_tabs.addTab(self.chat_widget, "💬 AI Assistant")
+        self.sidebar_tabs.addTab(self.outline_panel, "📋 Chapter Outline")
+
+        # Sidebar container — owns the collapse/expand state for the
+        # whole AI assistant + outline area as a single unit. When
+        # collapsed it shrinks to a thin vertical strip with a single
+        # expand button; when expanded it shows the tab strip + the
+        # active tab content.
+        self.sidebar_container = _SidebarContainer(self.sidebar_tabs)
 
         # Add to splitter
         self.main_splitter.addWidget(self.tab_widget)
-        self.main_splitter.addWidget(self.chat_widget)
+        self.main_splitter.addWidget(self.sidebar_container)
 
         # Set initial splitter sizes (3:1 ratio)
         self.main_splitter.setStretchFactor(0, 3)
@@ -2193,6 +3581,25 @@ class MainWindow(QMainWindow):
 
         # Auto-save when switching chapters
         self.manuscript_editor.chapter_switched.connect(self._auto_save_project)
+        # Sync the AI Assistant's outline panel to the newly-loaded
+        # chapter — load that chapter's planning.outline into the
+        # panel and bind autosave back to it.
+        self.manuscript_editor.chapter_switched.connect(
+            self._sync_outline_panel_to_chapter)
+        # Persist user edits in the outline panel back to the
+        # current chapter's planning.outline (debounced).
+        self.chat_widget.outline_panel.outline_changed.connect(
+            self._on_outline_panel_edited)
+        # When the user clicks the per-beat ✨ AI-help button on a
+        # beat in the chapter planner, route into the outline-mode
+        # chat focused on that beat.
+        self.manuscript_editor.beat_ai_help_requested.connect(
+            self._handle_beat_ai_help_requested)
+        # Auto-sync new beats from the outline panel into
+        # chapter.planning.events whenever the panel changes — this
+        # is what "slots a user-created beat into the plan" means.
+        self.chat_widget.outline_panel.outline_changed.connect(
+            self._sync_panel_beats_to_planning_events)
 
         # Update grader widget when switching to Critique tab
         self.tab_widget.currentChanged.connect(self._on_tab_changed)
@@ -2445,6 +3852,2485 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 # Log error but don't interrupt user
                 print(f"Auto-save failed: {e}")
+
+    def _sync_outline_panel_to_chapter(self) -> None:
+        """Bind the AI Assistant's outline panel to the current chapter.
+
+        Fired on chapter switch. Loads the new chapter's
+        ``planning.outline`` into the panel; if no chapter is open
+        the panel is reset to its disabled placeholder state.
+
+        When ``planning.outline`` is empty but ``planning.events``
+        already lists beats, hydrate the panel with one
+        ``## [ ] Beat N: title`` heading per event so the user sees
+        the existing beat structure as a checklist immediately
+        (instead of an empty panel that would mistakenly trigger
+        the "no outline yet" auto-route on the next writer call).
+        The hydrated text is treated like any user-typed outline —
+        it autosaves back into ``planning.outline`` on first edit.
+        """
+        panel = getattr(self.chat_widget, 'outline_panel', None)
+        if panel is None:
+            return
+        ce = getattr(self.manuscript_editor,
+                     'current_chapter_editor', None)
+        if ce is None or not getattr(ce, 'chapter', None):
+            panel.load_chapter(None, None, None)
+            return
+        chapter = ce.chapter
+        outline_text = ""
+        title = getattr(chapter, 'title', '') or ''
+        if (hasattr(chapter, 'planning')
+                and chapter.planning is not None):
+            outline_text = (
+                getattr(chapter.planning, 'outline', '') or '')
+            # No text outline yet — but the chapter may already have
+            # a structured beat list in planning.events. Render those
+            # as outline markdown so the panel shows them and the
+            # writer treats the chapter as outlined.
+            if not outline_text.strip():
+                events = getattr(chapter.planning, 'events', None)
+                if events:
+                    outline_text = self._events_to_outline_markdown(
+                        events)
+        panel.load_chapter(chapter.id, title, outline_text)
+
+    def _log_beat_state(self,
+                        mode: str,
+                        chapter_id: str,
+                        event: str = "tick") -> None:
+        """Print a uniform beat-state line to the console.
+
+        Helps debug "why is the model on Beat 1 again?" by surfacing
+        every transition: state init, audit landed, user confirm,
+        beat/prose landed, advance. The line is grep-friendly so you
+        can ``python main.py | grep [beat-log]`` to follow the flow.
+
+        Format:
+            [beat-log mode=outline ch=ch_abc event=audit_landed
+             beat=4 done=3 rounds=0/4 audit=pending_user
+             action=populate title='Witness Encounter']
+        """
+        if mode == "outline":
+            state = self._outline_beat_state.get(chapter_id) or {}
+        else:
+            state = self._writer_beat_state.get(chapter_id) or {}
+        beat_no = state.get("current_beat_number", "?")
+        rounds = state.get("rounds_for_beat", 0)
+        # Defensive default — test fixtures sometimes bypass
+        # __init__ via __new__, in which case QMainWindow's
+        # __getattribute__ raises rather than returning the default,
+        # so getattr(default=…) doesn't help. Try/except is the
+        # robust path.
+        try:
+            cap = state.get(
+                "max_rounds",
+                self._OUTLINE_MAX_ROUNDS_PER_BEAT
+                if mode == "outline"
+                else self._WRITER_MAX_ROUNDS_PER_BEAT)
+        except Exception:
+            cap = state.get("max_rounds", 4)
+        audit = state.get("audit_status", "?")
+        action = state.get("outline_action", "-")
+        complete = state.get("complete", False)
+        in_progress = state.get("in_progress", False)
+        # Title for the current beat (best-effort; safe against
+        # out-of-range current_idx after _advance_beat hits the end).
+        title = ""
+        if mode == "writer":
+            remaining = state.get("remaining_beats") or []
+            idx = state.get("current_idx", 0)
+            if 0 <= idx < len(remaining):
+                cur = remaining[idx]
+                if isinstance(cur, dict):
+                    title = (cur.get("text") or "").strip()
+            done = f"{idx}/{len(remaining)}"
+        else:
+            done = state.get("beats_done", 0)
+        print(
+            f"[beat-log mode={mode} ch={chapter_id} "
+            f"event={event} beat={beat_no} done={done} "
+            f"rounds={rounds}/{cap} audit={audit} "
+            f"action={action} in_progress={in_progress} "
+            f"complete={complete}"
+            + (f" title={title!r}]" if title else "]"),
+            flush=True)
+
+    def _compute_beat_audit_deterministic(
+            self,
+            chapter,
+            output_mode: str,
+            panel=None) -> list:
+        """Engine-computed per-beat audit. No LLM call.
+
+        For each event in ``chapter.planning.events``:
+          - Outline mode: status = "outlined" if its title appears
+            as a ``## `` heading in the panel (or in
+            chapter.planning.outline as a fallback), else "pending".
+          - Full Text mode: status = "written" if matched by
+            ``_compute_chapter_coverage`` (text-content overlap),
+            else "pending".
+
+        Returns a list of dicts: ``{beat_number, title, stage,
+        description, status, evidence}`` in plot order. Empty list
+        when the chapter has no planned events.
+        """
+        if chapter is None:
+            return []
+        planning = getattr(chapter, "planning", None)
+        if planning is None:
+            return []
+        events = list(getattr(planning, "events", []) or [])
+        if not events:
+            return []
+
+        # Build the set of titles the engine will treat as "done"
+        # for this mode. Titles compared case-insensitively, with
+        # the leading "Beat N:" prefix stripped so panel headings
+        # like ``## [ ] Beat 1: Arrival`` match a planned event
+        # whose text is just ``Arrival``.
+        import re as _re
+        done_titles: set = set()
+
+        def _norm_title(s: str) -> str:
+            t = (s or "").strip().lower()
+            # Strip "beat N: " prefix if present.
+            t = _re.sub(r"^beat\s+\d+\s*[:\-—]\s*", "", t)
+            # Strip trailing " — stage".
+            t = _re.sub(r"\s+[—\-]\s+\w+$", "", t)
+            return t.strip()
+
+        if output_mode == "outline":
+            outline_text = ""
+            if panel is not None:
+                outline_text = panel.get_outline_text() or ""
+            if not outline_text.strip():
+                outline_text = (
+                    getattr(planning, "outline", "") or "")
+            if outline_text.strip():
+                from src.ui.outline_panel import _parse_beats
+                _, parsed_beats = _parse_beats(outline_text)
+                for b in parsed_beats:
+                    done_titles.add(_norm_title(b.title))
+        else:
+            coverage = self._compute_chapter_coverage(chapter)
+            for ev in coverage.get("covered_events", []) or []:
+                done_titles.add(_norm_title(ev.get("text", "")))
+
+        audit = []
+        for i, ev in enumerate(events, 1):
+            text = (getattr(ev, "text", "") or "").strip()
+            stage = (getattr(ev, "stage", "") or "").strip()
+            desc = (getattr(ev, "description", "") or "").strip()
+            norm = _norm_title(text)
+            if output_mode == "outline":
+                status = ("outlined" if norm in done_titles
+                          else "pending")
+                evidence = (
+                    "Heading found in outline panel."
+                    if status == "outlined"
+                    else "No matching heading in panel.")
+            else:
+                status = ("written" if norm in done_titles
+                          else "pending")
+                evidence = (
+                    "Beat title matched in chapter content."
+                    if status == "written"
+                    else "No matching prose in chapter content.")
+            audit.append({
+                "beat_number": i,
+                "title": text,
+                "stage": stage,
+                "description": desc,
+                "status": status,
+                "evidence": evidence,
+            })
+        return audit
+
+    # ── Outline session state machine ────────────────────────────
+    #
+    # The outline flow is an autonomous system with explicit phases.
+    # Each user message is routed by ``session["phase"]``. Drafted
+    # beats accumulate in ``session["staging"]`` until the user
+    # picks an apply mode at the end.
+
+    _OUTLINE_PHASE_PICK_START      = "await_user_confirm_start"
+    _OUTLINE_PHASE_AWAIT_PROCEED   = "await_user_proceed"
+    _OUTLINE_PHASE_BEAT_QUESTIONS  = "beat_questions"
+    _OUTLINE_PHASE_BEAT_DRAFTED    = "await_user_refine_or_proceed"
+    _OUTLINE_PHASE_AWAIT_APPLY     = "await_user_apply_choice"
+    _OUTLINE_PHASE_DONE            = "done"
+
+    def _dispatch_outline_session_turn(
+            self,
+            chapter_id: str,
+            chapter,
+            message: str,
+            context: dict) -> None:
+        """Route this user message based on the outline session phase.
+
+        Sets ``context["_outline_session_send_to_llm"] = True`` when
+        the LLM should be called this turn; otherwise the engine
+        handles the message locally (e.g. "proceed", "looks good",
+        "apply append") and the caller short-circuits.
+        """
+        s = self._outline_session(chapter_id)
+        cmd = self._outline_chat_command(message)
+
+        # PHASE: fresh / never-started → kick off pick_start.
+        if s.get("phase") is None and not s.get("started"):
+            self._outline_pick_start_kickoff(
+                chapter_id, chapter, context)
+            self._outline_set_phase(
+                chapter_id,
+                # Stay in "fresh" until the model returns;
+                # the response handler flips to PICK_START.
+                "await_pick_start_response",
+                log_event="kickoff_pick_start")
+            context["_outline_session_send_to_llm"] = True
+            return
+
+        phase = s.get("phase")
+
+        # PHASE: pick_start → user is confirming/correcting.
+        if phase == self._OUTLINE_PHASE_PICK_START:
+            # Approval phrase → keep current_beat_number, advance.
+            approve = self._is_simple_approval(message)
+            override = self._parse_user_beat_override(message)
+            if override is not None:
+                events = list(getattr(
+                    chapter.planning, "events", []) or [])
+                if 1 <= override <= len(events):
+                    s["current_beat_number"] = override
+                    s["current_beat_index"] = override - 1
+            elif not approve:
+                # Treat anything else as a free-form correction —
+                # default behavior is to accept current suggestion.
+                pass
+            cur = s.get("current_beat_number") or 1
+            self.chat_widget.add_message(
+                "Assistant",
+                f"_Starting at **Beat {cur}**. Send **\"proceed\"** "
+                f"to begin the per-beat questions._")
+            self._outline_set_phase(
+                chapter_id,
+                self._OUTLINE_PHASE_AWAIT_PROCEED,
+                log_event="confirmed_start")
+            context["_outline_session_send_to_llm"] = False
+            return
+
+        # PHASE: await_proceed → user types proceed → start Phase 1.
+        if phase == self._OUTLINE_PHASE_AWAIT_PROCEED:
+            if cmd == "proceed":
+                self._outline_set_phase(
+                    chapter_id,
+                    self._OUTLINE_PHASE_BEAT_QUESTIONS,
+                    log_event="enter_beat_questions")
+                # Surface the current beat in context for the LLM.
+                self._inject_outline_beat_context(
+                    context, s, chapter, mode="beat_questions")
+                context["_outline_session_send_to_llm"] = True
+                return
+            else:
+                # Any other input → coach the user.
+                self.chat_widget.add_message(
+                    "Assistant",
+                    "_Send **\"proceed\"** to begin questioning the "
+                    "starting beat._")
+                context["_outline_session_send_to_llm"] = False
+                return
+
+        # PHASE: beat_questions → either user is answering (LLM)
+        # or saying proceed to skip to write.
+        if phase == self._OUTLINE_PHASE_BEAT_QUESTIONS:
+            if cmd == "proceed":
+                # User wants to skip Q&A and write the beat now.
+                self._inject_outline_beat_context(
+                    context, s, chapter, mode="beat_write_force")
+            else:
+                s["rounds_for_beat"] += 1
+                if s["rounds_for_beat"] >= s["max_rounds"]:
+                    # Force write on round cap.
+                    self._inject_outline_beat_context(
+                        context, s, chapter,
+                        mode="beat_write_force")
+                else:
+                    self._inject_outline_beat_context(
+                        context, s, chapter, mode="beat_questions")
+            context["_outline_session_send_to_llm"] = True
+            return
+
+        # PHASE: beat_drafted → user proceeds (next beat / apply)
+        # OR refines (LLM call).
+        if phase == self._OUTLINE_PHASE_BEAT_DRAFTED:
+            if cmd == "proceed":
+                # Try to advance to next pending beat. If none, go
+                # to apply phase.
+                advanced = self._outline_advance_to_next_beat(
+                    chapter_id, chapter)
+                if advanced:
+                    self._outline_set_phase(
+                        chapter_id,
+                        self._OUTLINE_PHASE_BEAT_QUESTIONS,
+                        log_event="advance_next_beat")
+                    self._inject_outline_beat_context(
+                        context, s, chapter, mode="beat_questions")
+                    context["_outline_session_send_to_llm"] = True
+                else:
+                    self._outline_set_phase(
+                        chapter_id,
+                        self._OUTLINE_PHASE_AWAIT_APPLY,
+                        log_event="enter_await_apply")
+                    self.chat_widget.add_message(
+                        "Assistant",
+                        f"**All {len(s['staging'])} beats drafted "
+                        f"and in staging.** How should I apply "
+                        f"them to the Outline tab?\n\n"
+                        f"• Reply **\"append\"** to add the staged "
+                        f"beats to the end of the existing outline.\n"
+                        f"• Reply **\"replace\"** to replace the "
+                        f"existing outline with these beats.\n"
+                        f"• Reply **\"overwrite\"** to clear the "
+                        f"panel and write these beats fresh.")
+                    context["_outline_session_send_to_llm"] = False
+                return
+            # Anything else → refine the current beat.
+            self._inject_outline_beat_context(
+                context, s, chapter, mode="beat_refine",
+                refine_message=message)
+            context["_outline_session_send_to_llm"] = True
+            return
+
+        # PHASE: await_apply → user picks apply mode.
+        if phase == self._OUTLINE_PHASE_AWAIT_APPLY:
+            if cmd in ("apply_append", "apply_replace",
+                       "apply_overwrite"):
+                self._outline_apply_to_panel(chapter_id, cmd)
+                context["_outline_session_send_to_llm"] = False
+                return
+            else:
+                self.chat_widget.add_message(
+                    "Assistant",
+                    "_Reply **\"append\"**, **\"replace\"**, or "
+                    "**\"overwrite\"** to apply the staged outline._")
+                context["_outline_session_send_to_llm"] = False
+                return
+
+        # Fallback: unknown phase → kick off fresh.
+        self._outline_session_reset(chapter_id)
+        self._dispatch_outline_session_turn(
+            chapter_id, chapter, message, context)
+
+    @staticmethod
+    def _is_simple_approval(message: str) -> bool:
+        if not message:
+            return False
+        s = message.strip().lower().rstrip(".!?")
+        return s in (
+            "looks good", "ok", "okay", "yes", "y",
+            "good", "great", "perfect", "lgtm",
+            "confirm", "confirmed", "accept", "accepted",
+            "proceed", "go", "go ahead")
+
+    @staticmethod
+    def _parse_user_beat_override(message: str) -> Optional[int]:
+        """User says 'start at Beat 3' / 'use beat 5' / 'Beat 2' → returns N.
+
+        Tolerates a range of natural phrasings:
+          - "start at beat 3", "start with beat 3"
+          - "use beat 5", "begin at 5", "begin with beat 5"
+          - "let's start with 4", "go to beat 6"
+          - "beat 2" alone, or just "2" when the message is short
+        """
+        if not message:
+            return None
+        import re as _re
+        s = message.strip()
+        # Direct beat reference (most explicit).
+        m = _re.search(r"beat\s+(\d+)\b", s, _re.IGNORECASE)
+        if m:
+            try:
+                return int(m.group(1))
+            except Exception:
+                pass
+        # "start/begin/use/go (at/with/to) N"
+        m = _re.search(
+            r"(?:start|begin|use|go|jump|skip)\s+"
+            r"(?:to\s+|at\s+|with\s+)?(\d+)\b",
+            s, _re.IGNORECASE)
+        if m:
+            try:
+                return int(m.group(1))
+            except Exception:
+                pass
+        # Bare number when the message is short — likely the user
+        # just typing "3" to mean Beat 3.
+        if len(s) <= 4 and s.strip().isdigit():
+            try:
+                return int(s.strip())
+            except Exception:
+                pass
+        return None
+
+    def _inject_outline_beat_context(
+            self,
+            context: dict,
+            session: dict,
+            chapter,
+            mode: str,
+            refine_message: str = "") -> None:
+        """Stamp current beat info + session phase into context."""
+        cur_no = session.get("current_beat_number")
+        events = list(getattr(
+            chapter.planning, "events", []) or [])
+        if cur_no and 1 <= cur_no <= len(events):
+            ev = events[cur_no - 1]
+            context["outline_beat_focus"] = {
+                "beats_done": len(session.get("staging") or []),
+                "next_beat_number": cur_no,
+                "next_beat_title": (
+                    getattr(ev, "text", "") or "").strip(),
+                "next_beat_stage": (
+                    getattr(ev, "stage", "") or "").strip(),
+                "next_beat_description": (
+                    getattr(ev, "description", "") or "").strip(),
+                "rounds_for_beat": session.get(
+                    "rounds_for_beat", 0),
+                "max_rounds": session.get(
+                    "max_rounds",
+                    self._OUTLINE_MAX_ROUNDS_PER_BEAT),
+                "max_beats": self._OUTLINE_MAX_BEATS,
+                "audit_status": "confirmed",
+            }
+        # Surface the titles of beats already in staging — the
+        # priority directive at the top of the prompt uses this to
+        # tell the model "don't redo these".
+        context["outline_staged_titles"] = [
+            f"Beat {entry.get('beat_number')}: "
+            f"{(entry.get('title') or '').strip()}"
+            for entry in (session.get("staging") or [])
+            if entry.get("beat_number") != cur_no
+        ]
+        # Filter PLANNED BEATS to a useful slice — full data for
+        # the current beat + ±1 neighbour titles. Stops the full
+        # plot list from competing for the model's attention.
+        if events and cur_no:
+            slim = []
+            for i, ev in enumerate(events, 1):
+                slim.append({
+                    "beat_number": i,
+                    "title": (
+                        getattr(ev, "text", "") or "").strip(),
+                    "stage": (
+                        getattr(ev, "stage", "") or "").strip(),
+                    # Only include the description for the CURRENT
+                    # beat so the model isn't pulled toward
+                    # earlier-beat detail.
+                    "description": (
+                        (getattr(ev, "description", "") or "").strip()
+                        if i == cur_no else ""),
+                    "is_current": (i == cur_no),
+                })
+            context["planned_beats"] = slim
+        context["outline_session_phase"] = (
+            "beat_write" if mode == "beat_write_force"
+            else mode)
+        if mode == "beat_refine" and refine_message:
+            # Surface the prior draft so the model sees what to
+            # iterate on.
+            for entry in session.get("staging") or []:
+                if entry.get("beat_number") == cur_no:
+                    context["current_beat_draft"] = entry.get(
+                        "json")
+                    break
+            context["user_refine_message"] = refine_message
+
+    def _outline_session(self, chapter_id: str) -> dict:
+        """Return the outline session for this chapter (creating if absent)."""
+        s = self._outline_session_state.get(chapter_id)
+        if s is None:
+            s = {
+                "phase": None,        # None means "fresh — kick off pick_start on next user msg"
+                "current_beat_number": None,  # 1-based; from chapter.planning.events
+                "current_beat_index": None,   # 0-based index into events
+                "rounds_for_beat": 0,
+                "max_rounds": self._OUTLINE_MAX_ROUNDS_PER_BEAT,
+                "audit": [],
+                "staging": [],        # list of {beat_number, title, stage, json}
+                "started": False,
+            }
+            self._outline_session_state[chapter_id] = s
+        return s
+
+    def _outline_session_reset(self, chapter_id: str) -> None:
+        self._outline_session_state.pop(chapter_id, None)
+
+    def _outline_set_phase(self,
+                            chapter_id: str,
+                            phase: str,
+                            log_event: str = "") -> dict:
+        s = self._outline_session(chapter_id)
+        s["phase"] = phase
+        if log_event:
+            print(
+                f"[outline-session ch={chapter_id} "
+                f"phase={phase} event={log_event} "
+                f"current_beat={s.get('current_beat_number')} "
+                f"rounds={s['rounds_for_beat']}/{s['max_rounds']} "
+                f"staging={len(s['staging'])}]",
+                flush=True)
+        return s
+
+    def _outline_pick_start_kickoff(
+            self,
+            chapter_id: str,
+            chapter,
+            context: dict) -> None:
+        """Prepare context for the model's start-suggestion call.
+
+        Engine computes the deterministic audit + sends it as
+        context. Model returns ``phase: "start_suggestion"`` with
+        ``suggested_beat_number``. Engine surfaces to user.
+        """
+        panel = getattr(self.chat_widget, "outline_panel", None)
+        audit = self._compute_beat_audit_deterministic(
+            chapter, "outline", panel=panel)
+        s = self._outline_session(chapter_id)
+        s["audit"] = audit
+        s["started"] = True
+        # Tell the model what we want via the prompt context.
+        context["outline_session_phase"] = "pick_start"
+        context["outline_audit"] = audit
+        context["outline_session_staging_count"] = len(s["staging"])
+
+    def _outline_chat_command(self, message: str) -> Optional[str]:
+        """Recognise the user's command words for the session.
+
+        Returns one of: "proceed", "apply_append", "apply_replace",
+        "apply_overwrite", or None.
+        """
+        if not message:
+            return None
+        s = message.strip().lower().rstrip(".!?")
+        if s in ("proceed", "next", "go", "continue", "ok proceed",
+                 "go ahead", "next beat"):
+            return "proceed"
+        if s in ("apply append", "append"):
+            return "apply_append"
+        if s in ("apply replace", "replace"):
+            return "apply_replace"
+        if s in ("apply overwrite", "overwrite", "apply"):
+            return "apply_overwrite"
+        return None
+
+    def _outline_advance_to_next_beat(self,
+                                        chapter_id: str,
+                                        chapter) -> bool:
+        """Move current_beat_* to the next pending beat.
+
+        Returns True when a new beat was selected; False when the
+        list is exhausted (caller should transition to apply phase).
+        """
+        s = self._outline_session(chapter_id)
+        events = list(getattr(
+            getattr(chapter, "planning", None), "events",
+            []) or [])
+        if not events:
+            return False
+        # Treat any beat we haven't drafted yet AND that wasn't
+        # marked outlined/written by the deterministic audit as
+        # eligible. This way previously-outlined beats stay skipped.
+        drafted_numbers = {
+            b["beat_number"] for b in s["staging"]
+        }
+        already_done_numbers = set()
+        for entry in s.get("audit") or []:
+            if entry.get("status") in ("outlined", "written"):
+                already_done_numbers.add(
+                    entry.get("beat_number"))
+        cur = s.get("current_beat_number") or 0
+        for i, ev in enumerate(events, 1):
+            if i <= cur:
+                continue
+            if i in drafted_numbers:
+                continue
+            if i in already_done_numbers:
+                continue
+            s["current_beat_number"] = i
+            s["current_beat_index"] = i - 1
+            s["rounds_for_beat"] = 0
+            return True
+        return False
+
+    def _build_outline_apply_text(
+            self, staging: list) -> str:
+        """Build the markdown body to apply to the panel.
+
+        Beats are emitted in plot order (sorted by ``beat_number``)
+        regardless of the order the user drafted them. This is what
+        keeps the final outline coherent even when the user starts
+        at Beat 5 and then loops back to Beat 1.
+        """
+        if not staging:
+            return ""
+        ordered = sorted(
+            staging,
+            key=lambda e: (
+                e.get("beat_number")
+                if isinstance(e.get("beat_number"), int)
+                else 9999))
+        parts = []
+        for entry in ordered:
+            beat_json = entry.get("json") or {}
+            md = self._outline_beat_json_to_markdown(
+                beat_json,
+                fallback_number=entry["beat_number"],
+                force_number=True,
+                force_title=entry.get("title", ""),
+                force_stage=entry.get("stage", ""))
+            parts.append(md.rstrip())
+        return "\n\n".join(parts) + "\n"
+
+    def _merge_outline_with_existing_panel(
+            self,
+            staging: list,
+            panel) -> str:
+        """For APPEND mode: merge staged beats with existing panel beats.
+
+        Parses the panel's existing beats by number, overlays the
+        staged ones (staging wins on conflict), and re-renders the
+        whole list in plot order. This stops append mode from
+        scrambling existing content (e.g. existing Beat 5 followed
+        by newly-staged Beat 1 → would land [5, 1] without the
+        merge).
+
+        When a beat exists in the panel but NOT in staging, the
+        engine reuses the panel's raw markdown for that beat
+        verbatim (no JSON to re-render from).
+        """
+        if panel is None:
+            return self._build_outline_apply_text(staging)
+        existing_text = (panel.get_outline_text() or "").strip()
+        if not existing_text:
+            return self._build_outline_apply_text(staging)
+        from src.ui.outline_panel import _parse_beats
+        preamble, panel_beats = _parse_beats(existing_text)
+
+        import re as _re
+        # Map beat_number → (raw_panel_block, marker_checked)
+        # for each beat already in the panel. We extract the
+        # "Beat N" number from the heading text; beats without a
+        # detectable number get appended at the end (best-effort).
+        panel_by_number: dict = {}
+        unnumbered: list = []
+        for pb in panel_beats:
+            m = _re.match(
+                r"^beat\s+(\d+)\s*[:\-—]?\s*(.*)$",
+                pb.title.strip(), _re.IGNORECASE)
+            if m:
+                try:
+                    n = int(m.group(1))
+                    body = "\n".join(pb.body_lines).rstrip()
+                    marker = "[x]" if pb.checked else "[ ]"
+                    raw = (
+                        f"## {marker} Beat {n}: {m.group(2).strip()}"
+                        + (f"\n{body}" if body else ""))
+                    panel_by_number[n] = raw
+                    continue
+                except Exception:
+                    pass
+            # No number → keep separate
+            unnumbered.append(pb)
+
+        # Map beat_number → rendered markdown for each staged beat.
+        staged_md: dict = {}
+        for entry in staging:
+            n = entry.get("beat_number")
+            if not isinstance(n, int):
+                continue
+            md = self._outline_beat_json_to_markdown(
+                entry.get("json") or {},
+                fallback_number=n,
+                force_number=True,
+                force_title=entry.get("title", ""),
+                force_stage=entry.get("stage", ""))
+            staged_md[n] = md.rstrip()
+
+        # Staged beats override panel beats on conflict; otherwise
+        # we keep what was already in the panel. Sort by number.
+        merged_numbers = sorted(
+            set(panel_by_number.keys()) | set(staged_md.keys()))
+        parts = []
+        if preamble.strip():
+            parts.append(preamble.rstrip())
+        for n in merged_numbers:
+            if n in staged_md:
+                parts.append(staged_md[n])
+            else:
+                parts.append(panel_by_number[n])
+        # Trailing unnumbered beats stay at the bottom (best-effort
+        # preservation of any user-typed material the parser
+        # couldn't classify).
+        for pb in unnumbered:
+            body = "\n".join(pb.body_lines).rstrip()
+            marker = "[x]" if pb.checked else "[ ]"
+            parts.append(
+                f"## {marker} {pb.title}"
+                + (f"\n{body}" if body else ""))
+        return "\n\n".join(parts) + "\n"
+
+    def _outline_apply_to_panel(self,
+                                 chapter_id: str,
+                                 mode: str) -> None:
+        """Apply the staging list to the OutlinePanel.
+
+        All three modes (append/replace/overwrite) write through
+        ``set_outline_text`` so the final panel content is always
+        emitted in plot order — never the user's draft order. The
+        difference:
+          * append  → merge staged beats with existing panel beats,
+                      sort by beat number, write the whole thing.
+          * replace → drop existing panel content, write only the
+                      staged beats sorted.
+          * overwrite → same as replace.
+        """
+        s = self._outline_session(chapter_id)
+        panel = getattr(self.chat_widget, "outline_panel", None)
+        if panel is None:
+            return
+        staging = s.get("staging") or []
+        if mode == "apply_append":
+            body = self._merge_outline_with_existing_panel(
+                staging, panel)
+            verb = "merged in"
+        elif mode == "apply_replace":
+            body = self._build_outline_apply_text(staging)
+            verb = "replaced with"
+        else:  # apply_overwrite
+            body = self._build_outline_apply_text(staging)
+            verb = "overwrote with"
+        if not body.strip():
+            self.chat_widget.add_message(
+                "Assistant",
+                "(Nothing to apply — staging is empty.)")
+            return
+        # Always set (not append) — _merge_outline_with_existing_panel
+        # already includes the existing content for append mode.
+        panel.set_outline_text(body)
+        # Switch sidebar to outline tab so the user sees the result.
+        tabs = getattr(self, "sidebar_tabs", None)
+        if tabs is not None:
+            idx = tabs.indexOf(panel)
+            if idx >= 0:
+                tabs.setCurrentIndex(idx)
+        self.chat_widget.add_message(
+            "Assistant",
+            f"**Outline panel {verb} {len(s['staging'])} staged "
+            f"beats** — beats are written in plot order regardless "
+            f"of draft sequence. Edits in the panel autosave back "
+            f"to the chapter plan.")
+        self._outline_set_phase(
+            chapter_id, self._OUTLINE_PHASE_DONE,
+            log_event=f"applied_{mode}")
+        # Reset session so the next "outline this" starts fresh.
+        self._outline_session_reset(chapter_id)
+
+    def _init_beat_state_with_audit(
+            self,
+            chapter_id: str,
+            chapter,
+            output_mode: str,
+            state_dict: Optional[dict] = None,
+            preserve_remaining_beats: bool = False) -> dict:
+        """Initialise per-mode beat state from the deterministic audit.
+
+        Computes the audit, finds the first pending beat, and
+        seeds the state with audit_status="pending_user" so the
+        next user message routes through ``_apply_audit_user_reply``
+        (and from there into per-beat orchestration). For Full Text
+        writer mode, the existing remaining_beats list is preserved
+        so ``_current_beat`` keeps working.
+        """
+        if output_mode == "outline":
+            target_dict = self._outline_beat_state
+            panel = getattr(
+                self.chat_widget, "outline_panel", None)
+            audit = self._compute_beat_audit_deterministic(
+                chapter, "outline", panel=panel)
+            cap = self._OUTLINE_MAX_ROUNDS_PER_BEAT
+        else:
+            target_dict = (state_dict
+                           if state_dict is not None
+                           else self._writer_beat_state)
+            audit = self._compute_beat_audit_deterministic(
+                chapter, "full_text")
+            cap = self._WRITER_MAX_ROUNDS_PER_BEAT
+
+        first_pending = next(
+            (a["beat_number"] for a in audit
+             if a["status"] == "pending"),
+            None)
+        beats_done = sum(
+            1 for a in audit if a["status"] != "pending")
+
+        existing = target_dict.get(chapter_id) or {}
+        new_state = {
+            "in_progress": first_pending is not None,
+            "complete": first_pending is None and bool(audit),
+            "beats_done": beats_done,
+            "current_beat_number": first_pending or 1,
+            "rounds_for_beat": 0,
+            "max_rounds": cap,
+            "audit_status": "pending_user",
+            "audit": audit,
+        }
+        if preserve_remaining_beats:
+            for k in ("remaining_beats", "current_idx",
+                       "force_write", "completed",
+                       "outline_action"):
+                if k in existing:
+                    new_state[k] = existing[k]
+            # Re-align current_idx to first_pending in the
+            # remaining_beats list (best-effort title match).
+            if first_pending is not None and audit:
+                target_title = ""
+                for a in audit:
+                    if a["beat_number"] == first_pending:
+                        target_title = (
+                            a["title"] or "").strip().lower()
+                        break
+                rb = new_state.get("remaining_beats") or []
+                for i, b in enumerate(rb):
+                    if (b.get("text", "").strip().lower()
+                            == target_title):
+                        new_state["current_idx"] = i
+                        break
+        target_dict[chapter_id] = new_state
+        return new_state
+
+    def _surface_engine_audit(self,
+                               chapter_id: str,
+                               output_mode: str) -> None:
+        """Post the engine-computed audit to chat + log it."""
+        if output_mode == "outline":
+            state = self._outline_beat_state.get(chapter_id) or {}
+            mode_label = "Outline (engine-computed)"
+        else:
+            state = self._writer_beat_state.get(chapter_id) or {}
+            mode_label = "Writer (engine-computed)"
+        audit = state.get("audit") or []
+        first_pending = state.get("current_beat_number")
+        if not audit:
+            self.chat_widget.add_message(
+                "Assistant",
+                "This chapter has no planned beats. Add some in "
+                "the chapter planner before outlining/writing.")
+            return
+        if not state.get("in_progress"):
+            self.chat_widget.add_message(
+                "Assistant",
+                self._render_audit_chat_message(
+                    audit, None, mode_label)
+                + "\n\n_All planned beats look done — nothing "
+                "left to produce._")
+            return
+        self.chat_widget.add_message(
+            "Assistant",
+            self._render_audit_chat_message(
+                audit, first_pending, mode_label))
+        # Note: don't push this turn into _chat_history — the
+        # user hasn't said anything yet that needs to be remembered.
+
+    def _render_audit_chat_message(self,
+                                    audit: list,
+                                    first_pending: Optional[int],
+                                    mode_label: str) -> str:
+        """Format the AI's audit list as a markdown chat message."""
+        icon_for = {
+            "written":  "✍️",
+            "outlined": "📋",
+            "pending":  "⏳",
+        }
+        lines = [
+            f"**{mode_label} audit — please confirm:**",
+            "",
+        ]
+        for entry in audit or []:
+            bn = entry.get("beat_number", "?")
+            title = entry.get("title", "(untitled)")
+            status = (entry.get("status") or "pending").lower()
+            evidence = (entry.get("evidence") or "").strip()
+            icon = icon_for.get(status, "•")
+            line = f"{icon}  **Beat {bn}:** {title} — _{status}_"
+            if evidence:
+                line += f"  \n      {evidence}"
+            lines.append(line)
+        lines.append("")
+        if first_pending is not None:
+            lines.append(
+                f"_First pending: **Beat {first_pending}**._")
+        lines.append("")
+        lines.append(
+            "Reply **\"looks good\"** to proceed from there, or "
+            "correct the audit (e.g. _\"Beat 3 is pending\"_).")
+        return "\n".join(lines)
+
+    def _handle_outline_json_beat_staging(
+            self, chapter_id: str, parsed: dict) -> None:
+        """Append/refine beat in staging list; await user.
+
+        - If the session is in BEAT_QUESTIONS phase, this beat is a
+          NEW draft → append to staging.
+        - If in BEAT_DRAFTED phase, the beat is a REFINEMENT →
+          replace the last staging entry.
+        - After landing, transition to BEAT_DRAFTED + post the JSON
+          summary in chat with the proceed/refine prompt.
+        """
+        beat = parsed.get("beat") or {}
+        if not isinstance(beat, dict) or not beat:
+            self.chat_widget.add_message(
+                "Assistant",
+                "(Model emitted phase=\"beat\" but no beat object — "
+                "send another message to retry.)")
+            self._pending_chat_message = ""
+            return
+        s = self._outline_session(chapter_id)
+        cur_no = s.get("current_beat_number")
+        ce = getattr(self.manuscript_editor,
+                     "current_chapter_editor", None)
+        events = (
+            list(getattr(getattr(ce.chapter, "planning", None),
+                         "events", []) or [])
+            if (ce and getattr(ce, "chapter", None)) else [])
+        title, stage = "", ""
+        if cur_no and 1 <= cur_no <= len(events):
+            title = (events[cur_no - 1].text or "").strip()
+            stage = (events[cur_no - 1].stage or "").strip()
+
+        entry = {
+            "beat_number": cur_no,
+            "title": title,
+            "stage": stage,
+            "json": beat,
+        }
+        # Refinement vs new draft: refinement REPLACES the last
+        # staging entry for THIS beat number.
+        existing_idx = None
+        for i, e in enumerate(s["staging"]):
+            if e.get("beat_number") == cur_no:
+                existing_idx = i
+                break
+        if existing_idx is not None:
+            s["staging"][existing_idx] = entry
+            verb = "refined"
+        else:
+            s["staging"].append(entry)
+            verb = "drafted"
+
+        # Render the beat as markdown so the user can read what
+        # landed in staging.
+        beat_md = self._outline_beat_json_to_markdown(
+            beat,
+            fallback_number=cur_no or 1,
+            force_number=True,
+            force_title=title,
+            force_stage=stage)
+        # Build the chat confirmation. Wording distinguishes
+        # "drafted" (count goes up) from "refined" (count stays
+        # the same — the existing entry was REPLACED in place).
+        # The staged-beat numbers are listed explicitly so the
+        # user can see exactly what's in staging.
+        thinking = (parsed.get("thinking") or "").strip()
+        staged_numbers = sorted(
+            e["beat_number"] for e in s["staging"]
+            if isinstance(e.get("beat_number"), int))
+        staged_str = ", ".join(
+            f"Beat {n}" for n in staged_numbers) or "(none)"
+        total_events = len(events) or 0
+        # Find the next pending beat number (the one a "proceed"
+        # would advance to) so the message names it explicitly.
+        already_done_set = set()
+        for entry_audit in (s.get("audit") or []):
+            if entry_audit.get("status") in (
+                    "outlined", "written"):
+                already_done_set.add(
+                    entry_audit.get("beat_number"))
+        drafted_set = set(staged_numbers)
+        next_pending = None
+        for i in range(1, total_events + 1):
+            if i <= cur_no:
+                continue
+            if i in drafted_set or i in already_done_set:
+                continue
+            next_pending = i
+            break
+        lines = []
+        if thinking:
+            lines.append(f"_{thinking}_")
+            lines.append("")
+        if verb == "refined":
+            lines.append(
+                f"**Beat {cur_no} refined** — staging entry "
+                f"updated in place. Staging unchanged: "
+                f"{len(staged_numbers)}/{total_events} beats "
+                f"[{staged_str}].")
+        else:
+            lines.append(
+                f"**Beat {cur_no} drafted** — added to staging. "
+                f"Staging now: {len(staged_numbers)}/"
+                f"{total_events} beats [{staged_str}].")
+        lines.append("")
+        lines.append("```")
+        lines.append(beat_md.rstrip())
+        lines.append("```")
+        lines.append("")
+        # Tell the user EXACTLY what proceed will do next.
+        if next_pending is not None:
+            lines.append(
+                f"_Reply **\"proceed\"** to draft "
+                f"**Beat {next_pending}**, or refine Beat "
+                f"{cur_no} again (e.g. _\"strengthen the "
+                f"worldbuilding hooks\"_)._")
+        else:
+            lines.append(
+                "_All planned beats are now in staging. Reply "
+                "**\"proceed\"** to apply, or refine this beat "
+                "first._")
+        self.chat_widget.add_message(
+            "Assistant", "\n".join(lines))
+        self._outline_set_phase(
+            chapter_id, self._OUTLINE_PHASE_BEAT_DRAFTED,
+            log_event=f"beat_{cur_no}_{verb}")
+        # Reset round counter so next beat starts fresh.
+        s["rounds_for_beat"] = 0
+        self._pending_chat_message = ""
+
+    def _handle_outline_json_start_suggestion(
+            self, chapter_id: str, parsed: dict) -> None:
+        """Surface the model's start-beat suggestion + await user."""
+        s = self._outline_session(chapter_id)
+        try:
+            suggested = int(parsed.get("suggested_beat_number"))
+        except Exception:
+            suggested = None
+        title = (
+            parsed.get("suggested_beat_title") or "").strip()
+        reasoning = (parsed.get("reasoning") or "").strip()
+        thinking = (parsed.get("thinking") or "").strip()
+        # Validate: the suggested beat must exist in the chapter's
+        # plot events. Otherwise fall back to first pending from
+        # the audit.
+        valid = False
+        ce = getattr(self.manuscript_editor,
+                     "current_chapter_editor", None)
+        events = (
+            list(getattr(getattr(ce.chapter, "planning", None),
+                         "events", []) or [])
+            if (ce and getattr(ce, "chapter", None)) else [])
+        if suggested and 1 <= suggested <= len(events):
+            valid = True
+            if not title:
+                title = (events[suggested - 1].text
+                         or "(untitled)")
+        if not valid:
+            # Fall back to first pending from audit.
+            for entry in s.get("audit") or []:
+                if entry.get("status") == "pending":
+                    suggested = entry.get("beat_number")
+                    title = entry.get("title", "")
+                    break
+            if not suggested and events:
+                suggested = 1
+                title = events[0].text
+        s["current_beat_number"] = suggested
+        s["current_beat_index"] = (
+            (suggested - 1) if suggested else None)
+        # Surface the audit + suggestion to the user.
+        audit_md = self._render_audit_chat_message(
+            s.get("audit") or [], suggested,
+            "Outline (engine-computed)")
+        lines = []
+        if thinking:
+            lines.append(f"_{thinking}_")
+            lines.append("")
+        lines.append(audit_md)
+        lines.append("")
+        if reasoning:
+            lines.append(f"_Suggested start: **Beat {suggested} — "
+                         f"\"{title}\"**. {reasoning}_")
+        else:
+            lines.append(
+                f"_Suggested start: **Beat {suggested} — "
+                f"\"{title}\"**._")
+        lines.append("")
+        lines.append(
+            "Reply **\"looks good\"** to accept this start, or "
+            "specify a different beat (e.g. _\"start at Beat 1\"_).")
+        self.chat_widget.add_message(
+            "Assistant", "\n".join(lines))
+        self._outline_set_phase(
+            chapter_id, self._OUTLINE_PHASE_PICK_START,
+            log_event="start_suggested")
+        self._pending_chat_message = ""
+
+    def _handle_outline_json_audit(self,
+                                    chapter_id: str,
+                                    parsed: dict) -> None:
+        """Coerce a legacy ``phase=audit`` reply into start_suggestion.
+
+        When the model still emits the old audit format on a turn
+        where we're awaiting ``start_suggestion`` (the new schema),
+        synthesise the suggestion from the audit's
+        ``first_pending_beat`` so the user still gets the
+        confirm/override prompt. This avoids a dead-end where the
+        old "audit ignored" message fires and the user has no way
+        to advance.
+        """
+        s = self._outline_session(chapter_id)
+        if s.get("phase") in (None, "await_pick_start_response"):
+            # Synthesise a start_suggestion from the audit so the
+            # PICK_START flow can continue.
+            audit = parsed.get("audit") or []
+            try:
+                first_pending = int(
+                    parsed.get("first_pending_beat"))
+            except Exception:
+                first_pending = next(
+                    (a.get("beat_number") for a in audit
+                     if isinstance(a, dict)
+                     and a.get("status") == "pending"),
+                    None)
+            title = ""
+            if first_pending and isinstance(audit, list):
+                for a in audit:
+                    if (isinstance(a, dict)
+                            and a.get("beat_number") == first_pending):
+                        title = (a.get("title") or "").strip()
+                        break
+            self._handle_outline_json_start_suggestion(
+                chapter_id, {
+                    "phase": "start_suggestion",
+                    "suggested_beat_number": first_pending,
+                    "suggested_beat_title": title,
+                    "reasoning":
+                        "(coerced from legacy `phase: audit` "
+                        "response — schema is `start_suggestion` "
+                        "now.)",
+                    "thinking":
+                        (parsed.get("thinking") or "").strip(),
+                })
+            self._log_beat_state(
+                "outline", chapter_id,
+                "audit_coerced_to_start_suggestion")
+            return
+        # Outside pick-start, the legacy audit is genuinely
+        # off-protocol — surface the original ignore message.
+        self.chat_widget.add_message(
+            "Assistant",
+            "_The engine handles the beat audit deterministically — "
+            "the model's audit was ignored. Send your next message "
+            "to continue the per-beat flow._")
+        self._pending_chat_message = ""
+        self._log_beat_state(
+            "outline", chapter_id, "model_audit_ignored")
+        return
+        # Original logic kept below (unreachable) for reference.
+        """Surface the model's outline-mode audit + await user."""
+        audit = parsed.get("audit") or []
+        first_pending = parsed.get("first_pending_beat")
+        try:
+            first_pending = int(first_pending) if first_pending else None
+        except Exception:
+            first_pending = None
+        if not isinstance(audit, list):
+            audit = []
+        ob_state = self._outline_beat_state.get(chapter_id) or {}
+        ob_state["audit"] = audit
+        ob_state["audit_status"] = "pending_user"
+        if first_pending is not None:
+            ob_state["current_beat_number"] = first_pending
+        self._outline_beat_state[chapter_id] = ob_state
+        self._log_beat_state(
+            "outline", chapter_id, "audit_landed")
+
+        msg = self._render_audit_chat_message(
+            audit, first_pending, "Outline")
+        self.chat_widget.add_message("Assistant", msg)
+
+        pending_msg = getattr(
+            self, "_pending_chat_message", "") or ""
+        if pending_msg:
+            self._chat_history.append(
+                {"role": "user", "content": pending_msg})
+            self._chat_history.append(
+                {"role": "assistant",
+                 "content": "(Outline audit — awaiting confirmation.)"})
+            self._compact_chat_history()
+        self._pending_chat_message = ""
+
+    def _handle_writer_json_audit(self,
+                                   chapter_id: str,
+                                   parsed: dict) -> None:
+        """No-op — engine computes audit deterministically now."""
+        self.chat_widget.add_message(
+            "Assistant",
+            "_The engine handles the beat audit deterministically — "
+            "the model's audit was ignored. Send your next message "
+            "to start the per-beat questions for the engine-selected "
+            "beat._")
+        self._pending_chat_message = ""
+        self._log_beat_state(
+            "writer", chapter_id, "model_audit_ignored")
+        return
+        # Original logic kept below (unreachable) for reference.
+        """Surface the model's writer-mode audit + await user."""
+        audit = parsed.get("audit") or []
+        first_pending = parsed.get("first_pending_beat")
+        try:
+            first_pending = int(first_pending) if first_pending else None
+        except Exception:
+            first_pending = None
+        if not isinstance(audit, list):
+            audit = []
+        beat_state = self._writer_beat_state.get(chapter_id) or {}
+        beat_state["audit"] = audit
+        beat_state["audit_status"] = "pending_user"
+        if first_pending is not None:
+            beat_state["current_beat_number"] = first_pending
+        self._writer_beat_state[chapter_id] = beat_state
+        self._log_beat_state(
+            "writer", chapter_id, "audit_landed")
+
+        msg = self._render_audit_chat_message(
+            audit, first_pending, "Writer")
+        self.chat_widget.add_message("Assistant", msg)
+
+        pending_msg = getattr(
+            self, "_pending_chat_message", "") or ""
+        if pending_msg:
+            self._chat_history.append(
+                {"role": "user", "content": pending_msg})
+            self._chat_history.append(
+                {"role": "assistant",
+                 "content": "(Writer audit — awaiting confirmation.)"})
+            self._compact_chat_history()
+        self._pending_chat_message = ""
+
+    @staticmethod
+    def _looks_like_audit_correction(text: str) -> Optional[dict]:
+        """Parse a user reply for audit corrections.
+
+        Returns ``{"flips": {beat_number: new_status}}`` when the
+        message looks like a beat-level correction, e.g.
+        "Beat 3 isn't done", "Beat 2 is actually written",
+        "Beat 4 is pending". Returns ``None`` for plain
+        confirmations ("looks good", "yes") so the caller treats
+        the audit as accepted as-is.
+        """
+        import re as _re
+        if not text:
+            return None
+        s = text.strip()
+        approve = ("looks good", "ok", "okay", "proceed",
+                   "go ahead", "confirm", "confirmed",
+                   "yes", "y", "good", "great", "perfect",
+                   "ship it", "lgtm")
+        s_low = s.lower().rstrip(".!?")
+        if s_low in approve:
+            return None
+        flips = {}
+        # Capture: "Beat N", an optional connector (which may be a
+        # negation), and the status label. Parsing the connector
+        # separately lets us flip "isn't done" -> pending while
+        # leaving plain "is done" -> written.
+        patt = _re.compile(
+            r"beat\s+(\d+)\b[^a-z0-9]*"
+            r"(is\s+not|isn[\u2019\']?t|is\s+also|is)?"
+            r"\s*(?:actually\s+)?"
+            r"(written|outlined|pending|done|complete|incomplete|"
+            r"todo|not\s+done)",
+            _re.IGNORECASE)
+        for m in patt.finditer(s):
+            try:
+                n = int(m.group(1))
+            except Exception:
+                continue
+            connector = (m.group(2) or "").lower()
+            negated = ("not" in connector
+                       or "n\u2019t" in connector
+                       or "n't" in connector)
+            label = _re.sub(r"\s+", " ", m.group(3).lower()).strip()
+            if label in ("done", "complete"):
+                flips[n] = "pending" if negated else "written"
+            elif label in ("incomplete", "todo", "not done"):
+                flips[n] = "pending"
+            elif negated:
+                flips[n] = "pending"
+            else:
+                flips[n] = label
+        return {"flips": flips} if flips else None
+
+    def _apply_audit_user_reply(
+            self,
+            chapter_id: str,
+            state: dict,
+            message: str,
+            state_dict: dict) -> None:
+        """Move audit_status from pending_user → confirmed.
+
+        Applies any beat-level corrections parsed from ``message``,
+        recomputes the first pending beat, and stamps
+        ``current_beat_number`` so the next prompt context tells
+        the model exactly which beat to work on.
+        """
+        audit = state.get("audit") or []
+        # Apply user corrections, if any.
+        correction = self._looks_like_audit_correction(message)
+        if correction and correction.get("flips"):
+            flips = correction["flips"]
+            for entry in audit:
+                bn = entry.get("beat_number")
+                if bn in flips:
+                    entry["status"] = flips[bn]
+                    entry["evidence"] = (
+                        f"User flipped to {flips[bn]}.")
+            state["audit"] = audit
+
+        # Compute first pending. Prefer the model's
+        # first_pending_beat unless the user's flips disagree.
+        first_pending = None
+        for entry in audit:
+            if entry.get("status") == "pending":
+                try:
+                    first_pending = int(entry.get("beat_number"))
+                except Exception:
+                    pass
+                break
+        if first_pending is None:
+            # All beats marked done — nothing left to produce.
+            state["in_progress"] = False
+            state["complete"] = True
+            state["audit_status"] = "confirmed"
+            self.chat_widget.add_message(
+                "Assistant",
+                "All planned beats look done according to the "
+                "audit. Nothing left to outline/write — let me "
+                "know if you want to refine an existing beat.")
+            state_dict[chapter_id] = state
+            try:
+                mode_label = (
+                    "outline" if state_dict is self._outline_beat_state
+                    else "writer")
+                self._log_beat_state(
+                    mode_label, chapter_id,
+                    "audit_confirmed_all_done")
+            except Exception:
+                pass
+            return
+
+        state["current_beat_number"] = first_pending
+        # Align the writer-mode current_idx to the same beat (for
+        # _current_beat lookups).
+        if "remaining_beats" in state:
+            # current_idx is the index INTO remaining_beats, which
+            # may not correspond 1-to-1 with absolute beat numbers
+            # (the writer's coverage analysis already filtered).
+            # Treat first_pending as the absolute beat number; find
+            # the matching remaining-beat index by title if we can.
+            target_title = ""
+            for entry in audit:
+                if entry.get("beat_number") == first_pending:
+                    target_title = (entry.get("title") or "").strip().lower()
+                    break
+            new_idx = 0
+            for i, b in enumerate(state["remaining_beats"]):
+                if (b.get("text", "").strip().lower()
+                        == target_title):
+                    new_idx = i
+                    break
+            state["current_idx"] = new_idx
+        state["audit_status"] = "confirmed"
+        state["rounds_for_beat"] = 0
+        state_dict[chapter_id] = state
+        # Log so the console shows which beat we're locked onto
+        # after the user confirms. Wrapped because some test
+        # fixtures bypass __init__ and accessing the state-dict
+        # attrs would raise.
+        try:
+            mode_label = (
+                "outline" if state_dict is self._outline_beat_state
+                else "writer")
+            self._log_beat_state(
+                mode_label, chapter_id, "audit_confirmed")
+        except Exception:
+            pass
+
+    @staticmethod
+    def _parse_writer_json_response(text: str) -> Optional[dict]:
+        """Extract a structured writer-mode JSON object from a reply.
+
+        Same shape as ``_parse_outline_json_response`` but validates
+        the writer-mode phase tags (``"questions"`` or ``"prose"``).
+        Returns ``None`` for malformed input so the caller can fall
+        back to the legacy markdown writer path.
+        """
+        import json
+        import re as _re
+        if not text or not text.strip():
+            return None
+
+        candidates: list = []
+        fence_re = _re.compile(
+            r"```(?:json)?\s*\n?(.*?)```",
+            _re.IGNORECASE | _re.DOTALL)
+        for m in fence_re.finditer(text):
+            candidates.append(m.group(1).strip())
+        candidates.append(text.strip())
+        first = text.find("{")
+        last = text.rfind("}")
+        if 0 <= first < last:
+            candidates.append(text[first:last + 1])
+
+        for cand in candidates:
+            cand = cand.strip()
+            if not cand or not cand.startswith("{"):
+                continue
+            try:
+                obj = json.loads(cand)
+            except Exception:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            phase = obj.get("phase")
+            if phase not in ("audit", "questions", "prose"):
+                continue
+            return obj
+        return None
+
+    def _handle_writer_json_questions(self,
+                                       chapter_id: str,
+                                       parsed: dict) -> None:
+        """Render a JSON ``phase=questions`` reply as Phase-1 chat.
+
+        Mirrors the outline-mode questions handler but uses the
+        ``_writer_beat_state`` round counter + the writer's
+        ``_current_beat`` for the beat label.
+        """
+        questions = parsed.get("questions") or []
+        thinking = (parsed.get("thinking") or "").strip()
+        if isinstance(questions, str):
+            questions = [questions]
+        questions = [str(q).strip() for q in questions if q]
+
+        beat_state = self._writer_beat_state.get(chapter_id) or {}
+        # Round counter: each questions-turn burns one round.
+        beat_state.setdefault("rounds_for_beat", 0)
+        beat_state.setdefault(
+            "max_rounds", self._WRITER_MAX_ROUNDS_PER_BEAT)
+        beat_state["rounds_for_beat"] += 1
+        rounds = beat_state["rounds_for_beat"]
+        cap = beat_state["max_rounds"]
+        cur_beat = self._current_beat(chapter_id) or {}
+        cur_title = cur_beat.get("text", "current beat")
+        beat_no = (
+            beat_state.get("current_idx", 0) + 1
+            if beat_state.get("in_progress") else 1)
+
+        lines = []
+        if thinking:
+            lines.append(f"_{thinking}_")
+            lines.append("")
+        if questions:
+            lines.append(
+                f"**Beat {beat_no} (\"{cur_title}\") — Phase-1 "
+                f"questions** (round {rounds}/{cap})")
+            for i, q in enumerate(questions, 1):
+                lines.append(f"{i}. {q}")
+        else:
+            lines.append(
+                f"(Model returned phase=\"questions\" but no "
+                f"questions — moving to write Beat {beat_no} on "
+                f"the next message.)")
+
+        if rounds >= cap:
+            self._writer_ready_chapters.add(chapter_id)
+            beat_state["force_write"] = True
+            lines.append("")
+            lines.append(
+                f"*Round cap reached — send another message and "
+                f"the model will write Beat {beat_no} directly.*")
+        else:
+            lines.append("")
+            lines.append(
+                f"*Answer above, or say `proceed` to skip ahead "
+                f"and write Beat {beat_no} now.*")
+
+        self.chat_widget.add_message(
+            "Assistant", "\n".join(lines))
+        self._writer_beat_state[chapter_id] = beat_state
+        self._log_beat_state(
+            "writer", chapter_id, "questions_landed")
+
+        pending_msg = getattr(
+            self, "_pending_chat_message", "") or ""
+        joined_qs = "\n".join(
+            f"{i}. {q}" for i, q in enumerate(questions, 1))
+        try:
+            self._record_writer_qa(
+                chapter_id, pending_msg, joined_qs)
+        except Exception:
+            pass
+        if pending_msg:
+            self._chat_history.append(
+                {"role": "user", "content": pending_msg})
+            self._chat_history.append(
+                {"role": "assistant",
+                 "content": joined_qs or "(no questions)"})
+            self._compact_chat_history()
+        self._pending_chat_message = ""
+
+    def _handle_writer_json_prose(self,
+                                   chapter_id: str,
+                                   parsed: dict) -> None:
+        """Insert prose from a JSON ``phase=prose`` reply.
+
+        Routes the prose into the chapter editor using the existing
+        insert_mode logic, surfaces the writing_summary in chat,
+        records the insertion for ``<edit_last_insertion>``, and
+        advances the per-beat state. Honours ``writing_complete``.
+        """
+        prose_text = (parsed.get("prose") or "").strip()
+        thinking = (parsed.get("thinking") or "").strip()
+        summary_obj = parsed.get("writing_summary") or {}
+        writing_complete = bool(parsed.get("writing_complete"))
+
+        if not prose_text:
+            self.chat_widget.add_message(
+                "Assistant",
+                "(Model emitted phase=\"prose\" but the prose field "
+                "was empty — try resending.)")
+            self._pending_chat_message = ""
+            return
+
+        ce = getattr(self.manuscript_editor,
+                     "current_chapter_editor", None)
+        if ce is None or not getattr(ce, "chapter", None):
+            self.chat_widget.add_message(
+                "Assistant",
+                "No chapter is open. Please select a chapter first.")
+            return
+        editor = ce.editor
+        insert_mode = getattr(
+            self, '_pending_insert_mode', 'insert_at_cursor')
+
+        # Insert the prose using the same logic as the legacy path.
+        cursor = editor.textCursor()
+        ins_start = cursor.position()
+        action = ""
+        try:
+            if insert_mode == 'replace_selection':
+                if cursor.hasSelection():
+                    ins_start = min(cursor.selectionStart(),
+                                     cursor.selectionEnd())
+                    cursor.insertText(prose_text)
+                    action = "replaced selection"
+                else:
+                    cursor.insertText(prose_text)
+                    action = "inserted at cursor"
+            elif insert_mode == 'insert_at_cursor':
+                ins_start = cursor.position()
+                cursor.insertText(prose_text)
+                action = "inserted at cursor"
+            elif insert_mode == 'append_to_chapter':
+                cursor.movePosition(cursor.MoveOperation.End)
+                current = editor.toPlainText()
+                if current and not current.endswith('\n\n'):
+                    cursor.insertText('\n\n')
+                ins_start = cursor.position()
+                cursor.insertText(prose_text)
+                action = "appended to chapter"
+            elif insert_mode == 'replace_chapter':
+                editor.setPlainText(prose_text)
+                ins_start = 0
+                cur = editor.textCursor()
+                cur.movePosition(cur.MoveOperation.End)
+                editor.setTextCursor(cur)
+                action = "replaced chapter"
+            else:
+                ins_start = cursor.position()
+                cursor.insertText(prose_text)
+                action = "inserted"
+        except Exception as e:
+            self.chat_widget.add_message(
+                "Assistant", f"Failed to insert prose: {e}")
+            return
+
+        ins_end = editor.textCursor().position()
+        # Render the writing summary into a markdown block so it
+        # reuses the existing chat formatting.
+        summary_md = self._render_writing_summary(summary_obj)
+
+        try:
+            self._record_writer_insertion(
+                chapter_id=chapter_id,
+                start=ins_start,
+                end=ins_end,
+                prose=prose_text,
+                prompt=getattr(
+                    self, "_pending_chat_message", "") or "",
+                mode=f"writer:full_text:{insert_mode}",
+                summary=summary_md,
+            )
+        except Exception:
+            pass
+
+        word_count = (
+            int(summary_obj.get("word_count")) if isinstance(
+                summary_obj.get("word_count"), (int, float))
+            else len(prose_text.split()))
+
+        # Engine-controlled beat number — the model's beat_number
+        # is overridden if it doesn't match what the engine asked
+        # for (audit-derived current_beat_number, or remaining-beat
+        # index when no audit fired). Stops the model from looping
+        # back to Beat 1 by claiming "beat_number: 1" when we asked
+        # for Beat 4.
+        beat_state = self._writer_beat_state.get(chapter_id)
+        engine_no = None
+        if beat_state:
+            engine_no = beat_state.get("current_beat_number")
+            if engine_no is None and beat_state.get("in_progress"):
+                engine_no = beat_state.get("current_idx", 0) + 1
+        model_no = None
+        try:
+            model_no = int(parsed.get("beat_number"))
+        except Exception:
+            model_no = None
+        if (engine_no is not None and model_no is not None
+                and model_no != engine_no):
+            self.chat_widget.add_message(
+                "Assistant",
+                f"(Model returned beat_number {model_no} but "
+                f"engine asked for Beat {engine_no} — using "
+                f"engine's number to keep the queue ordered.)")
+        beat_no = engine_no if engine_no is not None else (
+            model_no if model_no is not None else None)
+
+        if beat_state and beat_state.get("in_progress"):
+            beat_state["rounds_for_beat"] = 0
+            beat_state["force_write"] = False
+            try:
+                self._advance_beat(chapter_id)
+            except Exception:
+                pass
+            # Bump current_beat_number for the NEXT turn so the
+            # focus block stays one ahead.
+            if beat_no is not None:
+                beat_state["current_beat_number"] = beat_no + 1
+        if writing_complete and beat_state:
+            beat_state["in_progress"] = False
+        # Clear ready flag so next beat starts in Phase 1 again.
+        self._writer_ready_chapters.discard(chapter_id)
+        self._log_beat_state(
+            "writer", chapter_id,
+            f"prose_beat_{beat_no or '?'}_landed_advance_to_"
+            f"{(beat_no + 1) if beat_no is not None else '?'}")
+
+        # Build the chat confirmation.
+        lines = []
+        if thinking:
+            lines.append(f"_{thinking}_")
+            lines.append("")
+        if writing_complete:
+            lines.append(
+                f"**Chapter writing complete** — Beat "
+                f"{beat_no or '?'} ({word_count:,} words {action}). "
+                f"All planned beats covered.")
+        else:
+            lines.append(
+                f"**Beat {beat_no or '?'} written** — "
+                f"{word_count:,} words {action}. Send a follow-up "
+                f"to refine, or send the next message to continue "
+                f"with the next beat.")
+        if summary_md:
+            lines.append("")
+            lines.append(summary_md)
+        self.chat_widget.add_message(
+            "Assistant", "\n".join(lines))
+
+        # Chat-history bookkeeping (compact marker, not the full prose).
+        pending_msg = getattr(
+            self, "_pending_chat_message", "") or ""
+        if pending_msg:
+            marker = (
+                "(Chapter writing complete.)" if writing_complete
+                else f"(Beat {beat_no or '?'} written, "
+                     f"{word_count:,} words.)")
+            self._chat_history.append(
+                {"role": "user", "content": pending_msg})
+            self._chat_history.append(
+                {"role": "assistant", "content": marker})
+            self._compact_chat_history()
+        self._pending_chat_message = ""
+
+    @staticmethod
+    def _render_writing_summary(summary: dict) -> str:
+        """Render a writing_summary dict as a markdown block.
+
+        Mirrors the legacy ``<writing_summary>`` shape so the chat
+        confirmation reads consistently across the two paths.
+        """
+        if not isinstance(summary, dict):
+            return ""
+        lines = ["<writing_summary>"]
+        sections = [
+            ("plot_events_covered",   "PLOT EVENTS COVERED"),
+            ("key_changes",           "KEY CHANGES IN THIS SCENE"),
+            ("worldbuilding_surfaced", "WORLDBUILDING SURFACED"),
+            ("subplots_advanced",     "SUBPLOTS / TENSIONS ADVANCED"),
+        ]
+        any_section = False
+        for key, label in sections:
+            items = summary.get(key)
+            if isinstance(items, str):
+                items = [items]
+            if not items:
+                continue
+            lines.append(f"{label}:")
+            for item in items:
+                s = str(item).strip()
+                if s:
+                    lines.append(f"- {s}")
+            any_section = True
+        wc = summary.get("word_count")
+        if isinstance(wc, (int, float)):
+            lines.append(f"WORD COUNT: {int(wc)}")
+            any_section = True
+        lines.append("</writing_summary>")
+        return "\n".join(lines) if any_section else ""
+
+    @staticmethod
+    def _parse_outline_json_response(text: str) -> Optional[dict]:
+        """Extract the structured outline JSON object from a reply.
+
+        Tolerates the model wrapping the object in a ``json fence,
+        trailing prose, or no fence at all. Returns ``None`` when
+        no parseable object is found — caller falls back to the
+        markdown normalizer.
+
+        Validates that the parsed object has a ``phase`` field set
+        to ``"questions"`` or ``"beat"`` (anything else returns
+        None). Other fields are returned untouched for the caller
+        to interpret.
+        """
+        import json
+        import re as _re
+        if not text or not text.strip():
+            return None
+
+        candidates: list = []
+        # Prefer ```json fenced block when present.
+        fence_re = _re.compile(
+            r"```(?:json)?\s*\n?(.*?)```",
+            _re.IGNORECASE | _re.DOTALL)
+        for m in fence_re.finditer(text):
+            candidates.append(m.group(1).strip())
+        # Also try the raw text and the largest balanced {...} substring.
+        candidates.append(text.strip())
+        first = text.find("{")
+        last = text.rfind("}")
+        if 0 <= first < last:
+            candidates.append(text[first:last + 1])
+
+        for cand in candidates:
+            cand = cand.strip()
+            if not cand or not cand.startswith("{"):
+                continue
+            try:
+                obj = json.loads(cand)
+            except Exception:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            phase = obj.get("phase")
+            if phase not in (
+                    "audit", "questions", "beat",
+                    "start_suggestion"):
+                continue
+            return obj
+        return None
+
+    @staticmethod
+    def _outline_beat_json_to_markdown(beat: dict,
+                                        fallback_number: int = 1,
+                                        force_number: bool = False,
+                                        force_title: str = "",
+                                        force_stage: str = ""
+                                        ) -> str:
+        """Render a structured ``beat`` dict as outline-panel markdown.
+
+        Mirrors the markdown skeleton the panel parses into a
+        checklist card. Missing optional sections are skipped
+        (better a sparse card than empty bullet lists).
+
+        When ``force_number`` is True, the beat heading uses
+        ``fallback_number`` regardless of the model's ``number``
+        field. When ``force_title`` is non-empty, the heading uses
+        IT instead of the model's ``beat.title`` — this stops the
+        model from rewriting the planned beat title (e.g. emitting
+        Beat 1's title when the engine asked for Beat 4). The
+        engine sources both from ``chapter.planning.events`` so
+        they always match the plot plan.
+        """
+        if not isinstance(beat, dict):
+            return ""
+
+        if force_number:
+            number = fallback_number
+        else:
+            try:
+                number = int(beat.get("number", fallback_number)
+                             or fallback_number)
+            except Exception:
+                number = fallback_number
+        if force_title:
+            title = force_title.strip() or "(untitled)"
+        else:
+            title = (
+                beat.get("title") or "").strip() or "(untitled)"
+        if force_stage:
+            stage = force_stage.strip()
+        else:
+            stage = (beat.get("stage") or "").strip()
+        marker = (
+            "[x]" if str(beat.get("checked", "")).lower() in
+            ("true", "1", "x", "yes") else "[ ]")
+        heading = f"## {marker} Beat {number}: {title}"
+        if stage:
+            heading += f" — {stage}"
+
+        section_specs = [
+            ("what_happens",     "WHAT HAPPENS"),
+            ("who_is_in_it",     "WHO'S IN IT"),
+            ("where_when",       "WHERE / WHEN"),
+            ("worldbuilding",    "WORLDBUILDING TO LEAN INTO"),
+            ("sensory_hooks",    "SENSORY HOOKS / CONTENT EXAMPLES"),
+            ("subplot_theme",    "SUBPLOT / THEME LANDING"),
+            ("leave_vs_imply",   "WHAT TO LEAVE ON THE PAGE vs IMPLY"),
+        ]
+        parts = [heading, ""]
+        for key, label in section_specs:
+            items = beat.get(key)
+            # Tolerate a single-string value where a list is expected.
+            if isinstance(items, str):
+                items = [items]
+            if not items:
+                continue
+            parts.append(f"**{label}**:")
+            for item in items:
+                s = str(item).strip()
+                if not s:
+                    continue
+                parts.append(f"- {s}")
+            parts.append("")
+        return "\n".join(parts).rstrip() + "\n"
+
+    def _handle_outline_json_questions(self,
+                                        chapter_id: str,
+                                        parsed: dict) -> None:
+        """Render a JSON ``phase=questions`` reply as Phase-1 chat.
+
+        Reads the **session state** (not the legacy
+        _outline_beat_state) so the displayed beat number matches
+        what the engine actually asked the model to work on. The
+        legacy dict was unpopulated under the new flow, which made
+        this handler emit "produce Beat 1 now" even when the
+        session was on Beat 3 — confusing the user and biasing the
+        model.
+        """
+        questions = parsed.get("questions") or []
+        thinking = (parsed.get("thinking") or "").strip()
+        if isinstance(questions, str):
+            questions = [questions]
+        questions = [str(q).strip() for q in questions if q]
+
+        # Use the session state (single source of truth for the
+        # autonomous-system flow) — fall back to legacy state only
+        # when no session exists.
+        s = self._outline_session_state.get(chapter_id) or {}
+        if s.get("started"):
+            beat_no = s.get("current_beat_number") or 1
+            s.setdefault("rounds_for_beat", 0)
+            s.setdefault(
+                "max_rounds", self._OUTLINE_MAX_ROUNDS_PER_BEAT)
+            s["rounds_for_beat"] += 1
+            rounds = s["rounds_for_beat"]
+            cap = s["max_rounds"]
+            self._outline_session_state[chapter_id] = s
+        else:
+            ob_state = (
+                self._outline_beat_state.get(chapter_id) or {})
+            ob_state.setdefault("rounds_for_beat", 0)
+            ob_state.setdefault(
+                "max_rounds", self._OUTLINE_MAX_ROUNDS_PER_BEAT)
+            ob_state["rounds_for_beat"] += 1
+            rounds = ob_state["rounds_for_beat"]
+            cap = ob_state["max_rounds"]
+            beat_no = ob_state.get("beats_done", 0) + 1
+            self._outline_beat_state[chapter_id] = ob_state
+
+        # Build the chat-display message. Number questions so the
+        # user can answer "answer to #2 is …" naturally.
+        lines = []
+        if thinking:
+            lines.append(f"_{thinking}_")
+            lines.append("")
+        if questions:
+            lines.append(
+                f"**Beat {beat_no} — Phase-1 questions** "
+                f"(round {rounds}/{cap})")
+            for i, q in enumerate(questions, 1):
+                lines.append(f"{i}. {q}")
+        else:
+            lines.append(
+                f"(Model returned phase=\"questions\" but no "
+                f"questions — moving to write Beat {beat_no} on "
+                f"the next message.)")
+
+        # Round cap → flip ready so the next turn is forced into
+        # phase=beat.
+        if rounds >= cap:
+            self._writer_ready_chapters.add(chapter_id)
+            lines.append("")
+            lines.append(
+                f"*Round cap reached — send another message and "
+                f"the model will produce Beat {beat_no} directly.*")
+        else:
+            lines.append("")
+            lines.append(
+                f"*Answer above, or say `proceed` to skip ahead "
+                f"and produce Beat {beat_no} now.*")
+
+        self.chat_widget.add_message(
+            "Assistant", "\n".join(lines))
+        self._log_beat_state(
+            "outline", chapter_id, "questions_landed")
+
+        # Record Q&A so the cycling detector has a baseline + the
+        # next turn's prompt sees what was asked already.
+        pending_msg = getattr(
+            self, "_pending_chat_message", "") or ""
+        joined_qs = "\n".join(
+            f"{i}. {q}" for i, q in enumerate(questions, 1))
+        try:
+            self._record_writer_qa(
+                chapter_id, pending_msg, joined_qs)
+        except Exception:
+            pass
+        if pending_msg:
+            self._chat_history.append(
+                {"role": "user", "content": pending_msg})
+            self._chat_history.append(
+                {"role": "assistant",
+                 "content": joined_qs or "(no questions)"})
+            self._compact_chat_history()
+        self._pending_chat_message = ""
+
+    def _handle_outline_json_beat(self,
+                                   chapter_id: str,
+                                   parsed: dict) -> None:
+        """Render a JSON ``phase=beat`` reply into the outline panel.
+
+        Serializes the ``beat`` dict to outline-panel markdown,
+        appends it to the panel, advances the per-beat state, and
+        surfaces a "Beat N added" confirmation. Honours
+        ``outline_complete: true`` to close the loop.
+        """
+        beat = parsed.get("beat") or {}
+        thinking = (parsed.get("thinking") or "").strip()
+        outline_complete = bool(parsed.get("outline_complete"))
+        if not isinstance(beat, dict) or not beat:
+            self.chat_widget.add_message(
+                "Assistant",
+                "(Model emitted phase=\"beat\" but no beat object — "
+                "try resending.)")
+            self._pending_chat_message = ""
+            return
+        ob_state = self._outline_beat_state.get(chapter_id) or {}
+        # Engine-controlled beat number — prefer the audit-derived
+        # current_beat_number over a naive beats_done+1, and ALWAYS
+        # override whatever the model returned. This is what stops
+        # the model from looping back to Beat 1 after the audit
+        # established Beat 4 as the start.
+        next_no = ob_state.get(
+            "current_beat_number",
+            ob_state.get("beats_done", 0) + 1)
+        model_no = beat.get("number")
+        try:
+            model_no_int = int(model_no) if model_no else None
+        except Exception:
+            model_no_int = None
+        if (model_no_int is not None
+                and model_no_int != next_no):
+            self.chat_widget.add_message(
+                "Assistant",
+                f"(Model returned beat number {model_no_int} but "
+                f"engine asked for Beat {next_no} — using "
+                f"engine's number to keep the queue ordered.)")
+        # Engine-controlled title + stage — pull from the audit
+        # entry for this beat number so the panel heading always
+        # matches the planned event, regardless of what the model
+        # decided to call it. (Otherwise the model can return Beat
+        # 1's title when the engine asked for Beat 4's number.)
+        forced_title = ""
+        forced_stage = ""
+        for entry in (ob_state.get("audit") or []):
+            if entry.get("beat_number") == next_no:
+                forced_title = (entry.get("title") or "").strip()
+                forced_stage = (entry.get("stage") or "").strip()
+                break
+        if forced_title:
+            model_title = (beat.get("title") or "").strip()
+            if (model_title
+                    and model_title.lower()
+                        != forced_title.lower()):
+                self.chat_widget.add_message(
+                    "Assistant",
+                    f"(Model returned title \"{model_title[:60]}\" "
+                    f"but engine planned title is "
+                    f"\"{forced_title}\" — using engine's title.)")
+        beat_md = self._outline_beat_json_to_markdown(
+            beat,
+            fallback_number=next_no,
+            force_number=True,
+            force_title=forced_title,
+            force_stage=forced_stage)
+        if not beat_md.strip():
+            self.chat_widget.add_message(
+                "Assistant",
+                "(Model emitted phase=\"beat\" but the beat object "
+                "had no usable content — try resending.)")
+            self._pending_chat_message = ""
+            return
+
+        panel = getattr(self.chat_widget, "outline_panel", None)
+        if panel is None:
+            return
+        if panel.current_chapter_id() != chapter_id:
+            ce = self.manuscript_editor.current_chapter_editor
+            title = getattr(ce.chapter, "title", "") or ""
+            panel.load_chapter(
+                chapter_id, title, panel.get_outline_text())
+
+        outline_action = getattr(
+            self, "_pending_outline_action", "populate")
+        if outline_action == "replace":
+            panel.set_outline_text(beat_md)
+        else:
+            panel.append_outline_text(beat_md)
+
+        # Switch sidebar to Outline tab so the user sees the new card.
+        tabs = getattr(self, "sidebar_tabs", None)
+        if tabs is not None:
+            idx = tabs.indexOf(panel)
+            if idx >= 0:
+                tabs.setCurrentIndex(idx)
+
+        # Update outline beat state. ``beats_done`` tracks how many
+        # beats are in the panel; ``current_beat_number`` tracks
+        # which beat the model should produce NEXT — incremented
+        # after each beat lands so the engine stays one step ahead.
+        beat_no = next_no
+        ob_state["beats_done"] = max(
+            ob_state.get("beats_done", 0), beat_no)
+        ob_state["current_beat_number"] = beat_no + 1
+        ob_state["rounds_for_beat"] = 0
+        ob_state["force_write"] = False
+        if outline_complete or beat_no >= self._OUTLINE_MAX_BEATS:
+            ob_state["complete"] = True
+        self._outline_beat_state[chapter_id] = ob_state
+        # Clear ready flag so the next beat gets its own Phase-1.
+        self._writer_ready_chapters.discard(chapter_id)
+        self._log_beat_state(
+            "outline", chapter_id,
+            f"beat_{beat_no}_landed_advance_to_{beat_no + 1}")
+
+        # Build the chat confirmation.
+        lines = []
+        if thinking:
+            lines.append(f"_{thinking}_")
+            lines.append("")
+        if outline_complete:
+            lines.append(
+                f"**Outline complete** — {beat_no} beats in the "
+                f"Outline tab. Switch the AI Assistant back to "
+                f"Full Text and ask me to write the chapter; I'll "
+                f"do it beat by beat using this outline.")
+        else:
+            beat_title = (beat.get("title") or "").strip() or "(untitled)"
+            lines.append(
+                f"**Beat {beat_no} added** — \"{beat_title}\". Send "
+                f"a follow-up to refine, or send the next message "
+                f"to continue with Beat {beat_no + 1}.")
+        self.chat_widget.add_message(
+            "Assistant", "\n".join(lines))
+
+        # Chat-history bookkeeping.
+        pending_msg = getattr(
+            self, "_pending_chat_message", "") or ""
+        if pending_msg:
+            marker = (
+                "(Outline complete.)" if outline_complete
+                else f"(Beat {beat_no} added to outline.)")
+            self._chat_history.append(
+                {"role": "user", "content": pending_msg})
+            self._chat_history.append(
+                {"role": "assistant", "content": marker})
+            self._compact_chat_history()
+        self._pending_outline_action = (
+            "populate" if outline_action != "edit" else "edit")
+        self._pending_chat_message = ""
+
+    @staticmethod
+    def _normalize_outline_response(text: str,
+                                     next_beat_number: int = 1) -> tuple:
+        """Coerce a model outline response into ``## [ ] Beat N: …`` form.
+
+        Returns ``(normalized_text, note)``. ``note`` is a chat-
+        ready string explaining what was done (or empty when the
+        response was already in the expected shape). Three tiers:
+
+        T1 STRICT — already has at least one ``## `` heading; pass
+            through unchanged.
+        T2 NORMALIZE — has a heading-like line in another style
+            (``###``, ``# Beat 1``, ``**Beat 1: …**``). Rewrite the
+            first such line as ``## [ ] Beat <N>: <stripped title>``
+            and pass through.
+        T3 WRAP — no heading-like line at all (pure narrative or
+            bullets). Strip chatty wrappers ("Writing the first beat
+            now"), then wrap the whole thing as one synthetic beat.
+
+        Empty ``text`` returns ``("", "")`` — caller decides how to
+        handle that (the no-content branch fires elsewhere).
+        """
+        import re as _re
+        text = (text or "").strip()
+        if not text:
+            return ("", "")
+
+        strict_re = _re.compile(
+            r"^##\s+(?:\[[ xX]\]\s+)?\S", _re.MULTILINE)
+        if strict_re.search(text):
+            return (text, "")
+
+        # T2 — heading-like first line.
+        # `### Beat 1: …`, `# Beat 1: …`, `**Beat 1: …**`, or
+        # `Beat 1:` at the start (some models drop the heading
+        # prefix entirely but still write a labeled line).
+        soft_heading_res = [
+            _re.compile(r"^#{1,6}\s+(?:\[[ xX]\]\s+)?(.+)$",
+                         _re.MULTILINE),
+            _re.compile(
+                r"^\*\*\s*(?:\[[ xX]\]\s+)?(beat\s+\d+[:\-—].+?)\s*\*\*",
+                _re.MULTILINE | _re.IGNORECASE),
+            _re.compile(
+                r"^(?:\[[ xX]\]\s+)?(beat\s+\d+[:\-—].+)$",
+                _re.MULTILINE | _re.IGNORECASE),
+        ]
+        for rx in soft_heading_res:
+            m = rx.search(text)
+            if not m:
+                continue
+            title = (m.group(1) or "").strip()
+            # Strip any trailing ** from the bold-style match.
+            title = _re.sub(r"\*+\s*$", "", title).strip()
+            # Drop a leading task-list marker if the heading already
+            # carried one — we'll add it ourselves.
+            title = _re.sub(
+                r"^\[[ xX]\]\s+", "", title, flags=_re.IGNORECASE)
+            new_heading = f"## [ ] {title}"
+            normalized = (
+                text[: m.start()] + new_heading + text[m.end():])
+            note = (
+                f"(Normalized the model's heading style into "
+                f"`## [ ] {title[:60]}…` so it renders as a beat "
+                f"card.)")
+            return (normalized, note)
+
+        # T3 — no heading at all. Strip chatty wrappers from the
+        # top, then wrap as a synthetic beat.
+        chatty_lines = (
+            "writing the", "thank you", "i have everything",
+            "i'll proceed", "since the previous", "i will proceed",
+            "let me", "here's", "here is",
+        )
+        lines = text.splitlines()
+        # Drop leading chatty lines until we hit content.
+        while lines and any(
+                lines[0].strip().lower().startswith(p)
+                for p in chatty_lines):
+            lines.pop(0)
+        body = "\n".join(lines).strip()
+        if not body:
+            return ("", "")
+        # Title from the first sentence/line, capped to a reasonable
+        # length so it fits in the checklist heading.
+        title_seed = body.split("\n", 1)[0].strip()
+        title_seed = _re.sub(r"[*_`]+", "", title_seed)
+        if len(title_seed) > 70:
+            title_seed = title_seed[:67].rsplit(" ", 1)[0] + "…"
+        if not title_seed:
+            title_seed = f"Beat {next_beat_number}"
+        synthetic = (
+            f"## [ ] Beat {next_beat_number}: {title_seed}\n\n{body}")
+        snippet = body[:100].replace("\n", " ")
+        note = (
+            f"(Model returned narrative content without a "
+            f"`## [ ] Beat N: …` heading. Wrapped it as Beat "
+            f"{next_beat_number}; edit the heading in the panel "
+            f"to clean up. First line was: \"{snippet}…\")")
+        return (synthetic, note)
+
+    def _events_to_outline_markdown(self, events) -> str:
+        """Render chapter.planning.events as outline-panel markdown.
+
+        Each StoryEvent becomes one beat heading; the event's
+        description (if any) drops into a small body. Completed
+        events become ``[x]``, others ``[ ]`` so the checklist
+        reflects the existing completion state.
+        """
+        lines = []
+        for i, ev in enumerate(events, 1):
+            text = (getattr(ev, 'text', '') or '').strip()
+            if not text:
+                text = f"Beat {i}"
+            stage = (getattr(ev, 'stage', '') or '').strip()
+            heading = f"## [{'x' if getattr(ev, 'completed', False) else ' '}] Beat {i}: {text}"
+            if stage:
+                heading += f" — {stage}"
+            lines.append(heading)
+            desc = (getattr(ev, 'description', '') or '').strip()
+            if desc:
+                lines.append("")
+                lines.append(desc)
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
+
+    def _handle_beat_ai_help_requested(
+            self,
+            event_id: str,
+            event_text: str,
+            event_description: str,
+            event_stage: str,
+            chapter_id: str) -> None:
+        """Route a per-beat ✨ AI-help click into the outline chat.
+
+        Switches the sidebar to the AI Assistant tab, picks
+        outline mode, and types a focused prompt that names the
+        target beat. The user can then send to start the outline
+        flow on this beat. We don't auto-send so the user can
+        edit the prompt first.
+        """
+        # Ensure the sidebar is visible + on the AI Assistant tab.
+        if hasattr(self, "sidebar_container"):
+            try:
+                self.sidebar_container.expand()
+            except Exception:
+                pass
+        if hasattr(self, "sidebar_tabs"):
+            idx = self.sidebar_tabs.indexOf(self.chat_widget)
+            if idx >= 0:
+                self.sidebar_tabs.setCurrentIndex(idx)
+        # Switch chat to outline output mode if the toggle exists.
+        try:
+            self.chat_widget.set_output_mode("outline")
+        except Exception:
+            pass
+        # Compose the focused prompt for this beat.
+        beat_label = (event_text or "(untitled beat)").strip()
+        prompt = (
+            f"Help me develop this beat for the current chapter: "
+            f"\"{beat_label}\""
+            + (f" [{event_stage}]" if event_stage else "")
+            + (f"\n\nWhat I have so far: {event_description}"
+               if event_description else "")
+            + "\n\nAsk me clarifying questions, then produce the "
+              "structured outline JSON for this beat.")
+        # Stage the prompt in the input field — user reviews + sends.
+        try:
+            self.chat_widget.input_field.setPlainText(prompt)
+            self.chat_widget.input_field.setFocus()
+        except Exception:
+            # Fallback: just post a chat message with the prompt.
+            self.chat_widget.add_message(
+                "Assistant",
+                f"_Drafted prompt for **Beat: {beat_label}**: "
+                f"send it as your next message to start the "
+                f"per-beat outline flow._\n\n{prompt}")
+
+    def _sync_panel_beats_to_planning_events(
+            self, outline_text: str) -> None:
+        """Slot user-created panel beats into chapter.planning.events.
+
+        Triggered on every outline_panel.outline_changed signal.
+        Parses the panel's beats; for each beat heading whose
+        title doesn't match an existing StoryEvent (case-insensitive
+        title compare), inserts a new StoryEvent at the right
+        position in chapter.planning.events. Position is derived
+        from the ``Beat N:`` number when present; otherwise the
+        beat is appended.
+
+        Existing events are NEVER deleted or reordered — this is
+        an additive sync. The user can edit/delete events through
+        the planner widget's add/edit/remove controls.
+        """
+        ce = getattr(self.manuscript_editor,
+                     'current_chapter_editor', None)
+        if ce is None or not getattr(ce, 'chapter', None):
+            return
+        chapter = ce.chapter
+        if (not hasattr(chapter, 'planning')
+                or chapter.planning is None):
+            return
+        events = list(getattr(chapter.planning, 'events', []) or [])
+
+        # Parse panel beats.
+        from src.ui.outline_panel import _parse_beats
+        _, panel_beats = _parse_beats(outline_text or "")
+        if not panel_beats:
+            return
+
+        import re as _re
+        from src.models.project import StoryEvent
+        import uuid as _uuid
+
+        def _norm(s: str) -> str:
+            t = (s or "").strip().lower()
+            t = _re.sub(
+                r"^beat\s+\d+\s*[:\-—]\s*", "", t)
+            t = _re.sub(r"\s+[—\-]\s+\w+$", "", t)
+            return t.strip()
+
+        existing_norms = {
+            _norm(getattr(ev, "text", "") or "")
+            for ev in events
+        }
+        added_count = 0
+        for pb in panel_beats:
+            # Try to extract a "Beat N:" prefix for placement.
+            m = _re.match(
+                r"^beat\s+(\d+)\s*[:\-—]?\s*(.*)$",
+                pb.title.strip(), _re.IGNORECASE)
+            if m:
+                try:
+                    beat_no = int(m.group(1))
+                    bare_title = m.group(2).strip() or pb.title
+                except Exception:
+                    beat_no = None
+                    bare_title = pb.title
+            else:
+                beat_no = None
+                bare_title = pb.title
+            norm_title = _norm(bare_title)
+            if not norm_title:
+                continue
+            if norm_title in existing_norms:
+                continue
+            # Description from the body (one paragraph max, capped).
+            body = "\n".join(pb.body_lines).strip()
+            desc = body.split("\n\n", 1)[0][:500] if body else ""
+            new_event = StoryEvent(
+                id=_uuid.uuid4().hex[:8],
+                text=bare_title.strip(),
+                description=desc,
+                stage="rising",
+                completed=pb.checked)
+            # Insert at position derived from beat_no; otherwise
+            # append. Beat numbers are 1-based; index = N - 1.
+            if beat_no is not None and 1 <= beat_no <= len(events) + 1:
+                insert_idx = beat_no - 1
+                events.insert(insert_idx, new_event)
+            else:
+                events.append(new_event)
+            existing_norms.add(norm_title)
+            added_count += 1
+
+        if added_count > 0:
+            try:
+                chapter.planning.events = events
+            except Exception as e:
+                print(
+                    f"[outline-sync] failed to write events: {e}")
+                return
+            # Refresh the planner widget if it's currently bound to
+            # this chapter (so the user sees the new beats).
+            try:
+                planner = ce.planner_widget
+                if hasattr(planner, "load_data"):
+                    planner.load_data(chapter.planning)
+            except Exception:
+                pass
+            # Quiet autosave so the new event persists.
+            try:
+                self._auto_save_project()
+            except Exception:
+                pass
+            print(
+                f"[outline-sync] slotted {added_count} new "
+                f"beat(s) into chapter.planning.events "
+                f"(now {len(events)} total)",
+                flush=True)
+
+    def _on_outline_panel_edited(self, outline_text: str) -> None:
+        """Persist outline-panel edits back to chapter.planning.outline.
+
+        Wired to OutlinePanel.outline_changed (debounced inside the
+        panel). Schedules a project autosave so the change lives
+        beyond the session.
+        """
+        panel = getattr(self.chat_widget, 'outline_panel', None)
+        if panel is None:
+            return
+        target_id = panel.current_chapter_id()
+        if not target_id or not self.current_project:
+            return
+        # Guard against the panel writing to a chapter the user has
+        # since switched away from. The panel flushes pending writes
+        # on chapter switch, so this should only happen if the user
+        # is editing a different chapter than the panel is bound to.
+        ce = getattr(self.manuscript_editor,
+                     'current_chapter_editor', None)
+        live_id = (getattr(ce.chapter, 'id', None)
+                   if ce and getattr(ce, 'chapter', None) else None)
+        # Find the chapter on the project (either current OR by id —
+        # we always trust the panel's bound id).
+        target = None
+        manuscript = getattr(self.current_project, 'manuscript', None)
+        chapters = getattr(manuscript, 'chapters', None) or []
+        for ch in chapters:
+            if getattr(ch, 'id', None) == target_id:
+                target = ch
+                break
+        if target is None:
+            return
+        if not hasattr(target, 'planning') or target.planning is None:
+            return
+        # Only write if the text actually changed — keeps Pydantic /
+        # autosave churn down on no-op signals.
+        current_outline = (
+            getattr(target.planning, 'outline', '') or '')
+        if (current_outline or '') == (outline_text or ''):
+            return
+        try:
+            target.planning.outline = outline_text or ''
+        except Exception as e:
+            print(f"[outline-panel] failed to persist outline: {e}")
+            return
+        # Trigger a quiet autosave so the edit isn't lost on close.
+        # Only when this is the live-open chapter; otherwise leave
+        # the project dirty for the next regular save tick.
+        if live_id == target_id:
+            self._auto_save_project()
 
     def _load_project_into_ui(self):
         """Load current project data into UI widgets."""
@@ -2855,11 +6741,19 @@ class MainWindow(QMainWindow):
             self._setup_editor_selection_tracking()
 
     def _toggle_chat(self):
-        """Toggle chat widget visibility."""
-        if self.chat_widget.isVisible():
-            self.chat_widget.hide()
+        """Toggle the right-hand sidebar (AI Assistant + Outline)."""
+        # New layout: the sidebar container owns the collapse state
+        # for the whole AI Assistant + Outline area, so toggling the
+        # menu action (Ctrl+B) collapses/expands it as a unit. Falls
+        # back to the older show/hide behaviour if the container
+        # isn't around (defensive — should always exist post-init).
+        if hasattr(self, "sidebar_container"):
+            self.sidebar_container.toggle()
         else:
-            self.chat_widget.show()
+            if self.chat_widget.isVisible():
+                self.chat_widget.hide()
+            else:
+                self.chat_widget.show()
 
     def _toggle_voice_input(self):
         """Toggle speech-to-text input."""
@@ -3241,11 +7135,254 @@ class MainWindow(QMainWindow):
         self._pending_mode = mode
         self._pending_chat_message = message
 
-        # Pass conversation history only for general/chapter_focus modes (not writer)
-        if mode != "writer":
-            context['conversation_history'] = list(self._chat_history)
+        # Auto-flip writer-mode ready state when the user's message
+        # reads like a "proceed / go ahead" signal. Without this, the
+        # user has to wait for the model to also recognise the signal
+        # and emit <context_ready/> on its own — which small models
+        # often miss. Flipping here means the next writer call goes
+        # straight to Phase 2 (write the prose) regardless of what
+        # the model would have done.
+        if (mode == "writer"
+                and hasattr(self, "manuscript_editor")
+                and self.manuscript_editor.current_chapter_editor
+                and self._looks_like_proceed_signal(message)):
+            ch_id_now = (self.manuscript_editor
+                         .current_chapter_editor.chapter.id)
+            self._writer_ready_chapters.add(ch_id_now)
+        # Pull the writer-output mode (Full Text vs Outline) directly
+        # from the chat widget so the existing message_sent signal
+        # stays binary-compatible. Stash it into context so the
+        # ChatWorker can branch the system prompt + into _pending so
+        # the response handler can pick the right insertion path.
+        if mode == "writer" and hasattr(self, "chat_widget"):
+            try:
+                output_mode = self.chat_widget.get_output_mode()
+            except Exception:
+                output_mode = "full_text"
+            self._pending_output_mode = output_mode
+            context['writer_output_mode'] = output_mode
         else:
-            context['conversation_history'] = []
+            self._pending_output_mode = "full_text"
+
+        # OUTLINE-FIRST + PER-BEAT-OUTLINE AUTO-ROUTE.
+        #
+        # The outline is generated beat by beat (mirroring how prose
+        # is written): one beat per Phase-2 turn, with optional
+        # Phase-1 questions before each beat (capped at 4 rounds).
+        # The model emits ``<outline_complete/>`` when there are no
+        # more beats to add.
+        #
+        # Two ways to enter this flow:
+        #   * User selected Outline output mode → in_progress is
+        #     started/continued.
+        #   * User is in Full Text mode but the chapter has NO
+        #     outline yet → silently flip into outline-generation
+        #     until <outline_complete/>; then the next message in
+        #     full-text mode kicks off prose writing.
+        outline_first_redirect = False
+        if (mode == "writer"
+                and hasattr(self, "chat_widget")
+                and getattr(self.chat_widget, "outline_panel", None)
+                is not None):
+            panel = self.chat_widget.outline_panel
+            ce = getattr(self.manuscript_editor,
+                         "current_chapter_editor", None)
+            ch_id_now = (
+                ce.chapter.id
+                if (ce is not None
+                    and getattr(ce, "chapter", None)) else None)
+            ob_state = (
+                self._outline_beat_state.get(ch_id_now)
+                if ch_id_now else None)
+            outline_in_progress = bool(
+                ob_state and ob_state.get("in_progress")
+                and not ob_state.get("complete"))
+
+            existing_outline = (panel.get_outline_text() or "").strip()
+            if not existing_outline and ce is not None and ch_id_now:
+                if (hasattr(ce.chapter, "planning")
+                        and ce.chapter.planning is not None):
+                    existing_outline = (
+                        getattr(ce.chapter.planning, "outline", "")
+                        or "").strip()
+
+            # Hold the user in outline mode while generation is
+            # mid-flight. The user can interrupt by switching the
+            # output dropdown back to Full Text, which clears the
+            # state below.
+            if (outline_in_progress
+                    and self._pending_output_mode == "full_text"):
+                self._pending_output_mode = "outline"
+                context['writer_output_mode'] = "outline"
+
+            # Empty-outline + Full Text → kick off per-beat outline
+            # generation transparently.
+            if (self._pending_output_mode == "full_text"
+                    and not existing_outline and ch_id_now):
+                self._pending_output_mode = "outline"
+                context['writer_output_mode'] = "outline"
+                outline_first_redirect = True
+                self.chat_widget.add_message(
+                    "Assistant",
+                    "No outline for this chapter yet — producing one "
+                    "beat by beat. Each beat will land in the Outline "
+                    "tab as it's generated; you can refine each one "
+                    "before the next, just like writing prose. When "
+                    "the model signals the outline is complete, ask "
+                    "me to write the chapter and I'll switch to prose.")
+                # First message in outline mode → kick off the
+                # autonomous-system flow. The engine asks the model
+                # to pick a starting beat (with the deterministic
+                # audit as context). Subsequent turns route on
+                # ``session["phase"]``.
+                self._dispatch_outline_session_turn(
+                    ch_id_now, ce.chapter, message, context)
+                # The dispatcher decides whether this turn calls the
+                # LLM (and if so, returns False so the function
+                # continues to the worker start). When it handles
+                # the message itself (e.g. "proceed", "looks good",
+                # apply choice), it returns True and we stop here.
+                if not context.get(
+                        "_outline_session_send_to_llm"):
+                    return
+            elif (self._pending_output_mode == "outline"
+                  and ch_id_now):
+                # Subsequent outline-mode turn — route by session
+                # phase. Same dispatcher as above; it manages the
+                # state machine + decides whether to call the LLM.
+                self._dispatch_outline_session_turn(
+                    ch_id_now, ce.chapter, message, context)
+                if not context.get(
+                        "_outline_session_send_to_llm"):
+                    return
+
+            # NOTE: outline_beat_focus is now built by
+            # _inject_outline_beat_context inside the new session
+            # dispatcher (_dispatch_outline_session_turn). The legacy
+            # block here used to read _outline_beat_state["beats_done"]
+            # which the new flow doesn't populate, leading to
+            # KeyError when phase=questions handlers had partially
+            # initialised the dict. The legacy code is removed; the
+            # session dispatcher is the single source of truth for
+            # outline focus context.
+
+        # Outline routing: when the user is in writer + outline mode,
+        # decide whether this run POPULATES, EDITS, or REPLACES the
+        # outline panel. If the panel already has content (or the
+        # current chapter's planning.outline is non-empty), pop a
+        # modal ONCE per chapter session so the user picks. After
+        # the choice is made the action sticks on the outline beat
+        # state — subsequent turns reuse it without re-asking.
+        self._pending_outline_action = "populate"
+        if (mode == "writer"
+                and self._pending_output_mode == "outline"
+                and hasattr(self, "chat_widget")
+                and getattr(self.chat_widget, "outline_panel", None)
+                is not None):
+            panel = self.chat_widget.outline_panel
+            ob_state_now = (
+                self._outline_beat_state.get(ch_id_now)
+                if ch_id_now else None) or {}
+            sticky_action = ob_state_now.get("outline_action")
+            audit_done = bool(ob_state_now.get("audit_status"))
+            if sticky_action:
+                # Already decided this session — reuse without
+                # nagging the user every turn.
+                self._pending_outline_action = sticky_action
+                if sticky_action == "edit":
+                    existing_outline = (
+                        panel.get_outline_text() or "").strip()
+                    if existing_outline:
+                        context['existing_outline'] = existing_outline
+                context['outline_action'] = sticky_action
+            elif audit_done:
+                # Engine-computed audit handles existing-content
+                # detection deterministically — already-outlined
+                # beats are skipped, pending beats are produced.
+                # That's effectively the "edit/extend" path; no
+                # need to ask the user.
+                self._pending_outline_action = "populate"
+                ob_state_now["outline_action"] = "populate"
+                self._outline_beat_state[ch_id_now] = ob_state_now
+                context['outline_action'] = "populate"
+            else:
+                existing_outline = (
+                    panel.get_outline_text() or "").strip()
+                # Fall back to chapter.planning.outline in case the
+                # panel hasn't synced yet (e.g. first send after
+                # project load).
+                if not existing_outline:
+                    ce = getattr(self.manuscript_editor,
+                                 "current_chapter_editor", None)
+                    if (ce is not None and getattr(ce, "chapter", None)
+                            and hasattr(ce.chapter, "planning")
+                            and ce.chapter.planning is not None):
+                        existing_outline = (
+                            getattr(ce.chapter.planning, "outline", "")
+                            or "").strip()
+                if existing_outline:
+                    from PyQt6.QtWidgets import QMessageBox
+                    box = QMessageBox(self)
+                    box.setWindowTitle("Outline already exists")
+                    box.setIcon(QMessageBox.Icon.Question)
+                    box.setText(
+                        "This chapter already has an outline in the "
+                        "panel. How should I proceed?")
+                    box.setInformativeText(
+                        "• Edit — refine the existing outline "
+                        "through the normal Q&A flow (up to 4 "
+                        "question rounds per beat).\n"
+                        "• Replace — fully overwrite the outline "
+                        "with a fresh one based on this prompt.\n"
+                        "• Cancel — drop this message and don't "
+                        "send anything.\n\n"
+                        "(Asked once per chapter session.)")
+                    edit_btn = box.addButton(
+                        "Edit existing",
+                        QMessageBox.ButtonRole.AcceptRole)
+                    replace_btn = box.addButton(
+                        "Replace",
+                        QMessageBox.ButtonRole.DestructiveRole)
+                    cancel_btn = box.addButton(
+                        "Cancel", QMessageBox.ButtonRole.RejectRole)
+                    box.setDefaultButton(edit_btn)
+                    box.exec()
+                    clicked = box.clickedButton()
+                    if clicked is cancel_btn:
+                        self.chat_widget.add_message(
+                            "Assistant",
+                            "(Outline send cancelled — your prompt "
+                            "was not sent.)")
+                        self._pending_chat_message = ""
+                        self._pending_outline_action = "populate"
+                        return
+                    if clicked is replace_btn:
+                        self._pending_outline_action = "replace"
+                    else:
+                        self._pending_outline_action = "edit"
+                        context['existing_outline'] = existing_outline
+                else:
+                    self._pending_outline_action = "populate"
+                # Make the choice sticky so we don't ask again on
+                # subsequent turns this session.
+                if ch_id_now:
+                    if ob_state_now is None or not ob_state_now:
+                        ob_state_now = self._outline_beat_state.get(
+                            ch_id_now) or {}
+                    ob_state_now["outline_action"] = (
+                        self._pending_outline_action)
+                    self._outline_beat_state[ch_id_now] = ob_state_now
+                context['outline_action'] = (
+                    self._pending_outline_action)
+
+        # Conversation history flows for ALL modes now. Writer used to
+        # be single-shot and the history was deliberately wiped, but
+        # the phased Q&A protocol relies on multi-turn coherence — the
+        # model needs to remember what it already asked or it cycles
+        # on duplicate questions. Pass the same history for writer
+        # that other modes get; the per-chapter Q&A registry below
+        # provides finer-grained dedup guidance.
+        context['conversation_history'] = list(self._chat_history)
 
         # Set chapter context for training data metadata (style/voice/tone)
         # This captures the author's intended style for this specific work
@@ -3302,6 +7439,137 @@ class MainWindow(QMainWindow):
         else:
             context['_rag_search'] = None
 
+        # Surface recent AI insertions for the open chapter so the
+        # writer / chapter-focus model can refer back to them when
+        # the user says "edit that scene" / "add tension to the part
+        # you just wrote". The model sees the insertion records in a
+        # labelled prompt block and can emit
+        # ``<edit_last_insertion>`` to target the prose by index.
+        if (mode in ("writer", "chapter_focus")
+                and hasattr(self, "manuscript_editor")
+                and self.manuscript_editor.current_chapter_editor):
+            ch_id = (self.manuscript_editor
+                     .current_chapter_editor.chapter.id)
+            recent = self._get_recent_insertions(ch_id, limit=3)
+            if recent:
+                context['recent_insertions'] = recent
+
+        # Writer-mode pre-write coverage analysis: tell the agent
+        # which planned events are already covered in the existing
+        # chapter text and which still need writing. Used by the
+        # phased pre-write protocol so the agent only writes the
+        # REMAINING beats — not the whole chapter from scratch when
+        # half of it is already on the page. Also carries the
+        # session's ``ready_to_write`` flag so the agent knows
+        # whether the user has signed off on its proposed plan.
+        if (mode == "writer"
+                and hasattr(self, "manuscript_editor")
+                and self.manuscript_editor.current_chapter_editor):
+            chapter = (self.manuscript_editor
+                       .current_chapter_editor.chapter)
+            context['chapter_coverage'] = (
+                self._compute_chapter_coverage(chapter))
+            ready_set = getattr(self, "_writer_ready_chapters", set())
+            context['writer_ready_to_write'] = (
+                chapter.id in ready_set)
+            # Pre-write Q&A history for this chapter — surfaced so
+            # the model can see what it already asked + what the
+            # user answered. Without this the model often re-asks
+            # the same question on each turn ("which POV?", "which
+            # subplot?"). The cycling detector in the response
+            # handler is the safety net; this block is the primary
+            # prevention.
+            qa_log = self._writer_qa_log.get(chapter.id) or []
+            if qa_log:
+                context['writer_qa_history'] = qa_log[-6:]
+            # Per-beat orchestration state. Initialise lazily on the
+            # first writer-mode call for this chapter. The model gets
+            # a CURRENT BEAT FOCUS block telling it WHICH beat is in
+            # play, the round counter, and that questions should be
+            # scoped to this beat alone.
+            beat_state = self._ensure_beat_state(chapter.id, chapter)
+            # First Full Text turn for this chapter? Compute the
+            # deterministic audit + surface to the user. No LLM call
+            # until they confirm — the engine, not the model, owns
+            # which beat is up next.
+            if (self._pending_output_mode == "full_text"
+                    and beat_state.get("audit_status")
+                        == "pending_request"):
+                self._init_beat_state_with_audit(
+                    chapter.id, chapter, "full_text",
+                    state_dict=self._writer_beat_state,
+                    preserve_remaining_beats=True)
+                self._log_beat_state(
+                    "writer", chapter.id, "state_init_audit")
+                self._surface_engine_audit(
+                    chapter.id, "full_text")
+                self._pending_chat_message = ""
+                return
+            # Apply audit confirmation/correction BEFORE building
+            # the focus block — the user may have just answered the
+            # audit prompt and we need to advance past it.
+            if beat_state.get("audit_status") == "pending_user":
+                self._apply_audit_user_reply(
+                    chapter.id, beat_state, message,
+                    state_dict=self._writer_beat_state)
+                beat_state = self._writer_beat_state.get(
+                    chapter.id) or beat_state
+            if beat_state.get("in_progress"):
+                cur = self._current_beat(chapter.id)
+                if cur is not None:
+                    context['writer_current_beat'] = {
+                        "index": beat_state["current_idx"],
+                        "total": len(beat_state["remaining_beats"]),
+                        "rounds_used": beat_state["rounds_for_beat"],
+                        "max_rounds": beat_state["max_rounds"],
+                        "force_write": beat_state["force_write"],
+                        "title": cur.get("text", ""),
+                        "stage": cur.get("stage", ""),
+                        "description": cur.get("description", ""),
+                        "beat_number": beat_state.get(
+                            "current_beat_number",
+                            beat_state["current_idx"] + 1),
+                        "audit_status": beat_state.get(
+                            "audit_status", "confirmed"),
+                    }
+            # Always render the planned-beats list and audit hint
+            # for writer mode so the model can do the audit on its
+            # first turn.
+            planning = getattr(chapter, "planning", None)
+            events = (
+                list(getattr(planning, "events", []) or [])
+                if planning else [])
+            if events:
+                context['planned_beats'] = [
+                    {
+                        "beat_number": i + 1,
+                        "title": (getattr(ev, "text", "") or "").strip(),
+                        "stage": (getattr(ev, "stage", "") or "").strip(),
+                        "description":
+                            (getattr(ev, "description", "") or "").strip(),
+                    }
+                    for i, ev in enumerate(events)
+                ]
+
+        # Log the beat-state we're about to send to the model so the
+        # console can be followed turn-by-turn. Two log lines because
+        # writer + outline state live on different dicts.
+        if mode == "writer":
+            ch_log_id = (
+                getattr(self.manuscript_editor
+                        .current_chapter_editor.chapter, 'id', None)
+                if (hasattr(self, 'manuscript_editor')
+                    and self.manuscript_editor
+                    and self.manuscript_editor.current_chapter_editor)
+                else None)
+            if ch_log_id:
+                if self._pending_output_mode == "outline":
+                    self._log_beat_state(
+                        "outline", ch_log_id, "send_to_model")
+                else:
+                    self._log_beat_state(
+                        "writer", ch_log_id, "send_to_model")
+
         # Start background worker with mode
         self._chat_worker = ChatWorker(message, context, mode)
         self._chat_worker.finished.connect(self._on_chat_response)
@@ -3309,6 +7577,113 @@ class MainWindow(QMainWindow):
         self._chat_worker.start()
 
     # ── Chapter-focus context helpers ──────────────────────────────────────
+
+    def _compute_chapter_coverage(self, chapter) -> dict:
+        """Return a coverage analysis for the chapter's planned events.
+
+        Used by writer mode's pre-write protocol so the agent knows
+        which planned plot events are already covered in the existing
+        chapter text and which still need to be written. Empty
+        chapter → every planned event is "remaining".
+
+        Heuristic match: an event is considered COVERED when the
+        chapter text contains either:
+          * the event's exact title (case-insensitive), OR
+          * 60% or more of the meaningful (≥5 char) words from the
+            event's title + description combined.
+
+        Returns:
+            ``{"has_content": bool, "word_count": int,
+               "planned_events": [...], "covered_events": [...],
+               "remaining_events": [...], "summary": str}``
+            where each ``*_events`` entry is a dict with ``text``,
+            ``description``, ``stage``.
+        """
+        result = {
+            "has_content": False,
+            "word_count": 0,
+            "planned_events": [],
+            "covered_events": [],
+            "remaining_events": [],
+            "summary": "",
+        }
+        if chapter is None:
+            return result
+        content = (getattr(chapter, "content", "") or "").strip()
+        result["has_content"] = bool(content)
+        result["word_count"] = len(content.split())
+
+        planning = getattr(chapter, "planning", None)
+        events = list(getattr(planning, "events", []) or []) if planning else []
+        if not events:
+            # No planned events at all — fall back to the synopsis as
+            # the single "remaining beat" descriptor so the agent has
+            # SOMETHING to ask questions about.
+            desc = ""
+            if planning:
+                desc = (getattr(planning, "description", "")
+                        or getattr(planning, "outline", "") or "")
+            if desc.strip():
+                result["remaining_events"].append({
+                    "text": "Chapter as a whole",
+                    "description": desc.strip()[:300],
+                    "stage": "",
+                })
+            return result
+
+        content_lower = content.lower()
+        for ev in events:
+            text = getattr(ev, "text", "") or ""
+            desc = getattr(ev, "description", "") or ""
+            stage = getattr(ev, "stage", "") or ""
+            entry = {"text": text, "description": desc, "stage": stage}
+            result["planned_events"].append(entry)
+            if not content:
+                # Empty chapter — everything is remaining
+                result["remaining_events"].append(entry)
+                continue
+            covered = False
+            t = text.strip().lower()
+            if t and t in content_lower:
+                covered = True
+            else:
+                # Word-overlap heuristic: count meaningful words from
+                # title+description that appear in the chapter content
+                import re as _re
+                meaningful = [
+                    w for w in _re.findall(
+                        r"\b[a-zA-Z']{5,}\b",
+                        f"{text} {desc}".lower())
+                    if w not in {"chapter", "scene", "story",
+                                  "beat", "event"}
+                ]
+                if meaningful:
+                    hits = sum(1 for w in meaningful
+                               if w in content_lower)
+                    if hits / len(meaningful) >= 0.6:
+                        covered = True
+            (result["covered_events"] if covered
+             else result["remaining_events"]).append(entry)
+
+        # Build a one-line summary
+        n_total = len(result["planned_events"])
+        n_left = len(result["remaining_events"])
+        n_done = len(result["covered_events"])
+        if not result["has_content"]:
+            result["summary"] = (
+                f"Empty chapter — all {n_total} planned event(s) "
+                "need to be written.")
+        elif n_left == 0:
+            result["summary"] = (
+                f"All {n_total} planned event(s) appear to be "
+                f"covered in the existing {result['word_count']:,} "
+                "words. No remaining beats.")
+        else:
+            result["summary"] = (
+                f"{n_done}/{n_total} planned event(s) covered, "
+                f"{n_left} remaining. Existing chapter has "
+                f"{result['word_count']:,} words.")
+        return result
 
     def _get_chapter_synopsis(self, chapter, chapter_text: str) -> str:
         """Return a short synopsis for a chapter.
@@ -3539,6 +7914,47 @@ class MainWindow(QMainWindow):
         # Basic project info
         context['project_name'] = project.name
         context['project_description'] = project.description or ""
+
+        # Prose profile (target tone / style / voice / genre) +
+        # the resolved GenreProfile bands (sentence-length window,
+        # dialog %, passive cap, etc.) so the chat agent can answer
+        # pacing/genre questions with concrete numbers instead of
+        # vague genre platitudes. Surfaced for ALL modes — the data
+        # is small and orthogonal.
+        pp = getattr(project, "prose_profile", None)
+        if pp:
+            profile_dict = {
+                "tone":  (pp.tone  or "").strip(),
+                "style": (pp.style or "").strip(),
+                "voice": (pp.voice or "").strip(),
+                "genre": (pp.genre or "").strip(),
+                "notes": (pp.notes or "").strip(),
+            }
+            if any(profile_dict.values()):
+                context['prose_profile'] = profile_dict
+            try:
+                from src.ai.chapter_analysis_agent import (
+                    resolve_genre_profile)
+                gp = resolve_genre_profile(pp.genre or "")
+                # Only emit numeric targets — the text fields above
+                # already cover the freeform side.
+                context['genre_profile'] = {
+                    "key":  gp.key,
+                    "name": gp.name,
+                    "avg_sentence_target":
+                        list(gp.avg_sentence_target),
+                    "variety_score_target":
+                        gp.variety_score_target,
+                    "dialog_pct_target":
+                        list(gp.dialog_pct_target),
+                    "passive_pct_max":  gp.passive_pct_max,
+                    "long_sentence_pct_max":
+                        gp.long_sentence_pct_max,
+                    "adverb_pct_max":   gp.adverb_pct_max,
+                    "notes":            gp.notes,
+                }
+            except Exception as e:
+                print(f"[chat-context] genre profile resolve failed: {e}")
 
         # Include existing element names so the AI can reference them
         # and avoid creating duplicates
@@ -4451,7 +8867,30 @@ class MainWindow(QMainWindow):
         if getattr(self, '_pending_mode', '') == 'writer' and hasattr(self, '_pending_insert_mode'):
             self._handle_writer_response(response)
         else:
-            # First: detect long-form writing tool tags (chapter_focus mode).
+            # First: detect <edit_last_insertion> tags. These take
+            # priority over write tool tags because the user is
+            # asking to revise existing prose, not start something new.
+            edit_calls = extract_edit_calls(response)
+            if edit_calls:
+                cleaned = strip_edit_calls(response)
+                self.chat_widget.add_message(
+                    "Assistant",
+                    cleaned or "(editing your last insertion…)",
+                    system_prompt=system_prompt,
+                    original_response=response,
+                )
+                pending_msg = getattr(self, '_pending_chat_message', '')
+                if pending_msg:
+                    self._chat_history.append(
+                        {"role": "user", "content": pending_msg})
+                    self._chat_history.append(
+                        {"role": "assistant", "content": cleaned})
+                    self._compact_chat_history()
+                self._pending_chat_message = ""
+                self._dispatch_edit_insertion(edit_calls[0])
+                return
+
+            # Then: detect long-form writing tool tags (chapter_focus mode).
             # When the model emitted one, strip it from the visible message
             # and dispatch to the long-form writer engine.
             write_calls = extract_write_tool_calls(response)
@@ -4548,6 +8987,338 @@ class MainWindow(QMainWindow):
         prose = strip_meta_tokens(prose)
         return prose, summary
 
+    # ── Writer-insertion registry ────────────────────────────────────
+
+    def _record_writer_insertion(
+        self,
+        chapter_id: str,
+        start: int,
+        end: int,
+        prose: str,
+        prompt: str,
+        mode: str,
+        summary: str = "",
+    ):
+        """Append a record of an AI insertion to the per-chapter registry.
+
+        The registry is the source of truth for "edit that scene you
+        just wrote" follow-ups. Each record carries the byte range +
+        the prose + the user prompt + a brief summary so the chat
+        layer can surface recent insertions and the edit tool can
+        target the exact text with original context.
+        """
+        if not chapter_id or not (prose or "").strip():
+            return
+        from datetime import datetime
+        bucket = self._writer_insertions.setdefault(chapter_id, [])
+        bucket.append({
+            "id": datetime.now().strftime("%H%M%S%f")[:-3],
+            "start": int(start),
+            "end": int(end),
+            "prose": prose,
+            "prompt": prompt or "",
+            "mode": mode,
+            "summary": summary or "",
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+        })
+        # Cap the bucket so a long session doesn't accumulate every
+        # insertion. The most-recent N are what the user can refer
+        # back to in conversation; older insertions live only in the
+        # editor itself.
+        if len(bucket) > self._MAX_INSERTIONS_PER_CHAPTER:
+            del bucket[:len(bucket) - self._MAX_INSERTIONS_PER_CHAPTER]
+
+    def _shift_insertions(
+        self,
+        chapter_id: str,
+        from_pos: int,
+        delta: int,
+    ):
+        """Adjust insertion ranges after the editor's text shifts.
+
+        Called when an insertion is replaced with new prose of a
+        different length, OR when the user manually edits text before
+        an existing recorded insertion. ``delta`` is the signed
+        change in length (new_len - old_len).
+        """
+        if not chapter_id or not delta:
+            return
+        for rec in self._writer_insertions.get(chapter_id, []):
+            if rec["start"] >= from_pos:
+                rec["start"] += delta
+                rec["end"] += delta
+
+    def _get_recent_insertions(
+        self,
+        chapter_id: str,
+        limit: int = 3,
+    ) -> list:
+        """Return the most-recent ``limit`` insertions for a chapter."""
+        return list(
+            (self._writer_insertions.get(chapter_id) or [])[-limit:])
+
+    # ── Writer Q&A registry (Phase-1 cycle prevention) ───────────────
+
+    @staticmethod
+    def _extract_questions_from_response(text: str) -> List[str]:
+        """Pull question-shaped lines out of a model response.
+
+        Heuristic: a question is a line that ends with '?'. Lines are
+        normalised (lower-cased, punctuation collapsed) by callers
+        when matching for duplicates. Returns the raw question
+        strings in the order they appeared.
+        """
+        if not text:
+            return []
+        import re as _re
+        # Split into lines/sentences and keep ones ending with '?'.
+        # Models often put numbered list markers like "1. ..." or
+        # "- ..." in front; strip those when extracting.
+        candidates = _re.split(r"[\n]+|(?<=[\?\!\.])\s+", text)
+        out = []
+        for c in candidates:
+            s = c.strip()
+            if not s or not s.endswith("?"):
+                continue
+            # Strip leading list-marker noise
+            s = _re.sub(r"^\s*(?:[-•*]|\d+[.)])\s*", "", s).strip()
+            if len(s) < 6:
+                continue
+            out.append(s)
+        return out
+
+    # Stop-words filtered out during question normalisation so
+    # semantically identical phrasings ("X be Y" vs "X as Y") score
+    # as duplicates instead of slipping past the cycling detector.
+    _QUESTION_STOPWORDS = frozenset({
+        "a", "an", "the", "and", "or", "but", "if", "then",
+        "of", "to", "in", "on", "at", "for", "with", "by", "from",
+        "as", "like", "into", "onto", "over", "under",
+        "be", "is", "am", "are", "was", "were", "been", "being",
+        "have", "has", "had", "do", "does", "did", "done",
+        "will", "would", "shall", "should", "may", "might",
+        "can", "could", "must", "ought",
+        "i", "we", "you", "he", "she", "they", "it", "this",
+        "that", "these", "those", "my", "your", "his", "her",
+        "our", "their", "its",
+        "not", "no", "yes",
+    })
+
+    @classmethod
+    def _normalise_question(cls, q: str) -> str:
+        """Normalise a question for duplicate-matching.
+
+        Lower-cases, drops punctuation, drops question-stems
+        (Would you like / Should the / etc.), AND drops stop-words.
+        Two semantically identical asks normalise to the same
+        token set even when the model rephrases — the cycling
+        detector relies on this for accurate duplicate counts.
+        """
+        import re as _re
+        s = q.lower().strip()
+        # Drop common question-stems
+        s = _re.sub(
+            r"^(should|could|would|will|do|does|did|is|are|was|were|"
+            r"can|may)\s+(you|i|we|the|this|that|it|she|he|they)\s+",
+            "", s)
+        s = _re.sub(
+            r"^(would you like|do you want|would you prefer|"
+            r"how would you|how should|what about|what's your)\s+",
+            "", s)
+        # Collapse whitespace + drop punctuation
+        s = _re.sub(r"[^\w\s]", "", s)
+        s = _re.sub(r"\s+", " ", s).strip()
+        # Drop stop-words for semantic comparison
+        words = [w for w in s.split() if w not in cls._QUESTION_STOPWORDS]
+        return " ".join(words)
+
+    def _record_writer_qa(
+        self,
+        chapter_id: str,
+        user_message: str,
+        assistant_response: str,
+    ):
+        """Append a Q&A turn to the chapter's writer-mode log.
+
+        Each entry is ``{"user": ..., "assistant": ...,
+        "questions": [normalised question strings]}``. Used by the
+        cycling detector and the PRIOR Q&A context block.
+        """
+        if not chapter_id:
+            return
+        questions_raw = self._extract_questions_from_response(
+            assistant_response or "")
+        questions_norm = [self._normalise_question(q)
+                          for q in questions_raw]
+        bucket = self._writer_qa_log.setdefault(chapter_id, [])
+        bucket.append({
+            "user": (user_message or "").strip(),
+            "assistant": (assistant_response or "").strip(),
+            "questions": questions_raw,
+            "questions_norm": questions_norm,
+        })
+        # Cap the log at 10 turns so a long Phase-1 doesn't grow
+        # unbounded — the PRIOR Q&A block surfaces only the last few
+        # turns anyway.
+        if len(bucket) > 10:
+            del bucket[:len(bucket) - 10]
+
+    def _detect_question_cycling(
+        self,
+        chapter_id: str,
+        new_response: str,
+        threshold: float = 0.6,
+    ) -> bool:
+        """True when ≥``threshold`` of the new response's questions
+        match questions the model already asked in this chapter's
+        Phase-1 log. Signal that the model is cycling and we should
+        force the ready state + proceed to writing.
+
+        Default 0.6 — when 2 of 3 (or 3 of 5) questions repeat, the
+        model is functionally stuck. Higher thresholds let the cycle
+        run another round; lower thresholds risk false positives
+        when the model genuinely has only one new question among
+        several follow-ups.
+        """
+        bucket = self._writer_qa_log.get(chapter_id) or []
+        if not bucket:
+            return False
+        # Collect all prior normalised questions
+        prior_norm = set()
+        for entry in bucket:
+            prior_norm.update(entry.get("questions_norm") or [])
+        if not prior_norm:
+            return False
+        new_questions = self._extract_questions_from_response(
+            new_response or "")
+        if not new_questions:
+            return False
+        new_norm = [self._normalise_question(q) for q in new_questions]
+        # Count how many of the new questions appear in the prior set.
+        # Simple substring match across normalised text catches
+        # near-duplicates (e.g. "should marcus break first" vs
+        # "marcus break first or accept first").
+        repeats = 0
+        for n in new_norm:
+            if not n:
+                continue
+            for p in prior_norm:
+                if (n in p or p in n
+                        or self._jaccard_words(n, p) >= 0.6):
+                    repeats += 1
+                    break
+        ratio = repeats / len(new_norm)
+        return ratio >= threshold
+
+    @staticmethod
+    def _jaccard_words(a: str, b: str) -> float:
+        """Word-level Jaccard similarity between two normalised strings."""
+        sa = set(a.split())
+        sb = set(b.split())
+        if not sa or not sb:
+            return 0.0
+        inter = len(sa & sb)
+        union = len(sa | sb)
+        return inter / union if union else 0.0
+
+    # ── Per-beat orchestration helpers ────────────────────────────
+
+    def _ensure_beat_state(self, chapter_id: str, chapter) -> dict:
+        """Initialise the per-beat state for a chapter if absent.
+
+        State is computed lazily from the coverage analysis. When
+        the chapter has no remaining beats, returns a state with
+        ``in_progress=False`` so the response handler skips the
+        per-beat orchestration and behaves as a normal writer call.
+
+        Audit fields seed at ``pending_request`` so the model's
+        first turn is a phase=audit response — the engine surfaces
+        that to the user for confirmation before per-beat
+        orchestration starts at the first PENDING beat (not Beat 1).
+        """
+        existing = self._writer_beat_state.get(chapter_id)
+        if existing is not None:
+            return existing
+        coverage = self._compute_chapter_coverage(chapter)
+        remaining = list(coverage.get("remaining_events") or [])
+        # current_idx = index INTO the remaining_beats list. The
+        # ENGINE owns this number; the model can't override it via
+        # its JSON beat_number field.
+        state = {
+            "remaining_beats": remaining,
+            "current_idx": 0,
+            "current_beat_number": 1,  # 1-based; updated post-audit
+            "rounds_for_beat": 0,
+            "max_rounds": self._WRITER_MAX_ROUNDS_PER_BEAT,
+            "force_write": False,
+            "in_progress": bool(remaining),
+            "completed": [],
+            "audit_status": "pending_request",
+            "audit": None,
+        }
+        self._writer_beat_state[chapter_id] = state
+        return state
+
+    def _current_beat(self, chapter_id: str) -> Optional[dict]:
+        """Return the current beat dict for a chapter, or None."""
+        state = self._writer_beat_state.get(chapter_id)
+        if not state or not state.get("in_progress"):
+            return None
+        idx = state["current_idx"]
+        beats = state.get("remaining_beats") or []
+        if 0 <= idx < len(beats):
+            return beats[idx]
+        return None
+
+    def _advance_beat(self, chapter_id: str) -> Optional[dict]:
+        """Move to the next beat. Returns the new current beat or None.
+
+        When the queue is exhausted the state's ``in_progress`` flag
+        flips to False so subsequent writer calls fall back to the
+        unscoped behaviour (or the user can re-invoke for a fresh
+        session — coverage will be recomputed).
+        """
+        state = self._writer_beat_state.get(chapter_id)
+        if not state:
+            return None
+        state["current_idx"] += 1
+        state["rounds_for_beat"] = 0
+        state["force_write"] = False
+        # Clear ready flag so the next beat starts fresh in Phase 1
+        # (each beat gets its own Q&A round-set).
+        self._writer_ready_chapters.discard(chapter_id)
+        beats = state.get("remaining_beats") or []
+        if state["current_idx"] >= len(beats):
+            state["in_progress"] = False
+            return None
+        return beats[state["current_idx"]]
+
+    def _reset_beat_state(self, chapter_id: str):
+        """Wipe per-beat state for a chapter (e.g. user starts over)."""
+        self._writer_beat_state.pop(chapter_id, None)
+        self._writer_ready_chapters.discard(chapter_id)
+
+    @staticmethod
+    def _looks_like_proceed_signal(text: str) -> bool:
+        """True when the user's message reads like 'proceed / go ahead'."""
+        if not text:
+            return False
+        s = text.strip().lower()
+        if len(s) > 60:
+            return False  # too long to be just a signal
+        triggers = (
+            "proceed", "go ahead", "looks good", "ok proceed",
+            "ok go", "go for it", "ship it", "write it",
+            "do it", "let's go", "lets go", "sounds good",
+            "approved", "looks fine", "you have enough",
+            "you have what you need", "yes proceed", "fine, proceed",
+            "no further questions", "no more questions", "good to go",
+        )
+        for t in triggers:
+            if t in s:
+                return True
+        return False
+
     def _handle_writer_response(self, response: str):
         """Handle AI response in writer mode - insert into editor.
 
@@ -4564,12 +9335,47 @@ class MainWindow(QMainWindow):
             return
 
         editor = self.manuscript_editor.current_chapter_editor.editor
+        chapter_id = self.manuscript_editor.current_chapter_editor.chapter.id
+        # Run the project-element creation parser FIRST so the writer
+        # can emit <create_character>/<create_place>/<create_faction>/
+        # etc. mid-prose to add new project elements as it discovers
+        # the need for them. The parser strips the create blocks from
+        # the response and returns the cleaned text we use for the
+        # rest of the writer flow (Phase-1 routing + prose insertion).
+        # Surface created element names in chat + refresh the relevant
+        # UI tabs so the user sees the additions immediately.
+        try:
+            cleaned_for_creates, created_elements = (
+                self._parse_and_create_elements(response))
+            response = cleaned_for_creates
+            if created_elements:
+                names = ", ".join(
+                    f"{kind}: {name}"
+                    for kind, name in created_elements)
+                self.chat_widget.add_message(
+                    "Assistant",
+                    f"(Created from writer mode → {names})")
+                self._refresh_project_widgets()
+        except Exception as e:
+            print(f"[writer] create-parser failed: {e}")
+        # Detect the agent's <context_ready/> handshake. When seen,
+        # mark this chapter as past the pre-write phase so subsequent
+        # turns can write straight through without re-running the
+        # coverage / Q&A protocol. The tag is stripped from the
+        # response before it reaches the prose extractor.
+        import re as _re
+        ready_re = _re.compile(
+            r"<context_ready\s*/?>", _re.IGNORECASE)
+        if ready_re.search(response or ""):
+            self._writer_ready_chapters.add(chapter_id)
+            response = ready_re.sub("", response)
         # Degeneration guard — when the raw model output is mostly
         # meta-token spam (Harmony / ChatML / etc. leakage from a
         # mis-configured local model), surface a clear error in the
         # chat instead of inserting whatever residual the sanitiser
         # leaves into the manuscript.
-        from src.ai.output_sanitizer import is_degenerate_output
+        from src.ai.output_sanitizer import (
+            is_degenerate_output, strip_meta_tokens)
         if is_degenerate_output(response):
             self.chat_widget.add_message(
                 "Assistant",
@@ -4581,14 +9387,390 @@ class MainWindow(QMainWindow):
                 "disabling the agentic-lookup loop, or shortening the "
                 "prompt. Nothing was inserted into the chapter.")
             return
+
+        # PRE-WRITE PHASE GATE: if the agent has NOT (in this turn or
+        # earlier ones) signalled <context_ready/> for this chapter,
+        # treat the response as Phase-1 output (coverage + lookups +
+        # questions) and surface it ENTIRELY in the chat — no editor
+        # insertion. The user answers in chat; the next turn either
+        # asks more or emits <context_ready/> and writes.
+        is_ready = chapter_id in self._writer_ready_chapters
+        # Determine output mode now so the per-beat-state selector
+        # below picks the right state dict (writer vs outline).
+        output_mode = getattr(
+            self, "_pending_output_mode", "full_text") or "full_text"
+
+        # JSON-FIRST ROUTING. Both Outline and Full Text writer
+        # replies are required to be a single structured JSON
+        # object with an explicit ``phase`` field. The phase is
+        # authoritative — ``questions`` ALWAYS lands in chat (even
+        # if the ready flag is set), the deliverable phase
+        # (``beat`` for outline, ``prose`` for full text) ALWAYS
+        # lands in the panel/editor (even if the ready flag is
+        # unset). Falls through to the legacy markdown path when
+        # no JSON is present (kept for older models /
+        # backward-compat).
+        if output_mode == "outline":
+            parsed = self._parse_outline_json_response(response)
+            if parsed is not None:
+                phase = parsed.get("phase")
+                if phase == "start_suggestion":
+                    self._handle_outline_json_start_suggestion(
+                        chapter_id, parsed)
+                    return
+                if phase == "audit":
+                    self._handle_outline_json_audit(
+                        chapter_id, parsed)
+                    return
+                if phase == "questions":
+                    self._handle_outline_json_questions(
+                        chapter_id, parsed)
+                    return
+                if phase == "beat":
+                    self._handle_outline_json_beat_staging(
+                        chapter_id, parsed)
+                    return
+        else:
+            # Full Text writer mode: try JSON first, fall through
+            # to the legacy markdown writer flow when not present.
+            parsed = self._parse_writer_json_response(response)
+            if parsed is not None:
+                phase = parsed.get("phase")
+                if phase == "audit":
+                    self._handle_writer_json_audit(
+                        chapter_id, parsed)
+                    return
+                if phase == "questions":
+                    self._handle_writer_json_questions(
+                        chapter_id, parsed)
+                    return
+                if phase == "prose":
+                    self._handle_writer_json_prose(
+                        chapter_id, parsed)
+                    return
+        # Pull per-beat state. In OUTLINE mode the per-beat state
+        # lives on _outline_beat_state (one beat = one outline
+        # block); in FULL TEXT mode it lives on _writer_beat_state
+        # (one beat = one chunk of prose). Either way the Phase-1
+        # round counter + cap behave the same.
+        if output_mode == "outline":
+            beat_state = (
+                self._outline_beat_state.get(chapter_id) or {})
+        else:
+            beat_state = (
+                self._writer_beat_state.get(chapter_id) or {})
+        per_beat_active = bool(beat_state.get("in_progress"))
+        if not is_ready:
+            display = strip_meta_tokens(response).strip()
+            pending_msg = getattr(self, "_pending_chat_message", "") or ""
+            # Round-cap check first — if we've already burned 4 rounds
+            # on this beat, force the write next turn instead of
+            # asking again.
+            if per_beat_active:
+                beat_state["rounds_for_beat"] += 1
+                rounds = beat_state["rounds_for_beat"]
+                cap = beat_state["max_rounds"]
+                cur_beat = self._current_beat(chapter_id) or {}
+                cur_title = cur_beat.get("text", "(unnamed beat)")
+                if rounds >= cap:
+                    # Hit the cap. Auto-flip ready so the next user
+                    # message triggers the write for this beat.
+                    self._writer_ready_chapters.add(chapter_id)
+                    beat_state["force_write"] = True
+                    self.chat_widget.add_message(
+                        "Assistant",
+                        f"Round {rounds}/{cap} reached for beat "
+                        f"\"{cur_title}\". Send your next message "
+                        f"and I'll write this beat with the "
+                        f"context we already have.")
+                    self._record_writer_qa(
+                        chapter_id, pending_msg, display)
+                    if pending_msg:
+                        self._chat_history.append(
+                            {"role": "user", "content": pending_msg})
+                        self._chat_history.append(
+                            {"role": "assistant", "content":
+                                f"(Beat round cap — proceeding to "
+                                f"write \"{cur_title}\".)"})
+                        self._compact_chat_history()
+                    self._pending_chat_message = ""
+                    return
+            # Cycling detector — same as before but also flips
+            # force_write so the next call writes the current beat.
+            if display and self._detect_question_cycling(
+                    chapter_id, display):
+                self._writer_ready_chapters.add(chapter_id)
+                if per_beat_active:
+                    beat_state["force_write"] = True
+                    cur_beat = self._current_beat(chapter_id) or {}
+                    cur_title = cur_beat.get("text", "this beat")
+                    cycle_msg = (
+                        f"Model is cycling on the same questions for "
+                        f"\"{cur_title}\" — proceeding to write the "
+                        f"beat. Send your next message and I'll draft "
+                        f"it with the context we have.")
+                else:
+                    cycle_msg = (
+                        "Model is cycling on the same questions — "
+                        "auto-marking this chapter as ready. Send your "
+                        "next message to write straight through. (You "
+                        "can refine after with `<edit_last_insertion>` "
+                        "follow-ups.)")
+                self.chat_widget.add_message("Assistant", cycle_msg)
+                self._record_writer_qa(
+                    chapter_id, pending_msg, display)
+                if pending_msg:
+                    self._chat_history.append(
+                        {"role": "user", "content": pending_msg})
+                    self._chat_history.append(
+                        {"role": "assistant", "content":
+                            "(Cycled questions — auto-proceeding.)"})
+                    self._compact_chat_history()
+                self._pending_chat_message = ""
+                return
+            if display:
+                if per_beat_active:
+                    cur_beat = self._current_beat(chapter_id) or {}
+                    cur_title = cur_beat.get("text", "current beat")
+                    rounds = beat_state["rounds_for_beat"]
+                    cap = beat_state["max_rounds"]
+                    footer = (
+                        f"\n\n*(Beat \"{cur_title}\" — round "
+                        f"{rounds}/{cap}. Answer to refine, or say "
+                        f"`proceed` to write this beat now.)*")
+                else:
+                    footer = (
+                        "\n\n*(Pre-write phase — answer the questions "
+                        "above and I'll proceed to write the remaining "
+                        "beats. Say `proceed` or `looks good` to skip "
+                        "further questions.)*")
+                self.chat_widget.add_message(
+                    "Assistant", display + footer)
+            else:
+                self.chat_widget.add_message(
+                    "Assistant",
+                    "(Pre-write phase — model returned no questions. "
+                    "Reply `proceed` to write straight through.)")
+            # Record this Q&A turn so future turns can see what was
+            # already asked + so the cycling detector has a baseline.
+            self._record_writer_qa(chapter_id, pending_msg, display)
+            # Append to chat history so the model's next call has
+            # the full multi-turn context (the original bug was
+            # writer-mode history was forced to []).
+            if pending_msg:
+                self._chat_history.append(
+                    {"role": "user", "content": pending_msg})
+                self._chat_history.append(
+                    {"role": "assistant", "content": display})
+                self._compact_chat_history()
+            self._pending_chat_message = ""
+            return
+
         prose, summary = self._split_writer_response(response)
         word_count = len(prose.split())
 
+        # OUTLINE OUTPUT MODE — Phase 2 deliverable is a structured
+        # outline that lands in the AI Assistant's outline panel,
+        # NOT in the chapter editor. The panel writes back to
+        # chapter.planning.outline via its outline_changed signal,
+        # so the outline still persists with the project. (output_mode
+        # was determined earlier so the Phase-1 path could pick the
+        # right per-beat state dict.)
+        if output_mode == "outline":
+            panel = getattr(self.chat_widget, "outline_panel", None)
+            outline_action = getattr(
+                self, "_pending_outline_action", "populate")
+            if panel is None:
+                self.chat_widget.add_message(
+                    "Assistant",
+                    "Outline panel is unavailable — outline output "
+                    "could not be routed.")
+                self._pending_chat_message = ""
+                return
+
+            import re as _re
+            # Detect <outline_complete/> sentinel anywhere in the
+            # response; strip it before further processing.
+            complete_re = _re.compile(
+                r"<outline_complete\s*/?>", _re.IGNORECASE)
+            outline_complete_signaled = bool(
+                complete_re.search(prose or ""))
+            outline_text = complete_re.sub("", prose or "").strip()
+
+            ob_state = self._outline_beat_state.get(chapter_id) or {}
+
+            if not outline_text and not outline_complete_signaled:
+                self.chat_widget.add_message(
+                    "Assistant",
+                    "(Model returned no outline content — try again "
+                    "or rephrase the prompt.)")
+                self._pending_chat_message = ""
+                return
+
+            # NORMALIZE the response so it always lands in the panel
+            # as ONE structured beat — even when the model deviates
+            # from the strict ``## [ ] Beat N: …`` template. Three
+            # tiers of recovery so the user never sees a blunt
+            # rejection while the panel sits empty:
+            #
+            #   T1 STRICT  — already in expected form. Use as-is.
+            #   T2 NORMALIZE — model used ``###``, ``**Beat 1**``,
+            #                  ``# Beat 1`` etc. Rewrite the first
+            #                  heading-like line into ``## [ ] …``
+            #                  and treat the rest as the body.
+            #   T3 WRAP     — no heading-like line at all (pure
+            #                  prose, bullets, or chatty preamble).
+            #                  Wrap the whole response as a
+            #                  synthetic ``## [ ] Beat <N>: …`` so
+            #                  it lands in the panel; the user can
+            #                  edit the heading or retry.
+            outline_text, normalize_note = self._normalize_outline_response(
+                outline_text,
+                next_beat_number=(
+                    ob_state.get("beats_done", 0) + 1
+                    if ob_state else 1))
+            if normalize_note:
+                self.chat_widget.add_message(
+                    "Assistant", normalize_note)
+
+            # SAFETY CAP: even after normalization, a stubborn model
+            # may still pack two beats into one reply. Truncate to
+            # the first beat so each turn only adds one card.
+            heading_re = _re.compile(
+                r"^##\s+(?:\[[ xX]\]\s+)?\S",
+                _re.MULTILINE)
+            if outline_text:
+                headings = list(heading_re.finditer(outline_text))
+                if len(headings) > 1:
+                    second_start = headings[1].start()
+                    outline_text = outline_text[:second_start].rstrip()
+                    self.chat_widget.add_message(
+                        "Assistant",
+                        f"(Model emitted {len(headings)} beats in "
+                        f"one reply — keeping only the first; the "
+                        f"others will be regenerated on subsequent "
+                        f"turns.)")
+
+            # Make sure the panel is bound to THIS chapter before
+            # we write — covers the edge case where the user
+            # switched chapters mid-roundtrip.
+            if panel.current_chapter_id() != chapter_id:
+                ce = self.manuscript_editor.current_chapter_editor
+                title = getattr(ce.chapter, "title", "") or ""
+                panel.load_chapter(
+                    chapter_id, title,
+                    panel.get_outline_text())
+
+            # Decide whether this Phase-2 reply gets APPENDED (per-beat
+            # populate) or REPLACES the panel (legacy whole-outline /
+            # explicit replace). Per-beat append preserves prior beats
+            # and lets the model produce one beat at a time.
+            beats_added = 0
+            if outline_text:
+                if outline_action == "replace":
+                    panel.set_outline_text(outline_text)
+                    beats_added = len(
+                        _collect_beat_titles(outline_text))
+                else:
+                    # populate (per-beat) and edit both append. Edit
+                    # mode is documented to emit one refined beat at
+                    # a time.
+                    panel.append_outline_text(outline_text)
+                    beats_added = len(
+                        _collect_beat_titles(outline_text))
+
+            # Switch the sidebar to the Outline tab so the user sees
+            # the new content right away.
+            tabs = getattr(self, "sidebar_tabs", None)
+            if tabs is not None:
+                idx = tabs.indexOf(panel)
+                if idx >= 0:
+                    tabs.setCurrentIndex(idx)
+
+            # Update per-chapter outline state. Reset the round
+            # counter for the NEXT beat, bump beats_done, and mark
+            # complete when the sentinel fired.
+            if ob_state:
+                ob_state["beats_done"] = (
+                    ob_state.get("beats_done", 0) + beats_added)
+                ob_state["rounds_for_beat"] = 0
+                if outline_complete_signaled:
+                    ob_state["complete"] = True
+                if (ob_state["beats_done"]
+                        >= self._OUTLINE_MAX_BEATS):
+                    ob_state["complete"] = True
+                self._outline_beat_state[chapter_id] = ob_state
+
+            # Compose the chat confirmation message.
+            verb = ("Refined" if outline_action == "edit"
+                    else "Replaced" if outline_action == "replace"
+                    else "Beat added to")
+            beats_done_now = (ob_state.get("beats_done", beats_added)
+                              if ob_state else beats_added)
+            if outline_complete_signaled:
+                confirm = (
+                    f"Outline complete — {beats_done_now} beats in "
+                    f"the Outline tab. Switch the AI Assistant back "
+                    f"to Full Text and ask me to write the chapter; "
+                    f"I'll do it beat by beat using this outline.")
+            elif outline_action == "populate":
+                confirm = (
+                    f"Beat {beats_done_now} added to the Outline tab. "
+                    f"Send a follow-up to refine, or send the next "
+                    f"message to continue with Beat "
+                    f"{beats_done_now + 1}.")
+            else:
+                confirm = (
+                    f"Done — {verb.lower()} the chapter outline in "
+                    f"the Outline tab "
+                    f"({len(outline_text.split()):,} words).")
+            if summary:
+                confirm += "\n\n" + summary
+            self.chat_widget.add_message("Assistant", confirm)
+
+            # Chat-history bookkeeping. Don't dump the whole beat
+            # body into history — keep a short marker so the model's
+            # next call sees a tight summary instead of every prior
+            # beat's full structure.
+            pending_msg = getattr(
+                self, "_pending_chat_message", "") or ""
+            if pending_msg:
+                marker = (
+                    "(Outline complete.)"
+                    if outline_complete_signaled
+                    else f"(Beat {beats_done_now} added to outline.)")
+                self._chat_history.append(
+                    {"role": "user", "content": pending_msg})
+                self._chat_history.append(
+                    {"role": "assistant", "content": marker})
+                self._compact_chat_history()
+
+            # Reset for next turn. Outline-action stays as-is until
+            # the user starts a new run; populate is the default and
+            # also what the per-beat loop uses.
+            self._pending_outline_action = (
+                "populate" if outline_action != "edit" else "edit")
+            self._pending_chat_message = ""
+            # Reset the ready flag so the NEXT beat starts in
+            # Phase 1 again — each beat gets its own optional
+            # round of clarifying questions.
+            self._writer_ready_chapters.discard(chapter_id)
+            return
+
         try:
+            # Track the editor's pre-insert state so we can record
+            # the exact byte range the new prose occupies AFTER it
+            # lands. Capturing both the start position + the cursor
+            # position immediately after the insert gives us a stable
+            # range for the registry.
+            pre_cursor = editor.textCursor()
+            ins_start = pre_cursor.position()
             if insert_mode == 'replace_selection':
                 # Replace selected text
                 cursor = editor.textCursor()
                 if cursor.hasSelection():
+                    ins_start = min(cursor.selectionStart(),
+                                     cursor.selectionEnd())
                     cursor.insertText(prose)
                     action = "replaced selection"
                 else:
@@ -4599,6 +9781,7 @@ class MainWindow(QMainWindow):
             elif insert_mode == 'insert_at_cursor':
                 # Insert at current cursor position
                 cursor = editor.textCursor()
+                ins_start = cursor.position()
                 cursor.insertText(prose)
                 action = "inserted at cursor"
 
@@ -4610,19 +9793,44 @@ class MainWindow(QMainWindow):
                 current_text = editor.toPlainText()
                 if current_text and not current_text.endswith('\n\n'):
                     cursor.insertText('\n\n')
+                ins_start = cursor.position()
                 cursor.insertText(prose)
                 action = "appended to chapter"
 
             elif insert_mode == 'replace_chapter':
                 # Replace entire chapter content
                 editor.setPlainText(prose)
+                ins_start = 0
+                # Land cursor at end so the registry-end calc below
+                # uses the right value.
+                cursor = editor.textCursor()
+                cursor.movePosition(cursor.MoveOperation.End)
+                editor.setTextCursor(cursor)
                 action = "replaced chapter"
 
             else:
                 # Fallback
                 cursor = editor.textCursor()
+                ins_start = cursor.position()
                 cursor.insertText(prose)
                 action = "inserted"
+
+            # Record the insertion in the registry. ``end`` is the
+            # cursor position AFTER the insert (which sits at the end
+            # of the freshly-inserted text). This range lets the
+            # ``<edit_last_insertion>`` tool target the prose later.
+            ins_end = editor.textCursor().position()
+            output_mode = getattr(
+                self, "_pending_output_mode", "full_text") or "full_text"
+            self._record_writer_insertion(
+                chapter_id=chapter_id,
+                start=ins_start,
+                end=ins_end,
+                prose=prose,
+                prompt=getattr(self, "_pending_chat_message", "") or "",
+                mode=f"writer:{output_mode}:{insert_mode}",
+                summary=summary,
+            )
 
             # Show confirmation in chat. When the model emitted a
             # summary block, surface it so the author can audit plot
@@ -4635,13 +9843,291 @@ class MainWindow(QMainWindow):
                     "\n\n(No <writing_summary> block in the response — "
                     "ask the model to retry if you want a coverage "
                     "checklist.)")
-            self.chat_widget.add_message("Assistant", confirm_msg)
+            # Per-beat advance: when in per-beat mode, this Phase-2
+            # write covers the CURRENT beat. Record it as completed
+            # and move on. Append a hint to the user about what
+            # comes next.
+            beat_advance_msg = ""
+            if per_beat_active:
+                cur_beat = self._current_beat(chapter_id) or {}
+                cur_title = cur_beat.get("text", "current beat")
+                # Mark this beat completed in the state
+                beat_state.setdefault("completed", []).append({
+                    "title": cur_title,
+                    "prose": prose,
+                    "start": ins_start,
+                    "end": ins_end,
+                })
+                next_beat = self._advance_beat(chapter_id)
+                if next_beat is not None:
+                    beat_advance_msg = (
+                        f"\n\n*(Beat \"{cur_title}\" written. Now "
+                        f"on beat \"{next_beat.get('text', 'next')}\""
+                        + (f" [{next_beat.get('stage', '')}]"
+                           if next_beat.get('stage') else "")
+                        + " — send your next message and I'll start "
+                          "asking questions for it.)*")
+                else:
+                    beat_advance_msg = (
+                        "\n\n*(All planned beats written. Chapter is "
+                        "complete from the writer's perspective — "
+                        "send a fresh writer request to add more, or "
+                        "edit any beat with `<edit_last_insertion>`.)*")
+                # Reset chapter Q&A log when advancing — prior Q&A
+                # was about the just-completed beat and shouldn't
+                # contaminate the next beat's questions.
+                self._writer_qa_log.pop(chapter_id, None)
+
+            self.chat_widget.add_message(
+                "Assistant", confirm_msg + beat_advance_msg)
+
+            # Append to chat history so subsequent writer turns (e.g.
+            # follow-up edits, "now write the next bit") have the
+            # multi-turn context they need.
+            pending_msg = getattr(self, "_pending_chat_message", "") or ""
+            if pending_msg:
+                self._chat_history.append(
+                    {"role": "user", "content": pending_msg})
+                self._chat_history.append(
+                    {"role": "assistant", "content":
+                        confirm_msg + beat_advance_msg})
+                self._compact_chat_history()
+            self._pending_chat_message = ""
 
             # Show status bar notification
             self.statusBar().showMessage(f"Writer: {word_count} words {action}", 5000)
 
         except Exception as e:
             self.chat_widget.add_message("Assistant", f"Error inserting text: {str(e)}")
+
+    # ── Edit-last-insertion dispatch ──────────────────────────────────
+
+    EDIT_INSERTION_SYSTEM_PROMPT = (
+        "You are a fiction editor revising a passage the writer "
+        "previously inserted into a chapter. Apply the user's edit "
+        "instructions exactly. Match the chapter's existing voice, "
+        "tone, POV, and sentence cadence — the surrounding chapter "
+        "text is provided so you can stay seamless. Output ONLY the "
+        "revised passage as a drop-in replacement for the original "
+        "(no labels, no preamble, no metadata, no XML, no commentary)."
+    )
+
+    def _dispatch_edit_insertion(self, call: dict):
+        """Run an edit pass against a recorded AI insertion.
+
+        ``call['params']`` carries ``index`` (which insertion) +
+        ``instructions`` (what to change). The engine fetches the
+        original prose by index, builds an edit prompt with the
+        surrounding chapter context, runs the LLM, and replaces the
+        range in the editor in-place. The registry record is updated
+        to point at the new range so a follow-up edit chains
+        correctly.
+        """
+        params = (call or {}).get("params") or {}
+        instructions = (params.get("instructions") or "").strip()
+        if not instructions:
+            self.chat_widget.add_message(
+                "Assistant",
+                "(edit_last_insertion: missing 'instructions'; "
+                "nothing to do).")
+            return
+        if not (hasattr(self, "manuscript_editor")
+                and self.manuscript_editor.current_chapter_editor):
+            self.chat_widget.add_message(
+                "Assistant",
+                "No chapter is open — can't edit a previous insertion.")
+            return
+        chapter_editor = self.manuscript_editor.current_chapter_editor
+        chapter_id = chapter_editor.chapter.id
+        records = self._writer_insertions.get(chapter_id) or []
+        if not records:
+            self.chat_widget.add_message(
+                "Assistant",
+                "No recent AI insertions in this chapter to edit. "
+                "Ask me to write something first, then refer back.")
+            return
+        idx = resolve_index(params.get("index"), len(records))
+        if idx is None:
+            self.chat_widget.add_message(
+                "Assistant",
+                f"Invalid index {params.get('index')!r}. There "
+                f"are {len(records)} insertion(s) (0…{len(records)-1}).")
+            return
+
+        record = records[idx]
+        editor = chapter_editor.editor
+        full_text = editor.toPlainText()
+        start = int(record.get("start", 0))
+        end = int(record.get("end", start + len(record.get("prose", ""))))
+        # Sanity-check the range against the current editor state. If
+        # the recorded prose no longer matches what's at the range,
+        # the user probably edited the chapter manually — fall back to
+        # finding the prose by content. Failing that, abort.
+        recorded_prose = record.get("prose", "") or ""
+        actual_prose = full_text[start:end]
+        if actual_prose != recorded_prose:
+            # Try to relocate by content
+            located = full_text.find(recorded_prose)
+            if located >= 0:
+                start = located
+                end = located + len(recorded_prose)
+            else:
+                self.chat_widget.add_message(
+                    "Assistant",
+                    "I can't find the original passage in the chapter "
+                    "anymore — looks like it was edited or removed "
+                    "manually. Tell me what scene you want me to "
+                    "rewrite and I'll start fresh.")
+                return
+
+        # Surrounding chapter context — give the editor model 600
+        # chars before and after so the rewrite stays seamless.
+        ctx_before = full_text[max(0, start - 600):start]
+        ctx_after = full_text[end:end + 600]
+
+        # Stash state for the response handler
+        self._edit_state = {
+            "chapter_id": chapter_id,
+            "chapter_editor": chapter_editor,
+            "record_index": idx,
+            "start": start,
+            "end": end,
+            "old_prose": recorded_prose,
+            "instructions": instructions,
+            "user_message": getattr(
+                self, "_pending_chat_message", "") or "",
+        }
+
+        # Build the edit prompt
+        chapter_planning = None
+        try:
+            chapter_planning = chapter_editor.chapter.planning
+        except Exception:
+            pass
+        chapter_voice_lines = []
+        if chapter_planning:
+            for attr, label in [
+                ("description", "Chapter goal"),
+                ("pov_character", "POV character"),
+                ("tone", "Tone"),
+                ("voice", "Voice"),
+                ("style", "Style"),
+                ("pacing", "Pacing"),
+            ]:
+                v = (getattr(chapter_planning, attr, "") or "").strip()
+                if v:
+                    chapter_voice_lines.append(f"{label}: {v}")
+        voice_block = ("\n".join(chapter_voice_lines)
+                       if chapter_voice_lines
+                       else "(no chapter planning data)")
+
+        prompt = (
+            "EDIT INSTRUCTIONS:\n"
+            f"{instructions}\n\n"
+            "CHAPTER VOICE / CONSTRAINTS (match these exactly):\n"
+            f"{voice_block}\n\n"
+            "SURROUNDING TEXT (for seamless continuity — do not include "
+            "this in your output, just match its voice and meaning):\n"
+            f"BEFORE:\n{ctx_before or '(this is the chapter opening)'}\n"
+            f"AFTER:\n{ctx_after or '(this is the chapter ending)'}\n\n"
+            "ORIGINAL PASSAGE TO REVISE:\n"
+            f"{recorded_prose}\n\n"
+            "Output ONLY the revised passage as a drop-in replacement. "
+            "No preamble, no labels, no XML."
+        )
+
+        # Run the edit on the worker thread so the UI stays responsive.
+        self._edit_worker = _InsertionEditWorker(
+            prompt=prompt,
+            system_prompt=self.EDIT_INSERTION_SYSTEM_PROMPT,
+        )
+        self._edit_worker.finished.connect(self._on_edit_insertion_done)
+        self._edit_worker.error.connect(self._on_edit_insertion_error)
+        self._edit_worker.start()
+        self.statusBar().showMessage(
+            f"Editing insertion [{idx}] — running model…", 4000)
+
+    def _on_edit_insertion_done(self, raw_response: str):
+        """Apply the edit-LLM result to the editor + update the registry."""
+        from src.ai.output_sanitizer import (
+            strip_meta_tokens, is_degenerate_output)
+        state = getattr(self, "_edit_state", None) or {}
+        if not state:
+            return
+        if is_degenerate_output(raw_response):
+            self.chat_widget.add_message(
+                "Assistant",
+                "The edit model returned mostly internal channel / "
+                "format tokens. Nothing was changed — try again or "
+                "switch models.")
+            self._edit_state = {}
+            return
+        new_prose = strip_meta_tokens(raw_response or "").strip()
+        if not new_prose:
+            self.chat_widget.add_message(
+                "Assistant",
+                "The edit model returned empty output. Nothing was "
+                "changed.")
+            self._edit_state = {}
+            return
+
+        chapter_editor = state.get("chapter_editor")
+        if not (chapter_editor and chapter_editor.editor):
+            return
+        editor = chapter_editor.editor
+        start = int(state["start"])
+        end = int(state["end"])
+
+        # Replace the range in-place using a QTextCursor.
+        cursor = editor.textCursor()
+        cursor.setPosition(start)
+        cursor.setPosition(end, cursor.MoveMode.KeepAnchor)
+        cursor.insertText(new_prose)
+        editor.setTextCursor(cursor)
+
+        # Update the registry record. The new range starts where the
+        # old one did + ends after the new prose. Subsequent
+        # insertions in the same chapter need their offsets shifted
+        # by the length delta.
+        chapter_id = state["chapter_id"]
+        new_end = start + len(new_prose)
+        delta = new_end - end
+        records = self._writer_insertions.get(chapter_id) or []
+        idx = state["record_index"]
+        if 0 <= idx < len(records):
+            records[idx] = {
+                **records[idx],
+                "start": start,
+                "end": new_end,
+                "prose": new_prose,
+                "prompt": (records[idx].get("prompt", "")
+                            + " | edit: "
+                            + state.get("user_message", "")),
+            }
+        # Shift any insertions that started AFTER the edited range
+        if delta != 0:
+            for i, rec in enumerate(records):
+                if i == idx:
+                    continue
+                if rec["start"] >= end:
+                    rec["start"] += delta
+                    rec["end"] += delta
+
+        word_count = len(new_prose.split())
+        self.chat_widget.add_message(
+            "Assistant",
+            f"Edited insertion [{idx}] — replaced "
+            f"{len(state['old_prose'].split()):,} words "
+            f"with {word_count:,} words. The chapter now reads with "
+            f"your edit applied.")
+        self.statusBar().showMessage(
+            f"Edited AI insertion: {word_count} words", 4000)
+        self._edit_state = {}
+
+    def _on_edit_insertion_error(self, msg: str):
+        self.chat_widget.add_message(
+            "Assistant", f"Edit failed: {msg}")
+        self._edit_state = {}
 
     # ── Long-form writing dispatch ────────────────────────────────────
 
@@ -4850,10 +10336,22 @@ class MainWindow(QMainWindow):
         else:
             # For subsequent beats, separate with a paragraph break
             cursor.insertText("\n\n")
+        ins_start = cursor.position()
         cursor.insertText(prose)
         editor.setTextCursor(cursor)
         # Update the stored cursor pos so the next insert continues
         state["cursor_pos"] = cursor.position()
+        # Record this beat in the writer-insertion registry so
+        # follow-up edit requests can target it precisely.
+        self._record_writer_insertion(
+            chapter_id=chapter_editor.chapter.id,
+            start=ins_start,
+            end=cursor.position(),
+            prose=prose,
+            prompt=prompt or "",
+            mode=f"long_form:{state.get('mode').value if state.get('mode') else 'unknown'}",
+            summary=f"Beat {index + 1}: {title}",
+        )
         self.statusBar().showMessage(
             f"Wrote beat {index + 1}: {title}", 3000)
 
@@ -7109,11 +12607,16 @@ class MainWindow(QMainWindow):
     def _ask_about_critique_suggestion(self, suggestion_type: str, original_text: str,
                                         suggestion: str, explanation: str):
         """Handle 'Ask About This' from critique — send to Chapter Focus chat."""
-        # Make chat visible if hidden/collapsed
-        if not self.chat_widget.isVisible():
-            self.chat_widget.show()
-        if self.chat_widget._collapsed:
-            self.chat_widget._toggle_collapse()
+        # Make sure the AI Assistant tab is visible. The sidebar
+        # owns the collapsed state now; expand it if it's hidden,
+        # then switch to the chat tab so the question lands where
+        # the user can see the response.
+        if hasattr(self, "sidebar_container"):
+            self.sidebar_container.expand()
+        if hasattr(self, "sidebar_tabs"):
+            idx = self.sidebar_tabs.indexOf(self.chat_widget)
+            if idx >= 0:
+                self.sidebar_tabs.setCurrentIndex(idx)
 
         # Switch to Chapter Focus mode
         self.chat_widget.set_mode("chapter_focus")

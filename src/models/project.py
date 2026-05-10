@@ -811,8 +811,20 @@ class Chapter(BaseModel):
             # Save active revision content to file
             self.save_active_revision_to_file(project_dir)
 
-        # Save plan inside chapter folder
-        if self.plan:
+        # Save chapter outline inside chapter folder. The outline panel
+        # (and any AI-generated outline) writes to ``planning.outline``;
+        # mirror that into the legacy ``chapter.plan`` field so older
+        # code paths still see the same text, and write to ``plan.md``
+        # so the outline travels as a per-chapter file alongside the
+        # prose. When ``planning.outline`` is empty but the legacy
+        # ``chapter.plan`` has content, preserve the legacy file as-is
+        # for back-compat (don't clobber).
+        outline_text = (self.planning.outline or "").strip()
+        if outline_text:
+            self.plan = outline_text  # keep legacy field in sync
+            plan_path = project_dir / self.folder_path / "plan.md"
+            plan_path.write_text(outline_text, encoding='utf-8')
+        elif self.plan:
             plan_path = project_dir / self.folder_path / "plan.md"
             plan_path.write_text(self.plan, encoding='utf-8')
 
@@ -866,22 +878,40 @@ class Chapter(BaseModel):
         return False
 
     def load_plan_from_file(self, project_dir: Path) -> bool:
-        """Load chapter plan from file."""
+        """Load chapter plan from file (and migrate to planning.outline).
+
+        Reads the per-chapter ``plan.md`` (or the legacy flat
+        ``plan_file_path``) into ``self.plan``. If
+        ``planning.outline`` is empty after the read, the loaded
+        text is mirrored there as well so the AI-Assistant outline
+        panel picks up legacy outlines automatically — this is the
+        backwards-compatibility migration for projects that were
+        last edited before the outline-panel landed.
+        """
+        loaded = False
         # Try folder-based first
         if self.folder_path:
             plan_path = project_dir / self.folder_path / "plan.md"
             if plan_path.exists():
                 self.plan = plan_path.read_text(encoding='utf-8')
-                return True
+                loaded = True
 
         # Legacy fallback
-        if self.plan_file_path:
+        if not loaded and self.plan_file_path:
             full_path = project_dir / self.plan_file_path
             if full_path.exists():
                 self.plan = full_path.read_text(encoding='utf-8')
-                return True
+                loaded = True
 
-        return False
+        # Backwards-compat migration — if the new structured outline
+        # field is empty but we just loaded legacy plan text, surface
+        # it as the canonical outline. Strip whitespace so a file with
+        # only blank lines doesn't masquerade as content.
+        if (self.plan and self.plan.strip()
+                and not (self.planning.outline or "").strip()):
+            self.planning.outline = self.plan
+
+        return loaded
 
     def save_plan_to_file(self, project_dir: Path) -> bool:
         """Save chapter plan to file inside chapter folder."""
@@ -1394,6 +1424,9 @@ class WriterProject(BaseModel):
                 chapter.load_content_from_file(project_dir)
                 # Then migrate to folder structure
                 chapter.migrate_to_folder(project_dir)
+                # Pull legacy plan into planning.outline for the
+                # AI-Assistant outline panel.
+                chapter.load_plan_from_file(project_dir)
                 needs_save = True
             elif chapter.folder_path:
                 # Already folder-based, just load content
@@ -1402,6 +1435,13 @@ class WriterProject(BaseModel):
             elif chapter.file_path:
                 # Fallback: legacy flat file
                 chapter.load_content_from_file(project_dir)
+                # Even without a folder, a stale legacy chapter.plan
+                # value may already be on the model. Mirror it into
+                # planning.outline so the panel surfaces it.
+                if (chapter.plan and chapter.plan.strip()
+                        and not (chapter.planning.outline or "")
+                        .strip()):
+                    chapter.planning.outline = chapter.plan
 
         # Verify chapter numbering and folder_path consistency.
         # After a crash during a move operation, chapter.number or folder_path

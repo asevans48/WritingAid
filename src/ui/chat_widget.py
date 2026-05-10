@@ -149,6 +149,7 @@ class ChatMode(Enum):
     CHAPTER_FOCUS = "chapter_focus"
     PLOT = "plot"
     WRITER = "writer"
+    WORLDBUILDING = "worldbuilding"
 
 
 class WriterInsertMode(Enum):
@@ -157,6 +158,20 @@ class WriterInsertMode(Enum):
     INSERT_AT_CURSOR = "insert_at_cursor"    # Insert at cursor position
     APPEND_TO_CHAPTER = "append_to_chapter"  # Append to end of chapter
     REPLACE_CHAPTER = "replace_chapter"      # Replace entire chapter
+
+
+class WriterOutputMode(Enum):
+    """What kind of output Writer mode should produce.
+
+    FULL_TEXT (default) — actual prose for each remaining beat.
+    OUTLINE — structured per-beat outline with plot, focal
+        characters + tensions, location with worldbuilding hooks
+        (folklore, architecture, rituals, factions, mythology),
+        sensory examples, subplot / theme landing notes, etc. Used
+        when the author wants to plan rather than draft.
+    """
+    FULL_TEXT = "full_text"
+    OUTLINE = "outline"
 
 
 class WritingPOV(Enum):
@@ -214,15 +229,30 @@ CHAT_MODE_INFO = {
         "subtitle": "AI-assisted writing",
         "placeholder": "Describe what to write or continue...",
         "description": "Write or complete chapters based on your outline and world"
+    },
+    ChatMode.WORLDBUILDING: {
+        "name": "Worldbuilding",
+        "subtitle": "Build out cultures, places, factions, mythology",
+        "placeholder":
+            "Describe a place to flesh out, a faction to design, "
+            "a myth to craft, a culture to deepen…",
+        "description":
+            "Discuss + create worldbuilding elements (factions, "
+            "places, cultures, myths, religions, technologies, "
+            "flora/fauna, historical events) with the project's "
+            "existing world for consistency."
     }
 }
 
 
 class ChatWidget(QWidget):
-    """Collapsible chat interface for AI assistance."""
+    """Chat interface for AI assistance.
+
+    Lives inside a collapsible sidebar container in MainWindow —
+    the chat itself no longer owns a collapse state.
+    """
 
     message_sent = pyqtSignal(str, str, str)  # message, mode, insert_mode
-    collapsed_changed = pyqtSignal(bool)  # Emits True when collapsed
     mode_changed = pyqtSignal(str)  # Emits mode name when changed
     clear_requested = pyqtSignal()  # Emits when user clicks Clear
     # User clicked the "Preview context" button — main_window builds
@@ -234,9 +264,9 @@ class ChatWidget(QWidget):
         """Initialize chat widget."""
         super().__init__()
         self.setObjectName("chatWidget")
-        self._collapsed = False
         self._current_mode = ChatMode.GENERAL
         self._insert_mode = WriterInsertMode.INSERT_AT_CURSOR
+        self._output_mode = WriterOutputMode.FULL_TEXT
         self._has_selection = False  # Track if editor has selection
 
         # Conversation tracking for training data collection
@@ -267,29 +297,10 @@ class ChatWidget(QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
-        # Collapsed state button (vertical AI button)
-        self.collapsed_btn = QPushButton("🤖\nA\nI")
-        self.collapsed_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #6366f1;
-                color: white;
-                border: none;
-                border-radius: 6px;
-                font-size: 12px;
-                font-weight: bold;
-                padding: 8px 4px;
-                min-height: 80px;
-            }
-            QPushButton:hover {
-                background-color: #4f46e5;
-            }
-        """)
-        self.collapsed_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.collapsed_btn.clicked.connect(self._toggle_collapse)
-        self.collapsed_btn.setVisible(False)  # Hidden initially
-        layout.addWidget(self.collapsed_btn, 0, Qt.AlignmentFlag.AlignTop)
-
-        # Collapsible header bar
+        # Header bar — title + Clear button. The chat-widget itself
+        # no longer collapses on its own; the surrounding sidebar
+        # container (in main_window) owns the show/hide for the
+        # whole assistant + outline area.
         self.header_frame = QFrame()
         self.header_frame.setStyleSheet("""
             QFrame {
@@ -301,25 +312,11 @@ class ChatWidget(QWidget):
         header_layout.setContentsMargins(10, 6, 10, 6)
         header_layout.setSpacing(8)
 
-        # Toggle button with title
-        self.toggle_btn = QPushButton("◀ ✨ AI Assistant")
-        self.toggle_btn.setStyleSheet("""
-            QPushButton {
-                background-color: transparent;
-                color: white;
-                border: none;
-                font-size: 13px;
-                font-weight: 600;
-                text-align: left;
-                padding: 2px;
-            }
-            QPushButton:hover {
-                color: #e0e7ff;
-            }
-        """)
-        self.toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.toggle_btn.clicked.connect(self._toggle_collapse)
-        header_layout.addWidget(self.toggle_btn)
+        title_label = QLabel("✨ AI Assistant")
+        title_label.setStyleSheet(
+            "QLabel { background-color: transparent; color: white; "
+            " font-size: 13px; font-weight: 600; padding: 2px; }")
+        header_layout.addWidget(title_label)
         header_layout.addStretch()
 
         # Clear conversation button
@@ -426,6 +423,46 @@ class ChatWidget(QWidget):
         self.insert_combo.addItem("Replace Chapter", WriterInsertMode.REPLACE_CHAPTER.value)
         self.insert_combo.currentIndexChanged.connect(self._on_insert_mode_changed)
         insert_layout.addWidget(self.insert_combo)
+
+        # Output mode picker — Full Text (prose) vs Outline (structured
+        # per-beat plan with worldbuilding / characters / tensions
+        # surfaced for the author to flesh out manually). Lives in the
+        # same row as the Insert picker so Writer-mode controls stay
+        # compact.
+        output_label = QLabel("Output:")
+        output_label.setStyleSheet(
+            "font-size: 11px; color: #6b7280; font-weight: 500; "
+            "margin-left: 12px;")
+        insert_layout.addWidget(output_label)
+
+        self.output_combo = QComboBox()
+        self.output_combo.setStyleSheet("""
+            QComboBox {
+                padding: 4px 8px;
+                font-size: 11px;
+                border-radius: 4px;
+                border: 1px solid #d1d5db;
+                background-color: white;
+                min-width: 110px;
+            }
+            QComboBox:hover {
+                border-color: #6366f1;
+            }
+        """)
+        self.output_combo.addItem("Full Text",
+                                    WriterOutputMode.FULL_TEXT.value)
+        self.output_combo.addItem("Outline",
+                                    WriterOutputMode.OUTLINE.value)
+        self.output_combo.setToolTip(
+            "Full Text drafts prose for each remaining beat.\n"
+            "Outline produces a structured per-beat plan: plot + "
+            "focal characters + tensions + location worldbuilding + "
+            "folklore/myth/faction hooks + sensory examples — "
+            "everything you'd want to flesh the beat out yourself.")
+        self.output_combo.currentIndexChanged.connect(
+            self._on_output_mode_changed)
+        insert_layout.addWidget(self.output_combo)
+
         insert_layout.addStretch()
 
         content_layout.addWidget(self.insert_mode_widget)
@@ -803,25 +840,14 @@ class ChatWidget(QWidget):
 
         layout.addWidget(self.content_widget)
 
-    def _toggle_collapse(self):
-        """Toggle between collapsed and expanded state."""
-        self._collapsed = not self._collapsed
-        self.content_widget.setVisible(not self._collapsed)
-        self.header_frame.setVisible(not self._collapsed)
-        self.collapsed_btn.setVisible(self._collapsed)
-
-        if self._collapsed:
-            self.setMinimumWidth(36)
-            self.setMaximumWidth(40)
-        else:
-            self.setMinimumWidth(300)
-            self.setMaximumWidth(400)
-
-        self.collapsed_changed.emit(self._collapsed)
-
     def is_collapsed(self) -> bool:
-        """Return whether the widget is collapsed."""
-        return self._collapsed
+        """Always-expanded shim — sidebar handles the collapse now.
+
+        Retained so older call sites that asked the chat whether
+        it was collapsed don't break; the sidebar container owns
+        that state in the new layout.
+        """
+        return False
 
     def set_collapsed(self, collapsed: bool):
         """Set the collapsed state."""
@@ -856,6 +882,11 @@ class ChatWidget(QWidget):
         insert_value = self.insert_combo.itemData(index)
         self._insert_mode = WriterInsertMode(insert_value)
 
+    def _on_output_mode_changed(self, index: int):
+        """Handle output mode selection change (Full Text / Outline)."""
+        output_value = self.output_combo.itemData(index)
+        self._output_mode = WriterOutputMode(output_value)
+
     def update_selection_state(self, has_selection: bool):
         """Update UI based on whether editor has text selected.
 
@@ -878,6 +909,10 @@ class ChatWidget(QWidget):
         if self._has_selection:
             return WriterInsertMode.REPLACE_SELECTION.value
         return self._insert_mode.value
+
+    def get_output_mode(self) -> str:
+        """Get the current Writer-mode output type (Full Text / Outline)."""
+        return self._output_mode.value
 
     def get_current_mode(self) -> str:
         """Get the current chat mode value."""

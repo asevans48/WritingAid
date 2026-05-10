@@ -176,6 +176,11 @@ class ChapterEditor(QWidget):
     content_changed = pyqtSignal()
     word_count_changed = pyqtSignal(int)
     annotations_changed = pyqtSignal()  # Signal when annotations are added/edited/deleted
+    # Bubbled up from the planner widget when the user clicks
+    # the per-beat ✨ AI-help button. MainWindow connects to this
+    # to route the request into the outline-mode chat.
+    # (event_id, event_text, event_description, event_stage, chapter_id)
+    beat_ai_help_requested = pyqtSignal(str, str, str, str, str)
     _prose_analysis_ready = pyqtSignal(str)  # Signal to deliver prose analysis result to main thread
     _character_analysis_ready = pyqtSignal(str)
     _world_analysis_ready = pyqtSignal(str)
@@ -576,6 +581,10 @@ class ChapterEditor(QWidget):
         self.planner_widget.plan_changed.connect(self._on_plan_changed)
         self.planner_widget.set_context_provider(self._get_planner_context)
         self.planner_widget.set_chapter_content_provider(lambda: self.editor.toPlainText())
+        # Bubble per-beat AI-help requests up so MainWindow can
+        # route them into the outline chat.
+        self.planner_widget.beat_ai_help_requested.connect(
+            self._on_beat_ai_help_requested)
         self.right_panel.addTab(self.planner_widget, "Planner")
 
         from src.ui.feedback_widget import FeedbackWidget
@@ -624,6 +633,21 @@ class ChapterEditor(QWidget):
     def _on_plan_changed(self):
         """Handle plan content changes."""
         self.content_changed.emit()
+
+    def _on_beat_ai_help_requested(self,
+                                    event_id: str,
+                                    event_text: str,
+                                    event_description: str,
+                                    event_stage: str) -> None:
+        """Bubble per-beat AI-help up with the chapter id attached.
+
+        MainWindow listens to ``beat_ai_help_requested`` and routes
+        the request into the outline chat focused on this beat.
+        """
+        chapter_id = getattr(self.chapter, "id", "") or ""
+        self.beat_ai_help_requested.emit(
+            event_id, event_text, event_description,
+            event_stage, chapter_id)
 
     def _get_planner_context(self, question: str = "") -> dict:
         """Get context for the planner AI assistant.
@@ -3528,6 +3552,11 @@ class ManuscriptEditor(QWidget):
     content_changed = pyqtSignal()
     annotations_changed = pyqtSignal()  # Signal when any annotation changes
     chapter_switched = pyqtSignal()  # Signal when switching between chapters (triggers auto-save)
+    # Re-emitted from the active ChapterEditor when the user clicks
+    # the per-beat ✨ AI-help button in the planner. Carries
+    # (event_id, event_text, event_description, event_stage,
+    # chapter_id) so MainWindow can route to the outline chat.
+    beat_ai_help_requested = pyqtSignal(str, str, str, str, str)
 
     def __init__(self, project=None):
         """Initialize manuscript editor."""
@@ -4494,6 +4523,11 @@ class ManuscriptEditor(QWidget):
             self.current_chapter_editor.word_count_changed.connect(
                 lambda _: self._update_total_word_count()
             )
+            # Re-emit the per-beat AI-help signal so MainWindow can
+            # listen at the manuscript-editor level (no need to
+            # rewire on each chapter switch).
+            self.current_chapter_editor.beat_ai_help_requested.connect(
+                self.beat_ai_help_requested.emit)
             self.editor_layout.addWidget(self.current_chapter_editor)
 
             # Preload adjacent chapters in background for faster navigation
