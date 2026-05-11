@@ -3,10 +3,10 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QLineEdit,
     QPlainTextEdit, QPushButton, QLabel, QFrame, QComboBox, QToolButton,
-    QSizePolicy
+    QSizePolicy, QSplitter, QSplitterHandle
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QSettings
-from PyQt6.QtGui import QIcon
+from PyQt6.QtGui import QIcon, QPainter, QColor
 from enum import Enum
 from typing import List, Dict, Optional
 from datetime import datetime
@@ -26,6 +26,42 @@ _INPUT_ROWS_MAX = 16
 _INPUT_ROWS_DEFAULT = 2
 _INPUT_ROWS_STEP = 2
 _INPUT_FONT_PX = 13  # Constant text size — only the height varies now.
+
+
+class _GripHandle(QSplitterHandle):
+    """Splitter handle that paints three centered grip dots.
+
+    Default Qt vertical splitter handles render as a flat coloured
+    bar — easy to overlook. Drawing dots in the middle (the same
+    convention macOS / GNOME use for resizable elements) tells the
+    user at a glance "this is a drag target". Used by the chat
+    widget so the prompt-vs-history splitter is discoverable.
+    """
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(Qt.PenStyle.NoPen)
+            # Indigo dots that match the hover colour so the
+            # affordance feels like one continuous design.
+            painter.setBrush(QColor("#6366f1"))
+            cx = self.width() // 2
+            cy = self.height() // 2
+            r = 2  # dot radius
+            spacing = 6
+            for off in (-spacing, 0, spacing):
+                painter.drawEllipse(cx - r + off, cy - r, r * 2, r * 2)
+        finally:
+            painter.end()
+
+
+class _GrippedSplitter(QSplitter):
+    """QSplitter that uses :class:`_GripHandle` for its handles."""
+
+    def createHandle(self):
+        return _GripHandle(self.orientation(), self)
 
 
 class _ChatInput(QPlainTextEdit):
@@ -564,21 +600,36 @@ class ChatWidget(QWidget):
         # vertical QSplitter — built below — so the user can drag
         # the handle to resize the prompt area with the mouse. The
         # +/- preset buttons just nudge the splitter to a row count.
-        from PyQt6.QtWidgets import QSplitter
-        self._chat_splitter = QSplitter(Qt.Orientation.Vertical)
+        # _GrippedSplitter is QSplitter with a handle that paints
+        # three centered grip dots — makes the drag target obvious
+        # so the user discovers they can resize the prompt area.
+        self._chat_splitter = _GrippedSplitter(
+            Qt.Orientation.Vertical)
         self._chat_splitter.setChildrenCollapsible(False)
-        self._chat_splitter.setHandleWidth(6)
-        # Subtle visual cue on the handle so it's discoverable as a
-        # drag target rather than a flat line between two panes.
+        # Wide, visibly-styled handle so users discover that they
+        # can drag-resize the prompt vs the history. With the old
+        # 6px handle + 2x12 margin, the actual visible drag target
+        # was a thin grey hairline — easy to miss. 10px tall, no
+        # horizontal margins (full-width), centered grip lines, and
+        # an indigo hover make it impossible to miss.
+        self._chat_splitter.setHandleWidth(10)
         self._chat_splitter.setStyleSheet(
             "QSplitter::handle:vertical { "
-            "  background: #e5e7eb; "
-            "  margin: 2px 12px; "
-            "  border-radius: 2px; "
+            "  background: #d1d5db; "
+            "  border-top: 1px solid #9ca3af; "
+            "  border-bottom: 1px solid #9ca3af; "
             "} "
             "QSplitter::handle:vertical:hover { "
             "  background: #6366f1; "
+            "  border-color: #4f46e5; "
+            "} "
+            "QSplitter::handle:vertical:pressed { "
+            "  background: #4f46e5; "
             "}")
+        # The splitter sets the SizeVerCursor on its handle by
+        # default, so hovering already shows the resize affordance
+        # — combined with the wider handle + indigo hover above
+        # the drag target is now obvious.
         self._chat_splitter.addWidget(self.chat_history)
         content_layout.addWidget(self._chat_splitter, stretch=1)
 
