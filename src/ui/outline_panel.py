@@ -197,6 +197,7 @@ class _BeatCard(QFrame):
     move_requested = pyqtSignal(int, int)        # (idx, direction +1/-1)
     remove_requested = pyqtSignal(int)           # (idx)
     ai_help_requested = pyqtSignal(int)          # (idx)
+    selected = pyqtSignal(int)                   # (idx) — user clicked card
 
     def __init__(self, index: int, beat: _Beat,
                  total: int = 1,
@@ -211,8 +212,10 @@ class _BeatCard(QFrame):
         self._total = total
         self._checked = beat.checked
         self._expanded = expanded
+        self._is_selected = False
         self._suppress_title_signal = False
         self.setObjectName("beatCard")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._apply_card_style()
 
         layout = QVBoxLayout(self)
@@ -240,6 +243,16 @@ class _BeatCard(QFrame):
         # Tooltip is set unconditionally on init (was previously
         # only applied when a body existed, leaving an empty
         # tooltip on re-creates).
+        # Same tooltip-popup pinning as the action buttons — see the
+        # _TOOLTIP_RULE definition further down for why this is
+        # needed inline (per-widget stylesheets scope a new style
+        # context that can blank the tooltip text).
+        _CHEVRON_TOOLTIP_RULE = (
+            "QToolTip { background-color: #1a1a1a; "
+            " color: #ffffff; "
+            " border: 1px solid #4f46e5; "
+            " padding: 6px 10px; border-radius: 4px; "
+            " font-size: 12px; }")
         self.expand_btn = QPushButton("▾", self)
         self.expand_btn.setFlat(True)
         self.expand_btn.setToolTip(
@@ -250,7 +263,8 @@ class _BeatCard(QFrame):
             "QPushButton { background: transparent; border: none; "
             " color: #6b7280; font-size: 11px; "
             " padding: 0 4px; min-width: 16px; } "
-            "QPushButton:hover { color: #4f46e5; }")
+            "QPushButton:hover { color: #4f46e5; } "
+            + _CHEVRON_TOOLTIP_RULE)
         self.expand_btn.clicked.connect(self._toggle_expanded)
         top.addWidget(
             self.expand_btn, 0, Qt.AlignmentFlag.AlignTop)
@@ -265,16 +279,32 @@ class _BeatCard(QFrame):
         self.title_input = _ClickToEditLineEdit(display_title, self)
         self.title_input.setPlaceholderText(
             f"Beat {index + 1} title…")
-        self.title_input.setToolTip(
-            "Double-click to rename. Renaming a beat renames the "
-            "matching event in the chapter plot arc too (the event "
-            "id is preserved).")
+        # No tooltip on the title — the placeholder + double-click
+        # affordance is enough; tooltips on text fields just block
+        # the cursor when hovered.
         self._apply_title_style()
         # Edit signal fires on every keystroke; OutlinePanel
         # debounces the source rebuild.
         self.title_input.textChanged.connect(self._on_title_edited)
         top.addWidget(self.title_input, stretch=1)
 
+        # Tooltip styling embedded into every action button's
+        # stylesheet. The app-level QToolTip rule + QPalette
+        # override the global QWidget color rule, but per-button
+        # setStyleSheet calls scope a fresh style context, and
+        # without this block the tooltip popup spawned from these
+        # buttons inherits the button's own ``color: #6b7280`` (or
+        # the global ``color: #1a1a1a`` in some Qt builds) → dark
+        # text on the dark tooltip background → text invisible.
+        # Inlining the QToolTip rule pins the popup colors to high-
+        # contrast white-on-dark whenever it's spawned from one of
+        # these buttons.
+        _TOOLTIP_RULE = (
+            "QToolTip { background-color: #1a1a1a; "
+            " color: #ffffff; "
+            " border: 1px solid #4f46e5; "
+            " padding: 6px 10px; border-radius: 4px; "
+            " font-size: 12px; }")
         # Action buttons — ↑ ↓ × ✨
         action_btn_style = (
             "QPushButton { background: transparent; border: none; "
@@ -282,7 +312,8 @@ class _BeatCard(QFrame):
             " padding: 0 4px; min-width: 18px; } "
             "QPushButton:hover { color: #4f46e5; "
             "  background: #eef2ff; border-radius: 3px; } "
-            "QPushButton:disabled { color: #d1d5db; }")
+            "QPushButton:disabled { color: #d1d5db; } "
+            + _TOOLTIP_RULE)
         self.up_btn = QPushButton("↑", self)
         self.up_btn.setStyleSheet(action_btn_style)
         self.up_btn.setToolTip(
@@ -321,11 +352,19 @@ class _BeatCard(QFrame):
         self.ai_btn = QPushButton("✨", self)
         self.ai_btn.setStyleSheet(action_btn_style)
         self.ai_btn.setToolTip(
-            "Ask the AI Assistant to help develop this beat — "
-            "opens outline mode focused on it.")
+            "Develop this beat with AI — opens the writer-mode "
+            "chat with the surrounding beats, chapter plot, story "
+            "plots/subplots, characters, and worldbuilding pre-"
+            "loaded as context. The AI will ask up to four "
+            "clarifying questions, then produce a fleshed-out beat.")
         self.ai_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        # Mark this beat as selected BEFORE firing the AI request so
+        # the panel highlights it during the question rounds and the
+        # MainWindow handler can read the active focus from the
+        # panel's selected_index().
         self.ai_btn.clicked.connect(
-            lambda: self.ai_help_requested.emit(self._index))
+            lambda: (self.selected.emit(self._index),
+                      self.ai_help_requested.emit(self._index)))
         top.addWidget(self.ai_btn, 0, Qt.AlignmentFlag.AlignTop)
 
         layout.addLayout(top)
@@ -340,10 +379,9 @@ class _BeatCard(QFrame):
         self._suppress_body_signal = False
         self.body = _ClickToEditTextEdit(self)
         self.body.setFrameShape(QFrame.Shape.StyledPanel)
-        self.body.setToolTip(
-            "Double-click to edit. The structured bullet sections "
-            "(WHAT HAPPENS, WHO'S IN IT, etc.) are rendered from "
-            "markdown — type freely; bold/lists are kept.")
+        # No tooltip on the body — the placeholder + visible
+        # rendered content is the affordance; tooltips on the body
+        # text area get in the way when hovering to read.
         self.body.setStyleSheet(
             "QTextEdit { background: rgba(254, 252, 232, 0.5); "
             " border: 1px dashed transparent; "
@@ -409,7 +447,15 @@ class _BeatCard(QFrame):
         self.body_edited.emit(self._index, md)
 
     def _apply_card_style(self) -> None:
-        if self._checked:
+        # Selected state always wins so the user can spot the active
+        # beat even when it's also marked done. Heavier indigo border
+        # + faint indigo wash mirrors the brand colour used by the
+        # outline header so the highlight reads as "active focus".
+        if self._is_selected:
+            self.setStyleSheet(
+                "QFrame#beatCard { background-color: #eef2ff; "
+                " border: 2px solid #4f46e5; border-radius: 6px; }")
+        elif self._checked:
             self.setStyleSheet(
                 "QFrame#beatCard { background-color: #ecfdf5; "
                 " border: 1px solid #a7f3d0; border-radius: 6px; }")
@@ -417,6 +463,31 @@ class _BeatCard(QFrame):
             self.setStyleSheet(
                 "QFrame#beatCard { background-color: #ffffff; "
                 " border: 1px solid #fde68a; border-radius: 6px; }")
+
+    def set_selected(self, selected: bool) -> None:
+        """Toggle the visible selected highlight on this card."""
+        if self._is_selected == selected:
+            return
+        self._is_selected = selected
+        self._apply_card_style()
+
+    def is_selected(self) -> bool:
+        return self._is_selected
+
+    def mousePressEvent(self, event):
+        """Clicking the card background selects this beat.
+
+        Children (buttons, title, body) consume their own clicks so
+        this handler only fires for clicks on the card frame itself
+        — that's intentional: it gives the user a clear "click empty
+        space to select" affordance without stealing clicks from the
+        editable controls. The action buttons explicitly call
+        ``selected.emit`` themselves so they ALSO mark the beat as
+        the active focus before doing their work.
+        """
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.selected.emit(self._index)
+        super().mousePressEvent(event)
 
     def _apply_title_style(self) -> None:
         # Style the QLineEdit so it reads like inline editable text
@@ -501,6 +572,10 @@ class OutlinePanel(QWidget):
         # can rewrite the right line. Re-populated on every render.
         self._beats: List[_Beat] = []
         self._preamble: str = ""
+        # Index of the currently-selected beat card. Survives
+        # re-renders so the highlight reattaches after edits / sync
+        # rebuilds, as long as the same beat index still exists.
+        self._selected_index: Optional[int] = None
 
         self._init_ui()
 
@@ -627,6 +702,9 @@ class OutlinePanel(QWidget):
         self._current_chapter_id = chapter_id
         self._current_chapter_title = chapter_title
         self._source = outline_text or ""
+        # Drop any selection from the previous chapter — the new
+        # chapter's beats are unrelated.
+        self._selected_index = None
 
         if chapter_id is None:
             self.chapter_label.setText("(no chapter)")
@@ -768,6 +846,12 @@ class OutlinePanel(QWidget):
                     self._on_beat_remove_requested)
                 card.ai_help_requested.connect(
                     self._on_beat_ai_help_requested)
+                card.selected.connect(self._on_beat_selected)
+                # Restore selection highlight if this beat was the
+                # selected one before the re-render.
+                if (self._selected_index is not None
+                        and i == self._selected_index):
+                    card.set_selected(True)
                 layout.insertWidget(insert_at + i, card)
             insert_at += total
 
@@ -902,12 +986,86 @@ class OutlinePanel(QWidget):
         """Bubble per-beat AI help up to MainWindow."""
         if not (0 <= index < len(self._beats)):
             return
+        # Selecting on AI request gives the user a clear visual
+        # anchor for which beat the chat is now focused on.
+        self._on_beat_selected(index)
         beat = self._beats[index]
         body = "\n".join(beat.body_lines).strip()
         # Strip "Beat N:" prefix for a cleaner title.
         bare_title = _BeatCard._strip_beat_prefix(beat.title)
         self.beat_ai_help_requested.emit(
             bare_title, body, "")
+
+    def _on_beat_selected(self, index: int) -> None:
+        """Single-select: highlight ``index`` and unhighlight the rest."""
+        if not (0 <= index < len(self._beats)):
+            return
+        self._selected_index = index
+        layout = self._checklist_layout
+        for i in range(layout.count()):
+            w = layout.itemAt(i).widget()
+            if isinstance(w, _BeatCard):
+                w.set_selected(w._index == index)
+
+    def selected_beat_index(self) -> Optional[int]:
+        """Return the currently-selected beat index (None if none)."""
+        return self._selected_index
+
+    def selected_beat(self) -> Optional[_Beat]:
+        """Return the currently-selected beat dataclass (None if none)."""
+        if (self._selected_index is None
+                or not (0 <= self._selected_index < len(self._beats))):
+            return None
+        return self._beats[self._selected_index]
+
+    def beat_at(self, index: int) -> Optional[_Beat]:
+        """Public accessor for a beat by index."""
+        if not (0 <= index < len(self._beats)):
+            return None
+        return self._beats[index]
+
+    def all_beats(self) -> List[_Beat]:
+        """Public accessor for the parsed beat list (read-only snapshot)."""
+        return list(self._beats)
+
+    def update_beat_body(self,
+                          index: int,
+                          new_body_md: str,
+                          new_title: Optional[str] = None) -> bool:
+        """Replace ONLY one beat's body (and optionally title).
+
+        Used by the focused-beat AI flow: the user clicks ✨ on a
+        beat, AI asks questions, then produces JSON for that beat.
+        We need to push that JSON's rendered markdown into THAT
+        specific beat's body — not into staging, not as a new beat,
+        not appended to the panel.
+
+        Returns True on success, False if ``index`` is out of range
+        (e.g. the user deleted the beat while the AI was thinking).
+
+        Persists via the standard outline_changed signal so
+        chapter.planning.outline + planning.events both pick up
+        the change through the existing sync chain.
+        """
+        if not (0 <= index < len(self._beats)):
+            return False
+        body_lines = (new_body_md or "").rstrip().split("\n")
+        self._beats[index].body_lines = body_lines
+        if new_title:
+            # Renumber prefix is reapplied by _renumber_beat_titles
+            # so callers can pass a bare title without "Beat N:".
+            bare = (new_title or "").strip()
+            self._beats[index].title = (
+                f"Beat {index + 1}: {bare}" if bare
+                else f"Beat {index + 1}")
+        self._source = _serialize_beats(
+            self._preamble, self._beats)
+        # Re-render the checklist so the new body shows up
+        # immediately; emit outline_changed so MainWindow persists
+        # the edit + reconciles the events list.
+        self._render_checklist()
+        self._emit_outline_changed()
+        return True
 
     def _renumber_beat_titles(self) -> None:
         """Rewrite each beat title's ``Beat N`` prefix to match index."""

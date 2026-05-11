@@ -3,7 +3,7 @@
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QTabWidget,
     QMenu, QFileDialog, QMessageBox, QToolBar, QSplitter,
-    QLabel, QPushButton, QFrame, QSystemTrayIcon
+    QLabel, QPushButton, QFrame, QSystemTrayIcon, QApplication,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QThread
 from PyQt6.QtGui import QAction, QKeySequence, QIcon
@@ -3081,6 +3081,16 @@ class MainWindow(QMainWindow):
         # and the engine writes everything to the OutlinePanel in
         # one shot. See _handle_chat_message outline branch.
         self._outline_session_state: Dict[str, dict] = {}
+        # Per-chapter focused-beat AI session. Set when the user
+        # clicks ✨ on a beat in the outline panel. The next AI
+        # response with phase="beat" for this chapter is written
+        # DIRECTLY into the named beat's body in the panel (instead
+        # of going through the normal staging/apply chain). The
+        # entry is cleared after the beat is applied OR when the
+        # user clicks ✨ on a different beat.
+        # Shape: {chapter_id: {"beat_index": int, "beat_title": str,
+        #                       "started_at": float}}
+        self._focused_beat_ai: Dict[str, dict] = {}
 
         # RAG system for semantic context retrieval
         self._rag_system: Optional[EnhancedRAGSystem] = None
@@ -3096,8 +3106,42 @@ class MainWindow(QMainWindow):
         self.window_manager = WindowManager()
         self.window_manager.set_main_window(self)
 
-        # Apply modern stylesheet
+        # Apply modern stylesheet to MainWindow.
         self.setStyleSheet(get_modern_style())
+        # ALSO apply at the QApplication level so the QToolTip rules
+        # in the modern stylesheet actually reach tooltip popups.
+        # Tooltips are independent top-level widgets, not descendants
+        # of MainWindow — without an app-level stylesheet they fall
+        # back to the platform default (on macOS that's a near-
+        # invisible system tooltip).
+        try:
+            qapp = QApplication.instance()
+            if qapp is not None:
+                qapp.setStyleSheet(get_modern_style())
+        except Exception:
+            pass
+        # Belt-and-braces: force the tooltip text/background colors
+        # via QPalette. The modern stylesheet sets
+        #   QWidget  { color: #1a1a1a }  (near-black text everywhere)
+        #   QToolTip { color: white;  background-color: #1a1a1a }
+        # but Qt's QSS resolution lets the QWidget rule win for
+        # tooltip popups in some cases — the result is dark text on
+        # the dark tooltip background, so the tooltip looks blank
+        # even though the text is rendered. QPalette overrides the
+        # stylesheet for these two roles regardless of selector
+        # specificity, so the beat-card ↑ ↓ × ✨ tooltips actually
+        # show their text.
+        try:
+            from PyQt6.QtGui import QColor, QPalette
+            from PyQt6.QtWidgets import QToolTip
+            tt_palette = QToolTip.palette()
+            tt_palette.setColor(
+                QPalette.ColorRole.ToolTipBase, QColor("#1a1a1a"))
+            tt_palette.setColor(
+                QPalette.ColorRole.ToolTipText, QColor("#ffffff"))
+            QToolTip.setPalette(tt_palette)
+        except Exception:
+            pass
 
         self._init_ui()
         self._create_menus()
@@ -5758,6 +5802,116 @@ class MainWindow(QMainWindow):
             parts.append("")
         return "\n".join(parts).rstrip() + "\n"
 
+    def _handle_focused_beat_response(self,
+                                        chapter_id: str,
+                                        parsed: dict) -> bool:
+        """Push a phase="beat" JSON straight into the focused beat.
+
+        Wired in from the chat router when ``self._focused_beat_ai``
+        has an entry for ``chapter_id`` — the user clicked ✨ on a
+        specific beat and now the AI's beat output should land in
+        THAT beat's body in the panel, not in the staging list.
+
+        Returns True when the beat was successfully written into
+        the panel, False when the focused-beat session is invalid
+        (panel bound to a different chapter, beat index out of
+        range, etc.) so the caller can fall through to the normal
+        staging path and the AI's work isn't dropped.
+        """
+        focus = self._focused_beat_ai.get(chapter_id)
+        if not focus:
+            return False
+        beat = parsed.get("beat") or {}
+        if not isinstance(beat, dict) or not beat:
+            return False
+        panel = getattr(self.chat_widget, "outline_panel", None)
+        if panel is None:
+            return False
+        if panel.current_chapter_id() != chapter_id:
+            # Panel has moved on; let the staging path handle it.
+            return False
+        beat_index = focus.get("beat_index")
+        beat_title = focus.get("beat_title", "") or ""
+        if beat_index is None:
+            return False
+        # Render the JSON into the standard outline markdown — uses
+        # the same skeleton (WHAT HAPPENS / WHO'S IN IT / ...) that
+        # the panel already parses + displays.
+        full_md = self._outline_beat_json_to_markdown(
+            beat,
+            fallback_number=(beat_index + 1),
+            force_number=True,
+            force_title=beat_title,
+            force_stage=(beat.get("stage") or "").strip())
+        # Strip the leading "## [ ] Beat N: ... " heading + the
+        # blank line after it — update_beat_body is body-only.
+        body_lines = full_md.splitlines()
+        if body_lines and body_lines[0].startswith("## "):
+            body_lines = body_lines[1:]
+        # Drop any leading blank lines so the rendered card opens
+        # straight into the **WHAT HAPPENS** section.
+        while body_lines and not body_lines[0].strip():
+            body_lines = body_lines[1:]
+        new_body_md = "\n".join(body_lines).rstrip()
+        ok = panel.update_beat_body(
+            beat_index, new_body_md,
+            new_title=beat_title or None)
+        if not ok:
+            # Beat was deleted or moved — fall through to staging.
+            return False
+        # Refresh the corresponding StoryEvent.description too. The
+        # general panel→events sync deliberately PRESERVES existing
+        # descriptions on title-match (so a panel rename doesn't
+        # clobber manual edits) — but in the focused-beat flow the
+        # user explicitly asked the AI to develop this beat, so the
+        # description should reflect the new body.
+        try:
+            manuscript = getattr(
+                self.current_project, "manuscript", None)
+            chapters = (
+                getattr(manuscript, "chapters", None) or [])
+            chapter = next(
+                (c for c in chapters
+                 if getattr(c, "id", None) == chapter_id), None)
+            if (chapter is not None
+                    and getattr(chapter, "planning", None)
+                    is not None):
+                events = chapter.planning.events or []
+                if 0 <= beat_index < len(events):
+                    new_desc = (new_body_md or "").split(
+                        "\n\n", 1)[0][:500]
+                    events[beat_index].description = new_desc
+        except Exception:
+            pass
+        # Re-select the beat so the highlight stays anchored on the
+        # one we just updated (the re-render inside update_beat_body
+        # rebuilds the cards and selection survives via the panel's
+        # _selected_index, but make it explicit).
+        try:
+            panel._on_beat_selected(beat_index)
+        except Exception:
+            pass
+        # Confirmation in chat.
+        beat_label = beat_title or f"Beat {beat_index + 1}"
+        self.chat_widget.add_message(
+            "Assistant",
+            f"_Pushed the AI-developed beat into **{beat_label}** "
+            "in your outline panel — autosaved._\n\n"
+            "If you want a different angle, say so and I'll "
+            "rework it; or click ✨ on another beat to keep going.")
+        # Clear the focused-beat session — done.
+        self._focused_beat_ai.pop(chapter_id, None)
+        # Reset the outline session for this chapter so the next
+        # ✨ click starts a clean Q&A loop instead of resuming the
+        # previous round counter.
+        self._outline_session_state.pop(chapter_id, None)
+        print(
+            f"[focused-beat] chapter={chapter_id} "
+            f"beat_index={beat_index} title={beat_label!r} "
+            "applied to panel",
+            flush=True)
+        return True
+
     def _handle_outline_json_questions(self,
                                         chapter_id: str,
                                         parsed: dict) -> None:
@@ -5863,6 +6017,76 @@ class MainWindow(QMainWindow):
                  "content": joined_qs or "(no questions)"})
             self._compact_chat_history()
         self._pending_chat_message = ""
+
+        # Focused-beat sessions: when the AI signals readiness
+        # (phase=questions with an EMPTY questions array, or the
+        # round cap was just hit), the next turn would already
+        # produce phase=beat. Without an auto-send the user sees
+        # "moving to write Beat X on the next message" + has to
+        # type something — that's the "AI says it has enough but
+        # nothing lands in the checklist" report. Auto-send a
+        # "proceed" for them so the focused-beat flow completes
+        # in one click.
+        if self._focused_beat_ai.get(chapter_id) and (
+                not questions or rounds >= cap):
+            try:
+                from PyQt6.QtCore import QTimer as _QT
+                _QT.singleShot(
+                    0,
+                    lambda: self._auto_send_focused_beat_proceed(
+                        chapter_id))
+            except Exception:
+                pass
+
+    def _auto_send_focused_beat_proceed(self,
+                                          chapter_id: str) -> None:
+        """Re-fire the LLM with a synthetic 'proceed' for focused
+        beats so the AI's "I have enough" turn flows straight into
+        the beat-write turn without a manual user nudge.
+        """
+        # Sanity: panel must still be on this chapter and the
+        # focused session must still be set (the user might have
+        # clicked away while the LLM was thinking).
+        focus = self._focused_beat_ai.get(chapter_id)
+        if not focus:
+            return
+        panel = getattr(self.chat_widget, "outline_panel", None)
+        if panel is None or panel.current_chapter_id() != chapter_id:
+            return
+        # Don't auto-fire on top of an in-flight LLM call.
+        if (self._chat_worker is not None
+                and self._chat_worker.isRunning()):
+            return
+        # Pin to writer + outline output so the response routes
+        # through the outline JSON parser (the focused-beat session
+        # was started with these modes, but the user may have
+        # toggled away in the meantime — we re-pin defensively).
+        try:
+            self.chat_widget.set_mode("writer")
+        except Exception:
+            pass
+        try:
+            self.chat_widget.set_output_mode("outline")
+        except Exception:
+            pass
+        try:
+            insert_mode = (
+                self.chat_widget.get_insert_mode()
+                if hasattr(self.chat_widget, "get_insert_mode")
+                else "")
+        except Exception:
+            insert_mode = ""
+        # Visible nudge so the user understands what's happening
+        # (and can stop sending their own message into the void).
+        self.chat_widget.add_message(
+            "Assistant",
+            "_Producing the developed beat now…_")
+        # Drive the dispatcher's beat_write_force path with mode
+        # explicitly set to "writer" so _pending_output_mode picks
+        # up "outline" + the response handler routes phase="beat"
+        # to our focused-beat path.
+        self._handle_chat_message(
+            "proceed", "writer", insert_mode)
 
     def _handle_outline_json_beat(self,
                                    chapter_id: str,
@@ -6167,6 +6391,111 @@ class MainWindow(QMainWindow):
             event_stage=beat_stage,
             chapter_id=chapter_id)
 
+    def _build_focused_beat_context(self,
+                                       chapter_id: str,
+                                       beat_text: str,
+                                       beat_description: str) -> str:
+        """Compact local-neighbourhood context for a per-beat AI ask.
+
+        Returns a multi-line string with: chapter title, the beat
+        being developed, and (if found) the immediately preceding
+        and following beats. Wider context (main plot, subplots,
+        characters, worldbuilding) is added at chat-send time by
+        the existing ``_build_context_prompt`` pipeline; this
+        helper exists so the AI sees the LOCAL plot neighbourhood
+        in the user-visible prompt itself.
+
+        Returns "" when there's nothing to add (e.g. no project
+        loaded, or the beat isn't found in the chapter).
+        """
+        if not self.current_project:
+            return ""
+        manuscript = getattr(
+            self.current_project, "manuscript", None)
+        chapters = getattr(manuscript, "chapters", None) or []
+        chapter = next(
+            (c for c in chapters
+             if getattr(c, "id", None) == chapter_id),
+            None)
+        if chapter is None:
+            return ""
+        events = list(
+            getattr(getattr(chapter, "planning", None),
+                    "events", []) or [])
+
+        def _norm(s: str) -> str:
+            return (s or "").strip().lower()
+
+        target_norm = _norm(beat_text)
+        # Find this beat in events by exact (normalised) title match.
+        idx = next(
+            (i for i, ev in enumerate(events)
+             if _norm(getattr(ev, "text", "")) == target_norm),
+            None)
+
+        lines: list[str] = []
+        chapter_title = (
+            getattr(chapter, "title", "") or "").strip()
+        if chapter_title:
+            lines.append(
+                f"\nChapter: \"{chapter_title}\"")
+
+        if idx is not None:
+            total = len(events)
+            lines.append(
+                f"This beat is {idx + 1} of {total} in the chapter "
+                "plot arc.")
+            if idx > 0:
+                prev_ev = events[idx - 1]
+                prev_text = (
+                    getattr(prev_ev, "text", "") or "(untitled)")
+                prev_desc = (
+                    getattr(prev_ev, "description", "") or ""
+                ).strip()
+                lines.append(
+                    f"\nPrevious beat ({idx}): \"{prev_text}\"")
+                if prev_desc:
+                    # Cap to keep the prompt tight — the system
+                    # context-prompt pipeline carries the full
+                    # outline anyway.
+                    lines.append(prev_desc[:400])
+            if idx < total - 1:
+                next_ev = events[idx + 1]
+                next_text = (
+                    getattr(next_ev, "text", "") or "(untitled)")
+                next_desc = (
+                    getattr(next_ev, "description", "") or ""
+                ).strip()
+                lines.append(
+                    f"\nNext beat ({idx + 2}): \"{next_text}\"")
+                if next_desc:
+                    lines.append(next_desc[:400])
+        else:
+            # Beat not in events list — likely a brand-new card the
+            # user just added. Show the nearby beats from the panel
+            # so the AI still has neighbourhood context.
+            panel = getattr(self.chat_widget, "outline_panel", None)
+            sel_idx = (panel.selected_beat_index()
+                       if panel is not None else None)
+            if (panel is not None and sel_idx is not None):
+                beats = panel.all_beats()
+                if 0 <= sel_idx < len(beats):
+                    total = len(beats)
+                    lines.append(
+                        f"This beat is {sel_idx + 1} of {total} in "
+                        "the chapter plot arc.")
+                    if sel_idx > 0:
+                        prev = beats[sel_idx - 1]
+                        lines.append(
+                            f"\nPrevious beat ({sel_idx}): "
+                            f"\"{prev.title}\"")
+                    if sel_idx < total - 1:
+                        nxt = beats[sel_idx + 1]
+                        lines.append(
+                            f"\nNext beat ({sel_idx + 2}): "
+                            f"\"{nxt.title}\"")
+        return "\n".join(lines).rstrip()
+
     def _handle_beat_ai_help_requested(
             self,
             event_id: str,
@@ -6178,10 +6507,64 @@ class MainWindow(QMainWindow):
 
         Switches the sidebar to the AI Assistant tab, picks
         outline mode, and types a focused prompt that names the
-        target beat. The user can then send to start the outline
-        flow on this beat. We don't auto-send so the user can
-        edit the prompt first.
+        target beat plus the surrounding beats / chapter so the
+        AI has the local plot context up front. The wider story-
+        wide context (main plot, subplots, characters,
+        worldbuilding) is added by the existing context-prompt
+        pipeline when the user sends — this prompt is the local
+        framing on top of that.
+
+        The prompt explicitly tells the AI to ask up to four
+        clarifying questions (one round at a time) before producing
+        the fleshed-out beat. We don't auto-send so the user can
+        edit first.
+
+        Records a focused-beat session so the next AI response with
+        phase="beat" lands DIRECTLY in this beat's body (rather
+        than going through the normal staging/apply pipeline).
         """
+        # Record which beat this session is for so the JSON response
+        # is pushed straight into THAT beat's body in the panel.
+        try:
+            panel = getattr(self.chat_widget, "outline_panel", None)
+            sel_idx = (panel.selected_beat_index()
+                       if panel is not None else None)
+            target_chapter = chapter_id or (
+                panel.current_chapter_id() if panel else "")
+            if target_chapter and sel_idx is not None:
+                import time as _time
+                self._focused_beat_ai[target_chapter] = {
+                    "beat_index": sel_idx,
+                    "beat_title": (event_text or "").strip(),
+                    "started_at": _time.time(),
+                }
+                # Pre-populate the outline session so the FIRST user
+                # send drops straight into BEAT_QUESTIONS for the
+                # clicked beat. Without this, the dispatcher would
+                # kick off pick_start (asks the AI which beat to
+                # start with), then await_proceed (user types
+                # "proceed"), and only THEN enter beat_questions —
+                # the focused-beat user has already told us which
+                # beat by clicking ✨, so all that is wasted turns
+                # and explains "AI says ready but nothing lands".
+                # The dispatcher's beat_questions branch then drives
+                # the up-to-4 question loop and force-flips to
+                # beat_write at the cap, which is what feeds JSON
+                # to _handle_focused_beat_response.
+                self._outline_session_state[target_chapter] = {
+                    "phase": self._OUTLINE_PHASE_BEAT_QUESTIONS,
+                    "current_beat_number": sel_idx + 1,
+                    "current_beat_index": sel_idx,
+                    "rounds_for_beat": 0,
+                    "max_rounds":
+                        self._OUTLINE_MAX_ROUNDS_PER_BEAT,
+                    "audit": [],
+                    "staging": [],
+                    "started": True,
+                    "_focused": True,
+                }
+        except Exception:
+            pass
         # Ensure the sidebar is visible + on the AI Assistant tab.
         if hasattr(self, "sidebar_container"):
             try:
@@ -6192,21 +6575,63 @@ class MainWindow(QMainWindow):
             idx = self.sidebar_tabs.indexOf(self.chat_widget)
             if idx >= 0:
                 self.sidebar_tabs.setCurrentIndex(idx)
-        # Switch chat to outline output mode if the toggle exists.
+        # Switch the chat to writer mode + outline output. BOTH are
+        # required for the focused-beat flow to work end-to-end:
+        #
+        #   * Setting output_mode alone is NOT enough — the response
+        #     handler reads _pending_output_mode, which only gets
+        #     populated from the chat widget when mode == "writer"
+        #     (otherwise it's force-pinned to "full_text"). Without
+        #     mode="writer" the outline JSON parser never runs and
+        #     the AI's phase="beat" reply silently falls into the
+        #     writer-prose branch instead of our focused-beat handler.
+        #   * Setting mode alone is NOT enough — the outline-mode
+        #     JSON contract (phase: "questions" / "beat") only
+        #     applies when output_mode is "outline".
+        try:
+            self.chat_widget.set_mode("writer")
+        except Exception:
+            pass
         try:
             self.chat_widget.set_output_mode("outline")
         except Exception:
             pass
-        # Compose the focused prompt for this beat.
+        # Compose the focused prompt for this beat — pulls in the
+        # immediate plot neighbourhood (prev / next beat) so the AI
+        # doesn't have to ask questions the surrounding beats
+        # already answer.
         beat_label = (event_text or "(untitled beat)").strip()
-        prompt = (
-            f"Help me develop this beat for the current chapter: "
+        local_context = self._build_focused_beat_context(
+            chapter_id=chapter_id,
+            beat_text=beat_label,
+            beat_description=event_description)
+        prompt_parts = [
+            f"Develop this beat for the current chapter: "
             f"\"{beat_label}\""
-            + (f" [{event_stage}]" if event_stage else "")
-            + (f"\n\nWhat I have so far: {event_description}"
-               if event_description else "")
-            + "\n\nAsk me clarifying questions, then produce the "
-              "structured outline JSON for this beat.")
+            + (f" [{event_stage}]" if event_stage else ""),
+        ]
+        if event_description:
+            prompt_parts.append(
+                f"\nWhat I have so far for this beat:\n"
+                f"{event_description}")
+        if local_context:
+            prompt_parts.append(local_context)
+        prompt_parts.append(
+            "\nProcess:\n"
+            "  1. Ask up to FOUR rounds of clarifying questions, "
+            "one round at a time. Each round's questions must be "
+            "unique (don't repeat earlier rounds) and clearly "
+            "relevant to fleshing out THIS beat.\n"
+            "  2. Lean on the surrounding beats, chapter outline, "
+            "story plots and subplots, characters, and "
+            "worldbuilding context (provided in the system prompt) "
+            "before asking — only ask what those don't already "
+            "answer.\n"
+            "  3. After the questions (or sooner if I tell you to "
+            "produce now), output the structured outline JSON for "
+            "ONLY this beat — keep its title exactly as I named "
+            "it: \"" + beat_label + "\".")
+        prompt = "\n".join(prompt_parts)
         # Stage the prompt in the input field — user reviews + sends.
         try:
             self.chat_widget.input_field.setPlainText(prompt)
@@ -9619,6 +10044,19 @@ class MainWindow(QMainWindow):
                         chapter_id, parsed)
                     return
                 if phase == "beat":
+                    # Focused-beat session takes precedence: the
+                    # ✨ button on a beat card pinned this beat as
+                    # the destination, so write the JSON straight
+                    # into its body instead of going through the
+                    # whole-outline staging/apply chain.
+                    if self._focused_beat_ai.get(chapter_id):
+                        if self._handle_focused_beat_response(
+                                chapter_id, parsed):
+                            return
+                        # If the focused-beat application failed
+                        # (beat index now out of range, etc.) we
+                        # fall through to the normal staging path
+                        # so the AI's work isn't dropped.
                     self._handle_outline_json_beat_staging(
                         chapter_id, parsed)
                     return

@@ -925,6 +925,20 @@ class ChatWidget(QWidget):
                 self.mode_combo.setCurrentIndex(i)
                 break
 
+    def set_output_mode(self, output_mode: str):
+        """Set the writer-output mode (Full Text / Outline)
+        programmatically. Drives the combo box so the visible UI
+        stays in sync — needed by the per-beat ✨ AI flow which
+        forces the chat into Writer + Outline so the AI's
+        phase=\"beat\" JSON routes through the outline JSON parser.
+        """
+        if not hasattr(self, "output_combo"):
+            return
+        for i in range(self.output_combo.count()):
+            if self.output_combo.itemData(i) == output_mode:
+                self.output_combo.setCurrentIndex(i)
+                break
+
     def _send_message(self):
         """Send user message."""
         message = self.input_field.text().strip()
