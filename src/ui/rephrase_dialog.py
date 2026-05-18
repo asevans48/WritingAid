@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QCheckBox, QLineEdit, QFrame, QSplitter, QWidget, QScrollArea,
     QComboBox
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 
 from src.ai.rephrasing_agent import RephrasingAgent, RephraseStyle, RephraseTone, RephraseResult
 from src.ai.mlx_utils import can_use_mlx
@@ -132,6 +132,21 @@ class RephraseDialog(QDialog):
         # programmatically populate the preview (option-switch).
         self._preview_dirty: bool = False
         self._original_option_text: str = ""  # what was in preview before edits
+
+        # Debounced training-data save for ratings. Writing on the
+        # click instant loses in-flight edits (the user clicks Poor
+        # and then keeps correcting the prose) — the corpus row is
+        # the high-value piece, so we wait for the edit to settle
+        # before persisting. _on_preview_text_changed restarts the
+        # timer on each keystroke; _on_option_selected and
+        # _refine_results flush pending saves before clobbering
+        # the preview so the rating doesn't vanish silently.
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(900)
+        self._save_timer.timeout.connect(self._flush_pending_rating_save)
+        self._pending_rating: str = ""
+        self._last_saved_sig: tuple = ()
 
         self._init_ui()
         self._init_agent()
@@ -617,6 +632,13 @@ class RephraseDialog(QDialog):
         for b in (self.rate_excellent_btn, self.rate_good_btn,
                   self.rate_poor_btn, self.rate_bad_btn):
             rating_row.addWidget(b)
+        # Surfaces the debounced-save state so the user can see when
+        # their rating + edit actually lands in the corpus instead
+        # of guessing.
+        self._save_status_label = QLabel("")
+        self._save_status_label.setStyleSheet(
+            "color: #6b7280; font-size: 11px; font-style: italic;")
+        rating_row.addWidget(self._save_status_label)
         rating_row.addStretch()
         main_layout.addLayout(rating_row)
 
@@ -1129,6 +1151,14 @@ class RephraseDialog(QDialog):
             self._set_preview_dirty(False)
             return
 
+        # Persist any pending rating for the option the user is
+        # leaving — switching options replaces the preview, so the
+        # rating + edit would otherwise vanish before the debounce
+        # timer fires.
+        if self._pending_rating:
+            self._save_timer.stop()
+            self._flush_pending_rating_save()
+
         # Confirm before discarding an in-progress edit.
         if self._preview_dirty:
             from PyQt6.QtWidgets import QMessageBox
@@ -1166,6 +1196,10 @@ class RephraseDialog(QDialog):
         self.style_label.setText(f"Style: {option.style} | Tone: {option.tone} — {option.explanation}")
         self.use_btn.setEnabled(True)
         self._set_preview_dirty(False)
+        # Clear the save-status hint so a "✓ Saved as good" from the
+        # previous option doesn't linger and mislead the user about
+        # the freshly-loaded one.
+        self._update_save_status("", ok=True)
 
     def _restore_previous_selection(self):
         """Re-select the option whose text matches what's currently
@@ -1200,6 +1234,15 @@ class RephraseDialog(QDialog):
             self._original_option_text or '').strip()
         if is_dirty != self._preview_dirty:
             self._set_preview_dirty(is_dirty)
+        # Keep restarting the debounce while the user is still
+        # typing — the row that finally lands in the corpus should
+        # be their final text, not whatever was on screen when
+        # they clicked the rating button.
+        if self._pending_rating:
+            self._save_timer.start()
+            self._update_save_status(
+                f"Saving as {self._pending_rating} after you finish editing…",
+                pending=True)
 
     def _set_preview_dirty(self, dirty: bool) -> None:
         """Flip the dirty flag and update the badge / button label."""
@@ -1228,13 +1271,15 @@ class RephraseDialog(QDialog):
         self._set_preview_dirty(False)
 
     def _on_rating_clicked(self, value: str):
-        """Track which rating button is active (radio-button behavior).
+        """Track the active rating and schedule a debounced save.
 
-        For negative ratings (poor / bad) we ALSO log the currently
-        previewed suggestion as a rejected sample immediately — those
-        are the most valuable kind: rows the user explicitly disliked.
-        DPO/preference training pairs them with the eventual accepted
-        suggestion as the contrastive 'rejected' example.
+        Every rating (positive AND negative) queues a write to the
+        corpus on a short timer. Edits to the preview restart the
+        timer so the row that lands carries the user's final text
+        with the was_edited flag set — saving on the click instant
+        would lose corrections the user is still typing. The
+        contrastive un-edited row that _use_selected normally
+        writes is preserved through that path.
         """
         # Radio behavior — uncheck the others
         for v, btn in (("excellent", self.rate_excellent_btn),
@@ -1243,18 +1288,62 @@ class RephraseDialog(QDialog):
                        ("bad", self.rate_bad_btn)):
             btn.setChecked(v == value)
         self._selected_rating = value
+        self._pending_rating = value
+        self._update_save_status(
+            f"Saving as {value} after you finish editing…",
+            pending=True)
+        self._save_timer.start()
 
-        # Negative ratings are logged immediately so the user can keep
-        # iterating without losing the disliked example.
-        if value in ("poor", "bad"):
-            preview = self.preview_edit.toPlainText().strip()
-            if preview and preview != self.original_text.strip():
-                try:
-                    self._log_to_rephrase_db(
-                        self.original_text, preview,
-                        accepted=False, rating=value)
-                except Exception as e:
-                    print(f"[Rephrase] could not log negative: {e}")
+    def _flush_pending_rating_save(self):
+        """Persist the queued rated suggestion to the corpus.
+
+        Reads the preview at call time so any edits made while the
+        debounce was running are captured, and stamps was_edited
+        when the preview is dirty. Called by the timer, by option-
+        switch, and by refinement — anywhere the preview is about
+        to change or the user has stopped touching it.
+        """
+        if not self._pending_rating:
+            return
+        rating = self._pending_rating
+        self._pending_rating = ""
+        output = self.preview_edit.toPlainText().strip()
+        if not output or output == self.original_text.strip():
+            self._update_save_status(
+                "Nothing saved — preview is empty or matches the source.",
+                ok=False)
+            return
+        accepted = rating in ("excellent", "good")
+        was_edited = bool(self._preview_dirty)
+        sig = (rating, accepted, hash(output))
+        if sig == self._last_saved_sig:
+            self._update_save_status(
+                f"Already saved as {rating}.", ok=True)
+            return
+        try:
+            self._log_to_rephrase_db(
+                self.original_text, output,
+                accepted=accepted, rating=rating,
+                was_edited=was_edited)
+            self._last_saved_sig = sig
+            tail = " (edited)" if was_edited else ""
+            self._update_save_status(
+                f"✓ Saved as {rating}{tail} for training", ok=True)
+        except Exception as e:
+            self._update_save_status(f"Save failed: {e}", ok=False)
+
+    def _update_save_status(self, text: str, ok: bool = True,
+                            pending: bool = False) -> None:
+        """Update the inline save-status hint next to the rating row."""
+        if not hasattr(self, '_save_status_label'):
+            return
+        if pending:
+            color = "#6b7280"
+        else:
+            color = "#059669" if ok else "#dc2626"
+        self._save_status_label.setText(text)
+        self._save_status_label.setStyleSheet(
+            f"color: {color}; font-size: 11px; font-style: italic;")
 
     def _use_selected(self):
         """Use the selected/edited text and (if opted in) log the pair.
@@ -1274,6 +1363,13 @@ class RephraseDialog(QDialog):
         captures the contrast (this is the same kind of signal
         DPO/preference training looks for).
         """
+        # Stop the debounce — _use_selected does the explicit
+        # accepted=True write below; letting the timer also fire
+        # would race against dialog teardown.
+        self._save_timer.stop()
+        pending = self._pending_rating
+        self._pending_rating = ""
+
         edited = self.preview_edit.toPlainText()
         was_edited = bool(self._preview_dirty)
         original_option = self._original_option_text or ''
@@ -1284,11 +1380,27 @@ class RephraseDialog(QDialog):
         if rating in ("neutral", ""):
             rating = "good"
         try:
+            # If a negative rating was queued and would have fired
+            # any moment, persist that "rejected" signal first — the
+            # user explicitly flagged this suggestion as Poor/Bad
+            # even if they're about to use it anyway, and DPO
+            # training relies on that signal.
+            if pending in ("poor", "bad"):
+                neg_sig = (pending, False, hash(edited.strip()))
+                if neg_sig != self._last_saved_sig:
+                    self._log_to_rephrase_db(
+                        self.original_text, edited,
+                        accepted=False, rating=pending,
+                        was_edited=was_edited)
+                    self._last_saved_sig = neg_sig
             # Primary log: the text the user actually committed to.
-            self._log_to_rephrase_db(
-                self.original_text, edited,
-                accepted=True, rating=rating,
-                was_edited=was_edited)
+            primary_sig = (rating, True, hash(edited.strip()))
+            if primary_sig != self._last_saved_sig:
+                self._log_to_rephrase_db(
+                    self.original_text, edited,
+                    accepted=True, rating=rating,
+                    was_edited=was_edited)
+                self._last_saved_sig = primary_sig
             # Secondary log: when the user edited the option, also
             # log the un-edited original at a neutral rating so the
             # training data has both versions as a comparison
@@ -1396,6 +1508,13 @@ class RephraseDialog(QDialog):
             return
         if not self.result or not self.result.options:
             return
+
+        # Refinement will replace the current options + preview, so
+        # flush any pending rating for the about-to-be-clobbered
+        # suggestion first.
+        if self._pending_rating:
+            self._save_timer.stop()
+            self._flush_pending_rating_save()
 
         # Get the currently previewed text as the starting point
         current_text = self.preview_edit.toPlainText().strip()

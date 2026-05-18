@@ -8,6 +8,7 @@ from src.models.project import WriterProject
 from src.ai.semantic_search import (
     SemanticSearchEngine, SearchMethod, DocumentChunk
 )
+from src.ai.knowledge_graph import KnowledgeGraph
 
 if TYPE_CHECKING:
     from src.ai.llm_client import LLMClient
@@ -24,6 +25,7 @@ class ContextResult:
     matched_terms: List[str]
     match_type: str  # keyword, semantic, hybrid
     metadata: Dict[str, Any]
+    source_id: str = ""  # Entity ID — lets graph-aware consumers look up relations
 
 
 class EnhancedRAGSystem:
@@ -46,6 +48,7 @@ class EnhancedRAGSystem:
         self.llm_client = llm_client
         self.memory_manager = memory_manager
         self.search_engine = SemanticSearchEngine()
+        self.knowledge_graph = KnowledgeGraph()
         self._indexed = False
 
         # Set up embedding function if LLM client available
@@ -107,6 +110,15 @@ class EnhancedRAGSystem:
                 self._index_chapter_data()
             except Exception as e:
                 print(f"RAG chapter indexer failed: {e}")
+
+        # Build the knowledge graph alongside the search index. Walks
+        # the same Pydantic objects but extracts explicit relationships
+        # (allies, controls, social_tie, etc.) so retrieved entities
+        # can be annotated with their edges at query time.
+        try:
+            self.knowledge_graph.build_from_project(self.project)
+        except Exception as e:
+            print(f"RAG knowledge graph build failed: {e}")
 
         self._indexed = True
 
@@ -1038,7 +1050,8 @@ Related Characters: {', '.join(chars) if chars else 'All'}
                 relevance_score=r.score,
                 matched_terms=r.matched_terms,
                 match_type=r.match_type,
-                metadata=r.chunk.metadata
+                metadata=r.chunk.metadata,
+                source_id=r.chunk.source_id,
             )
             for r in results
         ]
@@ -1074,7 +1087,8 @@ Related Characters: {', '.join(chars) if chars else 'All'}
                 relevance_score=r.score,
                 matched_terms=r.matched_terms,
                 match_type=r.match_type,
-                metadata=r.chunk.metadata
+                metadata=r.chunk.metadata,
+                source_id=r.chunk.source_id,
             )
             for r in results
         ]
@@ -1083,17 +1097,25 @@ Related Characters: {', '.join(chars) if chars else 'All'}
         self,
         query: str,
         max_tokens: int = 2000,
-        method: SearchMethod = SearchMethod.HYBRID
+        method: SearchMethod = SearchMethod.HYBRID,
+        expand_graph: bool = True,
     ) -> str:
         """Get formatted context for AI chat.
 
         Searches both the project index AND the external knowledge store
         (Wikipedia, Britannica) if articles have been downloaded.
 
+        When ``expand_graph`` is true (default), each retrieved entity
+        that exists in the knowledge graph gets a compact
+        ``Relationships:`` line appended below its chunk listing its
+        outgoing edges (allies, controls, led_by, etc.). This gives the
+        LLM access to typed relationships without pulling extra chunks.
+
         Args:
             query: User's query
             max_tokens: Approximate max tokens for context
             method: Search method
+            expand_graph: Annotate retrieved entities with their graph edges
 
         Returns:
             Formatted context string for AI prompt
@@ -1106,12 +1128,20 @@ Related Characters: {', '.join(chars) if chars else 'All'}
         chars_per_token = 4
 
         for result in results:
-            content_tokens = len(result.content) // chars_per_token
+            relations_line = ""
+            if expand_graph and result.source_id:
+                relations_line = self._format_relations_line(
+                    result.source_type, result.source_id)
+            block = (
+                f"[{result.source_type.upper()}: {result.source_name}]\n"
+                f"{result.content}\n"
+            )
+            if relations_line:
+                block += f"Relationships: {relations_line}\n"
+            content_tokens = len(block) // chars_per_token
             if current_tokens + content_tokens > max_tokens:
                 break
-            context_parts.append(
-                f"[{result.source_type.upper()}: {result.source_name}]\n{result.content}\n"
-            )
+            context_parts.append(block)
             current_tokens += content_tokens
 
         # Search the external knowledge store (Wikipedia, Britannica, etc.)
@@ -1125,6 +1155,19 @@ Related Characters: {', '.join(chars) if chars else 'All'}
             return ""
 
         return "RELEVANT CONTEXT:\n\n" + "\n---\n".join(context_parts)
+
+    def _format_relations_line(self, source_type: str, source_id: str) -> str:
+        """Compact one-line render of a node's edges for prompt context.
+
+        Delegates to ``KnowledgeGraph.format_relations_line`` so chat-
+        side callers in main_window share the same rendering. Returns
+        "" when the entity has no graph node or no edges.
+        """
+        return self.knowledge_graph.format_relations_line(
+            source_type, source_id,
+            max_edges=12,
+            include_incoming=True,
+        )
 
     def _search_knowledge_store(self, query: str, max_tokens: int) -> list:
         """Search the external knowledge store for relevant articles.

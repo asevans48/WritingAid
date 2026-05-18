@@ -7274,6 +7274,15 @@ class MainWindow(QMainWindow):
             return ""
         if not results:
             return ""
+        # Knowledge-graph hook: when the retrieved chunk is for a
+        # graph-annotatable entity (faction / place / character /
+        # historical_event / etc.), append a short ``(related: …)``
+        # suffix listing its outgoing edges. This brings the typed-
+        # relationship signal to every chat mode that uses this method
+        # — the bypass-route that doesn't go through
+        # ``get_context_for_ai``. Falls through silently if the graph
+        # isn't built or the entity has no node, so it never hurts.
+        kg = getattr(self._rag_system, "knowledge_graph", None)
         lines = []
         running = 0
         for r in results:
@@ -7285,7 +7294,13 @@ class MainWindow(QMainWindow):
             head = (
                 f"  - [{r.source_type}] "
                 f"{r.source_name or '(unnamed)'}")
-            line = f"{head}: {body}"
+            related_suffix = ""
+            if kg is not None and getattr(r, "source_id", ""):
+                rel_line = kg.format_relations_line(
+                    r.source_type, r.source_id, max_edges=8)
+                if rel_line:
+                    related_suffix = f"  (related: {rel_line})"
+            line = f"{head}: {body}{related_suffix}"
             if running + len(line) > max_total_chars:
                 lines.append(
                     f"  …{len(results) - len(lines)} more "
@@ -8454,10 +8469,102 @@ class MainWindow(QMainWindow):
 
         return "\n".join(parts)
 
+    # Maps the human-readable category labels used by the focused-
+    # element block to the entity_type keys used by the knowledge
+    # graph. Lets us look up an entity's edges by category without a
+    # second name search.
+    _FOCUSED_CATEGORY_TO_GRAPH_TYPE = {
+        "Character":    "character",
+        "Faction":      "faction",
+        "Place":        "place",
+        "Culture":      "culture",
+        "Technology":   "technology",
+        "Myth":         "myth",
+        "Flora":        "flora",
+        "Fauna":        "fauna",
+    }
+
+    def _append_graph_connections(
+        self,
+        parts: list,
+        entity_type: str,
+        entity_id: str,
+        entity_name: str,
+    ) -> None:
+        """Append a 'Connections:' block listing this entity's graph edges.
+
+        Pulls from the knowledge graph if available so the model can
+        see who this entity is allied with / leads / inhabits / is
+        romantically tied to — typed relationships that mere prose
+        retrieval doesn't surface. No-op when the graph isn't built or
+        the entity has no edges.
+        """
+        rag = getattr(self, "_rag_system", None)
+        kg = getattr(rag, "knowledge_graph", None) if rag else None
+        if kg is None:
+            return
+        # Try the (type, id) tuple first; if that misses (e.g. legacy
+        # data with no stable ID), fall back to name resolution.
+        node = None
+        if entity_id and (entity_type, entity_id) in kg.graph:
+            node = (entity_type, entity_id)
+        elif entity_name:
+            node = kg.resolve(entity_name, prefer_type=entity_type)
+        if node is None:
+            return
+        edges = kg.edges_of(node, include_incoming=True)
+        if not edges:
+            return
+        # De-dup edges that point at the same neighbor with the same
+        # relation (can happen on parallel-edge multigraphs) and cap
+        # at a generous bound — the focused element is a single
+        # entity, so a richer neighborhood is acceptable here.
+        seen = set()
+        rendered = []
+        for relation, other, _attrs in edges:
+            key = (relation, other)
+            if key in seen:
+                continue
+            seen.add(key)
+            other_name = kg.graph.nodes[other].get("name", other[1])
+            other_type = kg.graph.nodes[other].get("entity_type", other[0])
+            rendered.append(f"  - {relation}: {other_name} ({other_type})")
+            if len(rendered) >= 20:
+                break
+        parts.append("Connections (from knowledge graph):")
+        parts.extend(rendered)
+
+    def _graph_edges_inline(
+        self,
+        entity_type: str,
+        entity_id: str,
+        max_edges: int = 5,
+        include_incoming: bool = False,
+    ) -> str:
+        """Compact inline edges string for the broad fallback blocks.
+
+        Returns "" when the entity isn't in the graph or has no edges.
+        Tighter cap (5) than the focused-element block since these
+        annotations are sprinkled across every entry in a roster — the
+        cumulative token cost adds up fast.
+        """
+        rag = getattr(self, "_rag_system", None)
+        kg = getattr(rag, "knowledge_graph", None) if rag else None
+        if kg is None:
+            return ""
+        return kg.format_relations_line(
+            entity_type, entity_id,
+            max_edges=max_edges,
+            include_incoming=include_incoming)
+
     def _find_referenced_element(self, message: str, project) -> str:
         """Check if the user's message mentions a specific element by name.
 
-        If found, return that element's full details as a formatted string.
+        If found, return that element's full details as a formatted
+        string, including a ``Connections:`` block listing the entity's
+        graph edges (allies, leader, controlling faction, social ties,
+        love interests, etc.) so the model can reason about typed
+        relationships without traversing the project manually.
         """
         msg_lower = message.lower()
 
@@ -8482,6 +8589,9 @@ class MainWindow(QMainWindow):
                         parts.append(f"Current state: {latest.emotional_state}")
                     if getattr(latest, 'growth_notes', ''):
                         parts.append(f"Growth: {latest.growth_notes[:200]}")
+                self._append_graph_connections(
+                    parts, "character",
+                    getattr(char, 'id', ''), char.name)
                 return "\n".join(parts)
 
         # Check worldbuilding elements
@@ -8509,6 +8619,12 @@ class MainWindow(QMainWindow):
                         elif val and isinstance(val, list) and val:
                             if all(isinstance(v, str) for v in val):
                                 parts.append(f"{field.replace('_', ' ').title()}: {', '.join(val[:10])}")
+                    graph_type = self._FOCUSED_CATEGORY_TO_GRAPH_TYPE.get(
+                        category)
+                    if graph_type:
+                        self._append_graph_connections(
+                            parts, graph_type,
+                            getattr(elem, 'id', ''), name)
                     return "\n".join(parts)
 
         return ""
@@ -8754,6 +8870,10 @@ class MainWindow(QMainWindow):
                         char_info = f"- {char.name} ({char.character_type})"
                         if char.personality:
                             char_info += f": {char.personality[:100]}"
+                    ties = self._graph_edges_inline(
+                        "character", getattr(char, 'id', ''))
+                    if ties:
+                        char_info += f"\n  Ties: {ties}"
                     char_summaries.append(char_info)
                 context['characters'] = "\n".join(char_summaries)
 
@@ -8770,16 +8890,42 @@ class MainWindow(QMainWindow):
                     wb_parts.append(f"Politics: {wb.politics[:detail_limit]}")
                 if wb.factions:
                     if is_chapter_focused:
-                        faction_info = [f"{f.name}: {f.description[:100] if hasattr(f, 'description') and f.description else ''}" for f in wb.factions[:8]]
+                        faction_lines = []
+                        for f in wb.factions[:8]:
+                            desc = (f.description[:100]
+                                    if hasattr(f, 'description')
+                                       and f.description else '')
+                            line = f"  - {f.name}: {desc}"
+                            ties = self._graph_edges_inline(
+                                "faction", getattr(f, 'id', ''))
+                            if ties:
+                                line += f"  [ties: {ties}]"
+                            faction_lines.append(line)
+                        wb_parts.append(
+                            "Factions:\n" + "\n".join(faction_lines))
                     else:
                         faction_info = [f.name for f in wb.factions[:5]]
-                    wb_parts.append(f"Factions: {', '.join(faction_info)}")
+                        wb_parts.append(
+                            f"Factions: {', '.join(faction_info)}")
                 if wb.places:
                     if is_chapter_focused:
-                        place_info = [f"{p.name}: {p.description[:100] if hasattr(p, 'description') and p.description else ''}" for p in wb.places[:8]]
+                        place_lines = []
+                        for p in wb.places[:8]:
+                            desc = (p.description[:100]
+                                    if hasattr(p, 'description')
+                                       and p.description else '')
+                            line = f"  - {p.name}: {desc}"
+                            ties = self._graph_edges_inline(
+                                "place", getattr(p, 'id', ''))
+                            if ties:
+                                line += f"  [ties: {ties}]"
+                            place_lines.append(line)
+                        wb_parts.append(
+                            "Places:\n" + "\n".join(place_lines))
                     else:
                         place_info = [p.name for p in wb.places[:5]]
-                    wb_parts.append(f"Places: {', '.join(place_info)}")
+                        wb_parts.append(
+                            f"Places: {', '.join(place_info)}")
                 context['worldbuilding'] = "\n".join(wb_parts)
 
         # Plot mode: build per-chapter excerpts (opening + closing of
@@ -8850,11 +8996,16 @@ class MainWindow(QMainWindow):
                     context['plot_freytag'] = block
                     map_parts.append("FREYTAG PYRAMID:\n" + block)
                 if getattr(fp, 'events', None):
-                    event_lines = [f"  - {e.title}"
-                                    + (f": {e.description[:150]}"
-                                        if getattr(e, 'description', '')
-                                        else "")
-                                    for e in fp.events[:25]]
+                    event_lines = []
+                    for e in fp.events[:25]:
+                        head = f"  - {e.title}"
+                        if getattr(e, 'description', ''):
+                            head += f": {e.description[:150]}"
+                        ties = self._graph_edges_inline(
+                            "plot_event", getattr(e, 'id', ''))
+                        if ties:
+                            head += f"  [ties: {ties}]"
+                        event_lines.append(head)
                     if event_lines:
                         block = "\n".join(event_lines)
                         context['plot_events'] = block
@@ -8886,6 +9037,16 @@ class MainWindow(QMainWindow):
                         sub_lines.append(
                             f"      characters: "
                             f"{', '.join(str(c) for c in chars)}")
+                    # Graph-derived edges (e.g. plot events that fold
+                    # into this subplot via related_subplots). The
+                    # ``characters`` line above already covers the
+                    # outgoing involves-character edges; this picks up
+                    # the incoming side and anything else.
+                    ties = self._graph_edges_inline(
+                        "subplot", getattr(s, 'id', ''),
+                        max_edges=6, include_incoming=True)
+                    if ties:
+                        sub_lines.append(f"      graph: {ties}")
                     events = getattr(s, 'events', []) or []
                     if events:
                         ev_lines = []
