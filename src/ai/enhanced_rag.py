@@ -1,6 +1,6 @@
 """Enhanced RAG system with semantic search and comprehensive worldbuilding support."""
 
-from typing import List, Dict, Optional, Any, TYPE_CHECKING
+from typing import List, Dict, Optional, Any, Set, Tuple, TYPE_CHECKING
 from dataclasses import dataclass
 import uuid
 
@@ -119,6 +119,17 @@ class EnhancedRAGSystem:
             self.knowledge_graph.build_from_project(self.project)
         except Exception as e:
             print(f"RAG knowledge graph build failed: {e}")
+
+        # Co-occurrence scoring: walks the indexed chunks and tags
+        # each edge with strong/moderate/weak based on how often its
+        # endpoints appear in the same text. The annotation lines
+        # then read "ally_of -> Stoneforge Pact (strong)" so the LLM
+        # can prioritize active relationships over dormant ones.
+        try:
+            docs = self.search_engine.tfidf_index.documents.values()
+            self.knowledge_graph.score_cooccurrences(docs)
+        except Exception as e:
+            print(f"RAG cooccurrence scoring failed: {e}")
 
         self._indexed = True
 
@@ -1056,6 +1067,146 @@ Related Characters: {', '.join(chars) if chars else 'All'}
             for r in results
         ]
 
+    def search_with_neighbors(
+        self,
+        query: str,
+        top_k: int = 10,
+        method: SearchMethod = SearchMethod.HYBRID,
+        source_types: Optional[List[str]] = None,
+        max_neighbors_per_seed: int = 2,
+        min_neighbor_score: float = 0.05,
+        candidate_pool_factor: int = 5,
+    ) -> List[ContextResult]:
+        """Search + 1-hop graph expansion with query-relevance scoring.
+
+        Runs the normal search to get the top-K primary results, then
+        for each primary result that maps to a knowledge-graph node:
+
+          1. Walks its outgoing graph edges to find candidate neighbors.
+          2. Looks up each neighbor's query-relevance score from a
+             broader candidate-pool search (top_k * candidate_pool_factor)
+             — re-using existing TF-IDF/hybrid scoring instead of
+             recomputing it.
+          3. Multiplies that score by ``KnowledgeGraph.expansion_tier_multiplier``
+             for the edge's ``cooccur_tier`` so strong edges promote
+             neighbors more eagerly than weak ones.
+          4. Promotes up to ``max_neighbors_per_seed`` neighbors per
+             seed whose final score >= ``min_neighbor_score``.
+
+        Each promoted result carries provenance in its metadata:
+        ``promoted_from_seed_type``, ``promoted_from_seed_id``,
+        ``promoted_via_relation``, ``promoted_tier``. Its
+        ``match_type`` is set to ``"graph_neighbor"`` so callers can
+        render it differently from direct retrieval results.
+
+        Returns the primary results followed by the promoted neighbors,
+        with no deduplication beyond skipping neighbors that are
+        already in the primary set.
+        """
+        primary = self.search(
+            query=query, method=method, top_k=top_k,
+            source_types=source_types)
+        if not primary:
+            return primary
+
+        primary_keys: Set[Tuple[str, str]] = {
+            (r.source_type, r.source_id)
+            for r in primary if r.source_id
+        }
+
+        # Collect candidate neighbors: for each primary entity that
+        # exists in the graph, gather its outgoing edges. Each
+        # neighbor may show up from multiple seeds; keep the best
+        # (seed, relation, edge_data) per neighbor — best meaning
+        # highest tier multiplier.
+        candidate_to_best_edge: Dict[
+            Tuple[str, str],
+            Tuple[Tuple[str, str], str, Dict[str, Any], float]
+        ] = {}
+        for r in primary:
+            if not r.source_id:
+                continue
+            seed = (r.source_type, r.source_id)
+            if seed not in self.knowledge_graph.graph:
+                continue
+            for relation, neighbor, edge_data in (
+                    self.knowledge_graph.edges_of(
+                        seed, include_incoming=False)):
+                if neighbor in primary_keys:
+                    continue
+                if neighbor[0] not in (
+                        self.knowledge_graph.ANNOTATABLE_TYPES):
+                    continue
+                tier = (edge_data or {}).get("cooccur_tier", "")
+                mult = (self.knowledge_graph
+                            .expansion_tier_multiplier(tier))
+                existing = candidate_to_best_edge.get(neighbor)
+                if existing is None or mult > existing[3]:
+                    candidate_to_best_edge[neighbor] = (
+                        seed, relation, edge_data or {}, mult)
+
+        if not candidate_to_best_edge:
+            return primary
+
+        # Build a score map from a broader search so we get TF-IDF
+        # relevance for the candidate neighbors without recomputing
+        # vectors. We deliberately don't pass ``source_types`` here —
+        # graph neighbors may be of a different type than the user's
+        # original filter (e.g., a character connected to a faction).
+        pool_size = max(top_k * candidate_pool_factor, len(primary) + 20)
+        pool = self.search(
+            query=query, method=method,
+            top_k=pool_size, source_types=None)
+        score_map: Dict[Tuple[str, str], ContextResult] = {
+            (r.source_type, r.source_id): r
+            for r in pool if r.source_id
+        }
+
+        # Group promoted neighbors by seed so the per-seed cap is
+        # enforced fairly: a highly connected primary entity doesn't
+        # consume all expansion slots.
+        per_seed_counts: Dict[Tuple[str, str], int] = {}
+        promoted_scored: List[Tuple[float, ContextResult]] = []
+        for neighbor, (seed, relation, edge_data, mult) in (
+                candidate_to_best_edge.items()):
+            scored = score_map.get(neighbor)
+            if scored is None:
+                # Below the search engine's noise floor for this query
+                # — neighbor isn't relevant enough to bother promoting.
+                continue
+            final_score = scored.relevance_score * mult
+            if final_score < min_neighbor_score:
+                continue
+            if per_seed_counts.get(seed, 0) >= max_neighbors_per_seed:
+                # Slot for this seed already full — we will still
+                # consider this candidate against the global ordering
+                # below by skipping the cap pre-emptively here.
+                continue
+            tier = edge_data.get("cooccur_tier", "")
+            new_metadata = dict(scored.metadata or {})
+            new_metadata.update({
+                "promoted_from_seed_type": seed[0],
+                "promoted_from_seed_id":   seed[1],
+                "promoted_via_relation":   relation,
+                "promoted_tier":           tier,
+                "promoted_base_score":     scored.relevance_score,
+            })
+            promoted = ContextResult(
+                content=scored.content,
+                source_type=scored.source_type,
+                source_name=scored.source_name,
+                relevance_score=final_score,
+                matched_terms=scored.matched_terms,
+                match_type="graph_neighbor",
+                metadata=new_metadata,
+                source_id=scored.source_id,
+            )
+            per_seed_counts[seed] = per_seed_counts.get(seed, 0) + 1
+            promoted_scored.append((final_score, promoted))
+
+        promoted_scored.sort(key=lambda x: -x[0])
+        return list(primary) + [r for _, r in promoted_scored]
+
     def find_similar(
         self,
         text: str,
@@ -1099,29 +1250,46 @@ Related Characters: {', '.join(chars) if chars else 'All'}
         max_tokens: int = 2000,
         method: SearchMethod = SearchMethod.HYBRID,
         expand_graph: bool = True,
+        expand_neighbors: bool = False,
+        max_neighbors_per_seed: int = 2,
     ) -> str:
         """Get formatted context for AI chat.
 
         Searches both the project index AND the external knowledge store
         (Wikipedia, Britannica) if articles have been downloaded.
 
-        When ``expand_graph`` is true (default), each retrieved entity
-        that exists in the knowledge graph gets a compact
-        ``Relationships:`` line appended below its chunk listing its
-        outgoing edges (allies, controls, led_by, etc.). This gives the
-        LLM access to typed relationships without pulling extra chunks.
+        Two graph-aware enrichments, controllable independently:
+
+          * ``expand_graph`` (default on, cheap) — each retrieved entity
+            that exists in the knowledge graph gets a compact
+            ``Relationships:`` line listing its outgoing edges with
+            co-occurrence tiers.
+
+          * ``expand_neighbors`` (default off, costs additional
+            chunks) — runs ``search_with_neighbors`` so 1-hop graph
+            neighbors that score well against the query are *promoted*
+            into the context as additional chunks. Each promoted
+            chunk is labelled with ``(via <relation> from <seed>)`` so
+            the LLM understands where it came from.
 
         Args:
             query: User's query
             max_tokens: Approximate max tokens for context
             method: Search method
             expand_graph: Annotate retrieved entities with their graph edges
+            expand_neighbors: Promote query-relevant graph neighbors into context
+            max_neighbors_per_seed: Cap when expand_neighbors is on
 
         Returns:
             Formatted context string for AI prompt
         """
-        # Search the project index
-        results = self.search(query, method, top_k=10)
+        # Search the project index — with graph expansion when asked.
+        if expand_neighbors:
+            results = self.search_with_neighbors(
+                query=query, method=method, top_k=10,
+                max_neighbors_per_seed=max_neighbors_per_seed)
+        else:
+            results = self.search(query, method, top_k=10)
 
         context_parts = []
         current_tokens = 0
@@ -1132,10 +1300,25 @@ Related Characters: {', '.join(chars) if chars else 'All'}
             if expand_graph and result.source_id:
                 relations_line = self._format_relations_line(
                     result.source_type, result.source_id)
-            block = (
-                f"[{result.source_type.upper()}: {result.source_name}]\n"
-                f"{result.content}\n"
-            )
+            header = f"[{result.source_type.upper()}: {result.source_name}"
+            # Promoted-neighbor provenance label. The seed name comes
+            # from the graph so it tracks renames automatically.
+            if result.match_type == "graph_neighbor":
+                seed_type = (result.metadata or {}).get(
+                    "promoted_from_seed_type", "")
+                seed_id = (result.metadata or {}).get(
+                    "promoted_from_seed_id", "")
+                relation = (result.metadata or {}).get(
+                    "promoted_via_relation", "")
+                seed_name = ""
+                if seed_type and seed_id:
+                    seed_node = (seed_type, seed_id)
+                    if seed_node in self.knowledge_graph.graph:
+                        seed_name = self.knowledge_graph.graph.nodes[
+                            seed_node].get("name", seed_id)
+                if relation and seed_name:
+                    header += f"  (via {relation} from {seed_name})"
+            block = f"{header}]\n{result.content}\n"
             if relations_line:
                 block += f"Relationships: {relations_line}\n"
             content_tokens = len(block) // chars_per_token

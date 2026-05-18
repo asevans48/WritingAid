@@ -371,6 +371,269 @@ def test_rag_top_chunks_per_type_appends_related_suffix() -> None:
     assert "ally_of -> Stoneforge Pact" in suffix, suffix
 
 
+def test_cooccurrence_scoring_writes_edge_attributes() -> None:
+    """score_cooccurrences should stamp every edge with cooccur_count
+    / cooccur_score / cooccur_tier attributes, derived from how often
+    the endpoints appear together in the supplied chunks."""
+    kg = KnowledgeGraph()
+    kg.build_from_project(_build_project())
+
+    class FakeChunk:
+        def __init__(self, content):
+            self.content = content
+
+    # Iron League's chunk mentions Stoneforge Pact, Shade Syndicate,
+    # General Mara, Highveld. A "rich" prose chunk repeats Iron League
+    # alongside Stoneforge Pact multiple times so the pair gets a
+    # non-trivial co-occurrence count.
+    chunks = [
+        FakeChunk(
+            "Iron League is allied with Stoneforge Pact, "
+            "led by General Mara, controlling Highveld."),
+        FakeChunk(
+            "The Stoneforge Pact has long fought beside the "
+            "Iron League against Shade Syndicate forces."),
+        FakeChunk(
+            "Far away, Joren waits for Mara to return."),
+        FakeChunk(
+            "Highveld is the contested ground; the Iron League "
+            "and Stoneforge Pact watch it warily."),
+    ]
+    stats = kg.score_cooccurrences(chunks)
+    assert stats["documents_scanned"] == 4, stats
+    assert stats["edges_with_signal"] > 0, stats
+
+    # Find the Iron League --ally_of--> Stoneforge Pact edge.
+    iron = ("faction", "f_iron")
+    stoneforge = ("faction", "f_pact")
+    edges = kg.graph.get_edge_data(iron, stoneforge) or {}
+    ally_edge = edges.get("ally_of")
+    assert ally_edge is not None, list(edges.keys())
+    assert ally_edge.get("cooccur_count", 0) >= 2, ally_edge
+    assert ally_edge.get("cooccur_tier") in {
+        "weak", "moderate", "strong"}, ally_edge
+
+    # Iron League's edge to Shade Syndicate appears in only one chunk
+    # (chunk 2 above), so it should be tagged "weak".
+    shade = ("faction", "f_shade")
+    enemy_edge_data = kg.graph.get_edge_data(iron, shade) or {}
+    enemy_edge = enemy_edge_data.get("enemy_of")
+    assert enemy_edge is not None
+    assert enemy_edge.get("cooccur_count", 0) == 1, enemy_edge
+    assert enemy_edge.get("cooccur_tier") == "weak", enemy_edge
+
+
+def test_format_relations_line_includes_tier_suffix() -> None:
+    """When scoring has run, the rendered line shows ``(tier)``."""
+    kg = KnowledgeGraph()
+    kg.build_from_project(_build_project())
+
+    class FakeChunk:
+        def __init__(self, content):
+            self.content = content
+
+    chunks = [
+        FakeChunk("Iron League and Stoneforge Pact stand together."),
+        FakeChunk("The Iron League and Stoneforge Pact will not fall."),
+        FakeChunk("Even in defeat, the Iron League trusts Stoneforge Pact."),
+    ]
+    kg.score_cooccurrences(chunks)
+    line = kg.format_relations_line("faction", "f_iron", max_edges=8)
+    # The ally edge should now show a tier; the enemy edge (no
+    # co-occurrence in these chunks) should NOT have a tier suffix.
+    assert "ally_of -> Stoneforge Pact (" in line, line
+    # Some tier word should appear after Stoneforge Pact.
+    assert any(t in line for t in ("strong", "moderate", "weak")), line
+
+
+def test_format_relations_line_no_tier_when_scoring_skipped() -> None:
+    """If scoring hasn't run, no tier suffix should appear."""
+    kg = KnowledgeGraph()
+    kg.build_from_project(_build_project())
+    line = kg.format_relations_line("faction", "f_iron")
+    assert "(" not in line, line  # no tier annotation
+    assert "ally_of -> Stoneforge Pact" in line, line
+
+
+def test_cooccurrence_skips_very_short_names() -> None:
+    """Names below the minimum length must not trigger matches —
+    short character names like 'X' would otherwise match half the
+    English text in any chunk."""
+    kg = KnowledgeGraph()
+    kg.build_from_project(_build_project())
+    # Inject a synthetic 2-char node and verify it never matches.
+    kg.graph.add_node(("character", "short"),
+                      name="Xy", entity_type="character",
+                      entity_id="short", unresolved=False)
+
+    class FakeChunk:
+        def __init__(self, content):
+            self.content = content
+
+    chunks = [FakeChunk("Xy went somewhere with Iron League and Xy.")]
+    kg.score_cooccurrences(chunks)
+    # The short-name node should never get a chunk count.
+    found_data = None
+    for u, v, key, data in kg.graph.edges(keys=True, data=True):
+        if u == ("character", "short") or v == ("character", "short"):
+            found_data = data
+    # Either the node has no edges (most likely) or those edges have
+    # cooccur_count == 0.
+    if found_data is not None:
+        assert found_data.get("cooccur_count", 0) == 0, found_data
+
+
+def test_expansion_tier_multiplier_mapping() -> None:
+    """Public tier multipliers honor the documented ordering."""
+    kg = KnowledgeGraph()
+    assert kg.expansion_tier_multiplier("strong") > (
+        kg.expansion_tier_multiplier("moderate"))
+    assert kg.expansion_tier_multiplier("moderate") > (
+        kg.expansion_tier_multiplier("weak"))
+    # Unknown tier falls back to the neutral default — does not raise.
+    assert kg.expansion_tier_multiplier("bogus") > 0
+    # Empty / no-tier sits between weak and moderate (we don't know
+    # whether the connection is active, so be cautious).
+    no_tier = kg.expansion_tier_multiplier("")
+    assert kg.expansion_tier_multiplier("weak") <= no_tier
+    assert no_tier <= kg.expansion_tier_multiplier("moderate")
+
+
+def test_search_with_neighbors_promotes_relevant_graph_nodes() -> None:
+    """When a primary result names a graph entity whose neighbor is
+    relevant to the query, search_with_neighbors should promote that
+    neighbor into the result list with match_type='graph_neighbor'.
+
+    Uses top_k=1 so only Iron League lands as primary — leaving its
+    1-hop graph neighbors (Stoneforge Pact, Shade Syndicate, Highveld,
+    etc.) eligible for promotion via expansion.
+    """
+    from src.ai.enhanced_rag import EnhancedRAGSystem
+
+    rag = EnhancedRAGSystem(_build_project())
+    rag.rebuild_index()
+
+    results = rag.search_with_neighbors(
+        query="Iron League allies and territory",
+        top_k=1,
+        max_neighbors_per_seed=3,
+        min_neighbor_score=0.0,
+    )
+
+    primary_keys = {(r.source_type, r.source_id) for r in results
+                    if r.match_type != "graph_neighbor"}
+    promoted = [r for r in results if r.match_type == "graph_neighbor"]
+    assert ("faction", "f_iron") in primary_keys, primary_keys
+    assert promoted, "expected at least one promoted neighbor"
+
+    # The promoted neighbor must carry provenance metadata pointing
+    # back at Iron League.
+    p = promoted[0]
+    assert p.metadata.get("promoted_from_seed_type") == "faction", p.metadata
+    assert p.metadata.get("promoted_from_seed_id") == "f_iron", p.metadata
+    assert p.metadata.get("promoted_via_relation"), p.metadata
+
+
+def test_search_with_neighbors_respects_min_score_threshold() -> None:
+    """A high min_neighbor_score should filter out marginal neighbors."""
+    from src.ai.enhanced_rag import EnhancedRAGSystem
+
+    rag = EnhancedRAGSystem(_build_project())
+    rag.rebuild_index()
+    high_bar = rag.search_with_neighbors(
+        query="Iron League allies",
+        top_k=5,
+        max_neighbors_per_seed=5,
+        min_neighbor_score=10.0,  # impossibly high
+    )
+    promoted = [r for r in high_bar if r.match_type == "graph_neighbor"]
+    assert not promoted, promoted
+
+
+def test_search_with_neighbors_caps_per_seed() -> None:
+    """max_neighbors_per_seed limits how many neighbors any one
+    primary result can contribute, so a highly-connected entity
+    doesn't monopolize the expansion budget."""
+    from src.ai.enhanced_rag import EnhancedRAGSystem
+
+    rag = EnhancedRAGSystem(_build_project())
+    rag.rebuild_index()
+    results = rag.search_with_neighbors(
+        query="Iron League",
+        top_k=5,
+        max_neighbors_per_seed=1,
+        min_neighbor_score=0.0,
+    )
+    promoted = [r for r in results if r.match_type == "graph_neighbor"]
+    # Count promotions per seed
+    from collections import Counter
+    seed_counts = Counter(
+        (r.metadata.get("promoted_from_seed_type"),
+         r.metadata.get("promoted_from_seed_id"))
+        for r in promoted)
+    for seed, count in seed_counts.items():
+        assert count <= 1, (seed, count)
+
+
+def test_get_context_for_ai_expand_neighbors_renders_via_label() -> None:
+    """When expand_neighbors=True, promoted chunks must carry a
+    'via <relation> from <seed>' label so the LLM understands the
+    chunk's provenance.
+
+    The default top_k=10 inside get_context_for_ai is much wider than
+    the synthetic test project's entity count, so most of Iron League's
+    1-hop neighbors would already land as primary. We patch search()
+    locally to return only the Iron League result, leaving the
+    expansion code with neighbors to promote.
+    """
+    from src.ai.enhanced_rag import EnhancedRAGSystem
+
+    rag = EnhancedRAGSystem(_build_project())
+    rag.rebuild_index()
+
+    # Restrict primary to Iron League so the neighbors are eligible
+    # for promotion via search_with_neighbors.
+    original_search = rag.search
+
+    def narrow_search(query, method, top_k, source_types=None):
+        full = original_search(query, method, max(top_k, 50), source_types)
+        # Keep only Iron League in the small-top_k slice; expansion's
+        # broader candidate-pool search uses the original method
+        # untouched because it calls original_search separately.
+        if top_k <= 10:
+            return [r for r in full
+                    if (r.source_type, r.source_id)
+                       == ("faction", "f_iron")][:top_k]
+        return full[:top_k]
+
+    rag.search = narrow_search
+    try:
+        ctx = rag.get_context_for_ai(
+            query="Iron League allies and territory",
+            max_tokens=8000,
+            expand_neighbors=True,
+            max_neighbors_per_seed=3,
+        )
+    finally:
+        rag.search = original_search
+
+    assert "(via " in ctx and "from Iron League" in ctx, ctx[:2000]
+
+
+def test_get_context_for_ai_default_no_expansion() -> None:
+    """Default behavior must NOT promote graph neighbors — backward
+    compat for callers that don't opt in."""
+    from src.ai.enhanced_rag import EnhancedRAGSystem
+
+    rag = EnhancedRAGSystem(_build_project())
+    rag.rebuild_index()
+    ctx = rag.get_context_for_ai(
+        query="Iron League allies",
+        max_tokens=8000,
+    )
+    assert "(via " not in ctx, ctx[:1500]
+
+
 def test_enhanced_rag_annotates_relationships_in_context() -> None:
     """End-to-end: the RAG context for a faction query should include
     a 'Relationships:' line listing the faction's edges."""
@@ -407,6 +670,16 @@ def _run_all() -> int:
         test_format_relations_line_with_incoming,
         test_plot_event_outgoing_includes_subplot_and_character,
         test_rag_top_chunks_per_type_appends_related_suffix,
+        test_cooccurrence_scoring_writes_edge_attributes,
+        test_format_relations_line_includes_tier_suffix,
+        test_format_relations_line_no_tier_when_scoring_skipped,
+        test_cooccurrence_skips_very_short_names,
+        test_expansion_tier_multiplier_mapping,
+        test_search_with_neighbors_promotes_relevant_graph_nodes,
+        test_search_with_neighbors_respects_min_score_threshold,
+        test_search_with_neighbors_caps_per_seed,
+        test_get_context_for_ai_expand_neighbors_renders_via_label,
+        test_get_context_for_ai_default_no_expansion,
         test_enhanced_rag_annotates_relationships_in_context,
     ]
     failed = 0

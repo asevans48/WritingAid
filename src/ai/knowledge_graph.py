@@ -19,6 +19,8 @@ Public surface:
 
 from __future__ import annotations
 
+import math
+import re
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import networkx as nx
@@ -538,6 +540,162 @@ class KnowledgeGraph:
         "subplot",
     })
 
+    # Minimum length for an entity name to enter co-occurrence
+    # matching. Names of 1-2 chars ("Al", "X") match too aggressively
+    # — every paragraph with the letter sequence would count.
+    _COOCCUR_MIN_NAME_LEN = 3
+
+    # Tier thresholds. ``cooccur_score`` is co_count / sqrt(count_A
+    # * count_B) — cosine-style normalization, in [0, 1] when
+    # co_count <= min(count_A, count_B). Single-chunk co-occurrence
+    # gets pinned to "weak" regardless of normalized score since one
+    # mention is too thin to call a real connection.
+    _COOCCUR_TIER_STRONG = 0.4
+    _COOCCUR_TIER_MODERATE = 0.15
+
+    def score_cooccurrences(
+        self,
+        documents: Iterable[Any],
+    ) -> Dict[str, Any]:
+        """Score each edge by how often its endpoints co-occur in text.
+
+        Walks the indexed document chunks (each must have a ``content``
+        str attribute), counts which entity names appear in each
+        chunk, and writes ``cooccur_count``, ``cooccur_score``, and
+        ``cooccur_tier`` attributes onto every edge in the graph.
+
+        Score = ``co_count / sqrt(count_A * count_B)``. This is
+        cosine-style: 1.0 means the two entities always appear
+        together, 0.0 means never. Symmetric.
+
+        Cheap to call (single pass over chunks, regex match). Safe to
+        call repeatedly; previous scores are overwritten.
+
+        Returns stats useful for debugging — entities scanned,
+        documents scanned, edges with non-zero co-occurrence.
+        """
+        # Build name → [NodeKey] index. Skip very-short names that
+        # would create regex chaos (every "Al" would match "always",
+        # "Albert", etc).
+        name_to_nodes: Dict[str, List[NodeKey]] = {}
+        for node_key, data in self.graph.nodes(data=True):
+            name = (data.get("name") or "").strip()
+            if not name or len(name) < self._COOCCUR_MIN_NAME_LEN:
+                continue
+            name_to_nodes.setdefault(name.lower(), []).append(node_key)
+
+        if not name_to_nodes:
+            return {
+                "documents_scanned": 0,
+                "entities_indexed": 0,
+                "edges_with_signal": 0,
+            }
+
+        # Single regex with word boundaries and case-insensitivity.
+        # Sort by length desc so "Iron League" wins over "Iron".
+        sorted_names = sorted(name_to_nodes.keys(),
+                              key=len, reverse=True)
+        pattern = re.compile(
+            r"\b(" + "|".join(re.escape(n) for n in sorted_names) + r")\b",
+            re.IGNORECASE,
+        )
+
+        chunks_per_node: Dict[NodeKey, int] = {}
+        pair_count: Dict[frozenset, int] = {}
+        docs_scanned = 0
+
+        for doc in documents:
+            text = getattr(doc, "content", "") or ""
+            if not text.strip():
+                continue
+            docs_scanned += 1
+            matched_nodes: Set[NodeKey] = set()
+            for m in pattern.finditer(text):
+                for node_key in name_to_nodes.get(
+                        m.group(1).lower(), []):
+                    matched_nodes.add(node_key)
+            if not matched_nodes:
+                continue
+            for n in matched_nodes:
+                chunks_per_node[n] = chunks_per_node.get(n, 0) + 1
+            if len(matched_nodes) >= 2:
+                nodes_list = list(matched_nodes)
+                for i in range(len(nodes_list)):
+                    for j in range(i + 1, len(nodes_list)):
+                        key = frozenset((nodes_list[i], nodes_list[j]))
+                        pair_count[key] = pair_count.get(key, 0) + 1
+
+        # Stamp every edge with its score (zero when no co-occurrence
+        # — explicit zero is more useful than missing attrs to
+        # downstream consumers that key on the presence of the field).
+        edges_with_signal = 0
+        for u, v, _key, data in self.graph.edges(keys=True, data=True):
+            pair_key = frozenset((u, v))
+            co = pair_count.get(pair_key, 0)
+            if co == 0:
+                data["cooccur_count"] = 0
+                data["cooccur_score"] = 0.0
+                data["cooccur_tier"] = ""
+                continue
+            cu = chunks_per_node.get(u, 0)
+            cv = chunks_per_node.get(v, 0)
+            if cu == 0 or cv == 0:
+                score = 0.0
+            else:
+                score = co / math.sqrt(cu * cv)
+            data["cooccur_count"] = co
+            data["cooccur_score"] = round(score, 3)
+            data["cooccur_tier"] = self._tier_for(co, score)
+            edges_with_signal += 1
+
+        return {
+            "documents_scanned": docs_scanned,
+            "entities_indexed": len(name_to_nodes),
+            "edges_with_signal": edges_with_signal,
+        }
+
+    # When combining query relevance with edge tier for graph-
+    # expansion scoring, the tier acts as a multiplier on the
+    # neighbor's TF-IDF / hybrid relevance score. Strong active
+    # relationships pull neighbors in more eagerly than dormant ones.
+    # ``""`` (no tier) gets a neutral-but-slightly-conservative
+    # multiplier — we don't know whether the connection is active.
+    _EXPANSION_TIER_MULTIPLIERS: Dict[str, float] = {
+        "strong":   1.0,
+        "moderate": 0.85,
+        "weak":     0.7,
+        "":         0.75,
+    }
+
+    @classmethod
+    def expansion_tier_multiplier(cls, tier: str) -> float:
+        """Public weight for combining edge tier with query relevance.
+
+        Used by graph-expansion code paths that want to combine a
+        neighbor's query-time relevance with how 'active' the edge
+        connecting it to the seed actually is in the prose.
+        """
+        return cls._EXPANSION_TIER_MULTIPLIERS.get(tier, 0.75)
+
+    @classmethod
+    def _tier_for(cls, co_count: int, score: float) -> str:
+        """Map a (count, score) pair to a categorical tier label.
+
+        Single-chunk co-occurrence is pinned to "weak" regardless of
+        score — one mention isn't enough to call a relationship strong
+        even if both entities appear in only that one chunk (which
+        artificially pushes the normalized score to 1.0).
+        """
+        if co_count <= 0:
+            return ""
+        if co_count == 1:
+            return "weak"
+        if score >= cls._COOCCUR_TIER_STRONG:
+            return "strong"
+        if score >= cls._COOCCUR_TIER_MODERATE:
+            return "moderate"
+        return "weak"
+
     def format_relations_line(
         self,
         entity_type: str,
@@ -549,7 +707,11 @@ class KnowledgeGraph:
 
         Returns "" when the entity isn't in the graph (e.g. a passage
         chunk, or an entity whose source_type isn't graph-annotatable)
-        or has no edges. Format: "rel -> Name; rel -> Name; ..."
+        or has no edges. Format: ``rel -> Name (tier)`` where the
+        ``(tier)`` suffix is included when co-occurrence scoring has
+        rated the edge (strong / moderate / weak), and omitted
+        otherwise — so callers don't need to know whether scoring has
+        run.
         """
         if not entity_type or not entity_id:
             return ""
@@ -562,9 +724,14 @@ class KnowledgeGraph:
         if not edges:
             return ""
         fragments = []
-        for relation, other, _attrs in edges[:max_edges]:
+        for relation, other, attrs in edges[:max_edges]:
             other_name = self.graph.nodes[other].get("name", other[1])
-            fragments.append(f"{relation} -> {other_name}")
+            tier = (attrs or {}).get("cooccur_tier", "")
+            if tier:
+                fragments.append(
+                    f"{relation} -> {other_name} ({tier})")
+            else:
+                fragments.append(f"{relation} -> {other_name}")
         return "; ".join(fragments)
 
     def format_edges_for_context(
@@ -590,10 +757,15 @@ class KnowledgeGraph:
             if hops <= 1:
                 edges = self.edges_of(seed)
                 fragments = []
-                for relation, other, _attrs in edges[:max_edges_per_seed]:
+                for relation, other, attrs in edges[:max_edges_per_seed]:
                     other_name = self.graph.nodes[other].get(
                         "name", other[1])
-                    fragments.append(f"{relation} -> {other_name}")
+                    tier = (attrs or {}).get("cooccur_tier", "")
+                    if tier:
+                        fragments.append(
+                            f"{relation} -> {other_name} ({tier})")
+                    else:
+                        fragments.append(f"{relation} -> {other_name}")
                 if fragments:
                     lines.append(f"{seed_name}: " + "; ".join(fragments))
             else:

@@ -3095,6 +3095,12 @@ class MainWindow(QMainWindow):
         # RAG system for semantic context retrieval
         self._rag_system: Optional[EnhancedRAGSystem] = None
         self._rag_initialized = False
+        # Set whenever any edit widget signals content_changed. The
+        # next chat retrieval sees the flag, rebuilds the search index
+        # + knowledge graph, and clears it. Lazy so we don't pay the
+        # rebuild cost on every keystroke during typing — only on
+        # actual query.
+        self._rag_dirty = False
 
         # AI debug panel (hidden by default)
         self._ai_debug_panel = None
@@ -7057,6 +7063,8 @@ class MainWindow(QMainWindow):
             # Rebuild index with current project data (including encyclopedia)
             self._rag_system.rebuild_index()
             self._rag_initialized = True
+            # Just-built — no pending edits to fold in yet.
+            self._rag_dirty = False
             print("RAG system initialized successfully")
 
         except Exception as e:
@@ -7167,6 +7175,38 @@ class MainWindow(QMainWindow):
     )
     REFERENCE_SOURCE_TYPES = ("encyclopedia",)
 
+    def _ensure_rag_fresh(self) -> None:
+        """Rebuild the RAG index + knowledge graph if user edits since
+        the last build marked them stale.
+
+        Called lazily from every retrieval entry point so a chat query
+        right after a worldbuilding / character / plot edit sees the
+        updated state. Set-and-clear of ``_rag_dirty`` is the only
+        synchronization — Python's GIL plus the UI being single-
+        threaded means a race window doesn't actually exist here.
+        """
+        if not self._rag_initialized or not self._rag_system:
+            return
+        if not getattr(self, "_rag_dirty", False):
+            return
+        # Latest project state needs to be on the system before
+        # rebuild — widget edits live in the widgets until
+        # ``_collect_project_data`` is called. Do that first so the
+        # graph and search index see what the user actually typed.
+        try:
+            self._collect_project_data()
+        except Exception as e:
+            # Non-fatal: rebuild from whatever is currently on the
+            # project model. Worst case we miss the most recent edit
+            # by one query.
+            print(f"[rag] collect before rebuild failed: {e}")
+        try:
+            self._rag_system.project = self.current_project
+            self._rag_system.rebuild_index()
+            self._rag_dirty = False
+        except Exception as e:
+            print(f"[rag] lazy rebuild failed: {e}")
+
     def _get_rag_context(self, query: str, max_tokens: int = 2000,
                          project_only: bool = True) -> str:
         """Get RAG-enhanced context for a query.
@@ -7186,6 +7226,7 @@ class MainWindow(QMainWindow):
         """
         if not self._rag_initialized or not self._rag_system:
             return ""
+        self._ensure_rag_fresh()
 
         try:
             if project_only:
@@ -7219,6 +7260,7 @@ class MainWindow(QMainWindow):
         """
         if not self._rag_initialized or not self._rag_system:
             return ""
+        self._ensure_rag_fresh()
         try:
             from src.config.ai_config import get_ai_config
             kb_enabled = get_ai_config().get_settings().get(
@@ -7263,6 +7305,7 @@ class MainWindow(QMainWindow):
             return ""
         if not query or not source_types:
             return ""
+        self._ensure_rag_fresh()
         try:
             results = self._rag_system.search(
                 query=query,
@@ -7352,6 +7395,11 @@ class MainWindow(QMainWindow):
             # Update characters in image generator when characters change
             characters = self.characters_widget.get_data()
             self.image_generator.set_characters(characters)
+
+            # Mark RAG index + knowledge graph stale. Next retrieval
+            # path will rebuild before reading. Cheap — just sets a
+            # flag, doesn't touch the index.
+            self._rag_dirty = True
 
     def _on_annotations_changed(self):
         """Handle annotation changes - update attributions tab."""
@@ -12612,15 +12660,22 @@ class MainWindow(QMainWindow):
         self.chat_widget.set_characters(self.current_project.characters)
 
         # Refresh RAG index with new/updated elements
+        just_rebuilt = False
         if self._rag_initialized and self._rag_system:
             try:
                 self._rag_system.rebuild_index()
+                just_rebuilt = True
                 print("RAG index refreshed after element creation")
             except Exception as e:
                 print(f"Failed to refresh RAG index: {e}")
 
         # Mark project as modified
         self._on_content_changed()
+        # _on_content_changed flips ``_rag_dirty`` to True, but we
+        # just rebuilt above — clear it again so the next chat query
+        # doesn't redundantly rebuild.
+        if just_rebuilt:
+            self._rag_dirty = False
 
     def _show_find_dialog(self):
         """Show Find dialog."""
