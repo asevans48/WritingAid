@@ -7208,7 +7208,9 @@ class MainWindow(QMainWindow):
             print(f"[rag] lazy rebuild failed: {e}")
 
     def _get_rag_context(self, query: str, max_tokens: int = 2000,
-                         project_only: bool = True) -> str:
+                         project_only: bool = True,
+                         expand_neighbors: bool = False,
+                         hops: int = 1) -> str:
         """Get RAG-enhanced context for a query.
 
         Args:
@@ -7238,12 +7240,18 @@ class MainWindow(QMainWindow):
                     top_k=8,
                     max_chars_per_chunk=600,
                     max_total_chars=max_tokens * 4,
+                    expand_neighbors=expand_neighbors,
+                    hops=hops,
                 )
             else:
+                # get_context_for_ai doesn't expose hops yet — pass
+                # only the on/off flag. The plot-mode chokepoints that
+                # use 2-hop go through _rag_top_chunks_per_type instead.
                 context = self._rag_system.get_context_for_ai(
                     query=query,
                     max_tokens=max_tokens,
                     method=SearchMethod.HYBRID,
+                    expand_neighbors=expand_neighbors,
                 )
             return context if context else ""
         except Exception as e:
@@ -7285,7 +7293,10 @@ class MainWindow(QMainWindow):
                                    source_types: list,
                                    top_k: int = 6,
                                    max_chars_per_chunk: int = 600,
-                                   max_total_chars: int = 3500) -> str:
+                                   max_total_chars: int = 3500,
+                                   expand_neighbors: bool = False,
+                                   max_neighbors_per_seed: int = 2,
+                                   hops: int = 1) -> str:
         """Return a RAG-selected formatted block for given source types.
 
         Used by the plot-AI context builder to populate
@@ -7307,10 +7318,31 @@ class MainWindow(QMainWindow):
             return ""
         self._ensure_rag_fresh()
         try:
-            results = self._rag_system.search(
-                query=query,
-                top_k=top_k,
-                source_types=source_types)
+            if expand_neighbors:
+                # search_with_neighbors does NOT accept source_types
+                # because graph neighbors may be of a different type
+                # than the seed. We filter the primary down to the
+                # requested types ourselves, then let the expansion
+                # surface cross-type neighbors (e.g., a character
+                # connected to a faction-typed seed).
+                full = self._rag_system.search_with_neighbors(
+                    query=query,
+                    top_k=top_k,
+                    max_neighbors_per_seed=max_neighbors_per_seed,
+                    hops=hops,
+                )
+                # Keep entries that are either in the requested types
+                # OR were promoted via graph (preserve cross-type
+                # neighbors so the expansion is actually useful).
+                allow = set(source_types or [])
+                results = [r for r in full
+                           if r.source_type in allow
+                              or r.match_type == "graph_neighbor"]
+            else:
+                results = self._rag_system.search(
+                    query=query,
+                    top_k=top_k,
+                    source_types=source_types)
         except Exception as e:
             print(f"[rag] per-type search failed "
                   f"({source_types}): {e}")
@@ -7337,6 +7369,33 @@ class MainWindow(QMainWindow):
             head = (
                 f"  - [{r.source_type}] "
                 f"{r.source_name or '(unnamed)'}")
+            # Promoted-neighbor provenance: tells the LLM that this
+            # chunk wasn't directly retrieved, but reached via the
+            # graph from a more-relevant seed. 2-hop entries render
+            # the full bridge path so the model knows the connection
+            # is one step further removed.
+            if r.match_type == "graph_neighbor" and r.metadata and kg:
+                hops_traveled = r.metadata.get("promoted_hops", 1)
+                path = r.metadata.get("promoted_path")
+                seed_type = r.metadata.get("promoted_from_seed_type", "")
+                seed_id = r.metadata.get("promoted_from_seed_id", "")
+                relation = r.metadata.get("promoted_via_relation", "")
+                if hops_traveled >= 2 and path:
+                    # path is [seed_step, bridge_step] for 2-hop
+                    bridge_name = path[-1].get("from_name", "")
+                    first_rel = path[0].get("relation", "?")
+                    if bridge_name:
+                        head += (
+                            f"  (via {first_rel} → {bridge_name}, "
+                            f"{relation}, 2 hops)")
+                else:
+                    seed_node = (
+                        (seed_type, seed_id)
+                        if seed_type and seed_id else None)
+                    if seed_node and seed_node in kg.graph:
+                        seed_name = kg.graph.nodes[seed_node].get(
+                            "name", seed_id)
+                        head += f"  (via {relation} from {seed_name})"
             related_suffix = ""
             if kg is not None and getattr(r, "source_id", ""):
                 rel_line = kg.format_relations_line(
@@ -8769,10 +8828,22 @@ class MainWindow(QMainWindow):
         # Encyclopedia hits land in a SEPARATE context key so the
         # model can never confuse real-world reference data with the
         # author's actual project plot.
+        # Graph-neighbor expansion: enable in modes where the LLM
+        # benefits from cross-entity reasoning (plot connections,
+        # chapter-focused character work, prose generation). Skip in
+        # general (broad / open-ended) and worldbuilding (entity
+        # creation, not retrieval-driven). Plot mode also gets
+        # 2-hop expansion — that's where indirect connections (an
+        # ally's leader, an enemy's territory) actually move the
+        # answer; chapter_focus / writer stay at 1-hop to keep prose
+        # context tight.
+        expand_kg = mode in ("plot", "chapter_focus", "writer")
+        kg_hops = 2 if mode == "plot" else 1
         if user_message and self._rag_initialized:
             rag_tokens = 1500 if mode == "general" else 1000
             rag_context = self._get_rag_context(
-                user_message, max_tokens=rag_tokens, project_only=True)
+                user_message, max_tokens=rag_tokens, project_only=True,
+                expand_neighbors=expand_kg, hops=kg_hops)
             if rag_context:
                 context['rag_context'] = rag_context
 
@@ -8798,7 +8869,9 @@ class MainWindow(QMainWindow):
                 and not context.get('rag_context')
                 and user_message and self._rag_initialized):
             rag_context = self._get_rag_context(
-                user_message, max_tokens=1200, project_only=True)
+                user_message, max_tokens=1200, project_only=True,
+                expand_neighbors=True,
+                hops=2 if mode == "plot" else 1)
             if rag_context:
                 context['rag_context'] = rag_context
 
@@ -8815,10 +8888,17 @@ class MainWindow(QMainWindow):
         if (mode == "plot" and user_message
                 and self._rag_initialized):
             try:
+                # Plot mode is where graph-neighbor expansion earns
+                # its keep: pulling in the antagonist of a focused
+                # character, or the faction whose territory the
+                # subplot turns on. Chapter passages stay non-expanded
+                # — they're prose chunks, not entity nodes, and have
+                # no graph-neighbor concept.
                 rag_chars = self._rag_top_chunks_per_type(
                     user_message, source_types=['character'],
                     top_k=8, max_chars_per_chunk=500,
-                    max_total_chars=3000)
+                    max_total_chars=3000,
+                    expand_neighbors=True, hops=2)
                 if rag_chars:
                     context['rag_focused_characters'] = rag_chars
 
@@ -8831,14 +8911,16 @@ class MainWindow(QMainWindow):
                 rag_world = self._rag_top_chunks_per_type(
                     user_message, source_types=world_types,
                     top_k=8, max_chars_per_chunk=500,
-                    max_total_chars=3500)
+                    max_total_chars=3500,
+                    expand_neighbors=True, hops=2)
                 if rag_world:
                     context['rag_focused_worldbuilding'] = rag_world
 
                 rag_subplots = self._rag_top_chunks_per_type(
                     user_message, source_types=['subplot'],
                     top_k=5, max_chars_per_chunk=400,
-                    max_total_chars=2000)
+                    max_total_chars=2000,
+                    expand_neighbors=True, hops=2)
                 if rag_subplots:
                     context['rag_focused_subplots'] = rag_subplots
 
@@ -11060,13 +11142,20 @@ class MainWindow(QMainWindow):
             "beats_written": [],
         }
 
-        # Build the RAG provider — same wrapper the critique flow uses
+        # Build the RAG provider — same wrapper the critique flow uses.
+        # Graph-neighbor expansion is enabled so the writer sees the
+        # connected worldbuilding / character context (a character's
+        # faction, an event's location, etc.) and not just the
+        # source-type filter would surface. ``hops`` defaults to 1;
+        # critique passes hops=2 for PLOT/TENSION reports.
         rag_provider = None
         if hasattr(self, "_rag_top_chunks_per_type") and self._rag_initialized:
-            rag_provider = lambda q, st: self._rag_top_chunks_per_type(
+            rag_provider = lambda q, st, hops=1: self._rag_top_chunks_per_type(
                 query=q, source_types=st,
                 top_k=6, max_chars_per_chunk=600,
                 max_total_chars=2500,
+                expand_neighbors=True,
+                hops=hops,
             )
 
         # Kick off the worker

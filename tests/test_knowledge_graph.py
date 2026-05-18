@@ -86,6 +86,14 @@ def _build_project() -> WriterProject:
         name="Riverford",
         place_type=PlaceType.TOWN,
         controlling_faction="f_iron",  # by ID
+        # Description with query-relevant tokens so the 2-hop tests
+        # can actually score this place against typical queries like
+        # "Iron League territory". Without prose content the TF-IDF
+        # noise floor (0.01) would silently drop Riverford from the
+        # candidate pool.
+        description=(
+            "Riverford is a trading town held by the Iron League. "
+            "It sits at the edge of their territory near Highveld."),
     )
 
     tech_furnace = Technology(
@@ -575,6 +583,101 @@ def test_search_with_neighbors_caps_per_seed() -> None:
         assert count <= 1, (seed, count)
 
 
+def test_search_with_neighbors_hops_2_promotes_through_bridge() -> None:
+    """With hops=2, neighbors-of-neighbors should be reachable as long
+    as the bridge itself qualifies as a 1-hop promotion. With hops=1,
+    those same 2-hop nodes must NOT appear."""
+    from src.ai.enhanced_rag import EnhancedRAGSystem
+
+    rag = EnhancedRAGSystem(_build_project())
+    rag.rebuild_index()
+
+    # top_k=1 → only Iron League is primary.
+    # 1-hop neighbors include Highveld (place). Highveld connects_to
+    # Riverford — a 2-hop reach from Iron League.
+    results_1 = rag.search_with_neighbors(
+        query="Iron League territory",
+        top_k=1,
+        max_neighbors_per_seed=5,
+        min_neighbor_score=0.0,
+        hops=1,
+    )
+    nodes_1 = {(r.source_type, r.source_id) for r in results_1}
+    # Riverford is 2 hops away — should NOT show up at hops=1.
+    assert ("place", "p_riverford") not in nodes_1, nodes_1
+
+    results_2 = rag.search_with_neighbors(
+        query="Iron League territory",
+        top_k=1,
+        max_neighbors_per_seed=5,
+        min_neighbor_score=0.0,
+        hops=2,
+        max_second_hop_per_intermediate=3,
+    )
+    nodes_2 = {(r.source_type, r.source_id) for r in results_2}
+    assert ("place", "p_riverford") in nodes_2, nodes_2
+
+    # The promoted 2-hop entry must carry the path metadata.
+    riverford = next(
+        r for r in results_2
+        if (r.source_type, r.source_id) == ("place", "p_riverford"))
+    assert riverford.match_type == "graph_neighbor"
+    assert riverford.metadata.get("promoted_hops") == 2, (
+        riverford.metadata)
+    path = riverford.metadata.get("promoted_path")
+    assert path and len(path) == 2, riverford.metadata
+    # First step is from the seed; last step is from the bridge.
+    assert path[0]["from_id"] == "f_iron", path
+    assert path[-1]["from_id"] == "p_highveld", path
+
+
+def test_search_with_neighbors_hops_2_skips_unqualified_bridges() -> None:
+    """A 2-hop walk only happens through a bridge that itself
+    qualifies as a 1-hop promotion. If we set min_neighbor_score so
+    high that no 1-hop neighbor clears the bar, no 2-hop neighbor
+    should appear either."""
+    from src.ai.enhanced_rag import EnhancedRAGSystem
+
+    rag = EnhancedRAGSystem(_build_project())
+    rag.rebuild_index()
+    results = rag.search_with_neighbors(
+        query="Iron League allies",
+        top_k=1,
+        max_neighbors_per_seed=5,
+        min_neighbor_score=10.0,  # impossibly high
+        hops=2,
+    )
+    promoted = [r for r in results if r.match_type == "graph_neighbor"]
+    assert not promoted, promoted
+
+
+def test_search_with_neighbors_hops_2_score_decays() -> None:
+    """A 2-hop promotion's relevance_score must be lower than the
+    same chunk's relevance via 1-hop (or its base score), because
+    we apply ``second_hop_decay`` and an additional tier multiplier."""
+    from src.ai.enhanced_rag import EnhancedRAGSystem
+
+    rag = EnhancedRAGSystem(_build_project())
+    rag.rebuild_index()
+    results = rag.search_with_neighbors(
+        query="Iron League territory",
+        top_k=1,
+        max_neighbors_per_seed=5,
+        min_neighbor_score=0.0,
+        hops=2,
+        second_hop_decay=0.7,
+    )
+    riverford = next(
+        (r for r in results
+         if (r.source_type, r.source_id) == ("place", "p_riverford")),
+        None,
+    )
+    assert riverford is not None, results
+    base = riverford.metadata.get("promoted_base_score", 0.0)
+    assert riverford.relevance_score < base, (
+        riverford.relevance_score, base)
+
+
 def test_get_context_for_ai_expand_neighbors_renders_via_label() -> None:
     """When expand_neighbors=True, promoted chunks must carry a
     'via <relation> from <seed>' label so the LLM understands the
@@ -634,6 +737,141 @@ def test_get_context_for_ai_default_no_expansion() -> None:
     assert "(via " not in ctx, ctx[:1500]
 
 
+def test_critique_gather_rag_passes_hops_per_report_type() -> None:
+    """CritiqueOrchestrator._gather_rag should pass hops=2 for PLOT
+    and TENSION reports, hops=1 for the others. Verifies the
+    per-report-type routing wired into critique."""
+    from src.ai.chapter_analysis_agent import (
+        CritiqueOrchestrator, ReportType)
+
+    calls: list = []
+
+    def fake_provider(query, source_types, hops=1):
+        calls.append({"hops": hops, "source_types": list(source_types)})
+        return f"[fake-rag hops={hops} types={source_types}]"
+
+    agent = CritiqueOrchestrator(rag_provider=fake_provider)
+    sample = "Mara walked into the council chamber. " * 50
+
+    # Clear the cache between calls so this test isolates per-report
+    # hops routing from the (separately-tested) memoization layer.
+    for rt in [ReportType.PLOT, ReportType.TENSION, ReportType.VOICE,
+               ReportType.DIALOG, ReportType.PACING, ReportType.STYLE]:
+        agent._rag_cache.clear()
+        agent._gather_rag(sample, rt)
+
+    hops_per_call = [c["hops"] for c in calls]
+    # PLOT, TENSION get 2 hops; VOICE/DIALOG/PACING/STYLE get 1.
+    assert hops_per_call == [2, 2, 1, 1, 1, 1], hops_per_call
+
+
+def test_critique_gather_rag_falls_back_to_legacy_signature() -> None:
+    """A legacy rag_provider that takes only (query, source_types) and
+    doesn't accept ``hops=`` must still work — we degrade gracefully."""
+    from src.ai.chapter_analysis_agent import (
+        CritiqueOrchestrator, ReportType)
+
+    calls: list = []
+
+    def legacy_provider(query, source_types):
+        # Note: no hops kwarg — raises TypeError if called with one
+        calls.append({"source_types": list(source_types)})
+        return "[legacy-rag]"
+
+    agent = CritiqueOrchestrator(rag_provider=legacy_provider)
+    sample = "The army marched at dawn. " * 50
+
+    result = agent._gather_rag(sample, ReportType.PLOT)
+    assert result == "[legacy-rag]", result
+    # Should still have made exactly one call (after the TypeError
+    # retry, not two visible calls because the first raised before
+    # appending).
+    assert len(calls) == 1, calls
+
+
+def test_critique_rag_cache_hits_on_duplicate_query() -> None:
+    """Two reports that resolve to the same (query, source_types, hops)
+    must share a single RAG fetch via the orchestrator's cache. With
+    the default per-report mapping, PLOT and TENSION share
+    source_types but differ in hops (both 2 here) — but they also
+    share hops, so they're a cache hit. PACING and STYLE have
+    different source_types so they each miss separately.
+    """
+    from src.ai.chapter_analysis_agent import (
+        CritiqueOrchestrator, ReportType)
+
+    calls: list = []
+
+    def fake_provider(query, source_types, hops=1):
+        calls.append((tuple(sorted(source_types)), hops))
+        return f"[fake hops={hops} types={sorted(source_types)}]"
+
+    agent = CritiqueOrchestrator(rag_provider=fake_provider)
+    sample = "The army marched on the capital. " * 50
+
+    # PLOT and TENSION both end up at (sorted=('character','chapter','subplot'), hops=2)
+    agent._gather_rag(sample, ReportType.PLOT)
+    agent._gather_rag(sample, ReportType.TENSION)
+    # PLOT again — must hit cache
+    agent._gather_rag(sample, ReportType.PLOT)
+
+    # Three calls into the orchestrator, but the provider should only
+    # have been invoked once (first PLOT). TENSION shares the key, the
+    # second PLOT shares the key.
+    assert len(calls) == 1, calls
+    assert agent._rag_cache_hits == 2, agent._rag_cache_hits
+    assert agent._rag_cache_misses == 1, agent._rag_cache_misses
+
+
+def test_critique_rag_cache_misses_on_different_hops() -> None:
+    """Same source_types but different hops are distinct cache keys."""
+    from src.ai.chapter_analysis_agent import (
+        CritiqueOrchestrator, ReportType)
+
+    calls: list = []
+
+    def fake_provider(query, source_types, hops=1):
+        calls.append((tuple(sorted(source_types)), hops))
+        return f"[fake hops={hops}]"
+
+    agent = CritiqueOrchestrator(rag_provider=fake_provider)
+    sample = "Words to query against. " * 50
+
+    # VOICE: ("character", "chapter"), hops=1
+    # DIALOG: ("character",), hops=1
+    # Different source_types → different keys → both miss.
+    agent._gather_rag(sample, ReportType.VOICE)
+    agent._gather_rag(sample, ReportType.DIALOG)
+    assert len(calls) == 2, calls
+
+
+def test_critique_extract_entity_refs_parses_rag_format() -> None:
+    """The entity extractor must correctly pull (source_type,
+    source_name) tuples out of the rag_context format produced by
+    _rag_top_chunks_per_type — including stripping trailing
+    annotations like '(via X from Y)' from the captured name."""
+    from src.ai.chapter_analysis_agent import CritiqueOrchestrator
+
+    rag_context = (
+        "  - [character] General Mara: Personality...\n"
+        "  - [faction] Iron League: Faction details...  (related: ally_of -> Stoneforge Pact (strong))\n"
+        "  - [place] Highveld  (via controls from Iron League): "
+        "Description of Highveld...\n"
+        "Some unrelated trailing text that doesn't match.\n"
+    )
+    refs = CritiqueOrchestrator._extract_entity_refs(rag_context)
+    assert ("character", "General Mara") in refs, refs
+    assert ("faction", "Iron League") in refs, refs
+    # The "(via ...)" trailing annotation must NOT bleed into the name
+    assert ("place", "Highveld") in refs, refs
+
+
+def test_critique_extract_entity_refs_empty_input() -> None:
+    from src.ai.chapter_analysis_agent import CritiqueOrchestrator
+    assert CritiqueOrchestrator._extract_entity_refs("") == []
+    assert CritiqueOrchestrator._extract_entity_refs("\n\n  \n") == []
+
+
 def test_enhanced_rag_annotates_relationships_in_context() -> None:
     """End-to-end: the RAG context for a faction query should include
     a 'Relationships:' line listing the faction's edges."""
@@ -678,8 +916,17 @@ def _run_all() -> int:
         test_search_with_neighbors_promotes_relevant_graph_nodes,
         test_search_with_neighbors_respects_min_score_threshold,
         test_search_with_neighbors_caps_per_seed,
+        test_search_with_neighbors_hops_2_promotes_through_bridge,
+        test_search_with_neighbors_hops_2_skips_unqualified_bridges,
+        test_search_with_neighbors_hops_2_score_decays,
         test_get_context_for_ai_expand_neighbors_renders_via_label,
         test_get_context_for_ai_default_no_expansion,
+        test_critique_gather_rag_passes_hops_per_report_type,
+        test_critique_gather_rag_falls_back_to_legacy_signature,
+        test_critique_rag_cache_hits_on_duplicate_query,
+        test_critique_rag_cache_misses_on_different_hops,
+        test_critique_extract_entity_refs_parses_rag_format,
+        test_critique_extract_entity_refs_empty_input,
         test_enhanced_rag_annotates_relationships_in_context,
     ]
     failed = 0

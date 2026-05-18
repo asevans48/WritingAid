@@ -5,7 +5,7 @@ without rewriting content. Uses cost-effective hybrid approach.
 """
 
 import re
-from typing import List, Dict, Any, Optional, TYPE_CHECKING
+from typing import List, Dict, Any, Optional, Tuple, TYPE_CHECKING
 from dataclasses import dataclass
 from enum import Enum
 
@@ -1098,10 +1098,17 @@ class ChapterReport:
     chapter_index: int
     word_count: int
     sections: List[ReportSection] = None
+    # Counts of how many reports in this chapter cited each entity.
+    # Keyed by ``(source_type, source_name)``. Lets the dashboard
+    # surface the entities that came up *across* reports without
+    # double-counting the same entity per report.
+    entity_mentions: Dict[Tuple[str, str], int] = None
 
     def __post_init__(self):
         if self.sections is None:
             self.sections = []
+        if self.entity_mentions is None:
+            self.entity_mentions = {}
 
 
 @dataclass
@@ -2008,10 +2015,57 @@ class CritiqueOrchestrator:
     ):
         self.primary_llm = primary_llm
         self.project = project
-        # rag_provider(query: str, source_types: list) -> str
+        # rag_provider(query: str, source_types: list, hops=1) -> str
         self.rag_provider = rag_provider
         self.chapter_synopses = chapter_synopses or {}
         self.total_cost = 0.0
+        # RAG memoization within a single critique run. Two reports
+        # that resolve to identical (query, source_types, hops) hit
+        # the cache instead of re-running TF-IDF + graph expansion.
+        # Cleared at the start of ``run()`` so a second invocation
+        # of the orchestrator picks up fresh data.
+        self._rag_cache: Dict[Tuple[Any, ...], str] = {}
+        self._rag_cache_hits = 0
+        self._rag_cache_misses = 0
+
+    # Format produced by ``main_window._rag_top_chunks_per_type``:
+    #   "  - [<source_type>] <source_name>: <body>"
+    # The pattern captures source_type and source_name so we can
+    # build entity-mention tallies across reports.
+    _ENTITY_REF_RE = re.compile(
+        r"^\s*-\s*\[(?P<source_type>[a-z_]+)\]\s+"
+        r"(?P<source_name>.+?):",
+        re.MULTILINE,
+    )
+
+    @classmethod
+    def _extract_entity_refs(
+        cls, rag_context: str
+    ) -> List[Tuple[str, str]]:
+        """Pull ``(source_type, source_name)`` references out of a
+        rag_context string. Used to aggregate entity mentions across
+        reports for cross-report dedup.
+
+        Non-greedy on the name so trailing `(via ...)` / `(related: ...)`
+        annotations don't bleed into the captured name. Returns an
+        empty list for empty input or content that doesn't match the
+        expected ``[type] name:`` shape.
+        """
+        if not rag_context:
+            return []
+        refs: List[Tuple[str, str]] = []
+        for m in cls._ENTITY_REF_RE.finditer(rag_context):
+            stype = m.group("source_type").strip()
+            sname = m.group("source_name").strip()
+            # Drop any trailing parenthetical annotations on the name
+            # (e.g., "General Mara  (via led_by from Iron League)") —
+            # the chunk header may wear those when expansion fires.
+            paren_idx = sname.find("  (")
+            if paren_idx > 0:
+                sname = sname[:paren_idx].strip()
+            if stype and sname:
+                refs.append((stype, sname))
+        return refs
 
     def _build_analyzer(
         self,
@@ -2039,6 +2093,12 @@ class CritiqueOrchestrator:
             return ""
         # Source-type focus per report — we want the model to see
         # what's relevant to this analysis, not every project chunk.
+        # Graph-expansion ``hops`` per report: PLOT and TENSION benefit
+        # most from indirect connections (an ally faction's territory,
+        # an antagonist's lieutenant), so we walk 2 hops there. Others
+        # stay at 1 hop — expansion still surfaces direct cross-type
+        # neighbors (a character's faction, a subplot's location) but
+        # doesn't chase indirect chains that might drift off-topic.
         source_types_by_report: Dict[ReportType, list] = {
             ReportType.PACING: ["chapter", "subplot"],
             ReportType.VOICE: ["character", "chapter"],
@@ -2047,16 +2107,40 @@ class CritiqueOrchestrator:
             ReportType.DIALOG: ["character"],
             ReportType.STYLE: ["chapter"],
         }
+        hops_by_report: Dict[ReportType, int] = {
+            ReportType.PLOT:    2,
+            ReportType.TENSION: 2,
+        }
         source_types = source_types_by_report.get(
             report_type, ["chapter", "character", "subplot"])
+        hops = hops_by_report.get(report_type, 1)
         # Use the chapter's first 800 words as the query so RAG returns
         # context relevant to *this* chapter rather than the project as a whole.
         query = " ".join(chapter_text.split()[:800])
+        # Memoize within a critique run. Two reports with the same
+        # (query, source_types, hops) — for example PLOT and TENSION
+        # share the same source_types but differ in hops — hit the
+        # cache only on exact matches. Sorted tuple of source_types
+        # keeps the key stable regardless of list ordering.
+        cache_key = (query, tuple(sorted(source_types)), hops)
+        if cache_key in self._rag_cache:
+            self._rag_cache_hits += 1
+            return self._rag_cache[cache_key]
+        self._rag_cache_misses += 1
         try:
-            return self.rag_provider(query, source_types)
+            # Support both new providers (hops kwarg) and legacy
+            # providers that only take (query, source_types). The
+            # signature is duck-typed; we fall back on TypeError.
+            try:
+                result = self.rag_provider(
+                    query, source_types, hops=hops)
+            except TypeError:
+                result = self.rag_provider(query, source_types)
         except Exception as e:
             print(f"[critique] RAG fetch failed: {e}")
-            return ""
+            result = ""
+        self._rag_cache[cache_key] = result
+        return result
 
     def run_chapter(
         self,
@@ -2078,12 +2162,28 @@ class CritiqueOrchestrator:
         )
         if not chapter_text or not chapter_text.strip():
             return chapter_report
+        # Track which entities (source_type, source_name) each
+        # report referenced; aggregate at the chapter level so the
+        # dashboard sees the *deduped* set with how many reports
+        # cited each one.
+        per_report_entities: List[set] = []
         for rt in report_types:
             if progress_cb:
                 progress_cb(
                     f"  {chapter_title}: running {rt.value} report…")
             analyzer = self._build_analyzer(rt, chapter_title)
             rag_context = self._gather_rag(chapter_text, rt)
+            # Dedup *within* a single report's context first — the
+            # same entity may appear multiple times if expansion
+            # promoted it via several paths. Then increment the
+            # per-chapter counter by one for each unique entity in
+            # this report.
+            this_report_entities = set(
+                self._extract_entity_refs(rag_context))
+            per_report_entities.append(this_report_entities)
+            for key in this_report_entities:
+                chapter_report.entity_mentions[key] = (
+                    chapter_report.entity_mentions.get(key, 0) + 1)
             section = analyzer.run(
                 text=chapter_text,
                 chapter_title=chapter_title,
@@ -2113,6 +2213,13 @@ class CritiqueOrchestrator:
         the UI worker can stay simple.
         """
         genre = resolve_genre_profile(genre_key_or_text)
+        # Fresh RAG cache per critique run — previous run's cache is
+        # stale because project state may have changed (the lazy
+        # rebuild on the main window only triggers via chat retrieval
+        # paths; critique runs through its own provider lambda).
+        self._rag_cache.clear()
+        self._rag_cache_hits = 0
+        self._rag_cache_misses = 0
         report = CritiqueReport(
             chapters=[],
             genre=genre,

@@ -1076,8 +1076,11 @@ Related Characters: {', '.join(chars) if chars else 'All'}
         max_neighbors_per_seed: int = 2,
         min_neighbor_score: float = 0.05,
         candidate_pool_factor: int = 5,
+        hops: int = 1,
+        second_hop_decay: float = 0.7,
+        max_second_hop_per_intermediate: int = 1,
     ) -> List[ContextResult]:
-        """Search + 1-hop graph expansion with query-relevance scoring.
+        """Search + multi-hop graph expansion with query-relevance scoring.
 
         Runs the normal search to get the top-K primary results, then
         for each primary result that maps to a knowledge-graph node:
@@ -1093,15 +1096,26 @@ Related Characters: {', '.join(chars) if chars else 'All'}
           4. Promotes up to ``max_neighbors_per_seed`` neighbors per
              seed whose final score >= ``min_neighbor_score``.
 
+        When ``hops >= 2``, each *promoted* 1-hop neighbor becomes a
+        bridge: we walk its outgoing edges to find 2-hop candidates.
+        Only neighbors that *would themselves be promoted* serve as
+        bridges, so the path quality is gated end-to-end. Combined
+        multiplier is ``tier(seed→N1) × tier(N1→N2) × second_hop_decay``
+        so 2-hop scores decay against 1-hop scores naturally.
+
         Each promoted result carries provenance in its metadata:
         ``promoted_from_seed_type``, ``promoted_from_seed_id``,
-        ``promoted_via_relation``, ``promoted_tier``. Its
+        ``promoted_via_relation``, ``promoted_tier`` for 1-hop;
+        additionally ``promoted_path`` (list of dicts, one per edge
+        in the walk) and ``promoted_hops`` for multi-hop entries. Its
         ``match_type`` is set to ``"graph_neighbor"`` so callers can
         render it differently from direct retrieval results.
 
         Returns the primary results followed by the promoted neighbors,
         with no deduplication beyond skipping neighbors that are
-        already in the primary set.
+        already in the primary set or already promoted earlier in the
+        same call (a 2-hop candidate reachable via two bridges keeps
+        only the best-scoring path).
         """
         primary = self.search(
             query=query, method=method, top_k=top_k,
@@ -1114,12 +1128,26 @@ Related Characters: {', '.join(chars) if chars else 'All'}
             for r in primary if r.source_id
         }
 
-        # Collect candidate neighbors: for each primary entity that
-        # exists in the graph, gather its outgoing edges. Each
-        # neighbor may show up from multiple seeds; keep the best
-        # (seed, relation, edge_data) per neighbor — best meaning
-        # highest tier multiplier.
-        candidate_to_best_edge: Dict[
+        # Build a score map from a broader search so we get TF-IDF
+        # relevance for any candidate neighbor without recomputing
+        # vectors. We deliberately don't pass ``source_types`` here —
+        # graph neighbors may be of a different type than the user's
+        # original filter (e.g., a character connected to a faction).
+        pool_size = max(top_k * candidate_pool_factor, len(primary) + 20)
+        pool = self.search(
+            query=query, method=method,
+            top_k=pool_size, source_types=None)
+        score_map: Dict[Tuple[str, str], ContextResult] = {
+            (r.source_type, r.source_id): r
+            for r in pool if r.source_id
+        }
+
+        # --- First-hop expansion -----------------------------------
+        # Collect (seed, relation, edge_data) candidates per
+        # neighbor. A neighbor reachable from multiple seeds keeps
+        # the best (highest tier-multiplier) introducer; the others
+        # are ignored to keep the per-seed cap fair.
+        first_hop_candidates: Dict[
             Tuple[str, str],
             Tuple[Tuple[str, str], str, Dict[str, Any], float]
         ] = {}
@@ -1140,47 +1168,29 @@ Related Characters: {', '.join(chars) if chars else 'All'}
                 tier = (edge_data or {}).get("cooccur_tier", "")
                 mult = (self.knowledge_graph
                             .expansion_tier_multiplier(tier))
-                existing = candidate_to_best_edge.get(neighbor)
+                existing = first_hop_candidates.get(neighbor)
                 if existing is None or mult > existing[3]:
-                    candidate_to_best_edge[neighbor] = (
+                    first_hop_candidates[neighbor] = (
                         seed, relation, edge_data or {}, mult)
 
-        if not candidate_to_best_edge:
-            return primary
-
-        # Build a score map from a broader search so we get TF-IDF
-        # relevance for the candidate neighbors without recomputing
-        # vectors. We deliberately don't pass ``source_types`` here —
-        # graph neighbors may be of a different type than the user's
-        # original filter (e.g., a character connected to a faction).
-        pool_size = max(top_k * candidate_pool_factor, len(primary) + 20)
-        pool = self.search(
-            query=query, method=method,
-            top_k=pool_size, source_types=None)
-        score_map: Dict[Tuple[str, str], ContextResult] = {
-            (r.source_type, r.source_id): r
-            for r in pool if r.source_id
-        }
-
-        # Group promoted neighbors by seed so the per-seed cap is
-        # enforced fairly: a highly connected primary entity doesn't
-        # consume all expansion slots.
+        promoted_by_node: Dict[Tuple[str, str], ContextResult] = {}
+        # Tracks (seed → bridge → final_score) so 2-hop walks can
+        # combine multipliers correctly.
+        first_hop_promoted_bridges: List[
+            Tuple[Tuple[str, str], str, Dict[str, Any], float,
+                  Tuple[str, str], float]
+        ] = []  # (seed, relation, edge_data, seed_tier_mult, bridge, bridge_final_score)
         per_seed_counts: Dict[Tuple[str, str], int] = {}
-        promoted_scored: List[Tuple[float, ContextResult]] = []
+
         for neighbor, (seed, relation, edge_data, mult) in (
-                candidate_to_best_edge.items()):
+                first_hop_candidates.items()):
             scored = score_map.get(neighbor)
             if scored is None:
-                # Below the search engine's noise floor for this query
-                # — neighbor isn't relevant enough to bother promoting.
                 continue
             final_score = scored.relevance_score * mult
             if final_score < min_neighbor_score:
                 continue
             if per_seed_counts.get(seed, 0) >= max_neighbors_per_seed:
-                # Slot for this seed already full — we will still
-                # consider this candidate against the global ordering
-                # below by skipping the cap pre-emptively here.
                 continue
             tier = edge_data.get("cooccur_tier", "")
             new_metadata = dict(scored.metadata or {})
@@ -1190,6 +1200,7 @@ Related Characters: {', '.join(chars) if chars else 'All'}
                 "promoted_via_relation":   relation,
                 "promoted_tier":           tier,
                 "promoted_base_score":     scored.relevance_score,
+                "promoted_hops":           1,
             })
             promoted = ContextResult(
                 content=scored.content,
@@ -1202,10 +1213,103 @@ Related Characters: {', '.join(chars) if chars else 'All'}
                 source_id=scored.source_id,
             )
             per_seed_counts[seed] = per_seed_counts.get(seed, 0) + 1
-            promoted_scored.append((final_score, promoted))
+            promoted_by_node[neighbor] = promoted
+            first_hop_promoted_bridges.append(
+                (seed, relation, edge_data, mult, neighbor, final_score))
 
-        promoted_scored.sort(key=lambda x: -x[0])
-        return list(primary) + [r for _, r in promoted_scored]
+        # --- Second-hop expansion ----------------------------------
+        # Only walks from bridges that already cleared the 1-hop bar —
+        # so an irrelevant 1-hop neighbor cannot drag in a 2-hop
+        # neighbor. Combined multiplier compounds both edge tiers and
+        # applies ``second_hop_decay`` to penalize the extra distance.
+        if hops >= 2 and first_hop_promoted_bridges:
+            per_bridge_counts: Dict[Tuple[str, str], int] = {}
+            for (seed, seed_rel, seed_edge_data, seed_mult,
+                 bridge, _bridge_score) in first_hop_promoted_bridges:
+                if bridge not in self.knowledge_graph.graph:
+                    continue
+                for rel2, hop2_node, hop2_edge_data in (
+                        self.knowledge_graph.edges_of(
+                            bridge, include_incoming=False)):
+                    if hop2_node == seed:
+                        continue  # don't walk back to where we came from
+                    if hop2_node in primary_keys:
+                        continue
+                    if hop2_node in promoted_by_node:
+                        continue  # already promoted at 1-hop
+                    if hop2_node[0] not in (
+                            self.knowledge_graph.ANNOTATABLE_TYPES):
+                        continue
+                    if per_bridge_counts.get(bridge, 0) >= (
+                            max_second_hop_per_intermediate):
+                        continue
+                    scored2 = score_map.get(hop2_node)
+                    if scored2 is None:
+                        continue
+                    tier2 = (hop2_edge_data or {}).get(
+                        "cooccur_tier", "")
+                    mult2 = (self.knowledge_graph
+                                 .expansion_tier_multiplier(tier2))
+                    combined_mult = (
+                        seed_mult * mult2 * second_hop_decay)
+                    final_score2 = (
+                        scored2.relevance_score * combined_mult)
+                    if final_score2 < min_neighbor_score:
+                        continue
+                    # Path: seed --seed_rel--> bridge --rel2--> hop2_node
+                    bridge_name = (
+                        self.knowledge_graph.graph.nodes[bridge].get(
+                            "name", bridge[1]))
+                    seed_tier = seed_edge_data.get("cooccur_tier", "")
+                    path = [
+                        {
+                            "from_type": seed[0],
+                            "from_id":   seed[1],
+                            "relation":  seed_rel,
+                            "tier":      seed_tier,
+                        },
+                        {
+                            "from_type": bridge[0],
+                            "from_id":   bridge[1],
+                            "from_name": bridge_name,
+                            "relation":  rel2,
+                            "tier":      tier2,
+                        },
+                    ]
+                    new_metadata = dict(scored2.metadata or {})
+                    new_metadata.update({
+                        "promoted_from_seed_type": seed[0],
+                        "promoted_from_seed_id":   seed[1],
+                        "promoted_via_relation":   rel2,
+                        "promoted_tier":           tier2,
+                        "promoted_base_score":     scored2.relevance_score,
+                        "promoted_hops":           2,
+                        "promoted_path":           path,
+                    })
+                    existing = promoted_by_node.get(hop2_node)
+                    if (existing is not None
+                            and existing.relevance_score
+                                >= final_score2):
+                        # Already reached via a better path — keep it.
+                        continue
+                    promoted2 = ContextResult(
+                        content=scored2.content,
+                        source_type=scored2.source_type,
+                        source_name=scored2.source_name,
+                        relevance_score=final_score2,
+                        matched_terms=scored2.matched_terms,
+                        match_type="graph_neighbor",
+                        metadata=new_metadata,
+                        source_id=scored2.source_id,
+                    )
+                    promoted_by_node[hop2_node] = promoted2
+                    per_bridge_counts[bridge] = (
+                        per_bridge_counts.get(bridge, 0) + 1)
+
+        promoted_sorted = sorted(
+            promoted_by_node.values(),
+            key=lambda r: -r.relevance_score)
+        return list(primary) + promoted_sorted
 
     def find_similar(
         self,
@@ -1303,21 +1407,13 @@ Related Characters: {', '.join(chars) if chars else 'All'}
             header = f"[{result.source_type.upper()}: {result.source_name}"
             # Promoted-neighbor provenance label. The seed name comes
             # from the graph so it tracks renames automatically.
+            # For 2-hop promotions we render the full path so the LLM
+            # can judge how indirect the connection is.
             if result.match_type == "graph_neighbor":
-                seed_type = (result.metadata or {}).get(
-                    "promoted_from_seed_type", "")
-                seed_id = (result.metadata or {}).get(
-                    "promoted_from_seed_id", "")
-                relation = (result.metadata or {}).get(
-                    "promoted_via_relation", "")
-                seed_name = ""
-                if seed_type and seed_id:
-                    seed_node = (seed_type, seed_id)
-                    if seed_node in self.knowledge_graph.graph:
-                        seed_name = self.knowledge_graph.graph.nodes[
-                            seed_node].get("name", seed_id)
-                if relation and seed_name:
-                    header += f"  (via {relation} from {seed_name})"
+                meta = result.metadata or {}
+                via_label = self._format_promoted_via_label(meta)
+                if via_label:
+                    header += f"  ({via_label})"
             block = f"{header}]\n{result.content}\n"
             if relations_line:
                 block += f"Relationships: {relations_line}\n"
@@ -1338,6 +1434,44 @@ Related Characters: {', '.join(chars) if chars else 'All'}
             return ""
 
         return "RELEVANT CONTEXT:\n\n" + "\n---\n".join(context_parts)
+
+    def _format_promoted_via_label(self, metadata: Dict[str, Any]) -> str:
+        """Render the 'via X from Y' / 'via path' label for promoted
+        graph-neighbor chunks.
+
+        Single-hop reads like ``via ally_of from Iron League``;
+        2-hop reads like ``via inhabited_by → Highveld, controlled_by
+        → Iron League, 2 hops`` so the LLM sees the full bridge.
+        """
+        hops = metadata.get("promoted_hops", 1)
+        path = metadata.get("promoted_path")
+        if hops >= 2 and path:
+            # Render the full chain: each step is "<relation> -> <node>".
+            steps = []
+            for step in path[:-1]:
+                # Intermediate node — use its from_name if available
+                # (set when the path was constructed).
+                rel = step.get("relation", "?")
+                steps.append(f"{rel}")
+            last = path[-1]
+            last_rel = last.get("relation", "?")
+            bridge_name = last.get("from_name", "")
+            if bridge_name:
+                return (f"via {steps[0]} → {bridge_name}, "
+                        f"{last_rel}, {hops} hops")
+            return f"via {' → '.join(steps + [last_rel])}, {hops} hops"
+        # 1-hop fallback
+        seed_type = metadata.get("promoted_from_seed_type", "")
+        seed_id = metadata.get("promoted_from_seed_id", "")
+        relation = metadata.get("promoted_via_relation", "")
+        if not (seed_type and seed_id and relation):
+            return ""
+        seed_node = (seed_type, seed_id)
+        if seed_node not in self.knowledge_graph.graph:
+            return ""
+        seed_name = self.knowledge_graph.graph.nodes[seed_node].get(
+            "name", seed_id)
+        return f"via {relation} from {seed_name}"
 
     def _format_relations_line(self, source_type: str, source_id: str) -> str:
         """Compact one-line render of a node's edges for prompt context.

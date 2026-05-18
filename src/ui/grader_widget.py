@@ -1117,20 +1117,27 @@ class GraderWidget(QWidget):
     def _make_rag_provider(self):
         """Build a RAG provider callable bound to the main window's RAG.
 
-        Returns ``(query, source_types) → str`` or ``None`` if RAG isn't
-        available. The orchestrator calls this once per chapter per
-        report so the model only sees report-relevant chunks.
+        Returns ``(query, source_types, hops=1) → str`` or ``None`` if
+        RAG isn't available. The orchestrator calls this once per
+        chapter per report so the model only sees report-relevant
+        chunks. Graph-neighbor expansion is enabled by default so a
+        character/subplot primary result pulls in its connected
+        worldbuilding / plot / character neighbors — the cross-type
+        "and worldbuilding elements" context that report writers need
+        but that the source_types filter alone doesn't provide.
         """
         try:
             mw = self.window()
             if mw is not None and hasattr(mw, "_rag_top_chunks_per_type"):
-                return lambda query, source_types: (
+                return lambda query, source_types, hops=1: (
                     mw._rag_top_chunks_per_type(
                         query=query,
                         source_types=source_types,
                         top_k=6,
                         max_chars_per_chunk=600,
                         max_total_chars=2500,
+                        expand_neighbors=True,
+                        hops=hops,
                     )
                 )
         except Exception as e:
