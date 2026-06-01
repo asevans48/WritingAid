@@ -881,6 +881,17 @@ class ReportType(Enum):
     PLOT = "plot"
     DIALOG = "dialog"
     STYLE = "style"
+    # Canon report — judges how faithfully the chapter follows the
+    # project's established characters and worldbuilding, AND
+    # suggests opportunities to draw on canon elements that aren't
+    # being used. Distinct from VOICE (which judges *prose voice*)
+    # and PLOT (which judges *structural beats*) — CANON judges
+    # *entity fidelity and opportunity*.
+    CANON = "canon"
+    # Grammar / spelling / hard-to-read paragraphs. Catches the
+    # mechanical errors and readability cliffs that the other
+    # analyzers (which judge *craft*) typically don't flag.
+    GRAMMAR = "grammar"
 
 
 @dataclass
@@ -1075,8 +1086,22 @@ class ReportSection:
     summary: str = ""              # 1-3 sentence rollup
     narrative: str = ""            # LLM-embellished prose (empty when no LLM)
     metrics: Dict[str, Any] = None # raw numbers for the dashboard
-    findings: List[str] = None     # bullet-point findings
+    findings: List[str] = None     # all bullet-point findings (kept for
+                                   # backwards compat; major + minor are
+                                   # the curated subsets the UI surfaces
+                                   # prominently)
     suggestions: List[str] = None  # bullet-point suggestions
+    # Severity-tiered subsets of findings. Items in major_issues are
+    # the load-bearing problems (metrics outside the genre band,
+    # missing required elements, hard errors). Items in minor_issues
+    # are within-tolerance observations the writer might still want
+    # to act on. ``strengths`` are positive observations — what's
+    # working — surfaced so writers see them before the issue
+    # backlog. ``findings`` stays as the full list so legacy
+    # consumers don't break.
+    major_issues: List[str] = None
+    minor_issues: List[str] = None
+    strengths: List[str] = None
     # Captured at execution time so a rated row can save the real
     # (prompt, narrative) pair as training data instead of a stub.
     prompt: str = ""               # user prompt the LLM saw
@@ -1085,6 +1110,12 @@ class ReportSection:
     def __post_init__(self):
         if self.metrics is None:
             self.metrics = {}
+        if self.major_issues is None:
+            self.major_issues = []
+        if self.minor_issues is None:
+            self.minor_issues = []
+        if self.strengths is None:
+            self.strengths = []
         if self.findings is None:
             self.findings = []
         if self.suggestions is None:
@@ -1161,8 +1192,20 @@ class _BaseAnalyzer:
 
     report_type: ReportType = None  # overridden by subclasses
 
-    def __init__(self, primary_llm: Optional['LLMClient'] = None):
+    def __init__(
+        self,
+        primary_llm: Optional['LLMClient'] = None,
+        story_planning: Optional[Any] = None,
+        manuscript: Optional[Any] = None,
+    ):
         self.primary_llm = primary_llm
+        # Story planning + manuscript are surfaced to every analyzer
+        # (not just PlotAnalyzer) so the shared context block can
+        # include the dramatic arc the chapter sits in AND the
+        # surrounding-chapter excerpts. Optional — if absent, the
+        # context block simply omits those sub-blocks.
+        self.story_planning = story_planning
+        self.manuscript = manuscript
         self._stats_cache: Dict[int, 'WritingStats'] = {}
 
     def _get_stats(self, text: str) -> 'WritingStats':
@@ -1175,6 +1218,67 @@ class _BaseAnalyzer:
         stats = ProWritingAnalyzer().analyze(text)
         self._stats_cache[key] = stats
         return stats
+
+    # Phrases that signal a load-bearing problem (metric outside the
+    # genre band, missing required element, structural break). Used by
+    # the auto-classifier when an analyzer's _compute hasn't already
+    # sorted its findings into major / minor.
+    _MAJOR_FINDING_MARKERS = (
+        "exceed", "above cap", "above genre", "above band",
+        "below band", "below genre", "outside",
+        "missing", "no scene break", "broken", "violat",
+        "unusually high", "unusually low",
+        "risk of fatigue", "risk of",
+        "above the",
+    )
+    # Phrases that signal "this is working" — positive observations
+    # the writer should see surfaced as strengths, not silently
+    # dropped or buried under the issue lists. Expanded liberally
+    # since each analyzer phrases positive deterministic findings
+    # in slightly different ways ("look healthy", "sit inside the
+    # expected band", "no flags detected", etc.).
+    _STRENGTH_FINDING_MARKERS = (
+        "sit inside expected", "sit inside the expected",
+        "look healthy", "look balanced", "look solid",
+        "within expected", "within tolerance",
+        "within the expected", "within the genre",
+        "no flags detected", "no issues detected",
+        "no spelling, grammar, or readability flags",
+        "balanced for the chapter",
+        "looks healthy for", "looks balanced for",
+    )
+    # Trailing fragment that an analyzer often emits when nothing
+    # tripped its thresholds. Treated as a strength rather than a
+    # minor issue.
+    _NO_FLAGS_MARKERS = (
+        "(none)",
+    )
+
+    def _auto_classify_findings(self, section: 'ReportSection') -> None:
+        """Distribute existing ``findings`` into ``major_issues``,
+        ``minor_issues``, and ``strengths`` by keyword pattern.
+
+        Pragmatic v1: analyzers' deterministic findings are short
+        strings with consistent phrasing ("Passive voice X% above
+        genre cap...", "Sentence variety looks healthy..."), so a
+        small keyword list catches most of them. Analyzers that
+        want a stricter classification can populate the lists
+        themselves — this hook only fires when all three lists are
+        empty.
+        """
+        for finding in section.findings:
+            lower = finding.lower()
+            if any(m in lower for m in self._STRENGTH_FINDING_MARKERS):
+                section.strengths.append(finding)
+                continue
+            if any(m in lower for m in self._NO_FLAGS_MARKERS):
+                # "(none)" or similar — not an issue, not really a
+                # strength either; let it fall through to neither.
+                continue
+            if any(m in lower for m in self._MAJOR_FINDING_MARKERS):
+                section.major_issues.append(finding)
+            else:
+                section.minor_issues.append(finding)
 
     def run(
         self,
@@ -1203,6 +1307,14 @@ class _BaseAnalyzer:
         except Exception as e:  # pragma: no cover — defensive
             section.findings.append(f"(analysis error: {e})")
             return section
+        # Distribute findings into major / minor / strengths buckets
+        # unless the analyzer's _compute already populated them
+        # itself. Keeps the UI's severity grouping working without
+        # forcing every analyzer to migrate at once.
+        if (not section.major_issues
+                and not section.minor_issues
+                and not section.strengths):
+            self._auto_classify_findings(section)
         if llm is not None:
             try:
                 prompt, system_prompt = self._build_prompt(
@@ -1257,13 +1369,29 @@ class _BaseAnalyzer:
                 lines.append(f"- {k}: {v}")
         return "\n".join(lines)
 
-    @staticmethod
     def _format_context_block(
+        self,
         manuscript_context: str,
         rag_context: str,
         critique_context: Optional[CritiqueContext],
+        chapter_title: str = "",
+        chapter_index: int = 0,
     ) -> str:
-        """Build the SHARED CONTEXT block consumed by every analyzer."""
+        """Build the SHARED CONTEXT block consumed by every analyzer.
+
+        Augmented with two arc-awareness blocks when the data is
+        available:
+
+          * **PLOT ANCHOR** — the dramatic-arc context the chapter
+            sits inside: stage estimate from chapter position, active
+            story promises, plot events near this beat. Surfaced via
+            ``self.story_planning``.
+          * **SURROUNDING CHAPTERS** — last ~200 words of the previous
+            chapter (or its planning summary if prose is absent) and
+            the next chapter's planning summary. Lets the analyzer
+            judge tonal seams, dropped threads, missing setup.
+            Surfaced via ``self.manuscript``.
+        """
         parts = []
         if critique_context:
             ctx_lines = []
@@ -1286,6 +1414,16 @@ class _BaseAnalyzer:
                     f"{critique_context.additional_instructions}")
             if ctx_lines:
                 parts.append("AUTHOR CONTEXT:\n" + "\n".join(ctx_lines))
+
+        plot_block = self._format_plot_anchor_block(chapter_index)
+        if plot_block:
+            parts.append(plot_block)
+
+        surround_block = self._format_surrounding_chapters_block(
+            chapter_title)
+        if surround_block:
+            parts.append(surround_block)
+
         if manuscript_context:
             parts.append(
                 "MANUSCRIPT CONTEXT:\n" + _truncate(manuscript_context, 1200))
@@ -1294,6 +1432,167 @@ class _BaseAnalyzer:
                 "RELEVANT BACKGROUND (from RAG):\n"
                 + _truncate(rag_context, 1500))
         return "\n\n".join(parts)
+
+    def _format_plot_anchor_block(self, chapter_index: int) -> str:
+        """Render dramatic-arc context: where this chapter sits in
+        the story, active promises, plot events near this point.
+
+        Returns "" when no story_planning is wired in. Bounded at
+        ~300 tokens of output so the prompt budget stays in hand.
+        """
+        sp = self.story_planning
+        if sp is None:
+            return ""
+        lines: List[str] = []
+
+        # Stage estimate from chapter position. Crude but useful when
+        # the writer hasn't tagged each chapter with an act explicitly.
+        total = 0
+        try:
+            total = len(self.manuscript.chapters) if self.manuscript else 0
+        except Exception:
+            total = 0
+        if total > 0:
+            position = (chapter_index + 1) / total
+            if position <= 0.25:
+                arc_zone = "opening / exposition"
+            elif position <= 0.5:
+                arc_zone = "rising action toward midpoint"
+            elif position <= 0.75:
+                arc_zone = "post-midpoint / falling action"
+            else:
+                arc_zone = "climax / resolution"
+            lines.append(
+                f"Position: chapter {chapter_index + 1} of {total} — "
+                f"{arc_zone}")
+
+        # Main plot one-liner.
+        main_plot = (getattr(sp, "main_plot", "") or "").strip()
+        if main_plot:
+            lines.append(f"Main plot: {_truncate(main_plot, 280)}")
+
+        # Active story promises — what the reader is tracking. Cap at
+        # 5 so a project with 20 promises doesn't dominate the block.
+        promises = getattr(sp, "promises", None) or []
+        if promises:
+            promise_lines = []
+            for p in promises[:5]:
+                title = (getattr(p, "title", "") or "(untitled)").strip()
+                desc = (getattr(p, "description", "") or "").strip()
+                if desc:
+                    promise_lines.append(
+                        f"- {title}: {_truncate(desc, 120)}")
+                else:
+                    promise_lines.append(f"- {title}")
+            if promise_lines:
+                lines.append(
+                    "Active promises:\n" + "\n".join(promise_lines))
+
+        # Plot events grouped by act so the analyzer can see the beat
+        # shape. Cap at 12 across the whole list to keep tokens bounded.
+        fp = getattr(sp, "freytag_pyramid", None)
+        events = getattr(fp, "events", None) if fp else None
+        if events:
+            event_lines = []
+            for ev in events[:12]:
+                act = getattr(ev, "act", 0)
+                stage = (getattr(ev, "stage", "") or "").replace(
+                    "_", " ")
+                title = (getattr(ev, "title", "") or "(untitled)").strip()
+                desc = (getattr(ev, "description", "") or "").strip()
+                head = f"- Act {act} [{stage}] {title}"
+                if desc:
+                    head += f": {_truncate(desc, 80)}"
+                event_lines.append(head)
+            if event_lines:
+                tail = (f"\n- (… {len(events) - 12} more events not shown)"
+                        if len(events) > 12 else "")
+                lines.append(
+                    "Plot beats (full arc):\n"
+                    + "\n".join(event_lines) + tail)
+
+        if not lines:
+            return ""
+        return "PLOT ANCHOR:\n" + "\n".join(lines)
+
+    def _format_surrounding_chapters_block(
+        self,
+        current_chapter_title: str,
+    ) -> str:
+        """Render previous chapter's tail + next chapter's plan so the
+        analyzer can judge tonal seams and continuity at the chapter
+        boundary. Returns "" when no manuscript is wired in or the
+        chapter can't be located in it.
+        """
+        ms = self.manuscript
+        chapters = getattr(ms, "chapters", None) if ms else None
+        if not chapters:
+            return ""
+        idx = -1
+        for i, ch in enumerate(chapters):
+            if getattr(ch, "title", "") == current_chapter_title:
+                idx = i
+                break
+        if idx < 0:
+            return ""
+
+        lines: List[str] = []
+
+        if idx > 0:
+            prev_ch = chapters[idx - 1]
+            prev_title = (getattr(prev_ch, "title", "")
+                          or f"Chapter {idx}")
+            prev_content = (getattr(prev_ch, "content", "") or "").strip()
+            if prev_content:
+                # Last ~200 words of the previous chapter. The TAIL is
+                # what the reader carries into this chapter — and what
+                # this chapter's opening has to land against.
+                tail_words = prev_content.split()[-200:]
+                tail = " ".join(tail_words)
+                lines.append(
+                    f"Previous chapter — \"{prev_title}\" "
+                    f"(closing ~{len(tail_words)} words):\n{tail}")
+            else:
+                # No prose yet — fall back to the planning description
+                # so analyzers still see what was intended.
+                planning = getattr(prev_ch, "planning", None)
+                plan_desc = (getattr(planning, "description", "")
+                             or getattr(planning, "outline", "")
+                             or "").strip() if planning else ""
+                if plan_desc:
+                    lines.append(
+                        f"Previous chapter — \"{prev_title}\" "
+                        f"(planning only, no prose yet):\n"
+                        f"{_truncate(plan_desc, 400)}")
+
+        if idx < len(chapters) - 1:
+            next_ch = chapters[idx + 1]
+            next_title = (getattr(next_ch, "title", "")
+                          or f"Chapter {idx + 2}")
+            planning = getattr(next_ch, "planning", None)
+            plan_desc = (getattr(planning, "description", "")
+                         or getattr(planning, "outline", "")
+                         or "").strip() if planning else ""
+            if plan_desc:
+                lines.append(
+                    f"Next chapter — \"{next_title}\" "
+                    f"(planning):\n{_truncate(plan_desc, 400)}")
+            else:
+                next_content = (getattr(next_ch, "content", "")
+                                or "").strip()
+                if next_content:
+                    # No plan — show the opening so analyzers can spot
+                    # whether this chapter sets up what the next one
+                    # actually opens with.
+                    head_words = next_content.split()[:120]
+                    head = " ".join(head_words)
+                    lines.append(
+                        f"Next chapter — \"{next_title}\" "
+                        f"(opening ~{len(head_words)} words):\n{head}")
+
+        if not lines:
+            return ""
+        return "SURROUNDING CHAPTERS:\n" + "\n\n".join(lines)
 
 
 class PacingAnalyzer(_BaseAnalyzer):
@@ -1389,9 +1688,18 @@ class PacingAnalyzer(_BaseAnalyzer):
             "person, be specific about where pacing succeeds and "
             "where it stalls. Reference quoted phrases (≤15 words) "
             "from the chapter when calling out a beat. Do NOT rewrite "
-            "the prose; describe what to change and why.")
+            "the prose; describe what to change and why. "
+            "**Every actionable suggestion must anchor to a specific "
+            "passage in the chapter — quote the passage, then explain "
+            "how that exact passage could be strengthened. No generic "
+            "advice. Diagnostic observations stay in the diagnostic "
+            "sections (CONTINUITY included); every actionable item "
+            "lives ONLY in the final actionable section. Do not mix "
+            "the two.**")
         ctx = self._format_context_block(
-            manuscript_context, rag_context, critique_context)
+            manuscript_context, rag_context, critique_context,
+            chapter_title=section.chapter_title,
+            chapter_index=section.chapter_index)
         prompt = f"""
 Chapter: {section.chapter_title}
 Genre: {genre.name} — {genre.notes}
@@ -1418,8 +1726,23 @@ Write a pacing report with these sections:
 3. WHERE PACING WORKS — 2-3 specific successes.
 4. WHERE PACING SLIPS — 2-3 specific issues, each with a quoted
    phrase and a concrete instruction (not a rewrite).
-5. NEXT REVISION PASS — bulleted, prioritized actions.
-Keep it under 600 words.
+5. CONTINUITY — 2-3 sentences using the PLOT ANCHOR and
+   SURROUNDING CHAPTERS context (if present). Does this chapter's
+   cadence pick up from the previous chapter's closing without a
+   jarring seam? Does its pacing set up the next chapter's planned
+   beats? If the adjacent context is absent (first/last chapter,
+   no planning), write "N/A — adjacent context unavailable."
+6. NEXT REVISION PASS — 3-5 prioritized actions. For each item,
+   give TWO lines in this exact format:
+       • Passage: "<quote the passage being targeted, ≤25 words>"
+       • How to strengthen: <concrete instruction tied to THIS
+         passage — what to change and why, not a rewrite>
+   Each item must point at a real quoted passage from the chapter;
+   skip the item if you cannot name a specific passage. Prefix
+   each item with **[MAJOR]** or **[MINOR]** indicating severity
+   (MAJOR = load-bearing problem; MINOR = within tolerance,
+   worth noting).
+Keep it under 700 words.
 """
         return prompt.strip(), system_prompt
 
@@ -1494,9 +1817,18 @@ class VoiceAnalyzer(_BaseAnalyzer):
             "rhythm, syntactic habits, what gets noticed and what gets "
             "skipped. Use the metrics provided as ground truth. When "
             "discussing voice, quote ≤15 word phrases that capture it. "
-            "Do not rewrite — diagnose.")
+            "Do not rewrite — diagnose. "
+            "**Every actionable suggestion must anchor to a specific "
+            "passage in the chapter — quote the passage, then explain "
+            "how that exact passage could be strengthened. No generic "
+            "advice. Diagnostic observations stay in the diagnostic "
+            "sections (CONTINUITY included); every actionable item "
+            "lives ONLY in the final actionable section. Do not mix "
+            "the two.**")
         ctx = self._format_context_block(
-            manuscript_context, rag_context, critique_context)
+            manuscript_context, rag_context, critique_context,
+            chapter_title=section.chapter_title,
+            chapter_index=section.chapter_index)
         prompt = f"""
 Chapter: {section.chapter_title}
 Genre: {genre.name} — {genre.notes}
@@ -1521,8 +1853,24 @@ Write a writer's-voice report with these sections:
    prose, with a quoted phrase each.
 4. CONSISTENCY WITH AUTHOR INTENT — given the stated tone/voice
    in AUTHOR CONTEXT (if any), call out drift.
-5. PRESCRIPTIVE NEXT PASS — bulleted, concrete actions.
-Keep under 600 words.
+5. CONTINUITY — 2-3 sentences using the PLOT ANCHOR and
+   SURROUNDING CHAPTERS context (if present). Is the voice
+   consistent with the prior chapter's closing voice? Does it set
+   up the voice the next chapter (per planning) will inhabit?
+   Write "N/A — adjacent context unavailable." if either side is
+   missing.
+6. PRESCRIPTIVE NEXT PASS — 3-5 prioritized actions. For each item,
+   give TWO lines in this exact format:
+       • Passage: "<quote the passage where voice slips or could
+         sharpen, ≤25 words>"
+       • How to strengthen: <concrete instruction tied to THIS
+         passage — diction / rhythm / cadence shift to make,
+         and what voice it should land closer to>
+   Prefix each item with **[MAJOR]** or **[MINOR]** indicating
+   severity (MAJOR = load-bearing problem, would hurt the reader's
+   experience; MINOR = within tolerance, worth noting). Skip the
+   item if you cannot name a specific passage.
+Keep under 700 words.
 """
         return prompt.strip(), system_prompt
 
@@ -1611,9 +1959,18 @@ class TensionAnalyzer(_BaseAnalyzer):
             "page — moment-to-moment friction, unanswered questions, "
             "stakes the reader can feel. Distinguish *plot tension* "
             "(what hangs over the chapter) from *scene tension* (the "
-            "second-by-second pull). Quote ≤15 word phrases. Do not rewrite.")
+            "second-by-second pull). Quote ≤15 word phrases. Do not rewrite. "
+            "**Every actionable suggestion must anchor to a specific "
+            "passage in the chapter — quote the passage, then explain "
+            "how that exact passage could be strengthened. No generic "
+            "advice. Diagnostic observations stay in the diagnostic "
+            "sections (CONTINUITY included); every actionable item "
+            "lives ONLY in the final actionable section. Do not mix "
+            "the two.**")
         ctx = self._format_context_block(
-            manuscript_context, rag_context, critique_context)
+            manuscript_context, rag_context, critique_context,
+            chapter_title=section.chapter_title,
+            chapter_index=section.chapter_index)
         prompt = f"""
 Chapter: {section.chapter_title}
 Genre: {genre.name} — {genre.notes}
@@ -1638,8 +1995,24 @@ Write a tension report with these sections:
    the reader.
 4. WHERE TENSION RELEASES TOO EARLY — places friction dissolves
    prematurely, with a quoted phrase.
-5. NEXT REVISION PASS — concrete actions to tighten or relieve tension.
-Keep under 600 words.
+5. CONTINUITY — 2-3 sentences using the PLOT ANCHOR and
+   SURROUNDING CHAPTERS context (if present). Does the chapter
+   inherit pressure from the previous chapter's closing? Does it
+   leave residual pressure that the next chapter (per planning)
+   can pick up? Write "N/A — adjacent context unavailable."
+   when context is missing.
+6. NEXT REVISION PASS — 3-5 prioritized actions. For each item,
+   give TWO lines in this exact format:
+       • Passage: "<quote the passage where tension drops, plateaus,
+         or could spike harder, ≤25 words>"
+       • How to strengthen: <concrete instruction tied to THIS
+         passage — tighten / release / delay / withhold, and what
+         pressure to apply>
+   Prefix each item with **[MAJOR]** or **[MINOR]** indicating
+   severity (MAJOR = load-bearing problem, would hurt the reader's
+   experience; MINOR = within tolerance, worth noting). Skip the
+   item if you cannot name a specific passage.
+Keep under 700 words.
 """
         return prompt.strip(), system_prompt
 
@@ -1649,9 +2022,14 @@ class PlotAnalyzer(_BaseAnalyzer):
     report_type = ReportType.PLOT
 
     def __init__(self, primary_llm=None, story_planning=None,
-                 chapter_synopsis: str = ""):
-        super().__init__(primary_llm)
-        self.story_planning = story_planning
+                 manuscript=None, chapter_synopsis: str = ""):
+        super().__init__(primary_llm,
+                         story_planning=story_planning,
+                         manuscript=manuscript)
+        # ``story_planning`` is now also stored on the base via the
+        # super().__init__ call, but PlotAnalyzer historically read it
+        # off self.story_planning; the base class assigns there too,
+        # so this stays consistent.
         self.chapter_synopsis = chapter_synopsis
 
     def _compute(self, text, section, genre, critique_context):
@@ -1717,9 +2095,18 @@ class PlotAnalyzer(_BaseAnalyzer):
             "beats earn their place, and whether reader promises are "
             "kept or broken. Be direct about structure problems. "
             "Quote ≤15 word phrases when calling out a beat. Do not "
-            "rewrite the prose.")
+            "rewrite the prose. "
+            "**Every actionable suggestion must anchor to a specific "
+            "passage in the chapter — quote the passage, then explain "
+            "how that exact passage could be strengthened. No generic "
+            "advice. Diagnostic observations stay in the diagnostic "
+            "sections (CONTINUITY included); every actionable item "
+            "lives ONLY in the final actionable section. Do not mix "
+            "the two.**")
         ctx = self._format_context_block(
-            manuscript_context, rag_context, critique_context)
+            manuscript_context, rag_context, critique_context,
+            chapter_title=section.chapter_title,
+            chapter_index=section.chapter_index)
         promises_block = ""
         if self.story_planning and getattr(self.story_planning, "promises", None):
             lines = []
@@ -1761,8 +2148,25 @@ Write a plot report with these sections:
    chapter advance, complicate, fulfil, or ignore it? Be specific.
 4. STRUCTURAL CONCERNS — pacing-of-plot issues: missing setup,
    skipped consequence, off-page payoff, unmotivated turn.
-5. NEXT REVISION PASS — concrete plot-level actions.
-Keep under 700 words.
+5. CONTINUITY — 2-3 sentences using the PLOT ANCHOR and
+   SURROUNDING CHAPTERS context (if present). Does this chapter
+   follow logically from the previous chapter's closing event?
+   Does it set up the next chapter's planned beats (no missing
+   bridges, no skipped turns)? Call out any threads dropped
+   between adjacent chapters. Write "N/A — adjacent context
+   unavailable." when context is missing.
+6. NEXT REVISION PASS — 3-5 prioritized plot-level actions. For
+   each item, give TWO lines in this exact format:
+       • Passage: "<quote the beat / pivot / promise-handoff being
+         critiqued, ≤25 words>"
+       • How to strengthen: <concrete instruction tied to THIS
+         passage — add setup, redirect consequence, sharpen turn,
+         move payoff onscreen — name the plot move>
+   Prefix each item with **[MAJOR]** or **[MINOR]** indicating
+   severity (MAJOR = load-bearing problem, would hurt the reader's
+   experience; MINOR = within tolerance, worth noting). Skip the
+   item if you cannot name a specific passage.
+Keep under 800 words.
 """
         return prompt.strip(), system_prompt
 
@@ -1848,9 +2252,18 @@ class DialogAnalyzer(_BaseAnalyzer):
             "You are an editor focused on dialog craft: voice "
             "differentiation between speakers, tag economy, action "
             "beats, subtext. Use the metrics as ground truth. Quote "
-            "≤15 word phrases. Don't rewrite — diagnose.")
+            "≤15 word phrases. Don't rewrite — diagnose. "
+            "**Every actionable suggestion must anchor to a specific "
+            "line or exchange in the chapter — quote the line, then "
+            "explain how that exact line could be strengthened. No "
+            "generic advice. Diagnostic observations stay in the "
+            "diagnostic sections (CONTINUITY included); every "
+            "actionable item lives ONLY in the final actionable "
+            "section. Do not mix the two.**")
         ctx = self._format_context_block(
-            manuscript_context, rag_context, critique_context)
+            manuscript_context, rag_context, critique_context,
+            chapter_title=section.chapter_title,
+            chapter_index=section.chapter_index)
         prompt = f"""
 Chapter: {section.chapter_title}
 Genre: {genre.name}
@@ -1876,8 +2289,24 @@ Write a dialog report with these sections:
    be implied, with a quoted phrase.
 4. ACTION BEATS — do beats anchor speakers in space, or do
    conversations float?
-5. NEXT REVISION PASS — concrete dialog-level actions.
-Keep under 600 words.
+5. CONTINUITY — 2-3 sentences using the PLOT ANCHOR and
+   SURROUNDING CHAPTERS context (if present). Are the speakers'
+   voices consistent with how they sounded in the previous
+   chapter? Does the dialogue close threads or open ones the next
+   chapter can pick up? Write "N/A — adjacent context
+   unavailable." when context is missing.
+6. NEXT REVISION PASS — 3-5 prioritized dialog-level actions. For
+   each item, give TWO lines in this exact format:
+       • Passage: "<quote the line / tag / exchange being
+         critiqued, ≤25 words>"
+       • How to strengthen: <concrete instruction tied to THIS
+         passage — cut the adverb, replace the tag, add a beat,
+         redirect to subtext, sharpen voice — name the move>
+   Prefix each item with **[MAJOR]** or **[MINOR]** indicating
+   severity (MAJOR = load-bearing problem, would hurt the reader's
+   experience; MINOR = within tolerance, worth noting). Skip the
+   item if you cannot name a specific passage.
+Keep under 700 words.
 """
         return prompt.strip(), system_prompt
 
@@ -1946,9 +2375,18 @@ class StyleAnalyzer(_BaseAnalyzer):
         system_prompt = (
             "You are a line editor diagnosing sentence-level style. "
             "Use metrics as ground truth. Quote ≤15 word phrases when "
-            "calling out a problem. Don't rewrite.")
+            "calling out a problem. Don't rewrite. "
+            "**Every actionable suggestion must anchor to a specific "
+            "passage in the chapter — quote the passage, then explain "
+            "how that exact passage could be strengthened. No generic "
+            "advice. Diagnostic observations stay in the diagnostic "
+            "sections (CONTINUITY included); every actionable item "
+            "lives ONLY in the final actionable section. Do not mix "
+            "the two.**")
         ctx = self._format_context_block(
-            manuscript_context, rag_context, critique_context)
+            manuscript_context, rag_context, critique_context,
+            chapter_title=section.chapter_title,
+            chapter_index=section.chapter_index)
         prompt = f"""
 Chapter: {section.chapter_title}
 Genre: {genre.name} — {genre.notes}
@@ -1972,8 +2410,527 @@ Write a style report with these sections:
 3. PASSIVE / ADVERB / CLICHÉ — concrete examples to address.
 4. SENTENCE-LEVEL VARIETY — does sentence shape vary, or
    default to one pattern?
-5. NEXT REVISION PASS — line-level actions.
-Keep under 600 words.
+5. CONTINUITY — 2-3 sentences using the SURROUNDING CHAPTERS
+   context (if present). Does the sentence-level style match the
+   prior chapter's closing prose? Are there sudden shifts in
+   register / cadence at the chapter boundary that read as seams?
+   Write "N/A — adjacent context unavailable." when context is
+   missing.
+6. NEXT REVISION PASS — 3-5 prioritized line-level actions. For
+   each item, give TWO lines in this exact format:
+       • Passage: "<quote the sentence or fragment being
+         critiqued, ≤25 words>"
+       • How to strengthen: <concrete instruction tied to THIS
+         passage — replace adverb with verb, cut filler word, vary
+         sentence shape, kill the cliché — name the move>
+   Prefix each item with **[MAJOR]** or **[MINOR]** indicating
+   severity (MAJOR = load-bearing problem, would hurt the reader's
+   experience; MINOR = within tolerance, worth noting). Skip the
+   item if you cannot name a specific passage.
+Keep under 700 words.
+"""
+        return prompt.strip(), system_prompt
+
+
+class CanonAnalyzer(_BaseAnalyzer):
+    """Canon (character + worldbuilding) fidelity and opportunity.
+
+    Two-sided lens that the other analyzers don't cover:
+      * **Fidelity** — when a character from the project appears in
+        the chapter, do they act consistent with their established
+        personality, motivations, fears, speaking style? When a
+        place / faction / technology is named, does the prose
+        respect what the project says about it?
+      * **Opportunity** — which canon elements (visible in the RAG
+        block + chapter planning's featured characters / locations)
+        could enrich this chapter but aren't being drawn on?
+
+    Relies on the RAG retrieval pulling in the relevant entities
+    plus their graph-neighbor expansion (already in place for the
+    critique flow); doesn't try to re-detect entity mentions itself.
+    """
+    report_type = ReportType.CANON
+
+    def _compute(self, text, section, genre, critique_context):
+        # Deterministic side: cross-check planning's featured set
+        # against actual chapter mentions. Useful as a fingerprint
+        # the LLM can comment on without re-deriving it.
+        featured_characters: List[str] = []
+        featured_locations: List[str] = []
+        if self.manuscript:
+            for ch in getattr(self.manuscript, "chapters", []) or []:
+                if getattr(ch, "title", "") == section.chapter_title:
+                    planning = getattr(ch, "planning", None)
+                    if planning:
+                        featured_characters = list(
+                            getattr(planning, "characters_featured", [])
+                            or [])
+                        featured_locations = list(
+                            getattr(planning, "locations", []) or [])
+                    break
+        lower = text.lower()
+        mentioned_featured = [
+            name for name in featured_characters
+            if name and name.lower() in lower]
+        missing_featured = [
+            name for name in featured_characters
+            if name and name.lower() not in lower]
+        section.metrics = {
+            "featured_characters": len(featured_characters),
+            "featured_mentioned": len(mentioned_featured),
+            "featured_missing": len(missing_featured),
+            "featured_locations": len(featured_locations),
+        }
+        if missing_featured:
+            section.findings.append(
+                f"Planned character{'s' if len(missing_featured) > 1 else ''} "
+                f"not named in chapter prose: "
+                f"{', '.join(missing_featured[:5])}"
+                + (f" (+{len(missing_featured) - 5} more)"
+                   if len(missing_featured) > 5 else ""))
+        if not featured_characters and not featured_locations:
+            section.findings.append(
+                "Chapter planning lists no featured characters or "
+                "locations — canon fidelity relies entirely on what "
+                "the prose names.")
+        else:
+            section.findings.append(
+                f"Chapter planning intends "
+                f"{len(featured_characters)} character(s) and "
+                f"{len(featured_locations)} location(s) featured.")
+        section.summary = (
+            f"Canon: {len(mentioned_featured)}/"
+            f"{len(featured_characters)} planned characters land on "
+            f"the page; {len(featured_locations)} location(s) planned.")
+
+    def _build_prompt(self, text, section, genre, manuscript_context,
+                      rag_context, critique_context):
+        system_prompt = (
+            "You are a developmental editor focused on canon fidelity "
+            "and canon opportunity. **Fidelity**: when a character or "
+            "world element from the project appears in the chapter, "
+            "do they act / present consistent with their established "
+            "personality, motivations, history, and the project's "
+            "rules? **Opportunity**: what canon elements visible in "
+            "the RELEVANT BACKGROUND or PLOT ANCHOR could enrich "
+            "the chapter — name them and say how. "
+            "Treat the RAG context and PLOT ANCHOR as the canonical "
+            "source of truth; flag any conflict between prose and "
+            "canon. Quote ≤15 word phrases when calling things out. "
+            "Do not rewrite — diagnose. "
+            "**Every actionable suggestion must anchor to a specific "
+            "passage or a specific canon element — quote the passage "
+            "or name the element, then explain how to fix the "
+            "fidelity break or how to draw on the underused element. "
+            "No generic advice. Diagnostic observations stay in the "
+            "diagnostic sections (CONTINUITY included); every "
+            "actionable item lives ONLY in the final actionable "
+            "section. Do not mix the two.**")
+        ctx = self._format_context_block(
+            manuscript_context, rag_context, critique_context,
+            chapter_title=section.chapter_title,
+            chapter_index=section.chapter_index)
+        prompt = f"""
+Chapter: {section.chapter_title}
+Genre: {genre.name}
+
+CANON METRICS:
+{self._format_metrics_block(section.metrics)}
+
+DETERMINISTIC FINDINGS:
+{chr(10).join(f'- {f}' for f in section.findings) or '- (none)'}
+
+{ctx}
+
+CHAPTER TEXT (first 2500 words):
+{' '.join(text.split()[:2500])}
+
+Write a canon report with these sections:
+1. CANON FIDELITY — for each project character or world element
+   that appears in the chapter, judge alignment. Quote a phrase
+   showing in-character (or out-of-character) behavior. Flag any
+   factual conflict with project canon (e.g., faction allegiance,
+   technology rules, personality drift). Be specific — name the
+   character/element and the canon fact.
+2. WORLD CONSISTENCY — does the chapter respect the project's
+   established worldbuilding (factions, places, technologies,
+   cultures)? Call out any drift between prose and canon.
+3. UNDERUSED OPPORTUNITIES — what's in the RAG block / PLOT
+   ANCHOR that this chapter could draw on but doesn't? Name 2-3
+   specific canon elements (a character's fear, a place's
+   atmosphere, a faction's pressure, a technology's limit) and
+   say where in the chapter they could land.
+4. PROMISES TOUCHED — for any Story Promise that intersects this
+   chapter's characters or world, is it advanced / complicated /
+   ignored?
+5. CONTINUITY — 2-3 sentences using the PLOT ANCHOR and
+   SURROUNDING CHAPTERS context (if present). Are characters
+   carrying state from the previous chapter? Does the chapter
+   set up canon elements the next chapter (per planning) will
+   need? Write "N/A — adjacent context unavailable." when
+   context is missing.
+6. NEXT REVISION PASS — 3-6 prioritized canon actions. For each
+   item, give TWO lines in this exact format:
+       • Passage or Element: "<quote the passage being critiqued
+         OR name the canon element being suggested, ≤25 words>"
+       • How to strengthen: <concrete instruction — either fix
+         the fidelity break (what the character/element would
+         actually do/be) OR show how to draw on the underused
+         element (which scene, which beat, what it contributes)>
+   Mix fidelity-fix items and opportunity-add items. Skip the
+   item if you cannot name a specific passage or canon element.
+Keep under 800 words.
+"""
+        return prompt.strip(), system_prompt
+
+
+class GrammarAnalyzer(_BaseAnalyzer):
+    """Grammar, spelling, and hard-to-read paragraphs.
+
+    Three deterministic dimensions the other analyzers don't cover:
+
+      * **Spelling** via pyspellchecker — catches typos with high
+        precision. Skips words already in the standard dictionary
+        and a small list of common proper-noun shapes.
+      * **Grammar** via language_tool_python (LanguageTool). Lazy-
+        loaded inside _compute and wrapped in try/except — the engine
+        needs a Java runtime, so absence gets logged once and the
+        section continues with spelling + hard-paragraphs only.
+      * **Hard-to-read paragraphs** — pure-Python thresholds: word
+        count > 250, avg sentence length > 30 words, or > 50% of
+        sentences > 25 words. Each flagged with the opening line so
+        the writer can find it in their draft.
+
+    Severity classification: spelling and grammar issues are MAJOR
+    when more than a small handful surface (5 misspellings or 3
+    grammar errors). Hard-to-read paragraphs are MAJOR when 3+ are
+    flagged. Below those thresholds they fall to MINOR.
+    """
+    report_type = ReportType.GRAMMAR
+
+    # Class-level caches so we don't reinstantiate heavy tools per
+    # chapter. ``None`` means "not yet attempted", ``False`` means
+    # "attempted and unavailable (don't retry)", instance means ready.
+    _spellchecker = None
+    _langtool = None
+
+    @classmethod
+    def _get_spellchecker(cls):
+        if cls._spellchecker is False:
+            return None
+        if cls._spellchecker is None:
+            try:
+                from spellchecker import SpellChecker
+                cls._spellchecker = SpellChecker()
+            except Exception as e:
+                print(f"[grammar] pyspellchecker unavailable: {e}")
+                cls._spellchecker = False
+                return None
+        return cls._spellchecker
+
+    @classmethod
+    def _get_langtool(cls):
+        if cls._langtool is False:
+            return None
+        if cls._langtool is None:
+            try:
+                import language_tool_python
+                cls._langtool = language_tool_python.LanguageTool(
+                    "en-US")
+            except Exception as e:
+                # No Java, no network, no jar — degrade gracefully.
+                print(f"[grammar] language_tool_python unavailable: {e}")
+                cls._langtool = False
+                return None
+        return cls._langtool
+
+    # Tokens that look like proper nouns we shouldn't flag as typos —
+    # heuristic, supplements the spellchecker dictionary.
+    _CAP_WORD = re.compile(r"^[A-Z][a-zA-Z'’\-]+$")
+
+    def _compute(self, text, section, genre, critique_context):
+        paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+        section.metrics["paragraph_count"] = len(paragraphs)
+
+        # --- Hard-to-read paragraphs (always available) ---
+        hard = self._find_hard_paragraphs(paragraphs)
+        section.metrics["hard_paragraph_count"] = len(hard)
+        if hard:
+            opening_previews = [
+                f"¶{i + 1}: \"{p['opening']}\""
+                for i, p in enumerate(hard[:5])
+            ]
+            note = (
+                f"Found {len(hard)} hard-to-read paragraph(s): "
+                + "; ".join(opening_previews)
+                + (f" (+{len(hard) - 5} more)"
+                   if len(hard) > 5 else ""))
+            if len(hard) >= 3:
+                section.major_issues.append(note)
+            else:
+                section.minor_issues.append(note)
+            section.findings.append(note)
+
+        # --- Spelling (deterministic; degrades silently) ---
+        misspelled = self._check_spelling(text)
+        section.metrics["misspelled_count"] = len(misspelled)
+        if misspelled:
+            sample = misspelled[:8]
+            note = (
+                f"Possible misspellings ({len(misspelled)}): "
+                + ", ".join(sample)
+                + (f" (+{len(misspelled) - 8} more)"
+                   if len(misspelled) > 8 else ""))
+            if len(misspelled) >= 5:
+                section.major_issues.append(note)
+            else:
+                section.minor_issues.append(note)
+            section.findings.append(note)
+
+        # --- Grammar via LanguageTool (lazy + graceful) ---
+        grammar_issues = self._check_grammar(text)
+        section.metrics["grammar_issue_count"] = len(grammar_issues)
+        if grammar_issues:
+            # Show a small sample so the writer sees what's flagged
+            # without us dumping the whole list into the section.
+            sample_lines = []
+            for issue in grammar_issues[:6]:
+                sample_lines.append(
+                    f"({issue['rule']}) \"{issue['preview']}\" "
+                    f"— {issue['message']}")
+            note = (
+                f"Found {len(grammar_issues)} grammar issue(s). "
+                f"Sample:\n  "
+                + "\n  ".join(sample_lines)
+                + (f"\n  (+{len(grammar_issues) - 6} more)"
+                   if len(grammar_issues) > 6 else ""))
+            if len(grammar_issues) >= 3:
+                section.major_issues.append(note)
+            else:
+                section.minor_issues.append(note)
+            section.findings.append(note)
+        elif self._get_langtool() is None and not section.findings:
+            section.findings.append(
+                "Grammar checker (LanguageTool) unavailable — "
+                "install Java to enable grammar diagnostics. "
+                "Spelling + hard-paragraph checks still ran.")
+
+        if (not hard and not misspelled and not grammar_issues
+                and self._get_langtool() is not None):
+            note = "No spelling, grammar, or readability flags detected."
+            section.findings.append(note)
+            section.strengths.append(note)
+        # Even when there ARE issues, surface a per-dimension strength
+        # for any dimension that came back clean. Writers benefit from
+        # knowing "your grammar is fine, only the long paragraph
+        # tripped" rather than just seeing the issue list.
+        if not misspelled and self._get_spellchecker() is not None:
+            section.strengths.append(
+                "Spelling: no likely misspellings detected.")
+        if (not grammar_issues
+                and self._get_langtool() is not None
+                and (hard or misspelled)):
+            section.strengths.append(
+                "Grammar: no rule-checker issues detected.")
+        if not hard and (misspelled or grammar_issues):
+            section.strengths.append(
+                "Readability: no hard-to-read paragraphs flagged "
+                "(every paragraph under length / sentence-density "
+                "thresholds).")
+
+        section.summary = (
+            f"Grammar: {section.metrics.get('grammar_issue_count', 0)} "
+            f"grammar issue(s), "
+            f"{section.metrics.get('misspelled_count', 0)} possible "
+            f"misspelling(s), "
+            f"{section.metrics.get('hard_paragraph_count', 0)} "
+            f"hard-to-read paragraph(s).")
+
+    def _find_hard_paragraphs(
+        self,
+        paragraphs: List[str],
+    ) -> List[Dict[str, Any]]:
+        """Return paragraphs flagged as hard-to-read with the reasons.
+
+        Three independent signals; any one of them triggers a flag.
+        Each result includes an ``opening`` (first ~80 chars) so the
+        writer can locate the paragraph in their draft.
+        """
+        flagged: List[Dict[str, Any]] = []
+        sentence_re = re.compile(r"[.!?]+\s+")
+        for i, para in enumerate(paragraphs):
+            words = para.split()
+            wc = len(words)
+            sentences = [s for s in sentence_re.split(para) if s.strip()]
+            sc = max(len(sentences), 1)
+            avg_sent_len = wc / sc
+            long_sent_count = sum(
+                1 for s in sentences if len(s.split()) > 25)
+            long_sent_ratio = long_sent_count / sc
+            reasons: List[str] = []
+            if wc > 250:
+                reasons.append(f"very long ({wc} words)")
+            if avg_sent_len > 30:
+                reasons.append(
+                    f"avg sentence ~{avg_sent_len:.0f} words")
+            if long_sent_ratio > 0.5 and sc >= 2:
+                reasons.append(
+                    f"{int(long_sent_ratio * 100)}% of sentences "
+                    f">25 words")
+            if reasons:
+                opening = para[:80].replace("\n", " ")
+                if len(para) > 80:
+                    opening = opening.rstrip() + "…"
+                flagged.append({
+                    "index": i + 1,
+                    "opening": opening,
+                    "word_count": wc,
+                    "avg_sentence_length": round(avg_sent_len, 1),
+                    "reasons": reasons,
+                })
+        return flagged
+
+    def _check_spelling(self, text: str) -> List[str]:
+        """Return likely misspellings. Excludes proper-noun-shaped
+        tokens to keep noise down — names of characters/places are
+        flagged elsewhere via the canon report's RAG retrieval, not
+        here. Returns empty list if pyspellchecker isn't available."""
+        sc = self._get_spellchecker()
+        if sc is None:
+            return []
+        # Tokenize words (preserve apostrophes for contractions).
+        words = re.findall(r"[A-Za-z][A-Za-z'’]*", text)
+        if not words:
+            return []
+        # Filter out: proper-noun-shaped tokens (capitalized) and very
+        # short / digits. Then run the spell checker on what remains.
+        candidates = []
+        seen: set = set()
+        for w in words:
+            if w in seen:
+                continue
+            seen.add(w)
+            if len(w) < 4:
+                continue
+            if self._CAP_WORD.match(w):
+                continue
+            candidates.append(w.lower())
+        misspelled = sc.unknown(candidates)
+        # Stable order = order of first appearance.
+        ordered: List[str] = []
+        added: set = set()
+        for w in candidates:
+            if w in misspelled and w not in added:
+                ordered.append(w)
+                added.add(w)
+        return ordered
+
+    def _check_grammar(
+        self,
+        text: str,
+    ) -> List[Dict[str, Any]]:
+        """Run LanguageTool over the chapter. Returns one dict per
+        issue with rule/preview/message. Skips capitalization-only
+        rules to dodge false positives on proper nouns and stylized
+        prose. Empty list if LanguageTool isn't available."""
+        tool = self._get_langtool()
+        if tool is None:
+            return []
+        try:
+            matches = tool.check(text)
+        except Exception as e:
+            print(f"[grammar] LanguageTool check failed: {e}")
+            return []
+        issues: List[Dict[str, Any]] = []
+        SKIP_RULES = {
+            "UPPERCASE_SENTENCE_START",  # Proper-noun start flags
+            "MORFOLOGIK_RULE_EN_US",     # Spelling — covered separately
+            "EN_QUOTES",                 # Smart-quote nags
+        }
+        for m in matches[:60]:  # cap to avoid runaway output
+            rule_id = getattr(m, "ruleId", "")
+            if rule_id in SKIP_RULES:
+                continue
+            offset = getattr(m, "offset", 0)
+            length = getattr(m, "errorLength", 0)
+            preview = text[offset:offset + max(length, 1) + 30]
+            preview = preview.replace("\n", " ")[:80]
+            issues.append({
+                "rule": rule_id or "Grammar",
+                "preview": preview,
+                "message": (getattr(m, "message", "") or "")[:200],
+            })
+        return issues
+
+    def _build_prompt(self, text, section, genre, manuscript_context,
+                      rag_context, critique_context):
+        system_prompt = (
+            "You are a copy editor focused on mechanical correctness "
+            "and readability — grammar, punctuation, spelling, and "
+            "passages that are hard to read because of length or "
+            "syntactic density. You receive the deterministic findings "
+            "(spell checker + LanguageTool + paragraph metrics) as "
+            "ground truth. Don't re-derive them; explain and prioritize. "
+            "Quote ≤25 word phrases when calling out a problem. Do not "
+            "rewrite the prose. "
+            "**Every actionable suggestion must anchor to a specific "
+            "passage in the chapter — quote the passage, then explain "
+            "how that exact passage could be strengthened. No generic "
+            "advice. Diagnostic observations stay in the diagnostic "
+            "sections (CONTINUITY included); every actionable item "
+            "lives ONLY in the final actionable section. Do not mix "
+            "the two.**")
+        ctx = self._format_context_block(
+            manuscript_context, rag_context, critique_context,
+            chapter_title=section.chapter_title,
+            chapter_index=section.chapter_index)
+        prompt = f"""
+Chapter: {section.chapter_title}
+Genre: {genre.name}
+
+GRAMMAR METRICS:
+{self._format_metrics_block(section.metrics)}
+
+DETERMINISTIC FINDINGS (treat as ground truth):
+{chr(10).join(f'- {f}' for f in section.findings) or '- (none)'}
+
+{ctx}
+
+CHAPTER TEXT (first 2500 words):
+{' '.join(text.split()[:2500])}
+
+Write a grammar & readability report with these sections:
+1. SPELLING — for the misspellings flagged above (if any), say
+   which are real typos vs. project-specific terms (character /
+   place / faction names, neologisms). Quote the misspelled token
+   with one word of context on each side.
+2. GRAMMAR — for the grammar issues flagged above (if any),
+   explain which are real errors vs. intentional style choices.
+   Quote the flagged passage.
+3. HARD-TO-READ PARAGRAPHS — for each flagged paragraph (if any),
+   explain the dominant reason (length / sentence density / long
+   sentence ratio) and what makes it hard for the eye. Quote the
+   opening of the paragraph.
+4. PUNCTUATION & MECHANICS — call out 2-3 issues the rule-based
+   checkers miss (comma splices, dialogue punctuation,
+   missing/extra ellipses, em-dash drift). Quote each.
+5. CONTINUITY — 2-3 sentences using the SURROUNDING CHAPTERS
+   context (if present). Does the chapter's punctuation /
+   formatting / dialogue conventions match the previous chapter's?
+   Write "N/A — adjacent context unavailable." when context is
+   missing.
+6. NEXT REVISION PASS — 3-6 prioritized actions. For each item,
+   give THREE lines in this exact format:
+       • [MAJOR] or [MINOR] severity tag
+       • Passage: "<quote the passage being targeted, ≤25 words>"
+       • How to strengthen: <concrete instruction — fix the
+         specific error, break the long sentence at X, split the
+         paragraph after Y, etc.>
+   Prefix each item with **[MAJOR]** or **[MINOR]** indicating
+   severity (MAJOR = load-bearing problem, would hurt the reader's
+   experience; MINOR = within tolerance, worth noting). Skip the
+   item if you cannot name a specific passage.
+Keep under 700 words.
 """
         return prompt.strip(), system_prompt
 
@@ -1990,6 +2947,8 @@ _ANALYZER_REGISTRY: Dict[ReportType, Any] = {
     ReportType.PLOT: PlotAnalyzer,
     ReportType.DIALOG: DialogAnalyzer,
     ReportType.STYLE: StyleAnalyzer,
+    ReportType.CANON: CanonAnalyzer,
+    ReportType.GRAMMAR: GrammarAnalyzer,
 }
 
 
@@ -2073,15 +3032,27 @@ class CritiqueOrchestrator:
         chapter_title: str,
     ) -> _BaseAnalyzer:
         cls = _ANALYZER_REGISTRY[report_type]
+        # Surface story_planning + manuscript to every analyzer (not
+        # just PlotAnalyzer) so the shared context block can include
+        # the PLOT ANCHOR and SURROUNDING CHAPTERS sub-blocks. Both
+        # are optional — analyzers gracefully omit them when missing.
+        sp = (getattr(self.project, "story_planning", None)
+              if self.project else None)
+        ms = (getattr(self.project, "manuscript", None)
+              if self.project else None)
         if cls is PlotAnalyzer:
             synopsis = self.chapter_synopses.get(chapter_title, "")
-            sp = getattr(self.project, "story_planning", None) if self.project else None
             return cls(
                 primary_llm=self.primary_llm,
                 story_planning=sp,
+                manuscript=ms,
                 chapter_synopsis=synopsis,
             )
-        return cls(primary_llm=self.primary_llm)
+        return cls(
+            primary_llm=self.primary_llm,
+            story_planning=sp,
+            manuscript=ms,
+        )
 
     def _gather_rag(
         self,
@@ -2106,10 +3077,27 @@ class CritiqueOrchestrator:
             ReportType.PLOT: ["chapter", "subplot", "character"],
             ReportType.DIALOG: ["character"],
             ReportType.STYLE: ["chapter"],
+            # Canon report fetches the broadest entity slice — it
+            # needs to judge BOTH characters and worldbuilding (factions,
+            # places, cultures, technologies, historical events, myths)
+            # against what's on the page. Graph expansion (hops=2) pulls
+            # in connected entities so a faction's leader / ally / capital
+            # surfaces alongside the faction itself.
+            ReportType.CANON: [
+                "character", "faction", "place", "culture",
+                "technology", "historical_event", "myth", "subplot",
+                "chapter",
+            ],
+            # Grammar is mechanical — chapter prose is all it needs
+            # for spelling/grammar checks. Surrounding-chapter context
+            # is wired separately via _format_surrounding_chapters_block
+            # for the CONTINUITY section.
+            ReportType.GRAMMAR: ["chapter"],
         }
         hops_by_report: Dict[ReportType, int] = {
             ReportType.PLOT:    2,
             ReportType.TENSION: 2,
+            ReportType.CANON:   2,
         }
         source_types = source_types_by_report.get(
             report_type, ["chapter", "character", "subplot"])

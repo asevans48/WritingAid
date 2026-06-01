@@ -3623,6 +3623,18 @@ class ManuscriptEditor(QWidget):
         )
         self._init_ui()
 
+    def get_current_chapter(self):
+        """Return the Chapter Pydantic object currently being edited,
+        or None if no chapter is open. Used by the Print Chapter menu
+        item so it can hand the right chapter to the printer."""
+        if not self._current_chapter_id or not self.manuscript:
+            return None
+        chapters = getattr(self.manuscript, "chapters", []) or []
+        for ch in chapters:
+            if getattr(ch, "id", None) == self._current_chapter_id:
+                return ch
+        return None
+
     def set_project(self, project):
         """Set the project for context lookup."""
         self.project = project

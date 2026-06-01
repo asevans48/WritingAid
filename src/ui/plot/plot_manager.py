@@ -16,6 +16,8 @@ from src.models.project import (
 )
 from src.ui.plot.freytag_pyramid_visual import FreytagPyramidVisual
 from src.ui.plot.plot_event_editor import PlotEventEditor
+from src.ui.plot.plot_event_ordering import normalize_sort_orders
+from src.ui.plot.plot_timeline import PlotTimelineWidget
 
 
 # Plot-AI system prompt. Lives at module scope so the worker thread
@@ -1028,52 +1030,43 @@ class PlotManagerWidget(QWidget):
 
         header.addStretch()
 
-        help_text = QLabel("Manage key events in your story's dramatic structure")
+        help_text = QLabel(
+            "Timeline view — events ordered within each act. "
+            "Use the per-card buttons to edit, reorder, or delete.")
         help_text.setStyleSheet("font-size: 11px; color: #6b7280;")
+        help_text.setWordWrap(True)
         header.addWidget(help_text)
 
         layout.addLayout(header)
 
-        # Toolbar
+        # Compact top-level toolbar — quick "Add Event" stays here as
+        # a shortcut. Per-card actions (Edit, Up, Down, Delete) live
+        # on the card itself; the cross-act add buttons live in each
+        # act section of the timeline.
         toolbar = QHBoxLayout()
-
         add_btn = QPushButton("➕ Add Event")
         add_btn.clicked.connect(self._add_event)
         toolbar.addWidget(add_btn)
-
-        self.edit_event_btn = QPushButton("✏️ Edit")
-        self.edit_event_btn.clicked.connect(self._edit_event)
-        self.edit_event_btn.setEnabled(False)
-        toolbar.addWidget(self.edit_event_btn)
-
-        self.remove_event_btn = QPushButton("🗑️ Remove")
-        self.remove_event_btn.clicked.connect(self._remove_event)
-        self.remove_event_btn.setEnabled(False)
-        toolbar.addWidget(self.remove_event_btn)
-
-        toolbar.addSeparator = QFrame()
-        toolbar.addSeparator.setFrameShape(QFrame.Shape.VLine)
-        toolbar.addWidget(toolbar.addSeparator)
-
-        self.move_event_up_btn = QPushButton("⬆ Move Up")
-        self.move_event_up_btn.clicked.connect(self._move_event_up)
-        self.move_event_up_btn.setEnabled(False)
-        toolbar.addWidget(self.move_event_up_btn)
-
-        self.move_event_down_btn = QPushButton("⬇ Move Down")
-        self.move_event_down_btn.clicked.connect(self._move_event_down)
-        self.move_event_down_btn.setEnabled(False)
-        toolbar.addWidget(self.move_event_down_btn)
-
         toolbar.addStretch()
-
         layout.addLayout(toolbar)
 
-        # Event list
-        self.event_list = QListWidget()
-        self.event_list.itemSelectionChanged.connect(self._on_event_selection_changed)
-        self.event_list.itemDoubleClicked.connect(self._on_event_list_double_clicked)
-        layout.addWidget(self.event_list)
+        # Timeline view — replaces the old flat QListWidget. Mutations
+        # are routed back to the existing handlers via signals so the
+        # data plumbing is unchanged.
+        self.event_timeline = PlotTimelineWidget()
+        self.event_timeline.add_event_requested.connect(
+            self._add_event_for_act)
+        self.event_timeline.edit_event_requested.connect(
+            self._edit_event_by_id)
+        self.event_timeline.delete_event_requested.connect(
+            self._remove_event_by_id)
+        self.event_timeline.move_event_up_requested.connect(
+            self._move_event_up_by_id)
+        self.event_timeline.move_event_down_requested.connect(
+            self._move_event_down_by_id)
+        self.event_timeline.event_selected.connect(
+            self._on_timeline_event_selected)
+        layout.addWidget(self.event_timeline, stretch=1)
 
         return widget
 
@@ -2920,8 +2913,10 @@ class PlotManagerWidget(QWidget):
                 "plot AI can reason about more deeply.")
             self._theme_list.addItem(item)
 
-    def _add_event(self):
-        """Add new plot event."""
+    def _add_event(self, preselected_act: Optional[int] = None):
+        """Add new plot event. Optional ``preselected_act`` lets the
+        per-act "+ Add event" buttons in the timeline open the
+        editor with the target act already chosen."""
         editor = PlotEventEditor(
             available_characters=self.available_characters,
             available_subplots=self.subplots,
@@ -2929,6 +2924,16 @@ class PlotManagerWidget(QWidget):
             act_names=self.freytag_pyramid.act_names,
             parent=self
         )
+        # When the request came from a specific act header, pre-fill
+        # the editor's act field so the user doesn't have to pick
+        # the act they already clicked.
+        if (preselected_act is not None
+                and hasattr(editor, "act_combo")):
+            try:
+                editor.act_combo.setCurrentIndex(
+                    max(0, preselected_act - 1))
+            except Exception:
+                pass
         if editor.exec() == QDialog.DialogCode.Accepted:
             event = editor.get_event()
 
@@ -2948,17 +2953,20 @@ class PlotManagerWidget(QWidget):
             self._update_event_list()
             self.content_changed.emit()
 
-    def _edit_event(self):
-        """Edit selected event."""
-        items = self.event_list.selectedItems()
-        if not items:
-            return
+    def _add_event_for_act(self, act_number: int):
+        """Timeline 'Add event to Act N' button entry point."""
+        self._add_event(preselected_act=act_number)
 
-        event_id = items[0].data(Qt.ItemDataRole.UserRole)
-        event = next((e for e in self.freytag_pyramid.events if e.id == event_id), None)
+    def _edit_event_by_id(self, event_id: str):
+        """Open the editor for the event matching this id. Called by
+        the timeline's per-card Edit button — bypasses the old
+        selection-based flow."""
+        event = next(
+            (e for e in self.freytag_pyramid.events if e.id == event_id),
+            None,
+        )
         if not event:
             return
-
         editor = PlotEventEditor(
             event=event,
             available_characters=self.available_characters,
@@ -2971,98 +2979,83 @@ class PlotManagerWidget(QWidget):
             self._update_event_list()
             self.content_changed.emit()
 
-    def _remove_event(self):
-        """Remove selected event."""
-        items = self.event_list.selectedItems()
-        if not items:
-            return
+    def _remove_event_by_id(self, event_id: str):
+        """Delete the event matching this id. Called by the timeline's
+        per-card Delete button."""
+        before = len(self.freytag_pyramid.events)
+        self.freytag_pyramid.events = [
+            e for e in self.freytag_pyramid.events if e.id != event_id]
+        if len(self.freytag_pyramid.events) != before:
+            self._update_event_list()
+            self.content_changed.emit()
 
-        event_id = items[0].data(Qt.ItemDataRole.UserRole)
-        self.freytag_pyramid.events = [e for e in self.freytag_pyramid.events if e.id != event_id]
-        self._update_event_list()
-        self.content_changed.emit()
-
-    def _move_event_up(self):
-        """Move selected event up in sort order (within same act and stage)."""
-        items = self.event_list.selectedItems()
-        if not items:
-            return
-
-        event_id = items[0].data(Qt.ItemDataRole.UserRole)
-        event = next((e for e in self.freytag_pyramid.events if e.id == event_id), None)
+    def _move_event_up_by_id(self, event_id: str):
+        """Swap this event's sort_order with the previous event in
+        its (act, stage) group. Called by the timeline's per-card ↑
+        button."""
+        event = next(
+            (e for e in self.freytag_pyramid.events if e.id == event_id),
+            None,
+        )
         if not event:
             return
-
-        # Find events in the same act AND stage
         same_group_events = [
             e for e in self.freytag_pyramid.events
             if e.act == event.act and e.stage == event.stage
         ]
         same_group_events.sort(key=lambda e: e.sort_order)
-
-        # Find current position
-        current_index = next((i for i, e in enumerate(same_group_events) if e.id == event_id), None)
+        current_index = next(
+            (i for i, e in enumerate(same_group_events)
+             if e.id == event_id), None)
         if current_index is None or current_index == 0:
             return
-
-        # Swap sort orders with the previous event
         prev_event = same_group_events[current_index - 1]
-        event.sort_order, prev_event.sort_order = prev_event.sort_order, event.sort_order
-
-        # If they ended up with the same sort_order (both were 0), fix it
+        event.sort_order, prev_event.sort_order = (
+            prev_event.sort_order, event.sort_order)
+        # Tie-break when both were 0 — bump the now-following event
+        # so the order is stable.
         if event.sort_order == prev_event.sort_order:
             prev_event.sort_order = event.sort_order + 1
-
         self._update_event_list()
+        self.event_timeline.select_event(event_id)
         self.content_changed.emit()
 
-        # Re-select the event
-        for i in range(self.event_list.count()):
-            item = self.event_list.item(i)
-            if item.data(Qt.ItemDataRole.UserRole) == event_id:
-                self.event_list.setCurrentItem(item)
-                break
-
-    def _move_event_down(self):
-        """Move selected event down in sort order (within same act and stage)."""
-        items = self.event_list.selectedItems()
-        if not items:
-            return
-
-        event_id = items[0].data(Qt.ItemDataRole.UserRole)
-        event = next((e for e in self.freytag_pyramid.events if e.id == event_id), None)
+    def _move_event_down_by_id(self, event_id: str):
+        """Swap this event's sort_order with the next event in its
+        (act, stage) group. Called by the timeline's per-card ↓
+        button."""
+        event = next(
+            (e for e in self.freytag_pyramid.events if e.id == event_id),
+            None,
+        )
         if not event:
             return
-
-        # Find events in the same act AND stage
         same_group_events = [
             e for e in self.freytag_pyramid.events
             if e.act == event.act and e.stage == event.stage
         ]
         same_group_events.sort(key=lambda e: e.sort_order)
-
-        # Find current position
-        current_index = next((i for i, e in enumerate(same_group_events) if e.id == event_id), None)
-        if current_index is None or current_index >= len(same_group_events) - 1:
+        current_index = next(
+            (i for i, e in enumerate(same_group_events)
+             if e.id == event_id), None)
+        if (current_index is None
+                or current_index >= len(same_group_events) - 1):
             return
-
-        # Swap sort orders with the next event
         next_event = same_group_events[current_index + 1]
-        event.sort_order, next_event.sort_order = next_event.sort_order, event.sort_order
-
-        # If they ended up with the same sort_order (both were 0), fix it
+        event.sort_order, next_event.sort_order = (
+            next_event.sort_order, event.sort_order)
         if event.sort_order == next_event.sort_order:
             event.sort_order = next_event.sort_order + 1
-
         self._update_event_list()
+        self.event_timeline.select_event(event_id)
         self.content_changed.emit()
 
-        # Re-select the event
-        for i in range(self.event_list.count()):
-            item = self.event_list.item(i)
-            if item.data(Qt.ItemDataRole.UserRole) == event_id:
-                self.event_list.setCurrentItem(item)
-                break
+    def _on_timeline_event_selected(self, event_id: str):
+        """The timeline tracks selection internally; nothing else
+        needs to react when a card is clicked (the per-card buttons
+        do their own work). Kept as a hook so future features —
+        e.g. syncing the pyramid highlight — have a place to land."""
+        pass
 
     def _add_subplot(self):
         """Add new subplot."""
@@ -3155,41 +3148,20 @@ class PlotManagerWidget(QWidget):
                 break
 
     def _update_event_list(self, update_pyramid: bool = True):
-        """Update event list display.
+        """Refresh the timeline view from ``freytag_pyramid.events``.
 
         Args:
             update_pyramid: If True, also update the visual pyramid (default True)
         """
-        self.event_list.clear()
-
-        # Sort events by act, then stage, then sort_order
-        stage_order = {"exposition": 0, "rising_action": 1, "climax": 2, "falling_action": 3, "resolution": 4}
-        sorted_events = sorted(
-            self.freytag_pyramid.events,
-            key=lambda e: (e.act, stage_order.get(e.stage, 1), e.sort_order)
+        # Timeline does its own per-act bucketing + sort_order
+        # ordering; we just hand it the current events and act config.
+        self.event_timeline.set_events(
+            events=list(self.freytag_pyramid.events),
+            num_acts=self.freytag_pyramid.num_acts,
+            act_names=list(self.freytag_pyramid.act_names),
         )
-
-        for event in sorted_events:
-            stage_names = {
-                "exposition": "Exposition",
-                "rising_action": "Rising Action",
-                "climax": "Climax",
-                "falling_action": "Falling Action",
-                "resolution": "Resolution"
-            }
-            stage_display = stage_names.get(event.stage, event.stage)
-
-            # Get act name
-            act_name = (self.freytag_pyramid.act_names[event.act - 1]
-                       if event.act <= len(self.freytag_pyramid.act_names)
-                       else f"Act {event.act}")
-
-            item_text = f"[{act_name}] {event.title} ({stage_display}, Intensity: {event.intensity})"
-            item = QListWidgetItem(item_text)
-            item.setData(Qt.ItemDataRole.UserRole, event.id)
-            self.event_list.addItem(item)
-
-        # Also update the visual pyramid to stay in sync
+        # Keep the pyramid visualization in sync — it's a different
+        # tab but shares the same data.
         if update_pyramid:
             self._update_pyramid()
 
@@ -3209,13 +3181,10 @@ class PlotManagerWidget(QWidget):
         """Update visual pyramid with events."""
         self.pyramid_visual.set_events(self.freytag_pyramid.events)
 
-    def _on_event_selection_changed(self):
-        """Handle event selection change."""
-        has_selection = bool(self.event_list.selectedItems())
-        self.edit_event_btn.setEnabled(has_selection)
-        self.remove_event_btn.setEnabled(has_selection)
-        self.move_event_up_btn.setEnabled(has_selection)
-        self.move_event_down_btn.setEnabled(has_selection)
+    # _on_event_selection_changed is gone — the timeline owns its
+    # own selection state, and the per-card buttons (Edit / ↑ / ↓ /
+    # Delete) drive themselves. The old QListWidget + toolbar-button
+    # enable/disable pattern doesn't apply to the card-based view.
 
     def _on_subplot_selection_changed(self):
         """Handle subplot selection change."""
@@ -3255,6 +3224,17 @@ class PlotManagerWidget(QWidget):
         self.tensions = tensions or []
         self.themes = themes or []
         self.legacy_themes = list(legacy_themes or [])
+
+        # Backward compatibility: pre-redesign data may have every
+        # event at the model default ``sort_order=0``. Normalize once
+        # at load so the timeline shows them in their original
+        # creation order and the per-card Up/Down buttons can swap
+        # neighbors meaningfully. Pure data migration — no events
+        # are added, removed, or moved between acts/stages.
+        normalize_sort_orders(self.freytag_pyramid.events)
+        for subplot in self.subplots:
+            # Subplots carry their own event lists with the same risk.
+            normalize_sort_orders(getattr(subplot, "events", []) or [])
 
         # Sync act configuration UI
         self.num_acts_spin.blockSignals(True)
@@ -3318,12 +3298,6 @@ class PlotManagerWidget(QWidget):
                 self.freytag_pyramid.act_names
             )
             self.content_changed.emit()
-
-    def _on_event_list_double_clicked(self, item: QListWidgetItem):
-        """Handle double-click on event list item."""
-        event_id = item.data(Qt.ItemDataRole.UserRole)
-        if event_id:
-            self._show_event_popup(event_id)
 
     def _on_pyramid_event_clicked(self, event_id: str):
         """Handle click on event in pyramid visual."""

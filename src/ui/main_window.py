@@ -4,6 +4,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QTabWidget,
     QMenu, QFileDialog, QMessageBox, QToolBar, QSplitter,
     QLabel, QPushButton, QFrame, QSystemTrayIcon, QApplication,
+    QDialog,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QThread
 from PyQt6.QtGui import QAction, QKeySequence, QIcon
@@ -3322,6 +3323,27 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
+        # Native print support — system print dialog lets the user
+        # pick a printer, page range, copies, etc. See
+        # src/ui/print_manuscript.py for the HTML rendering.
+        print_chapter_action = QAction("&Print Current Chapter...", self)
+        print_chapter_action.setShortcut(QKeySequence.StandardKey.Print)
+        print_chapter_action.setToolTip(
+            "Print the chapter currently open in the editor")
+        print_chapter_action.triggered.connect(self._print_current_chapter)
+        file_menu.addAction(print_chapter_action)
+
+        print_manuscript_action = QAction(
+            "Print &Entire Manuscript...", self)
+        print_manuscript_action.setShortcut("Ctrl+Shift+P")
+        print_manuscript_action.setToolTip(
+            "Print every chapter in the manuscript with page breaks "
+            "between them")
+        print_manuscript_action.triggered.connect(self._print_manuscript)
+        file_menu.addAction(print_manuscript_action)
+
+        file_menu.addSeparator()
+
         exit_action = QAction("E&xit", self)
         exit_action.setShortcut(QKeySequence.StandardKey.Quit)
         exit_action.triggered.connect(self.close)
@@ -3452,6 +3474,32 @@ class MainWindow(QMainWindow):
         export_summary_action.setToolTip("Export comprehensive project summary with optional AI/ML summarization")
         export_summary_action.triggered.connect(self._export_project_summary)
         export_menu.addAction(export_summary_action)
+
+        export_menu.addSeparator()
+
+        # LLM round-trip package — export entities as JSON the LLM
+        # can edit, then import the changes back. Chapter prose is
+        # never written by import (see src/export/llm_package.py).
+        export_llm_pkg_action = QAction(
+            "Export LLM-edit &Package (JSON)...", self)
+        export_llm_pkg_action.setToolTip(
+            "Bundle characters, worldbuilding, plot, and chapter "
+            "planning as JSON files an online LLM can edit "
+            "(Claude.ai, ChatGPT). Includes INSTRUCTIONS_FOR_LLM.md "
+            "and SCHEMA.md. Chapter prose is excluded.")
+        export_llm_pkg_action.triggered.connect(
+            self._export_llm_package)
+        export_menu.addAction(export_llm_pkg_action)
+
+        import_llm_pkg_action = QAction(
+            "&Import LLM Package...", self)
+        import_llm_pkg_action.setToolTip(
+            "Apply an LLM-edited package. Shows a preview of adds, "
+            "updates, and deletes (overwrite mode only) before "
+            "applying. Chapter prose is never modified.")
+        import_llm_pkg_action.triggered.connect(
+            self._import_llm_package)
+        export_menu.addAction(import_llm_pkg_action)
 
         # Help menu
         help_menu = menubar.addMenu("&Help")
@@ -13384,6 +13432,210 @@ class MainWindow(QMainWindow):
         # Show export dialog
         dialog = ExportSummaryDialog(self.current_project, self)
         dialog.exec()
+
+    def _print_current_chapter(self):
+        """Print the chapter currently open in the manuscript editor.
+
+        Opens the native QPrintDialog so the user can pick any
+        installed printer and adjust page options. The HTML rendering
+        lives in src/ui/print_manuscript.py — separated from this
+        method so it can be unit-tested without spinning up a
+        printer dialog.
+        """
+        if not self.current_project:
+            QMessageBox.warning(
+                self, "No Project",
+                "Open a project before printing a chapter.")
+            return
+        # Fold latest editor edits into the chapter model before
+        # printing, otherwise the printer would render the version
+        # last saved rather than what's on screen.
+        try:
+            self._collect_project_data()
+        except Exception as e:
+            print(f"[print] collect failed: {e}")
+        chapter = None
+        if hasattr(self.manuscript_editor, "get_current_chapter"):
+            chapter = self.manuscript_editor.get_current_chapter()
+        if chapter is None:
+            QMessageBox.warning(
+                self, "No chapter open",
+                "Open a chapter in the editor before printing it.")
+            return
+        from src.ui.print_manuscript import print_chapter
+        print_chapter(self, chapter)
+
+    def _print_manuscript(self):
+        """Print every chapter of the current project's manuscript.
+
+        Chapters appear in their stored order with page breaks
+        between them. A title page header at the top shows the
+        project name and chapter count.
+        """
+        if not self.current_project:
+            QMessageBox.warning(
+                self, "No Project",
+                "Open a project before printing the manuscript.")
+            return
+        try:
+            self._collect_project_data()
+        except Exception as e:
+            print(f"[print] collect failed: {e}")
+        manuscript = getattr(self.current_project, "manuscript", None)
+        if manuscript is None:
+            QMessageBox.warning(
+                self, "No manuscript",
+                "This project has no manuscript.")
+            return
+        from src.ui.print_manuscript import print_manuscript
+        print_manuscript(
+            self, manuscript, project_name=self.current_project.name)
+
+    def _export_llm_package(self):
+        """Export project elements as a JSON package an online LLM can
+        edit (Claude.ai, ChatGPT, etc.), then re-import.
+
+        Writes one file per entity plus INSTRUCTIONS_FOR_LLM.md and
+        SCHEMA.md so the LLM has everything it needs to either edit
+        the existing project or build a new one from scratch.
+
+        Crucially: chapter prose is NOT included. The user's writing
+        is safe across the round trip — see ``LLMPackageExporter``.
+        """
+        if not self.current_project:
+            QMessageBox.warning(
+                self, "No Project",
+                "No project loaded to export.")
+            return
+
+        parent_dir = QFileDialog.getExistingDirectory(
+            self, "Choose where to write the LLM-edit package",
+            str(Path.home()))
+        if not parent_dir:
+            return
+
+        # Derive a slug from the project name for a predictable folder.
+        from src.export.llm_package import LLMPackageExporter
+        slug = self._safe_project_slug(self.current_project.name)
+        dest = Path(parent_dir) / f"{slug}_llm_package"
+        if dest.exists():
+            reply = QMessageBox.question(
+                self, "Overwrite existing package?",
+                f"A folder already exists at:\n{dest}\n\n"
+                "Re-exporting will overwrite the files inside "
+                "(but won't touch other files in that folder). "
+                "Continue?",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.Cancel)
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+        try:
+            # Make sure the latest widget edits are folded in before
+            # we serialize.
+            self._collect_project_data()
+            result_path = LLMPackageExporter(
+                self.current_project).export(dest)
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Export failed",
+                f"Could not write LLM package:\n{e}")
+            return
+
+        QMessageBox.information(
+            self, "LLM package exported",
+            f"Exported to:\n{result_path}\n\n"
+            f"Upload this folder (or zip it) to Claude.ai / "
+            f"ChatGPT / etc., and tell the LLM to read "
+            f"INSTRUCTIONS_FOR_LLM.md and SCHEMA.md.\n\n"
+            f"When the LLM returns edited files, save them back "
+            f"to this folder and use "
+            f"Export → 'Import LLM Package…' to apply.")
+
+    def _import_llm_package(self):
+        """Re-import an LLM-edited package via the preview dialog.
+
+        The preview shows adds / updates / deletes (deletes only when
+        the user picks Overwrite mode) plus warnings and errors. The
+        apply step never writes chapter prose, regardless of mode —
+        see ``apply_import_plan``."""
+        if not self.current_project:
+            QMessageBox.warning(
+                self, "No Project",
+                "No project loaded — open one before importing.")
+            return
+
+        pkg_dir = QFileDialog.getExistingDirectory(
+            self, "Select the LLM-edit package folder",
+            str(Path.home()))
+        if not pkg_dir:
+            return
+
+        # Fold the latest widget edits in so the diff preview is
+        # honest — otherwise the dialog could show "update" for an
+        # entity the user already changed locally.
+        self._collect_project_data()
+
+        from src.ui.llm_package_dialog import LLMPackageImportDialog
+        from src.export.llm_package import apply_import_plan
+
+        dialog = LLMPackageImportDialog(
+            Path(pkg_dir), self.current_project, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        plan = dialog.get_plan()
+        if plan is None or not plan.is_applyable:
+            return
+
+        try:
+            result = apply_import_plan(self.current_project, plan)
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Import failed",
+                f"Could not apply the package:\n{e}")
+            return
+
+        # Refresh UI widgets so the new/updated entities show up
+        # immediately, then mark the project dirty.
+        try:
+            self._refresh_project_widgets()
+        except Exception as e:
+            print(f"[llm_import] widget refresh failed: {e}")
+
+        # RAG / knowledge graph need a rebuild — the project's entity
+        # set just changed. Lazy-rebuild handles it on next chat query.
+        self._rag_dirty = True
+
+        # Post-apply receipt. ``chapters_preserved`` is the "your
+        # prose is safe" signal — surface it explicitly.
+        summary_lines = [
+            f"Added: {len(result.added)}",
+            f"Updated: {len(result.updated)}",
+        ]
+        if plan.mode.value == "overwrite":
+            summary_lines.append(f"Deleted: {len(result.deleted)}")
+        summary_lines.extend([
+            f"Chapters with planning updated: "
+            f"{result.chapters_planning_updated}",
+            f"Chapters created: {result.chapters_created}",
+            f"Chapters preserved untouched: {result.chapters_preserved}",
+        ])
+        if result.skipped:
+            summary_lines.append(
+                f"Skipped (errors during apply): {len(result.skipped)}")
+        QMessageBox.information(
+            self, "LLM package imported",
+            "Import complete. No chapter prose was modified.\n\n"
+            + "\n".join(summary_lines))
+
+    def _safe_project_slug(self, name: str) -> str:
+        """Filesystem-safe slug from a project name. Centralized so
+        the LLM-package export and other path-building call sites
+        produce identical names."""
+        import re
+        s = (name or "project").strip().lower()
+        s = re.sub(r"[^a-z0-9]+", "_", s).strip("_")
+        return s or "project"
 
     def _show_import_guide(self):
         """Show the import guide dialog with AI prompts."""

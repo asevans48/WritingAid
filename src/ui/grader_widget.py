@@ -574,6 +574,11 @@ class GraderWidget(QWidget):
             (ReportType.PLOT, "Plot & Promises", "What changes; promise tracking; structural concerns."),
             (ReportType.DIALOG, "Dialog", "Density, tag hygiene, voice differentiation, subtext."),
             (ReportType.STYLE, "Sentence Style", "Passive, adverbs, clichés, echoes, readability."),
+            (ReportType.CANON, "Canon & Opportunities",
+             "How well the chapter follows the project's characters and "
+             "worldbuilding, and what canon elements it could draw on but doesn't."),
+            (ReportType.GRAMMAR, "Grammar & Readability",
+             "Spelling, grammar (LanguageTool), and hard-to-read paragraphs."),
         ]
         for i, (rt, label, tooltip) in enumerate(report_items):
             cb = QCheckBox(label)
@@ -1247,6 +1252,8 @@ class GraderWidget(QWidget):
         ReportType.PLOT: "Plot",
         ReportType.DIALOG: "Dialog",
         ReportType.STYLE: "Style",
+        ReportType.CANON: "Canon",
+        ReportType.GRAMMAR: "Grammar",
     }
 
     REPORT_STYLE_BLOCK = """
@@ -1542,7 +1549,8 @@ class GraderWidget(QWidget):
         if report.overall_summary:
             lines.append(
                 f"<h3>Overall</h3>"
-                f"<div class='narrative'>{self._escape_html(report.overall_summary)}</div>")
+                f"<div class='narrative'>"
+                f"{self._render_markdown(report.overall_summary)}</div>")
         # Per-chapter rollup
         for c in report.chapters:
             lines.append(
@@ -1587,15 +1595,61 @@ class GraderWidget(QWidget):
         if section.narrative:
             parts.append(
                 f"<h4>Narrative</h4>"
-                f"<div class='narrative'>{self._escape_html(section.narrative)}</div>")
-        if section.findings:
-            parts.append("<h4>Findings</h4><ul class='findings'>")
-            for f in section.findings:
-                ok = "Risk:" not in f and "exceed" not in f.lower() and "below" not in f.lower()
-                cls = " class='ok'" if ok else ""
+                f"<div class='narrative'>"
+                f"{self._render_markdown(section.narrative)}</div>")
+        # Strengths surface first — writers should see what's working
+        # before the issue backlog. Falls back gracefully on
+        # analyzers that haven't populated section.strengths (and
+        # the auto-classifier didn't catch any positive findings).
+        strengths = getattr(section, "strengths", None) or []
+        major = getattr(section, "major_issues", None) or []
+        minor = getattr(section, "minor_issues", None) or []
+        if strengths:
+            parts.append(
+                "<h4 class='strengths-heading'>"
+                f"Strengths ({len(strengths)})</h4>"
+                "<ul class='findings strengths'>")
+            for s in strengths:
                 parts.append(
-                    f"<li{cls}>{self._escape_html(f)}</li>")
+                    f"<li>{self._escape_html(s)}</li>")
             parts.append("</ul>")
+        if major:
+            parts.append(
+                "<h4 class='major-heading'>"
+                f"Major issues ({len(major)})</h4>"
+                "<ul class='findings major'>")
+            for f in major:
+                parts.append(
+                    f"<li>{self._escape_html(f)}</li>")
+            parts.append("</ul>")
+        if minor:
+            parts.append(
+                "<h4 class='minor-heading'>"
+                f"Minor issues ({len(minor)})</h4>"
+                "<ul class='findings minor'>")
+            for f in minor:
+                parts.append(
+                    f"<li>{self._escape_html(f)}</li>")
+            parts.append("</ul>")
+        # Only show the legacy Findings block when there's
+        # something that didn't make it into strengths / major / minor
+        # (e.g. neutral context lines from older analyzers).
+        if section.findings:
+            extra = [
+                f for f in section.findings
+                if f not in major and f not in minor
+                and f not in strengths
+            ]
+            if extra:
+                parts.append("<h4>Notes</h4><ul class='findings'>")
+                for f in extra:
+                    ok = ("risk:" not in f.lower()
+                          and "exceed" not in f.lower()
+                          and "below" not in f.lower())
+                    cls = " class='ok'" if ok else ""
+                    parts.append(
+                        f"<li{cls}>{self._escape_html(f)}</li>")
+                parts.append("</ul>")
         if section.suggestions:
             parts.append("<h4>Suggested actions</h4><ul class='suggestions'>")
             for s in section.suggestions:
@@ -1627,6 +1681,39 @@ class GraderWidget(QWidget):
                  .replace("<", "&lt;")
                  .replace(">", "&gt;")
                  .replace("\n", "<br>"))
+
+    @staticmethod
+    def _render_markdown(text: Any) -> str:
+        """Render markdown text (typical LLM output) as HTML.
+
+        Used for narrative blocks where the LLM emits real markdown:
+        ``## headings``, ``**bold**``, ``- list items``, etc. The
+        legacy ``_escape_html`` path was hard-escaping these so they
+        showed up literally in the critique pane.
+
+        Falls back to plain HTML-escape if the markdown library or
+        a single render breaks — never raises, since report
+        rendering is on a hot UI path.
+        """
+        if text is None:
+            return ""
+        s = str(text)
+        if not s.strip():
+            return ""
+        try:
+            import markdown as _md
+            # ``extra``: tables / fenced code / footnotes (LLMs use these)
+            # ``sane_lists``: don't promote stray dashes mid-paragraph
+            # ``nl2br``: a bare newline becomes <br> — matches how the
+            #   LLM tends to format short multi-line items
+            return _md.markdown(
+                s,
+                extensions=["extra", "sane_lists", "nl2br"],
+                output_format="html",
+            )
+        except Exception as e:  # pragma: no cover — defensive
+            print(f"[critique] markdown render failed: {e}")
+            return GraderWidget._escape_html(s)
 
     # ── Save / Load / Export for CritiqueReport ──────────────────
 
