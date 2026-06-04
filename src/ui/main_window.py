@@ -3194,6 +3194,17 @@ class MainWindow(QMainWindow):
         self.agent_manager = AgentManagerWidget()
         self.attributions_tab = AttributionsTab()
         self.prose_profile_widget = ProseProfileWidget()
+        # Video Studio — scene cards + AI director + backend picker.
+        # LLM + RAG providers are wired below so the studio can lazily
+        # pick them up after the user changes models in Settings.
+        from src.ui.video_studio.studio_widget import VideoStudioWidget
+        self.video_studio_widget = VideoStudioWidget()
+        self.video_studio_widget.set_llm_provider(
+            lambda: getattr(self, "_llm_client", None))
+        self.video_studio_widget.set_rag_provider(
+            lambda: getattr(self, "_rag_system", None))
+        self.video_studio_widget.contentChanged.connect(
+            self._on_content_changed)
 
         # Connect grader widget signals
         self.grader_widget.go_to_line_requested.connect(self._go_to_critique_line)
@@ -3211,6 +3222,7 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(self.image_generator, f"{get_icon('images')} Visuals")
         self.tab_widget.addTab(self.prose_profile_widget, "🎯 Prose Profile")
         self.tab_widget.addTab(self.grader_widget, f"{get_icon('grader')} Critique")
+        self.tab_widget.addTab(self.video_studio_widget, "🎬 Video Studio")
         self.tab_widget.addTab(self.agent_manager, f"{get_icon('agents')} Publishing")
 
         # Sidebar — chat assistant + chapter outline as stacked
@@ -7038,6 +7050,14 @@ class MainWindow(QMainWindow):
         # Set up grader widget with project reference and content provider
         self.grader_widget.set_project(self.current_project)
         self.grader_widget.set_content_provider(self.manuscript_editor.get_current_chapter_info)
+
+        # Wire the project into the Video Studio. The studio reads
+        # project.video_studio (creating it on first use) and uses
+        # the manuscript chapter list for AI scene generation.
+        try:
+            self.video_studio_widget.set_project(self.current_project)
+        except Exception as e:
+            print(f"[video_studio] set_project failed: {e}")
 
         # Update chat widget with characters for POV selection
         if self.current_project.characters:

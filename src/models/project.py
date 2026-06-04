@@ -8,6 +8,10 @@ import json
 import os
 
 from src.models.worldbuilding_objects import Faction, Myth, ClimatePreset, Flora, Fauna, Technology, Star, StarSystem, Place, Culture, Army, Economy, HistoricalEvent, PowerHierarchy, PoliticalSystem, WorldMap, MagicSystem
+# VideoStudio is optional on the project — imported here for the
+# forward-ref string in WriterProject. Importing at module top is
+# safe: video_studio/models.py has no cycle with project.py.
+from src.video_studio.models import VideoStudio
 
 
 class WorldBuilding(BaseModel):
@@ -1196,6 +1200,11 @@ class WriterProject(BaseModel):
 
     # AI-generated summaries for efficient context
     ai_summary: ProjectSummary = Field(default_factory=ProjectSummary)
+
+    # Video Studio — scene cards + hops + generated clip metadata.
+    # Optional so projects created before the studio module landed
+    # load cleanly; created on first use by the studio widget.
+    video_studio: Optional["VideoStudio"] = None
 
     # Metadata
     created_at: datetime = Field(default_factory=datetime.now)
