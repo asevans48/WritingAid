@@ -187,6 +187,167 @@ def _looks_like_image(path: Path) -> bool:
     return path.suffix.lower() in _IMAGE_EXTENSIONS
 
 
+# ---------------------------------------------------------------------
+# Audio mux — combine a per-scene clip with a narration track
+# ---------------------------------------------------------------------
+@dataclass
+class MuxResult:
+    success: bool
+    output_path: Path
+    error: str = ""
+    # Effective duration of the produced clip in seconds (the longer
+    # of video / audio, or the trimmed length depending on mode).
+    effective_duration: float = 0.0
+
+
+# Valid mismatch handler names. Mirrored from
+# ``models.VIDEO_AUDIO_MISMATCH_MODES`` so callers can validate
+# before invoking the mux.
+MISMATCH_MODES = (
+    "trim", "loop", "fade_extend", "extend_silent",
+)
+
+
+def mux_audio(
+    video_path: Path,
+    audio_path: Path,
+    output_path: Path,
+    *,
+    mode: str = "trim",
+    video_duration: float = 0.0,
+    audio_duration: float = 0.0,
+) -> MuxResult:
+    """Combine a narration track with a video clip via ffmpeg.
+
+    ``mode`` decides what happens when video and audio differ in
+    length — see ``MISMATCH_MODES``. ``video_duration`` and
+    ``audio_duration`` are best-effort hints used only by the
+    loop / fade_extend / extend_silent modes (the ``trim`` mode
+    uses ffmpeg's ``-shortest`` and doesn't need them).
+
+    Returns ``success=False`` with a descriptive error on failure
+    so the caller (scene generation, stitching) can surface the
+    message in the UI.
+    """
+    if not ffmpeg_available():
+        return MuxResult(
+            success=False, output_path=output_path,
+            error=(
+                "ffmpeg not found on PATH. Install ffmpeg and "
+                "try again."))
+    if not video_path.exists() or video_path.stat().st_size == 0:
+        return MuxResult(
+            success=False, output_path=output_path,
+            error=f"Video clip missing or empty: {video_path}")
+    if not audio_path.exists() or audio_path.stat().st_size == 0:
+        return MuxResult(
+            success=False, output_path=output_path,
+            error=f"Audio file missing or empty: {audio_path}")
+    if mode not in MISMATCH_MODES:
+        return MuxResult(
+            success=False, output_path=output_path,
+            error=f"Unknown mismatch mode: {mode!r}")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    # When we don't have durations, fall back to ``trim`` since
+    # loop / fade / extend all need to know the deltas.
+    if (mode != "trim"
+            and (video_duration <= 0 or audio_duration <= 0)):
+        mode = "trim"
+
+    cmd: List[str]
+    if mode == "trim":
+        # ``-shortest`` cuts the longer stream to match the
+        # shorter. Simplest and safest default.
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(video_path),
+            "-i", str(audio_path),
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-c:v", "copy", "-c:a", "aac",
+            "-shortest",
+            str(output_path),
+        ]
+        effective = min(video_duration or 0.0,
+                        audio_duration or 0.0) or 0.0
+    elif mode == "loop":
+        # ``-stream_loop -1`` on the video repeats until ``-t``
+        # cuts it at audio length. Audio plays through once.
+        cmd = [
+            "ffmpeg", "-y",
+            "-stream_loop", "-1",
+            "-i", str(video_path),
+            "-i", str(audio_path),
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            "-t", f"{audio_duration:.2f}",
+            str(output_path),
+        ]
+        effective = float(audio_duration)
+    elif mode == "fade_extend":
+        # Hold the last frame after the video ends, fading to
+        # black over the trailing audio. ``tpad`` clones the
+        # final frame for the gap, ``fade`` does the dim.
+        gap = max(0.0, audio_duration - video_duration)
+        fade_start = max(0.0, audio_duration - gap)
+        # Fade out the audio's tail too so it doesn't cut harshly.
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(video_path),
+            "-i", str(audio_path),
+            "-filter_complex",
+            (f"[0:v]tpad=stop_mode=clone:"
+             f"stop_duration={gap:.2f},"
+             f"fade=t=out:st={fade_start:.2f}:d={gap:.2f}[v];"
+             f"[1:a]afade=t=out:st={fade_start:.2f}:d=0.5[a]"),
+            "-map", "[v]", "-map", "[a]",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            "-t", f"{audio_duration:.2f}",
+            str(output_path),
+        ]
+        effective = float(audio_duration)
+    else:  # extend_silent
+        # Audio shorter than video — pad audio with silence so
+        # video plays to natural end.
+        gap = max(0.0, video_duration - audio_duration)
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(video_path),
+            "-i", str(audio_path),
+            "-filter_complex",
+            (f"[1:a]apad=pad_dur={gap:.2f}[a]"),
+            "-map", "0:v:0", "-map", "[a]",
+            "-c:v", "copy", "-c:a", "aac",
+            "-t", f"{video_duration:.2f}",
+            str(output_path),
+        ]
+        effective = float(video_duration)
+
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=600)
+        if proc.returncode != 0:
+            return MuxResult(
+                success=False, output_path=output_path,
+                error=(
+                    f"ffmpeg mux failed (mode={mode}). "
+                    f"stderr (last 400 chars):\n"
+                    + (proc.stderr or "")[-400:]))
+        return MuxResult(
+            success=True, output_path=output_path,
+            effective_duration=effective)
+    except subprocess.TimeoutExpired:
+        return MuxResult(
+            success=False, output_path=output_path,
+            error="ffmpeg mux timed out after 10 min.")
+    except Exception as e:
+        return MuxResult(
+            success=False, output_path=output_path,
+            error=f"ffmpeg mux invocation failed: {e}")
+
+
 def _render_image_segment(
     image_path: Path, output_path: Path, duration: float,
 ) -> Optional[str]:

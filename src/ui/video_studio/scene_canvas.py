@@ -32,7 +32,10 @@ from src.video_studio.models import Scene, SceneHop, VideoStudio
 # of meta lines; gutter keeps cards visually separated so cards
 # don't smash together at the grid boundary.
 CARD_W = 220
-CARD_H = 140
+# Bumped from 140 → 180 to make room for the in-card "Generate
+# video / image / slide deck" button row painted just above the
+# footer. Grid math (CELL_H) tracks automatically.
+CARD_H = 180
 CELL_GUTTER = 28
 CELL_W = CARD_W + CELL_GUTTER
 CELL_H = CARD_H + CELL_GUTTER
@@ -53,6 +56,12 @@ class SceneCardItem(QGraphicsObject):
     editRequested = pyqtSignal(str)            # scene_id
     moved = pyqtSignal(str)                    # scene_id
     contextMenuRequested = pyqtSignal(str, QPointF)  # scene_id, scene-pos
+    # In-card button signals — let the writer kick off renders
+    # without right-clicking. Wired up by SceneCanvasView, which
+    # forwards to the studio widget's existing generate handlers.
+    generateVideoClicked = pyqtSignal(str)        # scene_id
+    generateImageClicked = pyqtSignal(str)        # scene_id
+    generateSlideDeckClicked = pyqtSignal(str)    # scene_id
 
     def __init__(self, scene: Scene):
         super().__init__()
@@ -65,6 +74,17 @@ class SceneCardItem(QGraphicsObject):
             if len(scene.description or "") > 80
             else (scene.description or ""))
         self._chapter_number = scene.chapter_number
+        self._has_source_prose = bool(
+            (scene.source_prose or "").strip())
+        self._action_count = len(scene.actions)
+        self._mode = scene.mode or "video"
+        # Button geometry + state. Filled by ``_paint_button_row``
+        # on every paint so it always tracks the current card size,
+        # and read by mousePressEvent for hit testing. ``_pressed_btn``
+        # holds the key of the button currently being pressed so
+        # paint() can draw it in its pressed state.
+        self._button_rects: dict = {}
+        self._pressed_btn: Optional[str] = None
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
         self.setFlag(
@@ -86,6 +106,10 @@ class SceneCardItem(QGraphicsObject):
             if len(scene.description or "") > 80
             else (scene.description or ""))
         self._chapter_number = scene.chapter_number
+        self._has_source_prose = bool(
+            (scene.source_prose or "").strip())
+        self._action_count = len(scene.actions)
+        self._mode = scene.mode or "video"
         self.update()
 
     def boundingRect(self) -> QRectF:
@@ -126,7 +150,39 @@ class SceneCardItem(QGraphicsObject):
             int(Qt.AlignmentFlag.AlignVCenter
                 | Qt.AlignmentFlag.AlignLeft),
             self._name)
-        # Description preview
+        # Mode chip in the upper-right of the title strip — at-a-
+        # glance signal of which render path this scene uses and
+        # an affordance the writer can click via the context menu
+        # to switch. Color-coded so a mixed board reads instantly.
+        is_slideshow = (self._mode == "slideshow")
+        chip_w, chip_h = 76, 18
+        chip_x = title_rect.right() - chip_w - 8
+        chip_y = title_rect.y() + (title_rect.height() - chip_h) / 2
+        chip_rect = QRectF(chip_x, chip_y, chip_w, chip_h)
+        chip_bg = (QColor("#fef3c7") if is_slideshow
+                   else QColor("#dbeafe"))
+        chip_border = (QColor("#d97706") if is_slideshow
+                       else QColor("#2563eb"))
+        chip_text_color = (QColor("#92400e") if is_slideshow
+                           else QColor("#1d4ed8"))
+        painter.setBrush(QBrush(chip_bg))
+        painter.setPen(QPen(chip_border, 1))
+        chip_path = QPainterPath()
+        chip_path.addRoundedRect(chip_rect, 9, 9)
+        painter.drawPath(chip_path)
+        painter.setPen(QPen(chip_text_color))
+        chip_font = QFont()
+        chip_font.setPointSize(8)
+        chip_font.setBold(True)
+        painter.setFont(chip_font)
+        chip_label = ("🖼 slideshow" if is_slideshow
+                      else "🎬 video")
+        painter.drawText(
+            chip_rect,
+            int(Qt.AlignmentFlag.AlignCenter),
+            chip_label)
+        # Description preview — shrunken to leave room for the
+        # button row painted just above the footer.
         painter.setPen(QPen(QColor("#475569")))
         font = QFont()
         font.setPointSize(9)
@@ -139,6 +195,10 @@ class SceneCardItem(QGraphicsObject):
                 | Qt.AlignmentFlag.AlignLeft
                 | Qt.TextFlag.TextWordWrap),
             self._description_preview or "(no description)")
+        # Generation buttons row — painted directly on the card so
+        # the writer can kick off a render without right-clicking or
+        # opening the editor. Hit-tested in mousePressEvent below.
+        self._paint_button_row(painter, rect)
         # Footer: chapter + clip count badge
         footer_rect = QRectF(rect.x() + 12,
                              rect.bottom() - 24,
@@ -149,6 +209,15 @@ class SceneCardItem(QGraphicsObject):
         footer_text_parts.append(
             f"{self._clip_count} clip"
             + ("s" if self._clip_count != 1 else ""))
+        if self._action_count:
+            footer_text_parts.append(
+                f"{self._action_count} action"
+                + ("s" if self._action_count != 1 else ""))
+        if self._has_source_prose:
+            # Pencil-and-page glyph signals the writer has anchored
+            # this scene to a chapter excerpt — easy at-a-glance
+            # check that "Pull from chapter" actually persisted.
+            footer_text_parts.append("📜 prose")
         if self._favorite_set:
             footer_text_parts.append("★ favorite set")
         painter.setPen(QPen(QColor("#64748b")))
@@ -161,11 +230,96 @@ class SceneCardItem(QGraphicsObject):
                 | Qt.AlignmentFlag.AlignLeft),
             " · ".join(footer_text_parts))
 
+    # ------------------------------------------------------------------
+    # In-card buttons — paint + hit-test
+    # ------------------------------------------------------------------
+    def _paint_button_row(self, painter, rect: QRectF) -> None:
+        """Render the inline generation buttons just above the
+        footer. Up to three buttons: Video (always), Image (always),
+        Slide deck (only when the scene has actions). Button rects
+        are cached on ``self._button_rects`` for hit testing.
+        """
+        self._button_rects = {}
+        keys = [("video", "🎬 Video", "#2563eb", "#dbeafe"),
+                ("image", "🖼 Image", "#d97706", "#fef3c7")]
+        if self._action_count:
+            keys.append(
+                ("deck", "📑 Deck", "#059669", "#d1fae5"))
+        n = len(keys)
+        # Buttons live in a 28px-tall band 28px above the bottom
+        # edge, leaving 24px below for the footer text.
+        band_top = rect.bottom() - 56
+        band_h = 26
+        # Equal-width buttons with 6px gaps.
+        gap = 6
+        pad_x = 12
+        total_w = rect.width() - 2 * pad_x
+        btn_w = (total_w - gap * (n - 1)) / n
+        for i, (key, label, border, fill) in enumerate(keys):
+            x = rect.x() + pad_x + i * (btn_w + gap)
+            btn_rect = QRectF(x, band_top, btn_w, band_h)
+            self._button_rects[key] = btn_rect
+            is_pressed = (self._pressed_btn == key)
+            bg = QColor(fill).darker(108) if is_pressed else QColor(fill)
+            painter.setBrush(QBrush(bg))
+            painter.setPen(QPen(QColor(border), 1))
+            path = QPainterPath()
+            path.addRoundedRect(btn_rect, 6, 6)
+            painter.drawPath(path)
+            painter.setPen(QPen(QColor(border).darker(140)))
+            f = QFont()
+            f.setPointSize(8)
+            f.setBold(True)
+            painter.setFont(f)
+            painter.drawText(
+                btn_rect, int(Qt.AlignmentFlag.AlignCenter), label)
+
+    def _button_at(self, pos: QPointF) -> Optional[str]:
+        for key, rect in self._button_rects.items():
+            if rect.contains(pos):
+                return key
+        return None
+
     def mouseDoubleClickEvent(self, event) -> None:
+        # Don't open the editor when the user double-clicks one of
+        # the inline buttons — the first click already fired it.
+        if self._button_at(event.pos()) is not None:
+            event.accept()
+            return
         self.editRequested.emit(self._scene_id)
         event.accept()
 
+    def mousePressEvent(self, event) -> None:
+        hit = self._button_at(event.pos())
+        if hit is not None:
+            # Capture the press so paint() can show the pressed
+            # state, then suppress the drag-start that the base
+            # class would otherwise begin.
+            self._pressed_btn = hit
+            self.update()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
     def mouseReleaseEvent(self, event) -> None:
+        # If we were tracking a button press, fire the signal when
+        # the release lands inside the SAME button. Standard
+        # button-cancel behavior when the user drags off.
+        if self._pressed_btn is not None:
+            target = self._pressed_btn
+            self._pressed_btn = None
+            self.update()
+            hit = self._button_at(event.pos())
+            if hit == target:
+                if target == "video":
+                    self.generateVideoClicked.emit(self._scene_id)
+                elif target == "image":
+                    self.generateImageClicked.emit(self._scene_id)
+                elif target == "deck":
+                    self.generateSlideDeckClicked.emit(
+                        self._scene_id)
+            event.accept()
+            return
         # Snap-to-grid happens at the canvas level after release; we
         # just emit the moved signal so the canvas can re-snap and
         # repaint hops.
@@ -192,6 +346,11 @@ class SceneCanvasView(QGraphicsView):
     deleteSceneRequested = pyqtSignal(str)
     generateClipRequested = pyqtSignal(str)     # video clip
     generateImageRequested = pyqtSignal(str)    # image still
+    generateSlideDeckRequested = pyqtSignal(str)  # per-action images
+    stitchSlideDeckRequested = pyqtSignal(str)  # action images → mp4
+    openLastClipRequested = pyqtSignal(str)     # open favorite clip
+    openOutputFolderRequested = pyqtSignal(str)  # open scene dir
+    switchModeRequested = pyqtSignal(str, str)  # scene_id, "video"|"slideshow"
     sceneMoved = pyqtSignal(str, int, int)      # scene_id, col, row
 
     def __init__(self, parent=None):
@@ -204,6 +363,10 @@ class SceneCanvasView(QGraphicsView):
         self.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setBackgroundBrush(QBrush(QColor("#f8fafc")))
+        # ScrollHandDrag on empty-canvas middle-click would be nice
+        # too, but RubberBandDrag would conflict with card drags.
+        # Keep the default NoDrag mode so card drags route to the
+        # items first; the scrollbars handle panning.
         self._studio: Optional[VideoStudio] = None
         self._cards: Dict[str, SceneCardItem] = {}
         self._hop_items: List[QGraphicsPathItem] = []
@@ -211,6 +374,66 @@ class SceneCanvasView(QGraphicsView):
         # "Connect to ..." from the context menu — second click on
         # another card commits the new hop.
         self._connect_from_id: Optional[str] = None
+        # Zoom level — applied via setTransform's scaling. Range
+        # caps stop the user from zooming so far that cards are 1px
+        # or so big the view goes off-screen.
+        self._zoom_level: float = 1.0
+
+    # ------------------------------------------------------------------
+    # Zoom + fit-to-view (Ctrl+wheel to zoom, no modifier scrolls)
+    # ------------------------------------------------------------------
+    _ZOOM_MIN = 0.25
+    _ZOOM_MAX = 3.0
+    _ZOOM_STEP = 1.15
+
+    def wheelEvent(self, event) -> None:  # type: ignore[override]
+        """Ctrl + wheel zooms the canvas; plain wheel scrolls."""
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta == 0:
+                return
+            factor = (self._ZOOM_STEP if delta > 0
+                      else 1.0 / self._ZOOM_STEP)
+            new_zoom = self._zoom_level * factor
+            if new_zoom < self._ZOOM_MIN or new_zoom > self._ZOOM_MAX:
+                return
+            self._zoom_level = new_zoom
+            self.scale(factor, factor)
+            event.accept()
+            return
+        super().wheelEvent(event)
+
+    def reset_zoom(self) -> None:
+        """Snap back to 1:1 zoom and re-center on the scene."""
+        self.resetTransform()
+        self._zoom_level = 1.0
+        s = self.scene()
+        if s is not None:
+            self.centerOn(s.itemsBoundingRect().center())
+
+    def fit_to_view(self) -> None:
+        """Scale so every card fits in the viewport. Capped at the
+        zoom max so a single-scene board doesn't end up
+        comically magnified."""
+        s = self.scene()
+        if s is None:
+            return
+        rect = s.itemsBoundingRect()
+        if rect.isEmpty():
+            return
+        # ``fitInView`` resets the transform and re-scales. After
+        # that we recompute our tracked zoom from the actual
+        # transform so subsequent Ctrl+wheel steps move from here.
+        self.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
+        scale = self.transform().m11()
+        if scale > self._ZOOM_MAX:
+            # Re-cap to the max zoom.
+            self.resetTransform()
+            self.scale(self._ZOOM_MAX, self._ZOOM_MAX)
+            self._zoom_level = self._ZOOM_MAX
+            self.centerOn(rect.center())
+        else:
+            self._zoom_level = max(self._ZOOM_MIN, scale)
 
     # ------------------------------------------------------------------
     # Loading / refresh
@@ -271,6 +494,16 @@ class SceneCanvasView(QGraphicsView):
         card.editRequested.connect(self.sceneEditRequested)
         card.moved.connect(self._on_card_moved)
         card.contextMenuRequested.connect(self._on_card_context)
+        # Forward the in-card button clicks through the canvas's
+        # existing generate signals so the studio widget doesn't
+        # need new wiring — both the right-click menu and the
+        # painted buttons land on the same handlers.
+        card.generateVideoClicked.connect(
+            self.generateClipRequested)
+        card.generateImageClicked.connect(
+            self.generateImageRequested)
+        card.generateSlideDeckClicked.connect(
+            self.generateSlideDeckRequested)
         card.setZValue(1)
         return card
 
@@ -322,7 +555,10 @@ class SceneCanvasView(QGraphicsView):
         pen = QPen(QColor("#6366f1"), 1.8)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         item.setPen(pen)
-        item.setBrush(Qt.BrushStyle.NoBrush)
+        # ``setBrush`` wants a QBrush, not the BrushStyle enum.
+        # ``QBrush()`` with no args produces a "no brush" — we want
+        # the hop drawn as an outline only, no fill under the curve.
+        item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
         item.setZValue(0)
         s = self.scene()
         s.addItem(item)
@@ -376,10 +612,57 @@ class SceneCanvasView(QGraphicsView):
                 "Cancel pending hop",
                 lambda: self._cancel_connect())
         menu.addSeparator()
+        # Mode-aware generation commands. Both backends are always
+        # available — letting the user mix video and image scenes
+        # in the same board freely — but the slideshow variant is
+        # promoted when this scene has actions because that's where
+        # the per-action images live.
+        scene_obj = self._studio.get_scene(scene_id)
+        current_mode = (
+            getattr(scene_obj, "mode", "video") or "video")
+        action_count = len(getattr(scene_obj, "actions", []) or [])
         menu.addAction("Generate video clip", lambda:
                        self.generateClipRequested.emit(scene_id))
         menu.addAction("Generate image still", lambda:
                        self.generateImageRequested.emit(scene_id))
+        if action_count:
+            menu.addAction(
+                f"Generate slide deck ({action_count} action"
+                + ("s" if action_count != 1 else "") + ")",
+                lambda: self.generateSlideDeckRequested.emit(
+                    scene_id))
+            # Stitch only makes sense once images exist; we still
+            # offer it so the user can find it — the handler will
+            # explain when there's nothing to stitch yet.
+            menu.addAction(
+                "Stitch slide deck → video",
+                lambda: self.stitchSlideDeckRequested.emit(
+                    scene_id))
+        menu.addSeparator()
+        # Open paths — let the writer view what's been generated
+        # without digging into the editor or Finder.
+        clips_count = len(getattr(scene_obj, "clips", []) or [])
+        if clips_count:
+            menu.addAction(
+                "Open last clip / image",
+                lambda: self.openLastClipRequested.emit(scene_id))
+        menu.addAction(
+            "Open output folder",
+            lambda: self.openOutputFolderRequested.emit(scene_id))
+        menu.addSeparator()
+        # Quick render-mode toggle so writers can mix video and
+        # slideshow scenes on one board without opening the editor
+        # for every scene.
+        if current_mode == "slideshow":
+            menu.addAction(
+                "Switch render mode → 🎬 Video",
+                lambda: self.switchModeRequested.emit(
+                    scene_id, "video"))
+        else:
+            menu.addAction(
+                "Switch render mode → 🖼 Slideshow",
+                lambda: self.switchModeRequested.emit(
+                    scene_id, "slideshow"))
         menu.addSeparator()
         menu.addAction("Delete scene", lambda:
                        self.deleteSceneRequested.emit(scene_id))

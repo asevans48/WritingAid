@@ -295,6 +295,13 @@ class ChatWidget(QWidget):
     # the context dict + system prompt for the current message+mode
     # and opens the shared context-preview dialog.
     preview_requested = pyqtSignal(str, str)  # message, mode
+    # Emitted when the user clicks "+ Arc event" in the chat header
+    # after a discussion. Carries the last AI response text so the
+    # host (main window) can open the AddEventToArcDialog with it
+    # pre-filled and route the chosen chapter / stage / position
+    # into the chapter planner's public ``add_event_from_external``
+    # API.
+    add_as_arc_event_requested = pyqtSignal(str)
 
     def __init__(self):
         """Initialize chat widget."""
@@ -375,6 +382,24 @@ class ChatWidget(QWidget):
         """)
         self.clear_btn.clicked.connect(self._clear_conversation)
         header_layout.addWidget(self.clear_btn)
+
+        # "Add as event to chapter arc" — surfaces the last AI
+        # response in the AddEventToArcDialog so the writer can
+        # commit the proposed beat to a chapter's plot arc after
+        # discussing it. Hidden until there's an assistant response
+        # to add (toggled in add_message).
+        self.add_event_btn = QPushButton("+ Arc event")
+        self.add_event_btn.setToolTip(
+            "Take the last AI response and add it as an event "
+            "on a chapter's plot arc. Lets you refine the beat, "
+            "pick the stage, and slot it on the arc before "
+            "committing.")
+        self.add_event_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.add_event_btn.setStyleSheet(self.clear_btn.styleSheet())
+        self.add_event_btn.setVisible(False)
+        self.add_event_btn.clicked.connect(
+            self._on_add_last_as_event)
+        header_layout.addWidget(self.add_event_btn)
 
         layout.addWidget(self.header_frame)
 
@@ -1111,6 +1136,11 @@ class ChatWidget(QWidget):
                 "role": "assistant",
                 "content": training_content
             })
+            # Now that an assistant message has landed, the user can
+            # promote it to a chapter arc event. The button stays
+            # hidden until something to promote exists.
+            if hasattr(self, "add_event_btn"):
+                self.add_event_btn.setVisible(True)
 
         # Different styling for user vs AI
         if is_user:
@@ -1524,4 +1554,29 @@ class ChatWidget(QWidget):
         self.chat_history.clear()
         self._current_conversation = []
         self.rating_widget.setVisible(False)
+        # No assistant content left → hide the arc-event button so we
+        # don't promote stale text.
+        if hasattr(self, "add_event_btn"):
+            self.add_event_btn.setVisible(False)
         self.clear_requested.emit()
+
+    def last_assistant_message(self) -> str:
+        """Return the most recent assistant text in the conversation.
+
+        Public so the host can fetch it for "Add as event" flows
+        without reaching into ``_current_conversation`` directly.
+        Empty string when no assistant message exists yet.
+        """
+        for entry in reversed(self._current_conversation):
+            if entry.get("role") == "assistant":
+                return (entry.get("content") or "").strip()
+        return ""
+
+    def _on_add_last_as_event(self) -> None:
+        """Emit ``add_as_arc_event_requested`` with the last AI
+        response. Main window opens the AddEventToArcDialog and
+        commits the result onto the chapter planner."""
+        text = self.last_assistant_message()
+        if not text:
+            return
+        self.add_as_arc_event_requested.emit(text)

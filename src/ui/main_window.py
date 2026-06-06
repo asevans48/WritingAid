@@ -3199,8 +3199,13 @@ class MainWindow(QMainWindow):
         # pick them up after the user changes models in Settings.
         from src.ui.video_studio.studio_widget import VideoStudioWidget
         self.video_studio_widget = VideoStudioWidget()
+        # Build a fresh LLM client on demand from the current AI
+        # settings — there is no persistent ``self._llm_client``,
+        # so the prior ``getattr(self, "_llm_client", None)`` always
+        # returned None and surfaced the "configure an LLM"
+        # warning even when one was wired in Settings.
         self.video_studio_widget.set_llm_provider(
-            lambda: getattr(self, "_llm_client", None))
+            self._build_video_studio_llm_client)
         self.video_studio_widget.set_rag_provider(
             lambda: getattr(self, "_rag_system", None))
         self.video_studio_widget.contentChanged.connect(
@@ -3731,6 +3736,12 @@ class MainWindow(QMainWindow):
         # so the user sees exactly what the AI is about to receive.
         self.chat_widget.preview_requested.connect(
             self._handle_chat_preview_request)
+        # "Add as event to chapter arc" — wired to a handler that
+        # opens AddEventToArcDialog with the last AI response, lets
+        # the user refine + pick the chapter, then commits onto the
+        # chapter planner's public ``add_event_from_external`` API.
+        self.chat_widget.add_as_arc_event_requested.connect(
+            self._on_chat_add_as_arc_event)
 
         # Connect mic button to voice input
         self.chat_widget.mic_button.clicked.connect(self._toggle_voice_input)
@@ -7084,6 +7095,66 @@ class MainWindow(QMainWindow):
         self._loading_project = False
         self.project_changed.emit()
 
+    def _build_video_studio_llm_client(self):
+        """Build an LLMClient on demand using the user's current AI
+        settings. Used by the Video Studio so AI features there
+        (action extraction, scene rewrites, plot-aware prompts) pick
+        up whichever model the user has selected in Settings.
+
+        Returns None if AI is disabled or no provider is configured —
+        callers degrade gracefully and surface a one-time message.
+        """
+        try:
+            from src.ai.llm_client import (
+                LLMClient, LLMProvider, HuggingFaceConfig)
+            ai_config = get_ai_config()
+            if ai_config.is_ai_disabled():
+                return None
+            settings = ai_config.get_settings()
+            prefer_local = settings.get("prefer_local_model", False)
+            enable_local = settings.get("enable_local_models", False)
+            local_model_id = settings.get("local_model_id", "")
+            if prefer_local and enable_local and local_model_id:
+                is_mlx = "mlx" in local_model_id.lower()
+                hf_config = HuggingFaceConfig(
+                    model_id=local_model_id,
+                    use_local=True,
+                    device=settings.get(
+                        "local_model_device", "auto"),
+                    quantization=(
+                        settings.get(
+                            "local_model_quantization", "none")
+                        if settings.get(
+                            "local_model_quantization") != "none"
+                        else None),
+                    trust_remote_code=settings.get(
+                        "local_model_trust_remote_code", False),
+                )
+                provider = (LLMProvider.MLX_LOCAL if is_mlx
+                            else LLMProvider.HUGGINGFACE_LOCAL)
+                return LLMClient(
+                    provider=provider, hf_config=hf_config)
+            default_provider = settings.get(
+                "default_llm", "claude").lower()
+            api_key = ai_config.get_api_key(default_provider)
+            if not api_key:
+                return None
+            provider_map = {
+                "claude": LLMProvider.CLAUDE,
+                "chatgpt": LLMProvider.CHATGPT,
+                "openai": LLMProvider.CHATGPT,
+                "gemini": LLMProvider.GEMINI,
+            }
+            return LLMClient(
+                provider=provider_map.get(
+                    default_provider, LLMProvider.CLAUDE),
+                api_key=api_key,
+                model=ai_config.get_model(default_provider),
+            )
+        except Exception as e:
+            print(f"[video_studio] LLM client build failed: {e}")
+            return None
+
     def _init_rag_system(self):
         """Initialize or refresh the RAG system for semantic context retrieval.
 
@@ -7658,6 +7729,107 @@ class MainWindow(QMainWindow):
     def _clear_chat_history(self):
         """Clear the conversation history (triggered by Clear button)."""
         self._chat_history = []
+
+    def _on_chat_add_as_arc_event(self, ai_text: str) -> None:
+        """Open the AddEventToArcDialog seeded with the AI's last
+        response and commit the result onto the chapter planner.
+
+        The dialog lets the user pick the target chapter (default
+        is the currently-open chapter), tweak the event text,
+        choose the arc stage, and slide the arc position. On Accept
+        we push the new beat onto that chapter's planning via the
+        public ``add_event_from_external`` API.
+        """
+        if not ai_text or not ai_text.strip():
+            QMessageBox.information(
+                self, "No AI response",
+                "Ask the AI for an event idea first, then click "
+                "+ Arc event.")
+            return
+        if not self.current_project:
+            QMessageBox.information(
+                self, "No project",
+                "Open a project before adding events.")
+            return
+        chapters = []
+        if (self.current_project.manuscript
+                and self.current_project.manuscript.chapters):
+            chapters = list(self.current_project.manuscript.chapters)
+        if not chapters:
+            QMessageBox.information(
+                self, "No chapters",
+                "Create a chapter before adding events to its arc.")
+            return
+        # Default to the chapter the writer is currently editing
+        # (or planning); falls back to the first chapter when no
+        # current chapter is tracked.
+        initial_id = None
+        try:
+            cur = self.manuscript_editor.get_current_chapter()
+            if cur is not None:
+                initial_id = getattr(cur, "id", None)
+        except Exception:
+            pass
+        from src.ui.add_event_to_arc_dialog import (
+            AddEventToArcDialog,
+        )
+        dlg = AddEventToArcDialog(
+            chapters=chapters,
+            proposed_text=ai_text,
+            initial_chapter_id=initial_id,
+            parent=self,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        target_chapter = dlg.selected_chapter()
+        text = dlg.event_text()
+        description = dlg.event_description()
+        stage = dlg.event_stage()
+        arc_pos = dlg.event_arc_position()
+        if not text or target_chapter is None:
+            return
+        # Switch the chapter planner to the target chapter so the
+        # add lands on its planning (the widget renders whichever
+        # chapter is currently selected). If the planner is already
+        # showing the target chapter this is a no-op.
+        try:
+            target_id = getattr(target_chapter, "id", None)
+            if target_id:
+                self.manuscript_editor.select_chapter(target_id)
+        except Exception:
+            # Selecting may fail if the host doesn't expose this
+            # method on a given build — fall through and let the
+            # planner add to whatever chapter it's showing.
+            pass
+        try:
+            planner = self.manuscript_editor.chapter_planner
+        except Exception:
+            planner = None
+        if planner is None or not hasattr(
+                planner, "add_event_from_external"):
+            QMessageBox.warning(
+                self, "Planner unavailable",
+                "Couldn't reach the chapter planner to add the "
+                "event. Try opening the chapter in the planner "
+                "first.")
+            return
+        new_id = planner.add_event_from_external(
+            text=text,
+            description=description,
+            stage=stage,
+            arc_position=arc_pos,
+        )
+        if not new_id:
+            QMessageBox.warning(
+                self, "Add failed",
+                "Could not add the event. The text may have been "
+                "empty after trimming.")
+            return
+        ch_label = (
+            f"Ch. {getattr(target_chapter, 'number', '?')}: "
+            f"{getattr(target_chapter, 'title', '')}").strip()
+        self.statusBar().showMessage(
+            f"Added event to {ch_label} arc.", 5000)
 
     def _compact_chat_history(self):
         """Compact conversation history when it grows too large.

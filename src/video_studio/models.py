@@ -50,6 +50,128 @@ class VideoClip(BaseModel):
     notes: str = ""
 
 
+class ActionImage(BaseModel):
+    """One image generated for a single SceneAction.
+
+    A SceneAction can have many candidate images (from multiple
+    generation runs, different prompts, etc.) — the user picks
+    which ones land in the final slide deck for the scene.
+    """
+    id: str = Field(default_factory=lambda: f"actimg_{uuid4().hex[:10]}")
+    file_path: str = ""
+    sidecar_path: str = ""
+    backend: str = ""
+    prompt_at_generation: str = ""
+    seed: Optional[int] = None
+    is_placeholder: bool = False
+    # When True, this image is included in the scene's slide deck
+    # when the scene's ``mode`` is ``"slideshow"``. Multiple images
+    # per action MAY be included so writers can sequence a quick
+    # internal montage within a single beat.
+    included_in_slideshow: bool = True
+    display_seconds: float = 3.0
+    created_at: datetime = Field(default_factory=datetime.now)
+
+
+class SceneAction(BaseModel):
+    """A discrete beat within a Scene.
+
+    The Scene's overall ``prompt`` describes the whole scene; each
+    SceneAction breaks that into smaller verifiable units the writer
+    can refine — *"Mara crosses the threshold"*, *"the chamber
+    falls silent"*, *"the senior judge stands"*. Backends use the
+    action sequence to enrich their video prompt; image-based
+    backends generate one image per action when the scene is in
+    ``"slideshow"`` mode.
+    """
+    id: str = Field(default_factory=lambda: f"act_{uuid4().hex[:10]}")
+    name: str = ""                       # short verb-phrase
+    description: str = ""                # detailed action description
+    order: int = 0                       # position in the scene
+    # Character and location refs scoped to THIS action. The scene's
+    # overall ``character_refs`` still apply; these are the subset
+    # actually visible in this beat so backends can target
+    # likeness / setting more precisely.
+    character_refs: List[str] = Field(default_factory=list)
+    location_refs: List[str] = Field(default_factory=list)
+    # Free-text additional details — props, weather, lighting cues,
+    # camera notes — the writer wants the backend to honor.
+    scenery_details: str = ""
+    # Source prose excerpt this action was extracted from. Lets the
+    # writer see (and edit) the exact passage that motivated this
+    # beat — also fed into the per-action image prompt so the
+    # backend sees the same source detail.
+    prose_excerpt: str = ""
+    # How long this action's slide should hold on screen when the
+    # slide-deck stitcher walks the scene. 0 means "inherit from
+    # Scene.image_display_seconds" — most scenes have a uniform
+    # cadence, so the writer only sets this when they want a
+    # specific beat to linger or flash by.
+    display_seconds: float = 0.0
+    # Generated images for this action. Populated when the scene's
+    # mode is ``"slideshow"`` and the user clicks "Generate slide
+    # deck images" — one or more per action.
+    images: List[ActionImage] = Field(default_factory=list)
+    favorite_image_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
+
+    def favorite_image(self) -> Optional[ActionImage]:
+        if not self.favorite_image_id:
+            return self.images[0] if self.images else None
+        for img in self.images:
+            if img.id == self.favorite_image_id:
+                return img
+        return self.images[0] if self.images else None
+
+    def included_images(self) -> List[ActionImage]:
+        """Images marked for inclusion in the scene's slide deck."""
+        return [img for img in self.images if img.included_in_slideshow]
+
+
+# Allowed values for ``Scene.mode``. Video is the default — the
+# scene generates one video clip per its overall prompt. Slideshow
+# breaks the scene into per-action stills the stitcher walks in
+# sequence.
+SCENE_MODES = ("video", "slideshow")
+
+
+class Narration(BaseModel):
+    """A spoken-audio track attached to a scene.
+
+    Three production paths:
+      * ``source="tts"``: ``text`` was synthesized by ``tts_backend``
+        (and optionally a specific ``tts_voice``).
+      * ``source="imported"``: a pre-recorded audio file the user
+        dragged in (text may still be set as a transcript).
+      * ``source="recorded"``: in-app recording (future).
+
+    ``duration_seconds`` is best-effort — set by the TTS backend
+    from the synth result, or probed via ffprobe on import. May be
+    0 when the duration is unknown; downstream stitcher will fall
+    back to ``-shortest`` behavior in that case.
+    """
+    id: str = Field(default_factory=lambda: f"narr_{uuid4().hex[:10]}")
+    source: str = "tts"               # "tts" | "imported" | "recorded"
+    text: str = ""                     # synthesis input / transcript
+    audio_path: str = ""               # absolute path to the .mp3/.wav
+    duration_seconds: float = 0.0
+    tts_backend: str = ""
+    tts_voice: str = ""
+    sidecar_path: str = ""
+    created_at: datetime = Field(default_factory=datetime.now)
+
+
+# Valid handlers for video-vs-audio length mismatches. The stitcher
+# reads ``Scene.video_audio_mismatch`` to pick one when muxing.
+VIDEO_AUDIO_MISMATCH_MODES = (
+    "trim",            # cut whichever stream is longer to match (-shortest)
+    "loop",            # repeat the video to cover narration audio
+    "fade_extend",     # hold last frame of video, fading to black to cover audio
+    "extend_silent",   # pad audio with silence to match video length
+)
+
+
 class Scene(BaseModel):
     """A single scene card on the studio canvas.
 
@@ -85,6 +207,34 @@ class Scene(BaseModel):
     # an image still (as a fallback or storyboard frame), each with
     # its own appropriate length.
     image_display_seconds: float = 4.0
+    # Per-action breakdown. When populated, backends use these as
+    # the structural skeleton for the scene: video backends append
+    # the action sequence to their prompt for richer instruction;
+    # image backends in slideshow mode generate one image per
+    # action. Empty list means the scene is treated as a single
+    # beat described only by ``prompt``.
+    actions: List["SceneAction"] = Field(default_factory=list)
+    # "video" → generate a single video clip per the scene's
+    # overall prompt. "slideshow" → generate one image per
+    # SceneAction; the stitcher walks the selected images as a
+    # slide deck.
+    mode: str = "video"
+    # Chapter prose excerpt the user chose via "Pull from chapter".
+    # Persists across sessions so the picker can pre-select what
+    # the user already approved, and downstream features (action
+    # extraction, AI rewrites) have a stable source to ground in.
+    source_prose: str = ""
+    # Optional narration track (TTS or imported audio). When set, the
+    # stitcher mixes it into the scene's clip using the rule named by
+    # ``video_audio_mismatch`` to reconcile any length difference.
+    narration: Optional[Narration] = None
+    # How to reconcile video length vs. narration audio length.
+    # Defaults to "trim" — the safest, matches the default ffmpeg
+    # behavior. Other options:
+    #   * loop          → repeat video underneath longer narration
+    #   * fade_extend   → hold last frame fading to black for audio tail
+    #   * extend_silent → pad audio with silence to match video length
+    video_audio_mismatch: str = "trim"
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 
@@ -116,6 +266,54 @@ class Scene(BaseModel):
                 self.clips[0].id if self.clips else None)
         self.updated_at = datetime.now()
         return len(self.clips) != before
+
+    # ---- action helpers ----
+    def add_action(
+        self,
+        name: str = "",
+        description: str = "",
+        character_refs: Optional[List[str]] = None,
+        location_refs: Optional[List[str]] = None,
+    ) -> "SceneAction":
+        """Append a SceneAction at the end of this scene's list."""
+        action = SceneAction(
+            name=name.strip(),
+            description=description.strip(),
+            character_refs=list(character_refs or []),
+            location_refs=list(location_refs or []),
+            order=len(self.actions),
+        )
+        self.actions.append(action)
+        self.updated_at = datetime.now()
+        return action
+
+    def remove_action(self, action_id: str) -> bool:
+        before = len(self.actions)
+        self.actions = [a for a in self.actions if a.id != action_id]
+        # Re-number remaining actions so order stays dense.
+        for i, a in enumerate(self.actions):
+            a.order = i
+        if len(self.actions) != before:
+            self.updated_at = datetime.now()
+            return True
+        return False
+
+    def move_action(self, action_id: str, delta: int) -> bool:
+        """Shift an action up/down by ``delta`` slots; renumbers."""
+        for i, a in enumerate(self.actions):
+            if a.id == action_id:
+                new_i = max(0, min(len(self.actions) - 1, i + delta))
+                if new_i == i:
+                    return False
+                self.actions.insert(new_i, self.actions.pop(i))
+                for j, b in enumerate(self.actions):
+                    b.order = j
+                self.updated_at = datetime.now()
+                return True
+        return False
+
+    def is_slideshow(self) -> bool:
+        return self.mode == "slideshow"
 
     def favorite_clip(self) -> Optional[VideoClip]:
         if not self.favorite_clip_id:
@@ -287,6 +485,82 @@ class VideoStudio(BaseModel):
                 return ref
         self.character_references.append(ref)
         return ref
+
+    # ---- board management ----
+    def clear_board(self) -> int:
+        """Remove every scene and hop. Returns the number of scenes
+        dropped. Backend preferences and character references are
+        preserved so the user doesn't have to re-pick defaults after
+        starting fresh.
+
+        Sister of ``auto_arrange``: the two together cover the
+        "delete all + reflow if needed" workflow the user described.
+        """
+        n = len(self.scenes)
+        self.scenes = []
+        self.hops = []
+        return n
+
+    def auto_arrange(self) -> None:
+        """Re-flow every scene's grid position into a clean grid.
+
+        Order is topological by hops when the graph is a DAG (so a
+        viewer reads the storyboard in story order); falls back to
+        creation order otherwise. Resets all scenes to start at
+        (0, 0) and fills row-by-row across ``grid_cols``, growing
+        ``grid_rows`` as needed so the auto-flowed layout always
+        fits within the canvas bounds.
+        """
+        if not self.scenes:
+            return
+        ordered_ids = self._topological_or_creation_order()
+        cols = max(1, self.grid_cols)
+        # Walk in order, placing each scene at the next cell.
+        idx_to_pos = {}
+        for i, sid in enumerate(ordered_ids):
+            col = i % cols
+            row = i // cols
+            idx_to_pos[sid] = (col, row)
+        # Ensure the grid has enough rows.
+        max_row = max((p[1] for p in idx_to_pos.values()), default=0)
+        if max_row + 1 > self.grid_rows:
+            self.grid_rows = max_row + 1
+        # Apply.
+        for s in self.scenes:
+            pos = idx_to_pos.get(s.id)
+            if pos is None:
+                continue
+            s.grid_col, s.grid_row = pos
+
+    def _topological_or_creation_order(self) -> List[str]:
+        """Kahn's algorithm; falls back to creation order on a cycle
+        or when there are no hops."""
+        if not self.hops:
+            return [s.id for s in self.scenes]
+        in_degree: Dict[str, int] = {s.id: 0 for s in self.scenes}
+        out_edges: Dict[str, List[str]] = {s.id: [] for s in self.scenes}
+        for h in self.hops:
+            if (h.from_scene_id in in_degree
+                    and h.to_scene_id in in_degree):
+                out_edges[h.from_scene_id].append(h.to_scene_id)
+                in_degree[h.to_scene_id] += 1
+        # Seed the queue with scenes that have no incoming hops, in
+        # creation order so ties are deterministic.
+        ordered_ids = [s.id for s in self.scenes]
+        queue = [sid for sid in ordered_ids
+                 if in_degree.get(sid, 0) == 0]
+        result: List[str] = []
+        while queue:
+            sid = queue.pop(0)
+            result.append(sid)
+            for target in out_edges.get(sid, []):
+                in_degree[target] -= 1
+                if in_degree[target] == 0:
+                    queue.append(target)
+        # Cycle? Fall back to creation order so we don't drop scenes.
+        if len(result) != len(ordered_ids):
+            return ordered_ids
+        return result
 
     # ---- stitching path ----
     def topological_order_starting_at(

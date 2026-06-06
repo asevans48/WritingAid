@@ -1820,6 +1820,54 @@ class ChapterPlannerWidget(QWidget):
         events = [widget.get_data() for widget in self._event_widgets]
         self.arc_widget.set_events(events)
 
+    def add_event_from_external(
+        self,
+        text: str,
+        description: str = "",
+        stage: str = "rising",
+        arc_position: int = -1,
+    ) -> str:
+        """Public API for adding a single event to the currently-
+        displayed chapter's arc.
+
+        Called by the general AI chat after the user finishes a
+        discussion that produces a new beat ("add this as an event
+        to chapter 3"). Returns the new event's id so the caller
+        can confirm or undo. Empty text returns "" without adding —
+        callers should validate before calling.
+        """
+        text = (text or "").strip()
+        if not text:
+            return ""
+        # Sanity-clamp stage to one of the canonical values so we
+        # never end up with garbage from a free-text input.
+        stage = (stage or "rising").lower().strip()
+        if stage not in (
+                "exposition", "rising", "climax", "falling",
+                "resolution"):
+            stage = "rising"
+        # Stage-aware default arc position when none provided.
+        if arc_position < 0:
+            arc_position = {
+                "exposition": 10,
+                "rising": 30,
+                "climax": 55,
+                "falling": 75,
+                "resolution": 90,
+            }.get(stage, 50)
+        else:
+            arc_position = max(0, min(100, int(arc_position)))
+        new_id = str(uuid.uuid4())
+        self._add_event_item(
+            text=text,
+            description=description or "",
+            stage=stage,
+            arc_position=arc_position,
+            event_id=new_id,
+            order=len(self._event_widgets),
+        )
+        return new_id
+
     def _add_event_item(self, text: str = "", description: str = "", completed: bool = False,
                        stage: str = "rising", arc_position: int = -1,
                        event_id: str = None, order: int = -1):
@@ -2345,6 +2393,112 @@ class ChapterPlannerWidget(QWidget):
             return self._chapter_content_provider()
         return ""
 
+    def _collect_chapter_context_block(self) -> str:
+        """Snapshot the chapter-specific signals from this widget for
+        the AI prompt.
+
+        Bundles together:
+          * Chapter description (the writer's intent)
+          * POV character, timeline position
+          * Tone / voice / style fields
+          * Featured characters, locations, themes
+          * Planned scene_list (if any)
+          * The chapter prose itself (truncated to ~6000 chars
+            head + tail when long)
+
+        Returns the formatted block as a single string ready to prepend
+        to ``context_parts`` in ``_run_ai_request``. Empty string when
+        no signal is set — the prompt then falls back to project-level
+        context only, which was the legacy behavior.
+        """
+        bits: list = []
+
+        # --- Planning fields (cheap reads from the form) ---
+        def _val(widget) -> str:
+            try:
+                if hasattr(widget, "toPlainText"):
+                    return (widget.toPlainText() or "").strip()
+                if hasattr(widget, "text"):
+                    return (widget.text() or "").strip()
+            except Exception:
+                return ""
+            return ""
+
+        description = _val(self.description_editor)
+        if description:
+            bits.append(f"Chapter description (writer's intent):\n"
+                        f"{description}")
+        pov = _val(self.pov_edit)
+        if pov:
+            bits.append(f"POV character: {pov}")
+        timeline = _val(self.timeline_edit)
+        if timeline:
+            bits.append(f"Timeline position: {timeline}")
+        tone = _val(self.tone_edit) if hasattr(self, "tone_edit") else ""
+        if tone:
+            bits.append(f"Tone: {tone}")
+        voice = (
+            _val(self.voice_edit) if hasattr(self, "voice_edit") else "")
+        if voice:
+            bits.append(f"Voice: {voice}")
+        style = (
+            _val(self.style_edit) if hasattr(self, "style_edit") else "")
+        if style:
+            bits.append(f"Style: {style}")
+        characters = (
+            _val(self.characters_edit)
+            if hasattr(self, "characters_edit") else "")
+        if characters:
+            bits.append(f"Characters featured: {characters}")
+        locations = (
+            _val(self.locations_edit)
+            if hasattr(self, "locations_edit") else "")
+        if locations:
+            bits.append(f"Locations: {locations}")
+        themes = (
+            _val(self.themes_edit)
+            if hasattr(self, "themes_edit") else "")
+        if themes:
+            bits.append(f"Themes: {themes}")
+
+        # --- Existing planned scenes (if any) ---
+        scene_list_widget = (
+            getattr(self, "scene_list_edit", None)
+            or getattr(self, "scene_list_editor", None))
+        if scene_list_widget is not None:
+            sl = _val(scene_list_widget)
+            if sl:
+                bits.append(f"Existing planned scene list:\n{sl}")
+
+        # --- Chapter prose (when written) ---
+        # This is the load-bearing signal the previous version missed.
+        # If text exists, the AI should derive beats from what
+        # actually happens, not just from metadata.
+        content = self._get_chapter_content()
+        if content and content.strip():
+            content = content.strip()
+            wc = len(content.split())
+            if len(content) > 6000:
+                # Head + tail keeps the chapter's opening + climax
+                # within budget without cutting either end.
+                head = content[:3000].rstrip()
+                tail = content[-2500:].lstrip()
+                content_for_prompt = (
+                    f"{head}\n\n"
+                    f"... [middle of chapter elided, "
+                    f"~{wc - 1000} words omitted] ...\n\n"
+                    f"{tail}")
+            else:
+                content_for_prompt = content
+            bits.append(
+                f"Chapter prose (the actual text — use this as the "
+                f"primary signal for what happens in this chapter):\n"
+                f"{content_for_prompt}")
+
+        if not bits:
+            return ""
+        return "THIS CHAPTER:\n" + "\n\n".join(bits)
+
     def _append_to_chat(self, role: str, message: str):
         """Append a message to the chat history."""
         print(f"[ChapterPlanner] _append_to_chat called: role={role}, message_len={len(message)}")
@@ -2515,25 +2669,102 @@ class ChapterPlannerWidget(QWidget):
         context = self._get_context()
         chapter_title = context.get('chapter_title', 'this chapter')
 
-        prompt = f"""Based on the story context provided above, generate 5-8 specific story events for the chapter titled "{chapter_title}".
+        # Detect whether the writer has already written prose; the
+        # prompt reads differently when there's text to anchor to vs.
+        # when the chapter is still empty. The block was prepended in
+        # _run_ai_request from _collect_chapter_context_block.
+        has_prose = bool(self._get_chapter_content().strip())
+        has_description = bool(
+            self.description_editor.toPlainText().strip()
+            if hasattr(self, "description_editor") else "")
+
+        if has_prose:
+            primary_directive = (
+                "PRIMARY DIRECTIVE: recognize the beats that already "
+                "exist in the CHAPTER PROSE block above. Each event "
+                "you list MUST correspond to a real moment in the "
+                "prose — paraphrase a recognizable moment so the "
+                "writer can find it in their draft. Do NOT invent "
+                "beats that aren't on the page.\n\n"
+                "PARTIAL ARCS ARE EXPECTED. The writer may have only "
+                "written the opening, only the climax, or skipped "
+                "around. Follow these rules:\n"
+                "  * If a stage (exposition / rising / climax / "
+                "falling / resolution) has no corresponding moment in "
+                "the prose, OMIT that stage entirely — do NOT make "
+                "one up.\n"
+                "  * After your numbered list of recognized beats, "
+                "add a single line starting with 'GAPS:' that names "
+                "the stages absent from the prose (e.g., "
+                "'GAPS: climax, falling, resolution'). Omit the GAPS "
+                "line when the arc is complete.\n"
+                "  * If the prose ends in the middle of a beat "
+                "(scene fades, sentence stops), label that beat "
+                "with [partial] instead of a stage name and note "
+                "what it appears to be building toward.\n"
+                "  * Return AT MOST one event per recognized beat "
+                "— don't pad."
+            )
+        elif has_description:
+            primary_directive = (
+                "PRIMARY DIRECTIVE: the writer hasn't written prose "
+                "yet, but they have given a chapter description above. "
+                "Use that description as your structural source — each "
+                "event you propose must develop a thread the writer "
+                "named, not invent unrelated beats."
+            )
+        else:
+            primary_directive = (
+                "PRIMARY DIRECTIVE: there's no chapter prose or "
+                "description yet — generate a plausible arc based on "
+                "the project context (plot, characters, themes). "
+                "Lean toward beats that would set up the next chapter "
+                "rather than freelance."
+            )
+
+        prompt = f"""Generate 5-8 specific story events for the chapter titled "{chapter_title}".
+
+{primary_directive}
 
 TASK:
 Create concrete story beats that:
+- Match the chapter's prose, description, and writer-specified
+  tone/voice/style (in THIS CHAPTER block above) when present
 - Align with the established plot, characters, and worldbuilding
 - Show character development and advance the narrative
 - Follow a natural chapter arc structure
 - Are specific and actionable (not vague)
+- Each beat names the character doing the action and where it
+  happens (use the chapter's locations / POV when given)
 
-FORMAT YOUR RESPONSE:
-Use a numbered list with the arc stage in brackets:
+FORMAT YOUR RESPONSE — TWO LINES PER EVENT:
+Use a numbered list. The FIRST line of each item is a SHORT TITLE
+(3-7 words, evocative, the kind of label a writer would pin to an
+index card). The SECOND line is a DESCRIPTION (1-2 sentences with
+the concrete action — who does what, where, why it matters).
+Indent the description line with two spaces so the parser can tell
+it apart from the title.
 
-1. [exposition] Specific event that sets up the chapter...
-2. [rising] Event that builds tension or advances plot...
-3. [climax] The major turning point or key moment...
-4. [falling] Consequence or reaction to the climax...
-5. [resolution] How the chapter concludes or transitions...
+EXAMPLE FORMAT (do not copy the content — generate beats for the
+chapter above):
 
-Make each event concrete with specific character actions and scene details."""
+1. [exposition] The Council Summons
+  Mara is brought before the council to answer for her unsanctioned raids on the border villages.
+
+2. [rising] Refusing the Call
+  She argues with Bren in the antechamber that taking the mission means abandoning the survivors at Highveld.
+
+3. [climax] The Reckoning
+  Mara accepts the council's terms, knowing it will cost her Bren's trust.
+
+4. [falling] The Cold Walk Home
+  She leaves through the rain alone, replaying the moment Bren turned away.
+
+5. [resolution] A New Loyalty
+  She arrives at her quarters and burns her commission letter, sealing the choice.
+
+Make each title concrete and each description specific to character actions
+and scene details — never generic craft advice."""
 
         self._append_to_chat("system", f"Generating events for {chapter_title}...")
         self._set_processing(True)
@@ -2541,15 +2772,36 @@ Make each event concrete with specific character actions and scene details."""
         def on_response(response: str):
             self._set_processing(False)
             if response:
-                self._parse_ai_events_response(response)
-                self._append_to_chat("assistant", "Events generated! Review and adjust as needed.")
+                gaps = self._parse_ai_events_response(response)
+                if gaps:
+                    # Partial arc — tell the writer which stages
+                    # weren't found in the prose so they know what
+                    # the AI deliberately didn't fabricate.
+                    self._append_to_chat(
+                        "assistant",
+                        f"Events recognized from the chapter. The "
+                        f"AI noted that these arc stages aren't yet "
+                        f"present in the prose: **{gaps}**. Add "
+                        f"beats for those manually when you write "
+                        f"them.")
+                else:
+                    self._append_to_chat(
+                        "assistant",
+                        "Events generated! Review and adjust as "
+                        "needed.")
             else:
                 self._append_to_chat("error", "Failed to generate events.")
 
         self._run_ai_request(prompt, context, on_response)
 
-    def _parse_ai_events_response(self, response: str):
-        """Parse AI response into events."""
+    def _parse_ai_events_response(self, response: str) -> str:
+        """Parse AI response into events.
+
+        Returns the ``GAPS:`` line (with the prefix stripped) when
+        the model surfaced one — that's a hint to the writer about
+        which arc stages aren't yet on the page. Empty string when
+        no GAPS line was returned (full arc, or older prompt format).
+        """
         lines = response.strip().split('\n')
 
         # Clear existing events
@@ -2565,48 +2817,163 @@ Make each event concrete with specific character actions and scene details."""
             'falling': 'falling',
             'falling action': 'falling',
             'resolution': 'resolution',
-            'denouement': 'resolution'
+            'denouement': 'resolution',
+            # [partial] is emitted when the prose ends mid-beat;
+            # we attach it as a rising-action event but mark the text
+            # so it's visible to the writer that this beat is not yet
+            # fully on the page.
+            'partial': 'rising',
         }
+        # Collect any "GAPS: …" line so we can surface it to the user
+        # after the recognized beats land. This is the AI naming which
+        # stages are still missing from the prose — a hint for the
+        # writer, not an event to add to the arc.
+        gaps_line: str = ""
 
+        # Regex used to validate whether a line is plausibly an event
+        # entry vs. preamble / commentary. Bug we're fixing: the model
+        # often opens with "Here are the specific story events for the
+        # chapter…" — that line had no number and no stage tag, but
+        # the previous parser still added it as a rising-action event
+        # because it was non-empty and longer than 5 chars.
+        # An event line MUST either:
+        #   1. Start with a numbered list marker (1. / 1) / 1: ), OR
+        #   2. Start with a recognized [stage] tag (allowing an
+        #      optional dash/bullet prefix from looser formats).
+        # Lines failing both tests are commentary and skipped.
+        import re
+        _STAGE_WORDS = (
+            r"exposition|rising[\s_-]*action|rising|climax|"
+            r"falling[\s_-]*action|falling|resolution|denouement|"
+            r"partial")
+        _NUMBERED_RE = re.compile(r"^\d+\s*[\.\):]\s+")
+        _STAGE_TAG_RE = re.compile(
+            r"^[\-*•]?\s*\[(" + _STAGE_WORDS + r")\b",
+            re.IGNORECASE)
+
+        def _is_event_line(stripped: str) -> bool:
+            # Strip leading markdown bold / italic markers so
+            # ``**1.`` and ``__1.`` still pass the numbered check.
+            cleaned = re.sub(r"^[\s*_]+", "", stripped)
+            if not cleaned:
+                return False
+            return bool(_NUMBERED_RE.match(cleaned)
+                        or _STAGE_TAG_RE.match(cleaned))
+
+        # Two-pass: walk the lines to assemble (title, stage,
+        # description) tuples, then add them as widgets at the end.
+        # The new prompt asks the model to put a short title on the
+        # numbered line and a longer description on the following
+        # line(s) — we collect non-event lines after an event as
+        # description continuation. Blank lines reset the
+        # continuation cursor so the trailing summary block can't
+        # bleed into the last event's description.
+        events_to_add: List[dict] = []
+        current_event: Optional[dict] = None
         event_order = 0
-        for line in lines:
-            line = line.strip()
+
+        for raw_line in lines:
+            line = raw_line.strip()
             if not line:
+                # Blank lines break description continuation. The
+                # next non-event line will then be skipped as
+                # orphan / commentary unless it matches an event.
+                current_event = None
                 continue
 
-            # Try to extract stage from brackets
-            stage = 'rising'  # default
-            text = line
+            low = line.lower()
+            if low.startswith("gaps:") or low.startswith("**gaps:"):
+                gaps_line = re.sub(r"^\**\s*gaps:\s*", "",
+                                   line, flags=re.IGNORECASE).strip(
+                                       " *")
+                current_event = None
+                continue
 
-            # Check for [stage] format
-            import re
-            bracket_match = re.search(r'\[([^\]]+)\]', line)
+            if not _is_event_line(line):
+                # If we're sitting under an event, this is its
+                # description continuation. Otherwise it's preamble
+                # or trailing commentary — skip silently.
+                if current_event is not None:
+                    cont = re.sub(r"^[\s\-*•]+", "", line).strip()
+                    if cont:
+                        if current_event["description"]:
+                            current_event["description"] += " " + cont
+                        else:
+                            current_event["description"] = cont
+                continue
+
+            # New event line. Strip list marker + [stage] tag and
+            # decide whether the model crammed the description onto
+            # the same line via ``Title: description`` or ``Title —
+            # description``. Splitting only when the prefix looks
+            # short keeps real titles that contain a colon intact.
+            stage = 'rising'
+            is_partial = False
+            text = re.sub(r"^[\s*_]+", "", line)
+            text = re.sub(r"^\d+\s*[\.\):]\s*", "", text)
+            text = re.sub(r"^[\-*•]\s+", "", text).strip()
+
+            bracket_match = re.match(r'\s*\[([^\]]+)\]\s*', text)
             if bracket_match:
                 stage_text = bracket_match.group(1).lower().strip()
+                if stage_text == 'partial':
+                    is_partial = True
                 stage = stage_map.get(stage_text, 'rising')
-                text = re.sub(r'\[[^\]]+\]', '', line).strip()
+                text = text[bracket_match.end():].strip()
 
-            # Remove leading numbers
-            text = re.sub(r'^[\d]+[\.\)\:]?\s*', '', text).strip()
+            title = text
+            inline_desc = ""
+            # Detect ``title — description`` and ``title: description``
+            # patterns the model sometimes uses. Only split when the
+            # title side is short enough to plausibly BE a title,
+            # protecting titles like "Marcus: A Reckoning" from
+            # being chopped at a meaningful punctuation.
+            for sep in (" — ", " – ", ": ", " - "):
+                idx = title.find(sep)
+                if idx > 0 and idx <= 60:
+                    inline_desc = title[idx + len(sep):].strip()
+                    title = title[:idx].strip()
+                    break
 
-            if text and len(text) > 5:
-                # Calculate arc position based on stage
-                stage_positions = {
-                    'exposition': 10 + event_order * 3,
-                    'rising': 25 + event_order * 5,
-                    'climax': 50,
-                    'falling': 65 + event_order * 3,
-                    'resolution': 85 + event_order * 3
-                }
-                arc_pos = min(stage_positions.get(stage, 50), 95)
+            if is_partial:
+                title = f"[partial] {title}"
 
-                self._add_event_item(
-                    text=text,
-                    stage=stage,
-                    arc_position=arc_pos,
-                    order=event_order
-                )
-                event_order += 1
+            if not title or len(title) <= 2:
+                continue
+
+            stage_positions = {
+                'exposition': 10 + event_order * 3,
+                'rising': 25 + event_order * 5,
+                'climax': 50,
+                'falling': 65 + event_order * 3,
+                'resolution': 85 + event_order * 3,
+            }
+            arc_pos = min(stage_positions.get(stage, 50), 95)
+
+            current_event = {
+                "text": title,
+                "description": inline_desc,
+                "stage": stage,
+                "arc_position": arc_pos,
+                "order": event_order,
+            }
+            events_to_add.append(current_event)
+            event_order += 1
+
+        # Now add each collected event. Doing it in a separate pass
+        # keeps the title/description join step clean — we have the
+        # full description (head + any continuation lines) at the
+        # moment we construct the widget.
+        for ev in events_to_add:
+            self._add_event_item(
+                text=ev["text"],
+                description=ev["description"],
+                stage=ev["stage"],
+                arc_position=ev["arc_position"],
+                order=ev["order"],
+            )
+
+        return gaps_line
 
     def _send_chat_message(self):
         """Send a chat message to the AI.
@@ -3260,10 +3627,26 @@ Provide specific, constructive feedback."""
             pass  # Not connected yet
         self._ai_response_ready.connect(self._handle_ai_response)
 
+        # Capture the chapter's own context BEFORE the worker thread
+        # runs — Qt widgets aren't thread-safe to read from worker
+        # threads. We snapshot now and hand the resulting string
+        # block to the worker.
+        chapter_block = self._collect_chapter_context_block()
+
         def run():
             try:
                 # Build context with intelligent truncation
                 context_parts = []
+
+                # Chapter-specific signals FIRST so the model anchors
+                # to the actual chapter content (prose + description +
+                # planning details) before considering broader project
+                # context. The previous version put project context at
+                # the top and dropped chapter prose entirely — the AI
+                # then generated arc beats detached from what the
+                # writer had actually written.
+                if chapter_block:
+                    context_parts.append(chapter_block)
 
                 # Add plot (most important, keep full)
                 if context.get('plot'):
