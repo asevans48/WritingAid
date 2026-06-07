@@ -7,6 +7,7 @@ from typing import List, Optional
 from .base import VideoBackend
 from .cogvideox import CogVideoX2BBackend, CogVideoX5BBackend
 from .flux_schnell import FluxSchnellBackend
+from .configured_image import ConfiguredImageBackend
 from .image_base import ImageBackend
 from .image_placeholder import PlaceholderImageBackend
 from .ltx_video import LtxVideoBackend
@@ -26,14 +27,21 @@ _BACKENDS: List[VideoBackend] = [
     Wan21Backend(),           # ~14 GB VRAM (14B variant), 24 GB GPUs
 ]
 
-# Image backends form a parallel registry — the studio picker shows
-# them separately so users can mix-and-match (e.g. SDXL for stills
-# + LTX-Video for animation). Same shape as video backends so the
-# UI machinery (install dialog, memory check) is shared.
+# Image backends — the "Configured Model" entry delegates to the
+# unified ``ImageGenerationAgent`` so the studio renders with
+# whatever the writer picked in Settings → 🎨 Image Generation.
+# That makes the FULL model catalog (MLX, diffusers, DALL-E,
+# Stability AI, Replicate) available to the studio without
+# duplicating loader logic.
+#
+# SDXLBackend and FluxSchnellBackend remain in the registry as
+# explicit legacy options for installs that still wire diffusers
+# directly; new selections should prefer the Configured entry.
 _IMAGE_BACKENDS: List[ImageBackend] = [
     PlaceholderImageBackend(),
-    SDXLBackend(),              # ~8 GB VRAM, ~14 GB weights
-    FluxSchnellBackend(),       # ~16 GB VRAM, ~24 GB weights
+    ConfiguredImageBackend(),   # uses Settings → Image Generation
+    SDXLBackend(),              # legacy: direct diffusers, ~8 GB VRAM
+    FluxSchnellBackend(),       # legacy: direct diffusers, ~16 GB VRAM
 ]
 
 
@@ -90,5 +98,11 @@ def get_image_backend(name: str) -> Optional[ImageBackend]:
 
 
 def default_image_backend() -> ImageBackend:
+    """Prefer the Configured backend so the studio honors the
+    user's Settings → 🎨 Image Generation choice out of the box.
+    Falls back to placeholder when no model is configured."""
+    configured = get_image_backend("configured")
+    if configured is not None and configured.is_installed():
+        return configured
     avail = available_image_backends()
     return avail[0] if avail else _IMAGE_BACKENDS[0]

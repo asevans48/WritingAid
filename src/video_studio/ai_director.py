@@ -769,6 +769,109 @@ Output schema (JSON):
     return out
 
 
+def refine_visual_prompt(
+    composed_prompt: str,
+    target: str,
+    llm: Optional[Any],
+    max_tokens: int = 600,
+) -> str:
+    """LLM-refine a structured scene/action prompt into proper
+    artwork language for image OR video generation.
+
+    The writer's structured detail (style block, character_details,
+    setting_details, additional_instructions, action sequence,
+    prose_excerpt, etc.) is excellent grounding but reads like
+    narrative. Image and video models perform much better with
+    visual-art-direction language: composition, framing, lighting,
+    materials, color palette, camera move, motion. This helper
+    asks the LLM to translate without losing any of the writer's
+    specific detail.
+
+    ``target`` is ``"image"`` or ``"video"``. The system prompt
+    swaps in the right vocabulary so an image preview emphasises
+    composition and an image-of-stillness, while video generation
+    emphasises temporal motion / camera moves / action sequence
+    pacing.
+
+    Returns the LLM's refined prompt on success; returns the
+    original ``composed_prompt`` unchanged on any failure or when
+    ``llm`` is None — generation always has SOMETHING usable.
+    """
+    if llm is None or not (composed_prompt or "").strip():
+        return composed_prompt
+    target = (target or "image").lower()
+    if target not in ("image", "video"):
+        target = "image"
+    if target == "image":
+        system_prompt = (
+            "You are an expert at writing prompts for text-to-"
+            "IMAGE generators (FLUX, SDXL, SD 3.5, DALL-E). Your "
+            "job is to translate the writer's structured scene "
+            "description into a vivid, concrete VISUAL prompt — "
+            "what the frame LOOKS LIKE, not what happens. Use "
+            "art-direction language:\n"
+            "  • subject(s) + pose + expression\n"
+            "  • composition + framing (close-up, wide, etc.)\n"
+            "  • lighting (key + fill + practicals, time of day)\n"
+            "  • materials + textures + color palette\n"
+            "  • atmosphere (haze, smoke, rain, dust)\n"
+            "  • art style (when the writer asked for one)\n"
+            "DO preserve every concrete detail from the source "
+            "(character appearance, setting features, props, "
+            "additional instructions). DO NOT add details the "
+            "writer didn't authorise. Keep it to 80-180 words. "
+            "Output ONLY the refined prompt — no preamble, no "
+            "lists, no quotes, no 'Here is…'.")
+        user_lead = (
+            "Translate this scene description into a vivid image "
+            "prompt. Keep every named character + place + prop. "
+            "Frame it as a still — pick one moment.\n\n"
+            "SOURCE DETAIL:\n")
+    else:
+        system_prompt = (
+            "You are an expert at writing prompts for text-to-"
+            "VIDEO generators (LTX-Video, CogVideoX, Wan2.1, "
+            "Sora-class). Your job is to translate the writer's "
+            "structured scene description into a vivid, concrete "
+            "VISUAL + MOTION prompt — what the camera SEES and "
+            "how the action UNFOLDS. Use directorial language:\n"
+            "  • subject(s) + their motion across the clip\n"
+            "  • camera (static / dolly / pan / handheld), framing\n"
+            "  • lighting (key + fill + practicals, time of day)\n"
+            "  • atmosphere (haze, smoke, rain, dust)\n"
+            "  • action beats in order (if a sequence is supplied)\n"
+            "  • art style + look (when the writer asked for one)\n"
+            "DO preserve every concrete detail from the source "
+            "(character appearance, setting features, props, "
+            "additional instructions). DO NOT add details the "
+            "writer didn't authorise. Keep it to 120-220 words. "
+            "Output ONLY the refined prompt — no preamble, no "
+            "lists, no quotes, no 'Here is…'.")
+        user_lead = (
+            "Translate this scene description into a vivid video "
+            "prompt. Keep every named character + place + prop, "
+            "every action in the sequence, and every camera or "
+            "framing note from 'Additional instructions'.\n\n"
+            "SOURCE DETAIL:\n")
+    user_prompt = user_lead + composed_prompt
+    try:
+        raw = llm.generate_text(
+            user_prompt, system_prompt,
+            max_tokens=max_tokens, temperature=0.5)
+    except Exception as e:
+        print(f"[video_studio] refine_visual_prompt failed: {e}")
+        return composed_prompt
+    refined = (raw or "").strip()
+    # Strip wrapping quotes / triple-backticks the model sometimes
+    # adds despite instructions.
+    if refined.startswith("```"):
+        refined = refined.strip("`").strip()
+    if (refined.startswith('"') and refined.endswith('"')
+            and len(refined) > 2):
+        refined = refined[1:-1].strip()
+    return refined or composed_prompt
+
+
 def rewrite_scene(
     scene: Scene,
     chapter: Optional[Any],

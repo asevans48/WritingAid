@@ -9,7 +9,8 @@ from PyQt6.QtWidgets import (
     QLineEdit, QComboBox, QPushButton, QGroupBox, QLabel,
     QCheckBox, QSlider, QSpinBox, QDoubleSpinBox, QTabWidget,
     QWidget, QScrollArea, QListWidget, QListWidgetItem,
-    QProgressBar, QMessageBox, QFrame, QButtonGroup, QRadioButton
+    QProgressBar, QMessageBox, QFrame, QButtonGroup, QRadioButton,
+    QStackedWidget, QSplitter,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor
@@ -441,7 +442,10 @@ class SettingsDialog(QDialog):
     def _init_ui(self):
         """Initialize user interface."""
         self.setWindowTitle("AI Configuration & Settings")
-        self.setMinimumSize(600, 500)  # Reduced for laptop compatibility
+        # Larger min-width so the sidebar (180 px) + the form area
+        # (≥420 px) both have breathing room on a 1366×768 laptop.
+        # Height min lowered so the dialog still fits a 13" laptop.
+        self.setMinimumSize(820, 480)
 
         layout = QVBoxLayout(self)
 
@@ -450,56 +454,116 @@ class SettingsDialog(QDialog):
         header.setStyleSheet("font-size: 18px; font-weight: 600; color: #1a1a1a; padding: 10px;")
         layout.addWidget(header)
 
-        # Tabs for different settings categories
-        tabs = QTabWidget()
+        # Categories — a vertical sidebar on the left + a stacked
+        # content widget on the right. Replaces the old
+        # QTabWidget (10 horizontal tabs ran together and clipped
+        # on laptops). The sidebar surface is searchable so writers
+        # with deep configs can jump straight to the right page.
+        sidebar_panel = QWidget()
+        sidebar_layout = QVBoxLayout(sidebar_panel)
+        sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        sidebar_layout.setSpacing(4)
 
-        # API Keys Tab
+        self._category_search = QLineEdit()
+        self._category_search.setPlaceholderText(
+            "🔎 Filter categories…")
+        self._category_search.setClearButtonEnabled(True)
+        self._category_search.textChanged.connect(
+            self._filter_settings_categories)
+        self._category_search.setToolTip(
+            "Type to hide categories whose name doesn't match. "
+            "Empty to show all.")
+        sidebar_layout.addWidget(self._category_search)
+
+        self._category_list = QListWidget()
+        self._category_list.setUniformItemSizes(True)
+        self._category_list.setSpacing(2)
+        # Compact, modern look — pad each entry so the icon + label
+        # have room and the active row has clear visual weight.
+        self._category_list.setStyleSheet("""
+            QListWidget {
+                border: 1px solid #e5e7eb;
+                border-radius: 6px;
+                background: #f9fafb;
+                outline: 0;
+                padding: 4px;
+            }
+            QListWidget::item {
+                padding: 8px 10px;
+                border-radius: 4px;
+                color: #1f2937;
+            }
+            QListWidget::item:hover { background: #eef2ff; }
+            QListWidget::item:selected {
+                background: #4f46e5;
+                color: white;
+            }
+        """)
+        sidebar_layout.addWidget(self._category_list, stretch=1)
+
+        self._category_stack = QStackedWidget()
+
+        # Build each category once, then add (icon+label, widget)
+        # to both the sidebar list and the stack. ``_add_category``
+        # keeps the two in lock-step so a selection change always
+        # drives the right page.
         api_tab = self._create_api_keys_tab()
-        tabs.addTab(api_tab, "🔑 API Keys")
+        self._add_category("🔑  API Keys", api_tab)
 
-        # Model Configuration Tab
         model_tab = self._create_model_config_tab()
-        tabs.addTab(model_tab, "⚙️ Model Settings")
+        self._add_category("⚙️  Model Settings", model_tab)
 
-        # Hugging Face / Local Models Tab
         hf_tab = self._create_huggingface_tab()
-        tabs.addTab(hf_tab, "🤗 Local Models")
+        self._add_category("🤗  Local Models", hf_tab)
 
-        # Per-Task Trained Models tab — picks which trained model
-        # (from the Training Studio) each writing-tool task uses.
-        # Reads + writes directly to ``creativeos_config`` so the
-        # AgentSuite ``resolve_task_model`` lookup sees the picks.
+        # Per-Task Trained Models — picks which trained model (from
+        # the Training Studio) each writing-tool task uses. Reads +
+        # writes ``creativeos_config`` so AgentSuite's
+        # ``resolve_task_model`` lookup sees the picks.
         per_task_tab = self._create_per_task_models_tab()
-        tabs.addTab(per_task_tab, "🎯 Per-Task Models")
+        self._add_category("🎯  Per-Task Models", per_task_tab)
 
-        # GenAI / Image Generation Tab
         genai_tab = self._create_genai_tab()
-        tabs.addTab(genai_tab, "🎨 Image Generation")
+        self._add_category("🎨  Image Generation", genai_tab)
 
-        # Training Data Collection Tab
         training_tab = self._create_training_data_tab()
-        tabs.addTab(training_tab, "📊 Training Data")
+        self._add_category("📊  Training Data", training_tab)
 
-        # Text-to-Speech Tab
         tts_tab = self._create_tts_tab()
-        tabs.addTab(tts_tab, "🔊 Text-to-Speech")
+        self._add_category("🔊  Text-to-Speech", tts_tab)
 
-        # Features Tab
         features_tab = self._create_features_tab()
-        tabs.addTab(features_tab, "✨ AI Features")
+        self._add_category("✨  AI Features", features_tab)
 
-        # Language Resources Tab
         lang_tab = self._create_language_resources_tab()
-        tabs.addTab(lang_tab, "📚 Language")
+        self._add_category("📚  Language", lang_tab)
 
-        # Knowledge Bases Tab
         from src.ui.knowledge_settings_widget import KnowledgeSettingsWidget
         self.knowledge_widget = KnowledgeSettingsWidget()
         self.knowledge_widget.set_britannica_key(self.settings.get("britannica_api_key", ""))
         self.knowledge_widget.set_knowledge_enabled(self.settings.get("enable_knowledge_base", True))
-        tabs.addTab(self.knowledge_widget, "📖 Knowledge Bases")
+        self._add_category(
+            "📖  Knowledge Bases", self.knowledge_widget)
 
-        layout.addWidget(tabs)
+        # Wire selection → stack page switch.
+        self._category_list.currentRowChanged.connect(
+            self._category_stack.setCurrentIndex)
+        # Open on the first category by default.
+        self._category_list.setCurrentRow(0)
+
+        # Splitter so the writer can resize the sidebar if they
+        # want more / less room. We constrain the sidebar to a
+        # tight band so the form area always wins extra space.
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        sidebar_panel.setMaximumWidth(260)
+        sidebar_panel.setMinimumWidth(180)
+        splitter.addWidget(sidebar_panel)
+        splitter.addWidget(self._category_stack)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([200, 700])
+        splitter.setChildrenCollapsible(False)
+        layout.addWidget(splitter, stretch=1)
 
         # Info
         info_label = QLabel(
@@ -527,6 +591,42 @@ class SettingsDialog(QDialog):
         button_layout.addWidget(cancel_button)
 
         layout.addLayout(button_layout)
+
+    def _add_category(self, label: str, widget: QWidget) -> None:
+        """Register one settings category — adds an entry to the
+        sidebar list AND a page to the stacked content area, in
+        lock-step so the indices align for the currentRowChanged
+        signal."""
+        item = QListWidgetItem(label)
+        # Stash the raw label on the item so the search filter can
+        # match without the visible-text styling drift.
+        item.setData(Qt.ItemDataRole.UserRole, label.lower())
+        self._category_list.addItem(item)
+        self._category_stack.addWidget(widget)
+
+    def _filter_settings_categories(self, text: str) -> None:
+        """Hide sidebar rows that don't match the search text.
+        Empty text → show every row. Selection follows: if the
+        currently-selected row gets hidden, jump to the first
+        still-visible row so the writer never sees an empty
+        right-hand page."""
+        needle = (text or "").strip().lower()
+        first_visible = -1
+        current_row = self._category_list.currentRow()
+        current_still_visible = False
+        for i in range(self._category_list.count()):
+            item = self._category_list.item(i)
+            hay = (item.data(Qt.ItemDataRole.UserRole)
+                   or item.text().lower())
+            match = (not needle) or (needle in hay)
+            item.setHidden(not match)
+            if match:
+                if first_visible < 0:
+                    first_visible = i
+                if i == current_row:
+                    current_still_visible = True
+        if not current_still_visible and first_visible >= 0:
+            self._category_list.setCurrentRow(first_visible)
 
     def _create_api_keys_tab(self) -> QWidget:
         """Create API keys configuration tab."""
@@ -1765,6 +1865,49 @@ class SettingsDialog(QDialog):
 
         char_group.setLayout(char_layout)
         layout.addWidget(char_group)
+
+        # ── Video Studio: video backend only ───────────────────
+        # Image generation is unified: both the Visuals tab and the
+        # Video Studio render via the image model picked above (the
+        # studio uses the ``ConfiguredImageBackend`` adapter). Only
+        # the video backend (clips, not stills) needs its own
+        # selection — the studio still owns specialized renderers
+        # like LTX-Video / CogVideoX / Wan2.1 that don't fit the
+        # image-only catalog.
+        vs_group = QGroupBox("Video Studio Video Backend")
+        vs_layout = QFormLayout()
+
+        from src.video_studio.backends.registry import (
+            all_backends as _all_video_backends,
+        )
+        self.vs_video_backend_combo = QComboBox()
+        for b in _all_video_backends():
+            installed = " ✓" if b.is_installed() else "  (install)"
+            self.vs_video_backend_combo.addItem(
+                b.label + installed, b.name)
+        current_vid = settings.get(
+            "video_studio_video_backend", "placeholder")
+        idx = self.vs_video_backend_combo.findData(current_vid)
+        if idx >= 0:
+            self.vs_video_backend_combo.setCurrentIndex(idx)
+        self.vs_video_backend_combo.setToolTip(
+            "Renders video clips when the writer clicks 🎬 Generate "
+            "on a scene card. Each backend's memory cost is shown "
+            "in its install help.")
+        vs_layout.addRow("Video Backend:", self.vs_video_backend_combo)
+
+        vs_help_label = QLabel(
+            "Image stills + slide-deck images use the image model "
+            "you picked above. Install backends from the Video "
+            "Studio's <b>Install…</b> button (top toolbar) — that's "
+            "the one-click installer.")
+        vs_help_label.setWordWrap(True)
+        vs_help_label.setStyleSheet(
+            "color: #666; font-size: 11px; padding: 4px 0;")
+        vs_layout.addRow("", vs_help_label)
+
+        vs_group.setLayout(vs_layout)
+        layout.addWidget(vs_group)
 
         layout.addStretch()
         scroll_area.setWidget(content)
@@ -3655,6 +3798,9 @@ class SettingsDialog(QDialog):
             "image_guidance_scale": self.image_guidance.value(),
             "include_character_context": self.include_char_context.isChecked(),
             "character_prompt_weight": self.char_prompt_weight.value(),
+            "video_studio_video_backend":
+                self.vs_video_backend_combo.currentData()
+                or "placeholder",
         })
 
     def get_settings(self) -> dict:

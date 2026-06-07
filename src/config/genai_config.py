@@ -363,6 +363,15 @@ class GenAIConfig:
             "save_generated_images": True,
             "image_output_dir": str(self.config_dir / "generated_images"),
             "save_prompts": True,  # Save generated prompts alongside images
+
+            # ── Video Studio video backend ──────────────────────
+            # The video backend (placeholder / LtxVideo / CogVideoX
+            # / Wan21) is the only Video Studio-specific renderer
+            # selection left. Image generation flows through the
+            # unified ``image_model_id`` above, which both the
+            # Visuals tab and the Video Studio honor via the
+            # ``ConfiguredImageBackend`` adapter.
+            "video_studio_video_backend": "placeholder",
         }
 
     def _save_config(self, config: Dict[str, Any]):

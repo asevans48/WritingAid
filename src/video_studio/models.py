@@ -108,6 +108,21 @@ class SceneAction(BaseModel):
     # cadence, so the writer only sets this when they want a
     # specific beat to linger or flash by.
     display_seconds: float = 0.0
+    # Hand-curated character + setting detail for THIS action.
+    # The writer fills these via the editor's lookup buttons or
+    # by hand. Both feed into the per-action image / video prompt
+    # so the renderer sees the specifics for this beat —
+    # separate from the action's ``scenery_details`` (props /
+    # lighting cues) and from the scene-level character /
+    # setting fields (the scene-wide baseline).
+    character_details: str = ""
+    setting_details: str = ""
+    # Free-form per-action directives appended to the backend
+    # prompt for this beat — camera notes, no-text guards,
+    # framing tweaks, etc. Layered on top of the scene-level
+    # ``additional_instructions`` so the writer can target a
+    # specific beat without affecting the rest.
+    additional_instructions: str = ""
     # Generated images for this action. Populated when the scene's
     # mode is ``"slideshow"`` and the user clicks "Generate slide
     # deck images" — one or more per action.
@@ -134,6 +149,88 @@ class SceneAction(BaseModel):
 # breaks the scene into per-action stills the stitcher walks in
 # sequence.
 SCENE_MODES = ("video", "slideshow")
+
+
+# Visual style presets the user can pick from. Each entry is
+# (label, prompt_phrase) — the label shows up in the toolbar combo,
+# the phrase is folded VERBATIM into the backend prompt so the
+# rendered visuals match what the user expected when they picked the
+# preset. ``""`` (empty) is the sentinel for "no preset; rely on
+# the freeform description (or just the genre)".
+#
+# Phrases are written to compose cleanly into "Style: <phrase>." —
+# keep them noun-phrases describing the visual, not directives.
+# The director appends the user's ``style_description`` after the
+# preset phrase, so writers can layer "rim-lit, shallow depth of
+# field" onto any preset without re-typing the base style.
+STYLE_PRESETS: tuple = (
+    ("", "(no preset — use description only)"),
+    ("photo_realistic",
+     "photo-realistic, natural lighting, sharp focus, "
+     "high-detail textures, cinematic color grading"),
+    ("cinematic",
+     "cinematic 35mm film look, shallow depth of field, "
+     "anamorphic widescreen framing, dramatic key lighting"),
+    ("artistic",
+     "stylized artistic illustration, painterly brushwork, "
+     "rich saturated color, expressive composition"),
+    ("oil_painting",
+     "classical oil-painting aesthetic, visible brush strokes, "
+     "warm chiaroscuro lighting, Old Master color palette"),
+    ("watercolor",
+     "soft watercolor wash, paper texture, gentle bleed of color, "
+     "airy negative space"),
+    ("ink_sketch",
+     "monochrome ink-and-pencil sketch, crosshatched shading, "
+     "raw illustrative linework, minimal color accents"),
+    ("comic_book",
+     "comic-book panel art, bold inked outlines, halftone "
+     "shading, dynamic action posing, saturated primary colors"),
+    ("graphic_novel",
+     "modern graphic-novel illustration, muted painterly palette, "
+     "moody atmospheric lighting, cinematic framing"),
+    ("anime",
+     "anime / cel-shaded animation style, clean linework, "
+     "expressive eyes, vibrant color blocks, dynamic motion lines"),
+    ("cartoon",
+     "playful 2D cartoon style, bold flat colors, exaggerated "
+     "expressive features, simple shape language"),
+    ("pixar_3d",
+     "modern 3D animated film look (Pixar / DreamWorks), "
+     "soft global illumination, stylized character proportions, "
+     "vivid color palette"),
+    ("noir",
+     "high-contrast film-noir black-and-white, deep shadows, "
+     "venetian-blind light patterns, smoke and rain atmosphere"),
+    ("retro_film",
+     "warm 1970s film stock, slight grain, faded saturation, "
+     "soft hazy highlights, period-appropriate color science"),
+    ("storyboard",
+     "rough storyboard sketch, pencil-and-marker rendering, "
+     "loose linework, monochrome with key color highlights"),
+)
+
+
+def style_preset_phrase(key: str) -> str:
+    """Look up the prompt phrase for a style preset key. Returns
+    "" for the no-preset sentinel or any unknown key — callers
+    treat that as "writer described it themselves"."""
+    if not key:
+        return ""
+    for k, phrase in STYLE_PRESETS:
+        if k == key and k:
+            return phrase
+    return ""
+
+
+def style_preset_label(key: str) -> str:
+    """Human-readable label for a preset key (the second tuple
+    item when the key is empty serves as the dropdown's first
+    entry; for real keys we render the key with underscores
+    swapped for spaces and title-cased)."""
+    if not key:
+        return "(no preset)"
+    return key.replace("_", " ").title()
 
 
 class Narration(BaseModel):
@@ -224,6 +321,19 @@ class Scene(BaseModel):
     # the user already approved, and downstream features (action
     # extraction, AI rewrites) have a stable source to ground in.
     source_prose: str = ""
+    # Hand-curated character + setting detail blocks. The writer
+    # fills these in directly (or via the editor's "+ Lookup"
+    # buttons that pull from project.characters /
+    # project.worldbuilding.places). Folded into every backend
+    # prompt so the model sees the writer's authoritative
+    # description — independent of any LLM enhancer.
+    character_details: str = ""
+    setting_details: str = ""
+    # Free-form additional instructions appended to the backend
+    # prompt — aspect ratio, framing notes, "no text", "low-angle
+    # shot", any directive the writer wants the renderer to honor
+    # but doesn't fit the structured fields above.
+    additional_instructions: str = ""
     # Optional narration track (TTS or imported audio). When set, the
     # stitcher mixes it into the scene's clip using the rule named by
     # ``video_audio_mismatch`` to reconcile any length difference.
@@ -374,6 +484,24 @@ class VideoStudio(BaseModel):
     # seconds. Should be "enough to read the scene" — the studio's
     # design goal.
     default_duration_seconds: float = 8.0
+    # Visual style applied to every scene's render. ``style_preset``
+    # is the short label the user picked from a dropdown (one of
+    # ``STYLE_PRESETS``); ``style_description`` is freeform text the
+    # writer adds on top to embellish ("with practical lens flares",
+    # "always rim-lit", etc.). Both are folded into the prompt for
+    # every backend call so look-and-feel stays consistent across
+    # the board. Empty preset → "(no preset)", which falls back to
+    # the writer's description plus the project's genre alone.
+    style_preset: str = ""
+    style_description: str = ""
+    # When True, the studio asks the LLM to translate the
+    # structured composed prompt into proper artwork-direction
+    # language (target-aware: image-style for image renders,
+    # video-style for clip renders) before sending to the backend.
+    # Falls back to the raw composed prompt on any LLM failure or
+    # when no LLM is wired — backends always receive SOMETHING
+    # usable.
+    use_ai_prompt_refinement: bool = True
 
     # ---- scene helpers ----
     def get_scene(self, scene_id: str) -> Optional[Scene]:

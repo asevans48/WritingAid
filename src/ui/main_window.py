@@ -3210,6 +3210,22 @@ class MainWindow(QMainWindow):
             lambda: getattr(self, "_rag_system", None))
         self.video_studio_widget.contentChanged.connect(
             self._on_content_changed)
+        # Debounced auto-save for video-studio mutations. The
+        # studio fires ``contentChanged`` for many kinds of edits
+        # (scene fields, action mutations, image generation, style
+        # toggles) and each one would normally only mark the title
+        # dirty — the writer would have to remember Cmd-S before
+        # quitting to persist them, which several writers
+        # forgot. A single-shot timer batches rapid changes into a
+        # single disk write 1.2 s after the last change.
+        from PyQt6.QtCore import QTimer
+        self._video_studio_autosave_timer = QTimer(self)
+        self._video_studio_autosave_timer.setSingleShot(True)
+        self._video_studio_autosave_timer.setInterval(1200)
+        self._video_studio_autosave_timer.timeout.connect(
+            self._auto_save_project)
+        self.video_studio_widget.contentChanged.connect(
+            self._video_studio_autosave_timer.start)
 
         # Connect grader widget signals
         self.grader_widget.go_to_line_requested.connect(self._go_to_critique_line)
@@ -7054,6 +7070,25 @@ class MainWindow(QMainWindow):
         self.image_generator.load_data(self.current_project.generated_images)
         # Update characters for image generation
         self.image_generator.set_characters(self.current_project.characters)
+        # Pull worldbuilding + plot data into the image generator
+        # so its '+ Lookup place…' / '+ Lookup plot beat…' pickers
+        # have project content to surface.
+        try:
+            wb = getattr(self.current_project, "worldbuilding", None)
+            self.image_generator.set_places(
+                getattr(wb, "places", []) if wb else [])
+        except Exception:
+            self.image_generator.set_places([])
+        try:
+            sp = getattr(
+                self.current_project, "story_planning", None)
+            pyramid = (getattr(sp, "freytag_pyramid", None)
+                       if sp else None)
+            events = (getattr(pyramid, "events", [])
+                      if pyramid else [])
+            self.image_generator.set_plot_events(events)
+        except Exception:
+            self.image_generator.set_plot_events([])
         self.agent_manager.load_data(self.current_project.agent_contacts)
         self.prose_profile_widget.load_data(self.current_project.prose_profile)
         self.attributions_tab.set_manuscript(self.current_project.manuscript)

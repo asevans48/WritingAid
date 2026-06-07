@@ -20,9 +20,10 @@ from typing import Any, Callable, List, Optional
 from PyQt6.QtCore import Qt, QPointF, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QFont
 from PyQt6.QtWidgets import (
-    QComboBox, QDialog, QFileDialog, QFrame, QGroupBox, QHBoxLayout,
-    QLabel, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
-    QSizePolicy, QSplitter, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDialog, QFileDialog, QFrame, QGroupBox,
+    QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
+    QPushButton, QScrollArea, QSizePolicy, QSplitter, QVBoxLayout,
+    QWidget,
 )
 
 from src.video_studio.ai_director import (
@@ -65,6 +66,11 @@ class VideoStudioWidget(QWidget):
         self._current_image_backend: ImageBackend = (
             default_image_backend())
         self._build_ui()
+        # Honor Settings-stored backend choice on first open — even
+        # before a project is loaded — so the indicator label and
+        # any generate-before-set_project paths use the right
+        # renderer.
+        self._sync_backends_from_settings()
         self._refresh_backend_info()
 
     # ------------------------------------------------------------------
@@ -84,14 +90,13 @@ class VideoStudioWidget(QWidget):
                 project.video_studio = studio
             except Exception:
                 pass
-        # Restore last selected backend.
-        if studio.backend_preference:
-            b = get_backend(studio.backend_preference)
-            if b is not None:
-                self._current_backend = b
         self._canvas.load_studio(studio)
-        self._sync_backend_picker()
+        # Backend selection comes from Settings → 🎨 Image
+        # Generation; falls back to studio.backend_preference for
+        # legacy projects that pre-date the Settings consolidation.
+        self._sync_backends_from_settings()
         self._refresh_backend_info()
+        self._load_styles_into_toolbar()
         self._update_status(
             f"{len(studio.scenes)} scene(s), {len(studio.hops)} hop(s).")
 
@@ -114,108 +119,107 @@ class VideoStudioWidget(QWidget):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(8)
 
-        # ── Toolbar row ───────────────────────────────────────────
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(8)
+        # ── Toolbar (split across two compact rows so it fits a
+        # 1366×768 laptop without truncating button text). Row 1
+        # holds the primary "what do I want to make?" controls; row
+        # 2 holds backend settings + board management.
+        # ──────────────────────────────────────────────────────────
+        toolbar_row1 = QHBoxLayout()
+        toolbar_row1.setSpacing(6)
+        toolbar_row1.setContentsMargins(0, 0, 0, 0)
 
-        self._add_scene_btn = QPushButton("➕ Add scene")
+        self._add_scene_btn = QPushButton("➕ Add")
         self._add_scene_btn.setToolTip(
             "Drop a new empty scene on the canvas (at the first "
             "free grid cell).")
         self._add_scene_btn.clicked.connect(
             lambda: self._add_scene_at_first_free_cell())
-        toolbar.addWidget(self._add_scene_btn)
+        toolbar_row1.addWidget(self._add_scene_btn)
 
-        self._ai_fill_btn = QPushButton("✨ AI-fill from chapter")
+        self._ai_fill_btn = QPushButton("✨ AI-fill")
         self._ai_fill_btn.setToolTip(
             "Use the AI director to storyboard a chapter into a "
             "sequence of scenes. Uses graph-aware RAG for grounding.")
         self._ai_fill_btn.clicked.connect(self._ai_fill_from_chapter)
-        toolbar.addWidget(self._ai_fill_btn)
+        toolbar_row1.addWidget(self._ai_fill_btn)
 
-        toolbar.addWidget(self._vline())
+        toolbar_row1.addWidget(self._vline())
 
-        toolbar.addWidget(QLabel("Video:"))
-        self._backend_combo = QComboBox()
-        for b in all_backends():
-            self._backend_combo.addItem(
-                b.label + (" ✓" if b.is_installed() else "  (install)"),
-                b.name)
-        self._backend_combo.currentIndexChanged.connect(
-            self._on_backend_changed)
-        toolbar.addWidget(self._backend_combo)
+        # ---- Visual style (applies to every scene's render) ----
+        # The combo + freeform description feed into every backend
+        # prompt via ``_format_style_block`` so look-and-feel stays
+        # consistent across the storyboard.
+        toolbar_row1.addWidget(QLabel("Style:"))
+        self._style_combo = QComboBox()
+        from src.video_studio.models import STYLE_PRESETS as _SP
+        for key, phrase in _SP:
+            label = (phrase if not key
+                     else key.replace("_", " ").title())
+            self._style_combo.addItem(label, key)
+        self._style_combo.setToolTip(
+            "Pick a base visual style. The selected preset is folded "
+            "into every backend prompt verbatim — the renderer sees "
+            "the same style cue you do.")
+        self._style_combo.currentIndexChanged.connect(
+            self._on_style_preset_changed)
+        # Cap the combo's pop-up width so a really long preset name
+        # doesn't push the rest of the toolbar off-screen on a
+        # 1366px display.
+        self._style_combo.setMaximumWidth(180)
+        toolbar_row1.addWidget(self._style_combo)
+        self._style_description_edit = QLineEdit()
+        self._style_description_edit.setPlaceholderText(
+            "Embellish (rim-lit, neon, gritty…)")
+        # Reduced from 260 → 180; the field expands to fill the row
+        # via the QSizePolicy when extra space is available.
+        self._style_description_edit.setMinimumWidth(160)
+        self._style_description_edit.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed)
+        self._style_description_edit.setToolTip(
+            "Freeform style notes — appended after the preset. Use "
+            "this alone (with no preset) to describe the visual from "
+            "scratch.")
+        self._style_description_edit.editingFinished.connect(
+            self._on_style_description_changed)
+        toolbar_row1.addWidget(self._style_description_edit)
 
-        toolbar.addWidget(QLabel("Image:"))
-        self._image_backend_combo = QComboBox()
-        for b in all_image_backends():
-            self._image_backend_combo.addItem(
-                b.label + (" ✓" if b.is_installed() else "  (install)"),
-                b.name)
-        self._image_backend_combo.currentIndexChanged.connect(
-            self._on_image_backend_changed)
-        self._image_backend_combo.setToolTip(
-            "Backend used when 'Generate image still' is invoked "
-            "from a scene's context menu.")
-        toolbar.addWidget(self._image_backend_combo)
+        # AI prompt-refinement toggle. When checked, the studio
+        # routes the structured composed prompt through the LLM
+        # (target-aware: image / video) before sending to the
+        # backend. Disabled when no LLM is wired so the writer
+        # sees the affordance and the reason.
+        self._refine_prompt_check = QCheckBox("✨ AI refine")
+        self._refine_prompt_check.setToolTip(
+            "Ask the LLM to translate the structured prompt (style "
+            "+ characters + setting + actions + directives) into "
+            "proper image / video art-direction language before "
+            "sending to the renderer. Falls back to the raw "
+            "structured prompt on any LLM failure.")
+        self._refine_prompt_check.toggled.connect(
+            self._on_refine_toggle)
+        toolbar_row1.addWidget(self._refine_prompt_check)
 
-        self._install_help_btn = QPushButton("Install / Help")
-        self._install_help_btn.setToolTip(
-            "Install this backend in-app, or read the manual install "
-            "instructions if it doesn't support automated install.")
-        self._install_help_btn.clicked.connect(
-            self._show_install_help)
-        toolbar.addWidget(self._install_help_btn)
+        toolbar_row1.addWidget(self._vline())
 
-        toolbar.addWidget(self._vline())
-
-        self._stitch_btn = QPushButton("🎬 Stitch favorites")
+        self._stitch_btn = QPushButton("🎬 Stitch")
         self._stitch_btn.setToolTip(
             "Concatenate every scene's favorite clip into a single "
             "video, in the order their hops define (BFS from the "
             "first scene).")
         self._stitch_btn.clicked.connect(self._stitch_favorites)
-        toolbar.addWidget(self._stitch_btn)
+        toolbar_row1.addWidget(self._stitch_btn)
 
-        toolbar.addWidget(self._vline())
+        self._export_deck_btn = QPushButton("📑 Export deck")
+        self._export_deck_btn.setToolTip(
+            "Stitch every scene in a chapter (their chosen image / "
+            "video / slide-deck output) into a single chapter-wide "
+            "deck. Optionally adds a title card before each scene.")
+        self._export_deck_btn.clicked.connect(
+            self._export_chapter_deck)
+        toolbar_row1.addWidget(self._export_deck_btn)
 
-        # ---- Storyboard board management ----
-        self._save_board_btn = QPushButton("Save board…")
-        self._save_board_btn.setToolTip(
-            "Export the current storyboard (scenes, hops, character "
-            "references, narration metadata) as a standalone JSON "
-            "file. Reusable across projects.")
-        self._save_board_btn.clicked.connect(self._save_storyboard)
-        toolbar.addWidget(self._save_board_btn)
-
-        self._load_board_btn = QPushButton("Load board…")
-        self._load_board_btn.setToolTip(
-            "Load a storyboard JSON file, replacing the current "
-            "board. Asks for confirmation before discarding any "
-            "existing scenes.")
-        self._load_board_btn.clicked.connect(self._load_storyboard)
-        toolbar.addWidget(self._load_board_btn)
-
-        self._arrange_btn = QPushButton("Arrange")
-        self._arrange_btn.setToolTip(
-            "Re-flow scene cards into a tidy grid. Order follows "
-            "the hops (topological) when possible; falls back to "
-            "creation order on cycles.")
-        self._arrange_btn.clicked.connect(self._auto_arrange_board)
-        toolbar.addWidget(self._arrange_btn)
-
-        self._clear_board_btn = QPushButton("Clear")
-        self._clear_board_btn.setToolTip(
-            "Delete every scene and hop on the board. Character "
-            "references and backend preferences are kept.")
-        self._clear_board_btn.clicked.connect(self._clear_board)
-        toolbar.addWidget(self._clear_board_btn)
-
-        self._fit_view_btn = QPushButton("Fit")
-        self._fit_view_btn.setToolTip(
-            "Zoom and pan so the whole board fits in view. "
-            "Ctrl + mouse wheel zooms manually.")
-        self._fit_view_btn.clicked.connect(self._fit_canvas_to_view)
-        toolbar.addWidget(self._fit_view_btn)
+        toolbar_row1.addWidget(self._vline())
 
         self._toggle_side_btn = QPushButton("▶◀")
         self._toggle_side_btn.setToolTip(
@@ -223,13 +227,96 @@ class VideoStudioWidget(QWidget):
         self._toggle_side_btn.setCheckable(True)
         self._toggle_side_btn.setChecked(True)  # panel starts open
         self._toggle_side_btn.clicked.connect(self._toggle_side_panel)
-        toolbar.addWidget(self._toggle_side_btn)
+        toolbar_row1.addWidget(self._toggle_side_btn)
 
-        toolbar.addStretch()
+        root.addLayout(toolbar_row1)
+
+        # ── Toolbar row 2 — backend indicator + board management ─
+        # Backend selection now lives in Settings → Image
+        # Generation → "Video Studio Backends" so writers
+        # configure both the image and video processor in one
+        # place instead of duplicating it on the studio toolbar.
+        # Row 2 surfaces the current selection as a read-only
+        # label and offers a one-click "Install…" button for the
+        # currently-selected video backend.
+        toolbar_row2 = QHBoxLayout()
+        toolbar_row2.setSpacing(6)
+        toolbar_row2.setContentsMargins(0, 0, 0, 0)
+
+        self._backends_label = QLabel("Backends: …")
+        self._backends_label.setStyleSheet(
+            "color: #475569; font-size: 11px;")
+        self._backends_label.setToolTip(
+            "Image and video backends are configured in "
+            "Settings → 🎨 Image Generation → Video Studio "
+            "Backends. Click 'Install…' below to install the "
+            "current selection if it isn't ready yet.")
+        toolbar_row2.addWidget(self._backends_label)
+
+        self._install_help_btn = QPushButton("Install…")
+        self._install_help_btn.setToolTip(
+            "Install the currently-selected video backend in-app, "
+            "or read the manual install instructions if it doesn't "
+            "support automated install. Change the backend "
+            "selection in Settings → 🎨 Image Generation.")
+        self._install_help_btn.clicked.connect(
+            self._show_install_help)
+        toolbar_row2.addWidget(self._install_help_btn)
+
+        toolbar_row2.addWidget(self._vline())
+
+        # ---- Storyboard board management ----
+        self._save_board_btn = QPushButton("Save")
+        self._save_board_btn.setToolTip(
+            "Export the current storyboard (scenes, hops, character "
+            "references, narration metadata) as a standalone JSON "
+            "file. Reusable across projects.")
+        self._save_board_btn.clicked.connect(self._save_storyboard)
+        toolbar_row2.addWidget(self._save_board_btn)
+
+        self._load_board_btn = QPushButton("Load")
+        self._load_board_btn.setToolTip(
+            "Load a storyboard JSON file, replacing the current "
+            "board. Asks for confirmation before discarding any "
+            "existing scenes.")
+        self._load_board_btn.clicked.connect(self._load_storyboard)
+        toolbar_row2.addWidget(self._load_board_btn)
+
+        self._arrange_btn = QPushButton("Arrange")
+        self._arrange_btn.setToolTip(
+            "Re-flow scene cards into a tidy grid. Order follows "
+            "the hops (topological) when possible; falls back to "
+            "creation order on cycles.")
+        self._arrange_btn.clicked.connect(self._auto_arrange_board)
+        toolbar_row2.addWidget(self._arrange_btn)
+
+        self._clear_board_btn = QPushButton("Clear")
+        self._clear_board_btn.setToolTip(
+            "Delete every scene and hop on the board. Character "
+            "references and backend preferences are kept.")
+        self._clear_board_btn.clicked.connect(self._clear_board)
+        toolbar_row2.addWidget(self._clear_board_btn)
+
+        self._fit_view_btn = QPushButton("Fit")
+        self._fit_view_btn.setToolTip(
+            "Zoom and pan so the whole board fits in view. "
+            "Ctrl + mouse wheel zooms manually.")
+        self._fit_view_btn.clicked.connect(self._fit_canvas_to_view)
+        toolbar_row2.addWidget(self._fit_view_btn)
+
+        toolbar_row2.addStretch()
         self._status_label = QLabel("")
-        self._status_label.setStyleSheet("color: #475569;")
-        toolbar.addWidget(self._status_label)
-        root.addLayout(toolbar)
+        self._status_label.setStyleSheet(
+            "color: #475569; font-size: 11px;")
+        self._status_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred)
+        # Cap status text width so a long status doesn't elbow row 2
+        # widgets off-screen — it ellipsizes via the layout's
+        # default behavior when the label runs out of room.
+        self._status_label.setMinimumWidth(0)
+        toolbar_row2.addWidget(self._status_label, stretch=1)
+        root.addLayout(toolbar_row2)
 
         # ── Splitter: canvas (left) + side panel (right) ──────────
         # Collapsible right panel so the user can hide tips/backend
@@ -262,6 +349,10 @@ class VideoStudioWidget(QWidget):
             self._open_latest_clip_for_scene)
         self._canvas.openOutputFolderRequested.connect(
             self._open_output_folder_for_scene)
+        self._canvas.copyPromptRequested.connect(
+            self._copy_prompt_for_scene)
+        self._canvas.uploadClipRequested.connect(
+            self._upload_clip_from_canvas)
         self._canvas.switchModeRequested.connect(
             self._switch_scene_mode)
         self._canvas.sceneMoved.connect(
@@ -336,39 +427,354 @@ class VideoStudioWidget(QWidget):
         self._status_label.setText(text)
 
     # ------------------------------------------------------------------
-    # Backend picker
+    # Backend selection — driven by Settings → 🎨 Image Generation
     # ------------------------------------------------------------------
-    def _sync_backend_picker(self) -> None:
-        for i in range(self._backend_combo.count()):
-            if self._backend_combo.itemData(i) == self._current_backend.name:
-                self._backend_combo.setCurrentIndex(i)
-                return
+    def _sync_backends_from_settings(self) -> None:
+        """Pull both backends from ``GenAIConfig`` and update the
+        in-memory selections.
 
-    def _on_backend_changed(self, index: int) -> None:
-        name = self._backend_combo.itemData(index)
-        b = get_backend(name)
-        if b is None:
-            return
-        self._current_backend = b
-        studio = self._studio()
-        if studio is not None:
-            studio.backend_preference = b.name
-            self.contentChanged.emit()
-        self._refresh_backend_info()
+        Video: per-project preference → ``video_studio_video_backend``
+        setting → registry default.
 
-    def _on_image_backend_changed(self, index: int) -> None:
-        name = self._image_backend_combo.itemData(index)
-        b = get_image_backend(name)
-        if b is None:
-            return
-        self._current_image_backend = b
-        # Image backend preference stored separately so the picker
-        # restores correctly across sessions.
+        Image: ALWAYS the unified ``ConfiguredImageBackend`` when a
+        model is set in ``image_model_id``; otherwise placeholder.
+        Image generation has been consolidated to flow through the
+        same model the Visuals tab uses, so there's no separate
+        studio-specific image backend selection any more.
+        """
+        try:
+            from src.config.genai_config import get_genai_config
+            settings = get_genai_config().get_settings()
+        except Exception:
+            settings = {}
         studio = self._studio()
-        if studio is not None and hasattr(studio,
-                                            "image_backend_preference"):
-            studio.image_backend_preference = b.name
-            self.contentChanged.emit()
+        # Video backend.
+        vid_name = (
+            settings.get("video_studio_video_backend")
+            or (getattr(studio, "backend_preference", "")
+                if studio is not None else "")
+            or "")
+        vid = get_backend(vid_name) if vid_name else None
+        if vid is not None:
+            self._current_backend = vid
+        # Image backend — unified through ConfiguredImageBackend.
+        configured = get_image_backend("configured")
+        if (configured is not None
+                and configured.is_installed()):
+            self._current_image_backend = configured
+        else:
+            # No model set in Settings → fall back to placeholder so
+            # the studio still produces valid (if black-frame)
+            # output and the writer sees a clear "no model
+            # configured" status.
+            placeholder = get_image_backend("placeholder_image")
+            if placeholder is not None:
+                self._current_image_backend = placeholder
+
+    def _on_style_preset_changed(self, _index: int) -> None:
+        studio = self._studio()
+        if studio is None:
+            return
+        studio.style_preset = (
+            self._style_combo.currentData() or "")
+        self.contentChanged.emit()
+
+    def _on_style_description_changed(self) -> None:
+        studio = self._studio()
+        if studio is None:
+            return
+        studio.style_description = (
+            self._style_description_edit.text().strip())
+        self.contentChanged.emit()
+
+    def _load_styles_into_toolbar(self) -> None:
+        """Mirror the current studio's style fields into the
+        toolbar controls. Called whenever a project / board loads."""
+        studio = self._studio()
+        if studio is None:
+            return
+        # Block signals during programmatic load so we don't fire
+        # contentChanged in a loop.
+        self._style_combo.blockSignals(True)
+        idx = self._style_combo.findData(
+            getattr(studio, "style_preset", "") or "")
+        if idx >= 0:
+            self._style_combo.setCurrentIndex(idx)
+        self._style_combo.blockSignals(False)
+        self._style_description_edit.blockSignals(True)
+        self._style_description_edit.setText(
+            getattr(studio, "style_description", "") or "")
+        self._style_description_edit.blockSignals(False)
+        # Refine toggle — checkbox state mirrors the studio's
+        # ``use_ai_prompt_refinement`` field, and we disable when
+        # no LLM provider is wired so the writer sees why it isn't
+        # firing.
+        self._refine_prompt_check.blockSignals(True)
+        self._refine_prompt_check.setChecked(
+            bool(getattr(
+                studio, "use_ai_prompt_refinement", True)))
+        self._refine_prompt_check.blockSignals(False)
+        llm_available = self._llm_provider is not None
+        self._refine_prompt_check.setEnabled(llm_available)
+        if not llm_available:
+            self._refine_prompt_check.setToolTip(
+                "Ask the LLM to translate the structured prompt "
+                "into proper image / video art-direction language. "
+                "Disabled until an LLM is configured in Settings.")
+
+    def _on_refine_toggle(self, checked: bool) -> None:
+        studio = self._studio()
+        if studio is None:
+            return
+        studio.use_ai_prompt_refinement = bool(checked)
+        self.contentChanged.emit()
+
+    def _compose_action_prompt(self, scene: Scene, action) -> str:
+        """Build the structured per-action image prompt the
+        backend would see (before optional AI refinement). Same
+        composition as ``_generate_image_for_action`` — factored
+        out so the action editor's '✨ Preview AI-refined' button
+        sees the identical input."""
+        action_prompt = (
+            f"{(scene.prompt or '').strip()}. "
+            f"Action: {getattr(action, 'name', '')}. "
+            f"{getattr(action, 'description', '')}").strip()
+        sc_char = (
+            getattr(scene, "character_details", "") or "").strip()
+        if sc_char:
+            action_prompt += f" Characters: {sc_char}."
+        a_char = (
+            getattr(action, "character_details", "") or "").strip()
+        if a_char:
+            action_prompt += f" Characters (action): {a_char}."
+        sc_setting = (
+            getattr(scene, "setting_details", "") or "").strip()
+        if sc_setting:
+            action_prompt += f" Setting: {sc_setting}."
+        a_setting = (
+            getattr(action, "setting_details", "") or "").strip()
+        if a_setting:
+            action_prompt += f" Setting (action): {a_setting}."
+        scenery = getattr(action, "scenery_details", "") or ""
+        if scenery:
+            action_prompt += f" Scenery: {scenery}."
+        sc_extra = (
+            getattr(scene, "additional_instructions", "")
+            or "").strip()
+        if sc_extra:
+            action_prompt += (
+                f" Additional instructions: {sc_extra}.")
+        a_extra = (
+            getattr(action, "additional_instructions", "")
+            or "").strip()
+        if a_extra:
+            action_prompt += (
+                f" Additional instructions (action): {a_extra}.")
+        if getattr(action, "prose_excerpt", ""):
+            action_prompt += f" Prose: {action.prose_excerpt}"
+        style_block = self._format_style_block()
+        if style_block:
+            action_prompt = f"{style_block} {action_prompt}"
+        return action_prompt
+
+    def _refine_action_prompt_for_preview(
+        self, scene: Scene, action,
+    ) -> str:
+        """Compose + refine the per-action prompt for the action
+        editor's preview button. Always target='image'."""
+        composed = self._compose_action_prompt(scene, action)
+        if not composed.strip() or self._llm_provider is None:
+            return composed
+        try:
+            llm = self._llm_provider()
+        except Exception:
+            llm = None
+        if llm is None:
+            return composed
+        from src.video_studio.ai_director import (
+            refine_visual_prompt,
+        )
+        return refine_visual_prompt(
+            composed_prompt=composed, target="image", llm=llm)
+
+    def _refine_scene_prompt_for_preview(
+        self, scene: Scene, target: str,
+    ) -> str:
+        """Public refinement adapter for the scene editor's
+        '✨ Preview AI-refined prompt' button. Composes the
+        structured prompt and asks the LLM to refine — bypasses
+        the studio's enable toggle so the writer can preview the
+        refined version even when the auto-refine is off."""
+        composed = self._compose_scene_prompt(scene)
+        if not composed.strip() or self._llm_provider is None:
+            return composed
+        try:
+            llm = self._llm_provider()
+        except Exception:
+            llm = None
+        if llm is None:
+            return composed
+        from src.video_studio.ai_director import (
+            refine_visual_prompt,
+        )
+        return refine_visual_prompt(
+            composed_prompt=composed, target=target, llm=llm)
+
+    def _refine_prompt_if_enabled(
+        self, composed: str, target: str,
+    ) -> str:
+        """Optionally pass ``composed`` through
+        ``refine_visual_prompt`` based on the studio toggle + LLM
+        availability. Always returns SOMETHING usable — the raw
+        composed prompt when refinement is off, no LLM is wired,
+        or the LLM call fails."""
+        if not composed or not composed.strip():
+            return composed
+        studio = self._studio()
+        if (studio is None
+                or not getattr(
+                    studio, "use_ai_prompt_refinement", True)):
+            return composed
+        if self._llm_provider is None:
+            return composed
+        try:
+            llm = self._llm_provider()
+        except Exception:
+            llm = None
+        if llm is None:
+            return composed
+        from src.video_studio.ai_director import (
+            refine_visual_prompt,
+        )
+        return refine_visual_prompt(
+            composed_prompt=composed,
+            target=target, llm=llm)
+
+    def _compose_scene_prompt(self, scene: Scene) -> str:
+        """Build the prompt the video backend WOULD see for this
+        scene — same composition as ``_generate_clip_for_scene``,
+        factored out so the writer can copy / preview it without
+        actually running the backend.
+
+        Layout: ``<style block>\\n\\n<scene.prompt>\\n\\nAction
+        sequence:\\n1. ...``. Style block omitted when neither a
+        preset nor description nor genre is set. Action block
+        omitted when the scene has no actions.
+        """
+        base = (scene.prompt or "").strip()
+        # Fold scene-level character + setting detail BEFORE the
+        # action sequence so the backend sees the baseline before
+        # the per-beat overrides. Editorial detail only — backends
+        # are free to interpret style + composition themselves.
+        scene_char = (
+            getattr(scene, "character_details", "") or "").strip()
+        scene_setting = (
+            getattr(scene, "setting_details", "") or "").strip()
+        scene_extra = (
+            getattr(scene, "additional_instructions", "")
+            or "").strip()
+        extras: list = []
+        if scene_char:
+            extras.append(f"Characters: {scene_char}")
+        if scene_setting:
+            extras.append(f"Setting: {scene_setting}")
+        if scene_extra:
+            extras.append(f"Additional instructions: {scene_extra}")
+        if extras:
+            base = (
+                f"{base}\n\n" + "\n\n".join(extras)
+                if base else "\n\n".join(extras))
+        if scene.actions:
+            beats: list = []
+            for idx, a in enumerate(scene.actions, start=1):
+                line = f"{idx}. {a.name}"
+                if a.description:
+                    line += f" — {a.description}"
+                # Per-action overrides on the same baseline fields.
+                a_char = (
+                    getattr(a, "character_details", "") or "").strip()
+                if a_char:
+                    line += f" Characters: {a_char}"
+                a_setting = (
+                    getattr(a, "setting_details", "") or "").strip()
+                if a_setting:
+                    line += f" Setting: {a_setting}"
+                if a.scenery_details:
+                    line += f" Scenery: {a.scenery_details}"
+                a_extra = (
+                    getattr(a, "additional_instructions", "")
+                    or "").strip()
+                if a_extra:
+                    line += f" Instructions: {a_extra}"
+                if a.prose_excerpt:
+                    line += f" Prose: {a.prose_excerpt}"
+                beats.append(line)
+            base = (
+                f"{base}\n\n"
+                f"Action sequence:\n" + "\n".join(beats))
+        style_block = self._format_style_block()
+        if style_block:
+            base = f"{style_block}\n\n{base}"
+        return base
+
+    def _copy_prompt_for_scene(self, scene_id: str) -> None:
+        """Copy the assembled generation prompt to the clipboard so
+        the writer can paste it into another tool, share it for
+        review, or just verify what the backend actually sees."""
+        studio = self._studio()
+        if studio is None:
+            return
+        scene = studio.get_scene(scene_id)
+        if scene is None:
+            return
+        text = self._compose_scene_prompt(scene)
+        if not text.strip():
+            QMessageBox.information(
+                self, "Empty prompt",
+                "This scene has no prompt yet. Fill in the scene's "
+                "prompt (and optionally actions / style) first.")
+            return
+        from PyQt6.QtWidgets import QApplication
+        QApplication.clipboard().setText(text)
+        char_count = len(text)
+        line_count = text.count("\n") + 1
+        self._update_status(
+            f"Copied {char_count} chars / {line_count} line(s) of "
+            f"prompt for '{scene.name}' to clipboard.")
+
+    def _format_style_block(self) -> str:
+        """Render the style + genre block that gets folded into
+        every backend prompt. Empty string when neither side has
+        anything to say. Composed as a single line so backends with
+        short context windows don't waste tokens on whitespace.
+        """
+        studio = self._studio()
+        if studio is None:
+            return ""
+        from src.video_studio.models import style_preset_phrase
+        preset_phrase = style_preset_phrase(
+            getattr(studio, "style_preset", "") or "")
+        custom = (
+            getattr(studio, "style_description", "") or "").strip()
+        # Pull genre from the project's prose profile when available.
+        genre = ""
+        if self._project is not None:
+            pp = getattr(self._project, "prose_profile", None)
+            if pp is not None:
+                genre = (getattr(pp, "genre", "") or "").strip()
+        parts: list = []
+        style_bits: list = []
+        if preset_phrase:
+            style_bits.append(preset_phrase)
+        if custom:
+            style_bits.append(custom)
+        if style_bits:
+            parts.append("Style: " + "; ".join(style_bits) + ".")
+        if genre:
+            parts.append(
+                f"Genre: {genre}. Visuals MUST match this genre's "
+                f"conventions.")
+        return " ".join(parts)
 
     def _refresh_backend_info(self) -> None:
         b = self._current_backend
@@ -385,8 +791,8 @@ class VideoStudioWidget(QWidget):
                 "<b>No real renderer selected.</b> Generate will "
                 "create stub clips (0 bytes) so the studio flow "
                 "works end-to-end, but they will not play. "
-                "Pick another backend in the toolbar to render "
-                "actual video."
+                "Pick another backend in Settings → 🎨 Image "
+                "Generation → Video Studio Backends."
                 "</span>")
         elif installed:
             self._backend_status.setText(
@@ -396,11 +802,25 @@ class VideoStudioWidget(QWidget):
             self._backend_status.setText(
                 "<span style='color:#b91c1c'>"
                 "Not installed — generate will fail. Click "
-                "<b>Install / Help</b> on the toolbar to set up."
+                "<b>Install…</b> on the toolbar to set up."
                 "</span>")
         self._backend_desc.setText(b.description)
         self._install_help_btn.setEnabled(not installed
                                           or b.name != "placeholder")
+        # Compact toolbar indicator: "Video: <vid> · Image: <img>".
+        img_label = (
+            getattr(self._current_image_backend, "label",
+                    "Image backend")
+            if self._current_image_backend is not None else
+            "(none)")
+        vid_check = "✓" if installed else "⚠"
+        img_check = (
+            "✓" if (self._current_image_backend is not None
+                    and self._current_image_backend.is_installed())
+            else "⚠")
+        self._backends_label.setText(
+            f"<b>Backends</b> &nbsp;Video: {b.label} {vid_check} "
+            f"&nbsp;·&nbsp; Image: {img_label} {img_check}")
 
     def _toggle_side_panel(self) -> None:
         """Snap the right panel between its remembered width and 0.
@@ -434,16 +854,10 @@ class VideoStudioWidget(QWidget):
         dlg = InstallDialog(b, parent=self)
         dlg.exec()
         # Re-check install state after the user is done — backend
-        # may have just become available.
+        # may have just become available. The Settings dialog reads
+        # backend install state at open time too, so the writer's
+        # next trip there shows the freshest ✓ badges.
         self._refresh_backend_info()
-        # Refresh the backend combo's "✓ / (install)" badge too.
-        for i in range(self._backend_combo.count()):
-            name = self._backend_combo.itemData(i)
-            backend = get_backend(name)
-            if backend is None:
-                continue
-            badge = " ✓" if backend.is_installed() else "  (install)"
-            self._backend_combo.setItemText(i, backend.label + badge)
 
     # ------------------------------------------------------------------
     # Scene CRUD
@@ -568,9 +982,22 @@ class VideoStudioWidget(QWidget):
                 lambda s: self._stitch_slide_deck_for_scene(s.id)),
             open_output_folder=(
                 lambda s: self._open_output_folder_for_scene(s.id)),
+            compose_prompt=self._compose_scene_prompt,
+            refine_prompt=self._refine_scene_prompt_for_preview,
+            refine_action_prompt=(
+                self._refine_action_prompt_for_preview),
+            upload_action_image=self._upload_image_for_action,
+            upload_scene_clip=self._upload_clip_for_scene,
         )
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            # The dialog mutated the scene in place; refresh card.
+        accepted = (dlg.exec() == QDialog.DialogCode.Accepted)
+        # ``actions_dirty()`` covers the case where a sub-dialog
+        # (per-action editor, AI extract, image generation, slide-
+        # deck stitch) mutated the live scene and the writer then
+        # Cancels the outer dialog: contentChanged still needs to
+        # fire so the project autosave flushes those mutations to
+        # disk. Otherwise the next reload would read the stale
+        # state and the action edits would silently disappear.
+        if accepted or dlg.actions_dirty():
             self._canvas.refresh_scene_card(scene_id)
             self.contentChanged.emit()
 
@@ -743,24 +1170,16 @@ class VideoStudioWidget(QWidget):
         # via Scene.effective_duration.
         effective_duration = scene.effective_duration(
             studio.default_duration_seconds)
-        # When the scene has user-curated actions, give the backend
-        # an explicit shot list — most video models follow ordered
-        # beats better than a single dense prompt.
-        full_prompt = scene.prompt
-        if scene.actions:
-            beats = []
-            for idx, a in enumerate(scene.actions, start=1):
-                line = f"{idx}. {a.name}"
-                if a.description:
-                    line += f" — {a.description}"
-                if a.scenery_details:
-                    line += f" Scenery: {a.scenery_details}"
-                if a.prose_excerpt:
-                    line += f" Prose: {a.prose_excerpt}"
-                beats.append(line)
-            full_prompt = (
-                f"{scene.prompt.strip()}\n\n"
-                f"Action sequence:\n" + "\n".join(beats))
+        # Style + actions + scene prompt are all assembled the same
+        # way the "Copy generation prompt" affordance shows them —
+        # one helper keeps preview and runtime in sync.
+        full_prompt = self._compose_scene_prompt(scene)
+        # Optional AI refinement: translate structured detail into
+        # proper video art-direction language before the backend
+        # sees it. Falls back to the raw composed prompt on any
+        # LLM failure or when the toggle is off.
+        full_prompt = self._refine_prompt_if_enabled(
+            full_prompt, target="video")
         req = GenerationRequest(
             prompt=full_prompt,
             duration_seconds=effective_duration,
@@ -795,17 +1214,71 @@ class VideoStudioWidget(QWidget):
             + (" (placeholder)" if result.is_placeholder else "")
             + ".")
 
+    def _promote_to_real_image_backend(self):
+        """Return an image backend to render with.
+
+        With image generation now unified through the
+        ``ConfiguredImageBackend`` adapter, the placeholder→real
+        swap is rarely needed — the studio already picked the
+        Configured backend whenever Settings has a model id. The
+        only path that lands here on placeholder is one where the
+        writer hasn't picked a model yet, so we surface a one-time
+        prompt steering them to Settings → 🎨 Image Generation.
+        """
+        current = self._current_image_backend
+        is_placeholder = (
+            current is not None
+            and current.name == "placeholder_image")
+        if not is_placeholder:
+            return current
+        # See if the Configured backend would work — happens when
+        # the writer has picked a model in Settings since the last
+        # sync. If so, swap silently and remember it.
+        configured = get_image_backend("configured")
+        if (configured is not None
+                and configured.is_installed()):
+            self._current_image_backend = configured
+            self._refresh_backend_info()
+            return configured
+        # No model configured yet — point the writer at Settings
+        # once per session so they understand the placeholder
+        # output is intentional and how to fix it.
+        if not getattr(self, "_warned_no_real_backend", False):
+            QMessageBox.information(
+                self, "No image model configured",
+                "The studio is rendering with the placeholder "
+                "(black frames) because Settings → 🎨 Image "
+                "Generation has no model picked.\n\n"
+                "Open Settings, choose a model (FLUX / SDXL / "
+                "SD 3.5 / DALL-E / etc.), then come back to "
+                "the studio — the next render will use it.")
+            self._warned_no_real_backend = True
+        return current
+
     def _ensure_resources_for(self, backend: VideoBackend) -> bool:
         """Pre-flight RAM + VRAM check for ``backend.generate()``.
 
-        Returns True when generation is safe to proceed. When the
-        live snapshot is short of the backend's declared
-        requirements, prompts the user to free other models — if
-        they accept, drops local LLM weights + shared model cache +
-        accelerator caches and re-checks. If still short, surfaces a
-        clear blocker dialog and returns False (caller skips the
-        generate call rather than risk an OOM mid-render).
+        Returns True when generation is safe to proceed, OR when
+        the writer explicitly chooses to **proceed anyway** past a
+        tight-memory warning. The catalog's vram/ram numbers are
+        safety bars — many modern models can dynamically swap to
+        CPU offload or quantize on the fly, so writers shouldn't
+        be blocked from trying.
+
+        UI:
+          * First-pass short → buttons: ``Free models & retry`` /
+            ``Proceed anyway`` / ``Cancel``.
+          * Still short after eviction → ``Proceed anyway`` /
+            ``Cancel``.
+          * A session-level flag (``_skip_memory_checks_session``)
+            shortcuts the dialogs entirely once the writer has
+            explicitly chosen to proceed anyway during this
+            session — keeps the iteration loop fast.
         """
+        # Honor the session-wide "I know, just run it" flag set by
+        # a prior Proceed-anyway click.
+        if getattr(self, "_skip_memory_checks_session", False):
+            return True
         reqs = backend.memory_requirements()
         # Cheap exit when the backend declares no requirements
         # (placeholder, cloud-API backends).
@@ -814,7 +1287,7 @@ class VideoStudioWidget(QWidget):
         result = resource_manager.check(reqs)
         if result.satisfied:
             return True
-        # First-pass short — offer to evict.
+        # First-pass short — offer to evict OR proceed.
         snap = result.snapshot
         msg = (
             f"This backend may not have enough memory to run:\n\n"
@@ -824,16 +1297,41 @@ class VideoStudioWidget(QWidget):
             f"{snap.vram_available_mb} MB VRAM "
             f"({snap.accelerator.upper()})\n\n"
             f"{result.explanation}\n\n"
-            "Drop any loaded LLM and shared model cache to free "
-            "memory, then retry?")
-        reply = QMessageBox.question(
-            self, "Memory budget tight", msg,
-            QMessageBox.StandardButton.Yes
-            | QMessageBox.StandardButton.Cancel)
-        if reply != QMessageBox.StandardButton.Yes:
+            "Pick one:\n"
+            "  • Free models & retry — drops the LLM + shared "
+            "model cache, then re-checks\n"
+            "  • Proceed anyway — try the render with the "
+            "current memory state (CPU offload / quantization may "
+            "still let it succeed)\n"
+            "  • Cancel — abort this render")
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Memory budget tight")
+        box.setText(msg)
+        free_btn = box.addButton(
+            "Free models && retry",
+            QMessageBox.ButtonRole.AcceptRole)
+        proceed_btn = box.addButton(
+            "Proceed anyway",
+            QMessageBox.ButtonRole.ActionRole)
+        cancel_btn = box.addButton(
+            "Cancel", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(free_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked == cancel_btn:
             self._update_status("Generation cancelled by user.")
             return False
-        # Evict and re-check.
+        if clicked == proceed_btn:
+            # Persist for the session so the writer isn't
+            # re-prompted on every per-action generation in a
+            # tight iteration loop.
+            self._skip_memory_checks_session = True
+            self._update_status(
+                "Proceeding past memory warning — backend may "
+                "OOM mid-render.")
+            return True
+        # Free + retry.
         self._update_status("Freeing other models…")
         freed = resource_manager.free_other_models()
         self._update_status(
@@ -845,16 +1343,39 @@ class VideoStudioWidget(QWidget):
         result2 = resource_manager.check(reqs)
         if result2.satisfied:
             return True
-        # Still short — block.
-        QMessageBox.warning(
-            self, "Still short on memory",
-            "Even after freeing other models the system doesn't "
-            "have enough headroom for this backend.\n\n"
+        # Still short — offer Proceed anyway as the last option,
+        # rather than blocking the writer outright.
+        box2 = QMessageBox(self)
+        box2.setIcon(QMessageBox.Icon.Warning)
+        box2.setWindowTitle("Still short on memory")
+        box2.setText(
+            "Even after freeing other models the system is below "
+            "this backend's declared budget.\n\n"
             f"{result2.explanation}\n\n"
-            "Close other heavy apps, switch to a smaller backend "
-            "variant, or use a machine with more RAM/VRAM.")
+            "The render may still succeed (CPU offload / "
+            "quantization), but it can also fail mid-way. Proceed?")
+        proceed2 = box2.addButton(
+            "Proceed anyway",
+            QMessageBox.ButtonRole.ActionRole)
+        cancel2 = box2.addButton(
+            "Cancel", QMessageBox.ButtonRole.RejectRole)
+        box2.setDefaultButton(cancel2)
+        box2.exec()
+        if box2.clickedButton() == proceed2:
+            self._skip_memory_checks_session = True
+            self._update_status(
+                "Proceeding past memory warning — backend may "
+                "OOM mid-render.")
+            return True
         self._update_status("")
         return False
+
+    def reset_memory_check_skip(self) -> None:
+        """Re-enable the memory pre-flight after a session-wide
+        ``Proceed anyway``. Useful for the Project menu / a future
+        toolbar reset, or for tests that need to restore the
+        prompt-on-tight-memory behavior."""
+        self._skip_memory_checks_session = False
 
     def _generate_image_for_scene(self, scene_id: str) -> None:
         """Generate an image still for a scene via the current
@@ -867,8 +1388,8 @@ class VideoStudioWidget(QWidget):
         scene = studio.get_scene(scene_id)
         if scene is None:
             return
-        backend = self._current_image_backend
-        if not backend.is_installed():
+        backend = self._promote_to_real_image_backend()
+        if backend is None or not backend.is_installed():
             QMessageBox.warning(
                 self, "Image backend not installed",
                 f"{backend.label} isn't ready. Pick the placeholder "
@@ -909,8 +1430,15 @@ class VideoStudioWidget(QWidget):
                     "seed": None,
                 })
 
+        style_block = self._format_style_block()
+        image_prompt = (
+            f"{style_block}\n\n{scene.prompt}"
+            if style_block else scene.prompt)
+        # Optional AI refinement → image art-direction language.
+        image_prompt = self._refine_prompt_if_enabled(
+            image_prompt, target="image")
         req = ImageGenerationRequest(
-            prompt=scene.prompt,
+            prompt=image_prompt,
             output_path=out_path,
             scene_name=scene.name,
             character_refs=char_refs_payload,
@@ -934,7 +1462,7 @@ class VideoStudioWidget(QWidget):
             file_path=str(result.output_path),
             sidecar_path=str(result.sidecar_path),
             backend=backend.name,
-            prompt_at_generation=scene.prompt,
+            prompt_at_generation=image_prompt,
             duration_seconds=display,
             is_placeholder=result.is_placeholder,
             clip_type="image_still",
@@ -943,7 +1471,8 @@ class VideoStudioWidget(QWidget):
         self._canvas.refresh_scene_card(scene_id)
         self.contentChanged.emit()
         self._update_status(
-            f"Image still added to '{scene.name}' (display "
+            f"Image still added to '{scene.name}' via "
+            f"{backend.label} (display "
             f"{display:.1f}s"
             + (", placeholder" if result.is_placeholder else "")
             + ").")
@@ -1103,7 +1632,7 @@ class VideoStudioWidget(QWidget):
                 "use 'AI: extract from prose' or add actions "
                 "manually first.")
             return
-        backend = self._current_image_backend
+        backend = self._promote_to_real_image_backend()
         if backend is None or not backend.is_installed():
             QMessageBox.warning(
                 self, "Image backend not installed",
@@ -1268,6 +1797,211 @@ class VideoStudioWidget(QWidget):
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve())))
 
+    def _upload_clip_from_canvas(self, scene_id: str) -> None:
+        """Canvas-context-menu adapter: resolves the scene id and
+        delegates to ``_upload_clip_for_scene``."""
+        studio = self._studio()
+        if studio is None:
+            return
+        scene = studio.get_scene(scene_id)
+        if scene is None:
+            return
+        self._upload_clip_for_scene(scene)
+
+    def _upload_clip_for_scene(
+        self, scene: Scene,
+        src_paths: Optional[List[Path]] = None,
+    ) -> None:
+        """Ingest one or more existing image / video files into a
+        scene as VideoClip records. Lets writers bring in output
+        from external generators (Midjourney, RunwayML, Sora, etc.)
+        or hand-shot footage and use it in the studio just like
+        in-app renders.
+
+        When ``src_paths`` is None we open a file picker. The file
+        is COPIED into the scene's output dir (so the project is
+        portable) — never moved. Image files become VideoClip
+        records with ``clip_type="image_still"``; .mp4 / .mov /
+        .webm / .mkv become regular video clips. First upload
+        becomes the favorite when no favorite is set yet.
+        """
+        if src_paths is None:
+            picked, _ = QFileDialog.getOpenFileNames(
+                self,
+                f"Upload clip / image for '{scene.name}'",
+                "",
+                "Media (*.png *.jpg *.jpeg *.webp *.gif "
+                "*.mp4 *.mov *.webm *.mkv);;Image (*.png *.jpg "
+                "*.jpeg *.webp *.gif);;Video (*.mp4 *.mov *.webm "
+                "*.mkv);;All files (*)")
+            if not picked:
+                return
+            src_paths = [Path(p) for p in picked]
+        out_dir = self._scene_output_dir(scene)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        IMAGE_EXTS = {
+            ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif",
+            ".tiff"}
+        VIDEO_EXTS = {
+            ".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"}
+        from datetime import datetime
+        import shutil as _shutil
+        imported = 0
+        skipped: List[str] = []
+        for src in src_paths:
+            if not src.exists() or src.stat().st_size == 0:
+                skipped.append(f"{src.name}: empty or missing")
+                continue
+            ext = src.suffix.lower()
+            if ext in IMAGE_EXTS:
+                clip_type = "image_still"
+                duration = float(
+                    scene.image_display_seconds or 4.0)
+            elif ext in VIDEO_EXTS:
+                clip_type = "video"
+                duration = 0.0  # backends typically read length
+            else:
+                skipped.append(
+                    f"{src.name}: unsupported format ({ext})")
+                continue
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            idx = sum(
+                1 for c in scene.clips
+                if "upload" in c.backend) + 1
+            dest = out_dir / (
+                f"upload_{idx:03d}_{stamp}{ext}")
+            try:
+                _shutil.copy2(src, dest)
+            except Exception as e:
+                skipped.append(
+                    f"{src.name}: copy failed ({e})")
+                continue
+            clip = VideoClip(
+                file_path=str(dest),
+                sidecar_path="",
+                backend="upload",
+                prompt_at_generation=(
+                    f"Uploaded by writer: {src.name}"),
+                duration_seconds=duration,
+                is_placeholder=False,
+                clip_type=clip_type,
+            )
+            scene.add_clip(clip)
+            imported += 1
+        if imported == 0:
+            QMessageBox.warning(
+                self, "Nothing imported",
+                "No files were imported.\n\n"
+                + "\n".join(skipped[:10]))
+            return
+        self._canvas.refresh_scene_card(scene.id)
+        self.contentChanged.emit()
+        msg = (
+            f"Imported {imported} file"
+            + ("s" if imported != 1 else "")
+            + f" into '{scene.name}'.")
+        if skipped:
+            msg += (
+                f"\n\nSkipped {len(skipped)}:\n  • "
+                + "\n  • ".join(skipped[:10])
+                + ("\n  • …" if len(skipped) > 10 else ""))
+        self._update_status(msg.split("\n")[0])
+        QMessageBox.information(
+            self, "Upload complete", msg)
+
+    def _upload_image_for_action(
+        self, scene: Scene, action,
+        src_paths: Optional[List[Path]] = None,
+    ) -> Optional[Any]:
+        """Ingest one or more existing image files as ActionImage
+        records on the given action. Mirrors
+        ``_upload_clip_for_scene`` but at action granularity, so
+        writers can bring in external renders or hand-drawn
+        artwork for each beat. Returns the FIRST imported
+        ActionImage (or None) so the action editor can auto-
+        select it for preview.
+        """
+        if src_paths is None:
+            picked, _ = QFileDialog.getOpenFileNames(
+                self,
+                f"Upload images for action '{action.name}'",
+                "",
+                "Image (*.png *.jpg *.jpeg *.webp *.gif);;"
+                "All files (*)")
+            if not picked:
+                return None
+            src_paths = [Path(p) for p in picked]
+        out_dir = (
+            self._scene_output_dir(scene)
+            / "actions" / action.id)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        IMAGE_EXTS = {
+            ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif",
+            ".tiff"}
+        from datetime import datetime
+        import shutil as _shutil
+        from src.video_studio.models import ActionImage
+        imported_first: Optional[Any] = None
+        imported = 0
+        skipped: List[str] = []
+        for src in src_paths:
+            if not src.exists() or src.stat().st_size == 0:
+                skipped.append(f"{src.name}: empty or missing")
+                continue
+            ext = src.suffix.lower()
+            if ext not in IMAGE_EXTS:
+                skipped.append(
+                    f"{src.name}: unsupported format ({ext})")
+                continue
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            idx = len(action.images) + 1
+            dest = out_dir / (
+                f"upload_{idx:03d}_{stamp}{ext}")
+            try:
+                _shutil.copy2(src, dest)
+            except Exception as e:
+                skipped.append(
+                    f"{src.name}: copy failed ({e})")
+                continue
+            img = ActionImage(
+                file_path=str(dest),
+                sidecar_path="",
+                backend="upload",
+                prompt_at_generation=(
+                    f"Uploaded by writer: {src.name}"),
+                is_placeholder=False,
+                included_in_slideshow=True,
+                display_seconds=float(
+                    scene.image_display_seconds or 4.0),
+            )
+            action.images.append(img)
+            if action.favorite_image_id is None:
+                action.favorite_image_id = img.id
+            imported += 1
+            if imported_first is None:
+                imported_first = img
+        if imported == 0:
+            QMessageBox.warning(
+                self, "Nothing imported",
+                "No files were imported.\n\n"
+                + "\n".join(skipped[:10]))
+            return None
+        from datetime import datetime as _dt
+        action.updated_at = _dt.now()
+        self.contentChanged.emit()
+        self._update_status(
+            f"Imported {imported} image"
+            + ("s" if imported != 1 else "")
+            + f" into action '{action.name}'.")
+        if skipped:
+            QMessageBox.information(
+                self, "Upload complete",
+                f"Imported {imported}. "
+                f"Skipped {len(skipped)}:\n  • "
+                + "\n  • ".join(skipped[:10])
+                + ("\n  • …" if len(skipped) > 10 else ""))
+        return imported_first
+
     def _open_output_folder_for_scene(self, scene_id: str) -> None:
         """Open the scene's output directory in the system file
         manager — gives the writer a fast way to browse every
@@ -1314,7 +2048,7 @@ class VideoStudioWidget(QWidget):
         callback also appends to ``action.images``), or None on
         failure / no installed backend.
         """
-        backend = self._current_image_backend
+        backend = self._promote_to_real_image_backend()
         if backend is None or not backend.is_installed():
             QMessageBox.warning(
                 self, "Image backend not installed",
@@ -1329,19 +2063,15 @@ class VideoStudioWidget(QWidget):
         out_dir.mkdir(parents=True, exist_ok=True)
         idx = len(action.images) + 1
         out_path = out_dir / f"slide_{idx:03d}_{backend.name}.png"
-        # Compose a prompt that fuses the scene's overall prompt
-        # with the action's specifics so the image stays inside the
-        # scene's visual frame.
-        action_prompt = (
-            f"{(scene.prompt or '').strip()}. "
-            f"Action: {action.name}. {action.description}").strip()
-        if action.scenery_details:
-            action_prompt += f" Scenery: {action.scenery_details}."
-        # Include the verbatim prose excerpt when present — gives
-        # the image model the writer's exact language, which often
-        # carries detail the structured fields don't capture.
-        if action.prose_excerpt:
-            action_prompt += f" Prose: {action.prose_excerpt}"
+        # Structured composition lives in ``_compose_action_prompt``
+        # so the action editor's '✨ Preview AI-refined' button
+        # sees the same source string the renderer does. Optional
+        # AI refinement runs here: per-action images are still
+        # IMAGE prompts even when the scene's primary mode is
+        # video, so target="image".
+        action_prompt = self._compose_action_prompt(scene, action)
+        action_prompt = self._refine_prompt_if_enabled(
+            action_prompt, target="image")
         # Build character refs payload from action's chosen subset.
         studio = self._studio()
         char_refs_payload = []
@@ -1368,7 +2098,8 @@ class VideoStudioWidget(QWidget):
             character_refs=char_refs_payload,
         )
         self._update_status(
-            f"Generating image for action '{action.name}'…")
+            f"Generating image for action '{action.name}' "
+            f"via {backend.label}…")
         result = backend.generate(req)
         if not result.success:
             QMessageBox.warning(
@@ -1393,7 +2124,8 @@ class VideoStudioWidget(QWidget):
         action.updated_at = datetime.now()
         self.contentChanged.emit()
         self._update_status(
-            f"Image added for action '{action.name}'"
+            f"Image added for action '{action.name}' via "
+            f"{backend.label}"
             + (" (placeholder)" if result.is_placeholder else "")
             + ".")
         return img
@@ -1428,6 +2160,166 @@ class VideoStudioWidget(QWidget):
     # ------------------------------------------------------------------
     # Stitching
     # ------------------------------------------------------------------
+    def _export_chapter_deck(self) -> None:
+        """Stitch every scene in one chapter into a single deck.
+
+        Flow:
+          1. Pre-flight (ffmpeg + project + scenes-with-chapter).
+          2. Build the chapter picker; user picks the chapter and
+             whether to render title cards.
+          3. Resolve the scenes' favorite outputs + (optional)
+             title cards via ``deck_export.build_deck_entries``.
+          4. Stitch via ``stitcher.stitch_clips``.
+          5. Report skipped scenes + save path.
+        """
+        from src.video_studio.deck_export import (
+            build_deck_entries, collect_chapter_scenes,
+        )
+        from src.video_studio.stitcher import (
+            stitch_clips, ffmpeg_available)
+        studio = self._studio()
+        if studio is None or not studio.scenes:
+            QMessageBox.information(
+                self, "Nothing to export",
+                "Add scenes and generate at least one clip "
+                "(video, image still, or slide-deck stitch) first.")
+            return
+        if not ffmpeg_available():
+            QMessageBox.warning(
+                self, "ffmpeg not found",
+                "Exporting a chapter deck needs ffmpeg on PATH. "
+                "Install it (brew install ffmpeg / apt install "
+                "ffmpeg) and try again.")
+            return
+        # Build (chapter_id, label, scene_count) list — only
+        # chapters with at least one scene attached qualify.
+        chapters_with_counts = self._enumerate_chapters_with_scenes(
+            studio)
+        from src.ui.video_studio.chapter_deck_export_dialog import (
+            ChapterDeckExportDialog,
+        )
+        dlg = ChapterDeckExportDialog(
+            chapters_with_counts, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        chapter_id = dlg.selected_chapter_id()
+        if not chapter_id:
+            return
+        with_titles = dlg.include_title_cards()
+        scenes = collect_chapter_scenes(studio, chapter_id)
+        if not scenes:
+            QMessageBox.information(
+                self, "No scenes",
+                "That chapter has no scenes linked to it yet.")
+            return
+        # Resolve chapter label + scene title text for the title
+        # cards (passed to deck_export.build_deck_entries).
+        chapter_label = next(
+            (label for cid, label, _ in chapters_with_counts
+             if cid == chapter_id),
+            "Chapter")
+        out_root = self._studio_root_dir() / "chapter_decks"
+        out_root.mkdir(parents=True, exist_ok=True)
+        title_card_dir = (
+            out_root / f"{chapter_id}_titles" if with_titles else None)
+        paths, durations, skipped = build_deck_entries(
+            scenes,
+            title_card_dir=title_card_dir,
+            chapter_title=chapter_label)
+        if not paths:
+            QMessageBox.information(
+                self, "Nothing to stitch",
+                "None of this chapter's scenes have a usable "
+                "favorite output. Generate clips / images first, "
+                "then mark the ones you want included as "
+                "favorite.\n\nSkipped:\n  • "
+                + "\n  • ".join(skipped[:8])
+                + ("\n  • …" if len(skipped) > 8 else ""))
+            return
+        # Suggest a filename that survives a re-export — bump
+        # ``_<n>`` if a file at the same base name already exists.
+        safe_label = (
+            chapter_label.replace("/", "-")
+                         .replace(":", "-").strip() or "chapter")
+        suggested = out_root / f"{safe_label}_deck.mp4"
+        n = 1
+        while suggested.exists():
+            n += 1
+            suggested = (
+                out_root / f"{safe_label}_deck_{n:02d}.mp4")
+        out_str, _ = QFileDialog.getSaveFileName(
+            self, "Save chapter deck",
+            str(suggested), "MP4 video (*.mp4)")
+        if not out_str:
+            return
+        self._update_status(
+            f"Stitching chapter deck — {len(scenes)} scene(s)…")
+        result = stitch_clips(
+            paths, Path(out_str), clip_durations=durations)
+        if not result.success:
+            QMessageBox.warning(
+                self, "Export failed", result.error)
+            self._update_status("")
+            return
+        total = sum(durations)
+        msg = (
+            f"Saved chapter deck:\n{result.output_path}\n\n"
+            f"Stitched {len(scenes) - len(skipped)} scene(s)"
+            + (f" + {len(scenes)} title card(s)" if with_titles
+               else "")
+            + f", ~{total:.1f}s total.")
+        if skipped:
+            msg += (
+                f"\n\nSkipped {len(skipped)} scene(s):\n  • "
+                + "\n  • ".join(skipped[:10])
+                + ("\n  • …" if len(skipped) > 10 else ""))
+        QMessageBox.information(self, "Chapter deck exported", msg)
+        self._update_status(
+            f"Chapter deck saved: {Path(out_str).name}")
+
+    def _enumerate_chapters_with_scenes(
+        self, studio: Any,
+    ) -> list:
+        """Return ``[(chapter_id, label, scene_count), ...]`` for
+        every chapter the project knows about that has at least one
+        scene attached. Label is "Ch. N — <title>" when both fields
+        exist, falling back gracefully otherwise."""
+        scene_chapter_ids = {
+            getattr(s, "chapter_id", None) for s in studio.scenes
+        }
+        scene_chapter_ids.discard(None)
+        scene_chapter_ids.discard("")
+        if not scene_chapter_ids:
+            return []
+        # Resolve labels via the project's manuscript when available.
+        ch_meta: dict = {}  # chapter_id → (number, title)
+        if self._project is not None:
+            ms = getattr(self._project, "manuscript", None)
+            for ch in getattr(ms, "chapters", []) or []:
+                if getattr(ch, "id", "") in scene_chapter_ids:
+                    ch_meta[ch.id] = (
+                        getattr(ch, "chapter_number", None),
+                        getattr(ch, "title", "") or "")
+        out: list = []
+        for cid in scene_chapter_ids:
+            count = sum(
+                1 for s in studio.scenes
+                if getattr(s, "chapter_id", None) == cid)
+            number, title = ch_meta.get(cid, (None, ""))
+            if number is not None and title:
+                label = f"Ch. {number} — {title}"
+            elif number is not None:
+                label = f"Ch. {number}"
+            elif title:
+                label = title
+            else:
+                label = f"Chapter ({cid[:8]}…)"
+            out.append((cid, label, count))
+        # Order by chapter number when known, label otherwise.
+        out.sort(key=lambda t: (
+            ch_meta.get(t[0], (9999, ""))[0] or 9999, t[1]))
+        return out
+
     def _stitch_favorites(self) -> None:
         studio = self._studio()
         if studio is None or not studio.scenes:

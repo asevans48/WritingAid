@@ -98,6 +98,46 @@ class SceneEditorDialog(QDialog):
             Callable[[Any], None]] = None
         self._open_output_folder_cb: Optional[
             Callable[[Any], None]] = None
+        # Optional prompt-composer — receives the scene and returns
+        # the assembled backend prompt as a string. When wired, the
+        # "Copy generation prompt" button copies the result; when
+        # not, the button falls back to scene.prompt alone so the
+        # affordance still works without the studio's style block.
+        self._compose_prompt_cb: Optional[
+            Callable[[Any], str]] = None
+        # Optional refinement callback — when wired, the
+        # "Preview AI-refined prompt" button asks the LLM to
+        # translate the structured composed prompt into proper
+        # artwork-direction language and shows the result. The
+        # callable signature is callable(scene, target:str) → str
+        # where target is "image" or "video".
+        self._refine_prompt_cb: Optional[
+            Callable[[Any, str], str]] = None
+        # Per-action refinement — forwarded to the SceneActionDialog
+        # so its "Preview AI-refined prompt" button can show the
+        # image-target refinement of the per-action prompt.
+        self._refine_action_prompt_cb: Optional[
+            Callable[[Any, Any], str]] = None
+        # Per-action upload callback — forwarded so the action
+        # editor's "📤 Upload image" button can import existing
+        # files (Midjourney / RunwayML output, hand-drawn art) into
+        # the action's image list.
+        self._upload_action_image_cb: Optional[
+            Callable[[Any, Any], Optional[Any]]] = None
+        # Scene-level upload callback — for the editor's own
+        # "📤 Upload image / video" button in the Generate group.
+        self._upload_scene_clip_cb: Optional[
+            Callable[[Any], None]] = None
+        # Sub-dialog (per-action editor, AI extract, image
+        # generation, etc.) mutate ``self._scene`` directly. If the
+        # writer then Cancels the outer dialog, those mutations are
+        # already on the live scene — but ``contentChanged`` only
+        # fires on outer-Save, so a Cancel after sub-dialog edits
+        # would orphan them until the next save trigger and lose
+        # them on a fresh reload. We track an "actions dirty" flag
+        # so the host can force-save on close regardless of the
+        # outer dialog's Accepted/Rejected state.
+        self._actions_dirty: bool = False
         self._build_ui()
         self._load_scene_into_form()
 
@@ -117,6 +157,15 @@ class SceneEditorDialog(QDialog):
         generate_image: Optional[Callable[[Any], None]] = None,
         stitch_slide_deck: Optional[Callable[[Any], None]] = None,
         open_output_folder: Optional[Callable[[Any], None]] = None,
+        compose_prompt: Optional[Callable[[Any], str]] = None,
+        refine_prompt: Optional[
+            Callable[[Any, str], str]] = None,
+        refine_action_prompt: Optional[
+            Callable[[Any, Any], str]] = None,
+        upload_action_image: Optional[
+            Callable[[Any, Any], Optional[Any]]] = None,
+        upload_scene_clip: Optional[
+            Callable[[Any], None]] = None,
     ) -> None:
         """Wire the host's scene-level generation callbacks. Each
         callable receives the Scene and is expected to mutate
@@ -128,11 +177,25 @@ class SceneEditorDialog(QDialog):
         self._generate_image_cb = generate_image
         self._stitch_slide_deck_cb = stitch_slide_deck
         self._open_output_folder_cb = open_output_folder
+        self._compose_prompt_cb = compose_prompt
+        self._refine_prompt_cb = refine_prompt
+        self._refine_action_prompt_cb = refine_action_prompt
+        self._upload_action_image_cb = upload_action_image
+        self._upload_scene_clip_cb = upload_scene_clip
         self._refresh_generation_buttons()
 
     def get_scene(self) -> Scene:
         """Caller picks this up after exec() returns Accepted."""
         return self._scene
+
+    def actions_dirty(self) -> bool:
+        """True when any sub-dialog or action-mutating button
+        committed changes during this dialog's lifetime. The host
+        uses this to decide whether to fire its ``contentChanged``
+        signal even when the writer Cancels the outer dialog —
+        sub-dialog edits already mutated the live scene and must
+        survive to the next disk save."""
+        return self._actions_dirty
 
     # ------------------------------------------------------------------
     # UI construction
@@ -173,6 +236,64 @@ class SceneEditorDialog(QDialog):
         self._character_refs_edit.setPlaceholderText(
             "Comma-separated character names present in this beat")
         form.addRow("Characters", self._character_refs_edit)
+        # Hand-curated character + setting description blocks.
+        # The writer can fill these by hand OR via the "+ Lookup"
+        # buttons that pull from project.characters /
+        # project.worldbuilding.places. Both fold into every
+        # backend prompt so the renderer sees the writer's
+        # authoritative description — independent of any LLM
+        # enhancer.
+        char_label_row = QHBoxLayout()
+        char_label_row.addWidget(QLabel("Character details:"))
+        char_label_row.addStretch()
+        self._lookup_char_btn = QPushButton("+ Lookup character…")
+        self._lookup_char_btn.setToolTip(
+            "Pick a character from the project to append their "
+            "appearance / personality / quirks into this box.")
+        self._lookup_char_btn.clicked.connect(
+            self._on_lookup_character)
+        char_label_row.addWidget(self._lookup_char_btn)
+        form.addRow(char_label_row)
+        self._character_details_edit = QPlainTextEdit()
+        self._character_details_edit.setPlaceholderText(
+            "Visible character detail — appearance, clothing, "
+            "voice cues. The renderer sees this verbatim.")
+        self._character_details_edit.setMinimumHeight(80)
+        form.addRow(self._character_details_edit)
+
+        setting_label_row = QHBoxLayout()
+        setting_label_row.addWidget(QLabel("Setting / worldbuilding:"))
+        setting_label_row.addStretch()
+        self._lookup_place_btn = QPushButton("+ Lookup place…")
+        self._lookup_place_btn.setToolTip(
+            "Pick a place from worldbuilding to append its "
+            "description / atmosphere / key features.")
+        self._lookup_place_btn.clicked.connect(
+            self._on_lookup_place)
+        setting_label_row.addWidget(self._lookup_place_btn)
+        form.addRow(setting_label_row)
+        self._setting_details_edit = QPlainTextEdit()
+        self._setting_details_edit.setPlaceholderText(
+            "Location, atmosphere, key features. Pulled into "
+            "every backend prompt for this scene.")
+        self._setting_details_edit.setMinimumHeight(80)
+        form.addRow(self._setting_details_edit)
+
+        # Free-form additional instructions — the writer's
+        # "tell the model THIS too" box. Folded into every backend
+        # prompt verbatim, after the structured detail so the
+        # directives take precedence in the model's attention.
+        self._additional_instructions_edit = QPlainTextEdit()
+        self._additional_instructions_edit.setPlaceholderText(
+            "Extra directives for the renderer (aspect ratio, "
+            "framing notes, 'no text overlays', 'shot from low "
+            "angle', etc.). Appended to every backend prompt for "
+            "this scene.")
+        self._additional_instructions_edit.setMinimumHeight(70)
+        form.addRow(
+            "Additional instructions",
+            self._additional_instructions_edit)
+
         # Source prose — the chapter passage the writer picked via
         # "Pull from chapter". Distinct from the narration TTS text
         # (which is for audio) and from the prompt (which is for
@@ -429,8 +550,48 @@ class SceneEditorDialog(QDialog):
             self._on_generate_image_clicked)
         gen_row1.addWidget(self._gen_video_btn)
         gen_row1.addWidget(self._gen_image_btn)
+        # Upload existing image / video files into this scene —
+        # writers using paid subscriptions (Midjourney, RunwayML,
+        # Sora, etc.) can bring rendered output in without leaving
+        # the studio. Files are copied into the scene's output
+        # folder so the project stays portable.
+        self._upload_scene_btn = QPushButton("📤 Upload image / video")
+        self._upload_scene_btn.setToolTip(
+            "Import existing image or video files into this scene "
+            "as clips. Lets writers use output from external "
+            "generators (or hand-shot footage) instead of (or "
+            "alongside) the in-app backends.")
+        self._upload_scene_btn.clicked.connect(
+            self._on_upload_scene_clicked)
+        gen_row1.addWidget(self._upload_scene_btn)
         gen_layout.addLayout(gen_row1)
         gen_row2 = QHBoxLayout()
+        # Preview / copy the assembled prompt — what the backend
+        # will actually see (style block + scene prompt + action
+        # sequence). Useful for sanity-checking before burning a
+        # render or for pasting into an external tool.
+        self._copy_prompt_btn = QPushButton("📋 Copy generation prompt")
+        self._copy_prompt_btn.setToolTip(
+            "Copy the full prompt the video backend would receive "
+            "(style + genre + scene prompt + action sequence) to "
+            "the clipboard.")
+        self._copy_prompt_btn.clicked.connect(
+            self._on_copy_prompt_clicked)
+        gen_row2.addWidget(self._copy_prompt_btn)
+        # AI-refine preview — shows what the LLM-translated
+        # artwork prompt looks like before the writer commits to a
+        # render. Target is picked from scene.mode (slideshow →
+        # image; otherwise video) so the writer sees the same
+        # prompt the renderer would receive.
+        self._preview_refined_btn = QPushButton(
+            "✨ Preview AI-refined prompt")
+        self._preview_refined_btn.setToolTip(
+            "Run the structured prompt through the LLM to "
+            "translate it into proper image / video art-direction "
+            "language. Opens a small dialog with the result.")
+        self._preview_refined_btn.clicked.connect(
+            self._on_preview_refined_clicked)
+        gen_row2.addWidget(self._preview_refined_btn)
         self._stitch_deck_btn = QPushButton(
             "📑 Stitch slide deck → video")
         self._stitch_deck_btn.setToolTip(
@@ -452,9 +613,12 @@ class SceneEditorDialog(QDialog):
         # Until the host wires callbacks (via
         # set_generation_callbacks), every generation button stays
         # disabled with a clear tooltip — the writer sees the
-        # affordance but isn't fooled into clicking it.
+        # affordance but isn't fooled into clicking it. Copy-prompt
+        # stays out of this list because it's host-agnostic; the
+        # editor handles it directly via _on_copy_prompt_clicked.
         for btn in (self._gen_video_btn, self._gen_image_btn,
-                    self._stitch_deck_btn, self._open_folder_btn):
+                    self._stitch_deck_btn, self._open_folder_btn,
+                    self._upload_scene_btn):
             btn.setEnabled(False)
             btn.setToolTip(
                 btn.toolTip()
@@ -489,14 +653,27 @@ class SceneEditorDialog(QDialog):
         scroll.setWidget(content)
         outer.addWidget(scroll, stretch=1)
 
-        # Dialog buttons
+        # Dialog buttons. We use Save + Close (instead of the
+        # default Save + Cancel) so writers don't silently lose
+        # form-level edits when they reach for the X / Esc — both
+        # buttons commit the form. Sub-dialog mutations (image
+        # generation, action edits, AI enrich) have already
+        # written to the live scene by the time we get here, so
+        # they survive either choice. The auto-save timer on the
+        # main window picks up the change shortly after the dialog
+        # closes.
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
-            | QDialogButtonBox.StandardButton.Cancel)
+            | QDialogButtonBox.StandardButton.Close)
         buttons.button(
             QDialogButtonBox.StandardButton.Save).setText("Save")
+        buttons.button(
+            QDialogButtonBox.StandardButton.Close).setText(
+                "Close")
         buttons.accepted.connect(self._on_save)
-        buttons.rejected.connect(self.reject)
+        # Close also commits — we treat it as Save under a quieter
+        # label so writers can choose whichever feels right.
+        buttons.rejected.connect(self._on_close_commit)
         button_row = QHBoxLayout()
         button_row.setContentsMargins(8, 4, 8, 8)
         button_row.addWidget(buttons)
@@ -511,6 +688,13 @@ class SceneEditorDialog(QDialog):
         self._prompt_edit.setPlainText(self._scene.prompt)
         self._character_refs_edit.setText(
             ", ".join(self._scene.character_refs))
+        self._character_details_edit.setPlainText(
+            getattr(self._scene, "character_details", "") or "")
+        self._setting_details_edit.setPlainText(
+            getattr(self._scene, "setting_details", "") or "")
+        self._additional_instructions_edit.setPlainText(
+            getattr(
+                self._scene, "additional_instructions", "") or "")
         self._source_prose_edit.setPlainText(
             self._scene.source_prose or "")
         # Durations — 0 indicates "use studio default" (rendered by
@@ -578,6 +762,7 @@ class SceneEditorDialog(QDialog):
             (self._gen_image_btn, self._generate_image_cb),
             (self._stitch_deck_btn, self._stitch_slide_deck_cb),
             (self._open_folder_btn, self._open_output_folder_cb),
+            (self._upload_scene_btn, self._upload_scene_clip_cb),
         ]
         for btn, cb in pairs:
             wired = cb is not None
@@ -598,6 +783,7 @@ class SceneEditorDialog(QDialog):
         # duration values without forcing a Save round-trip.
         self._commit_form_to_scene()
         self._generate_video_cb(self._scene)
+        self._actions_dirty = True
         self._refresh_clip_list()
 
     def _on_generate_image_clicked(self) -> None:
@@ -605,6 +791,7 @@ class SceneEditorDialog(QDialog):
             return
         self._commit_form_to_scene()
         self._generate_image_cb(self._scene)
+        self._actions_dirty = True
         self._refresh_clip_list()
 
     def _on_stitch_slide_deck_clicked(self) -> None:
@@ -612,12 +799,123 @@ class SceneEditorDialog(QDialog):
             return
         self._commit_form_to_scene()
         self._stitch_slide_deck_cb(self._scene)
+        self._actions_dirty = True
+        self._refresh_clip_list()
+
+    def _on_upload_scene_clicked(self) -> None:
+        if self._upload_scene_clip_cb is None:
+            return
+        self._commit_form_to_scene()
+        self._upload_scene_clip_cb(self._scene)
+        # Uploads land as new clips on the scene; mark actions
+        # dirty so the host fires contentChanged even on Close.
+        self._actions_dirty = True
         self._refresh_clip_list()
 
     def _on_open_output_folder_clicked(self) -> None:
         if self._open_output_folder_cb is None:
             return
         self._open_output_folder_cb(self._scene)
+
+    def _on_preview_refined_clicked(self) -> None:
+        """Compose the structured prompt, ask the host to refine
+        it via the LLM, then show the result in a small read-only
+        dialog with a Copy button. Target is image for slideshow
+        mode, video otherwise — matches the renderer the writer
+        is heading toward."""
+        if (self._refine_prompt_cb is None
+                or self._compose_prompt_cb is None):
+            QMessageBox.information(
+                self, "AI refine unavailable",
+                "Refinement needs an LLM. Configure one in "
+                "Settings → ⚙️ Model Settings, then re-open the "
+                "scene editor.")
+            return
+        # Commit form edits so the refinement sees the freshest
+        # detail without forcing a Save round-trip.
+        self._commit_form_to_scene()
+        target = (
+            "image" if self._scene.mode == "slideshow" else "video")
+        prev_label = self._preview_refined_btn.text()
+        self._preview_refined_btn.setEnabled(False)
+        self._preview_refined_btn.setText("Refining…")
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()
+        try:
+            refined = self._refine_prompt_cb(self._scene, target)
+        finally:
+            self._preview_refined_btn.setEnabled(True)
+            self._preview_refined_btn.setText(prev_label)
+        if not refined or not refined.strip():
+            QMessageBox.information(
+                self, "Nothing to refine",
+                "The LLM didn't return a refined prompt. Try "
+                "filling more detail in the prompt / character / "
+                "setting boxes first.")
+            return
+        self._show_refined_prompt_dialog(refined, target)
+
+    def _show_refined_prompt_dialog(
+        self, refined: str, target: str,
+    ) -> None:
+        """Minimal modal: scrollable read-only text + Copy + Close."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle(
+            f"AI-refined prompt ({target})")
+        dlg.resize(640, 420)
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel(
+            "This is the prompt the renderer will receive when "
+            f"the studio's ✨ AI refine toggle is on (target: "
+            f"<b>{target}</b>). The structured detail you entered "
+            "drives the translation — refine the source fields if "
+            "anything is off."))
+        text = QPlainTextEdit()
+        text.setPlainText(refined)
+        text.setReadOnly(True)
+        v.addWidget(text, stretch=1)
+        btn_row = QHBoxLayout()
+        copy_btn = QPushButton("📋 Copy")
+        close_btn = QPushButton("Close")
+        from PyQt6.QtWidgets import QApplication
+        copy_btn.clicked.connect(
+            lambda: QApplication.clipboard().setText(refined))
+        close_btn.clicked.connect(dlg.accept)
+        btn_row.addStretch()
+        btn_row.addWidget(copy_btn)
+        btn_row.addWidget(close_btn)
+        v.addLayout(btn_row)
+        dlg.exec()
+
+    def _on_copy_prompt_clicked(self) -> None:
+        """Copy the assembled generation prompt to the clipboard.
+        Uses the host's composer when wired (full style + genre +
+        action sequence); falls back to ``scene.prompt`` so the
+        button works even when the dialog is opened standalone."""
+        # Commit edits first so a writer who tweaked the prompt /
+        # actions in this dialog sees the current values in the
+        # copied text.
+        self._commit_form_to_scene()
+        if self._compose_prompt_cb is not None:
+            text = self._compose_prompt_cb(self._scene)
+        else:
+            text = (self._scene.prompt or "").strip()
+        if not text.strip():
+            QMessageBox.information(
+                self, "Empty prompt",
+                "This scene has no prompt yet. Fill in the scene's "
+                "prompt (and optionally actions / style) first.")
+            return
+        from PyQt6.QtWidgets import QApplication
+        QApplication.clipboard().setText(text)
+        # Brief confirmation — the dialog has no status bar, so a
+        # transient label change on the button itself is the least
+        # noisy way to acknowledge.
+        prev = self._copy_prompt_btn.text()
+        self._copy_prompt_btn.setText("✓ Copied to clipboard")
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(
+            1500, lambda: self._copy_prompt_btn.setText(prev))
 
     def _refresh_clip_list(self) -> None:
         self._clips_list.clear()
@@ -736,6 +1034,75 @@ class SceneEditorDialog(QDialog):
     # ------------------------------------------------------------------
     # Narration handlers
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Lookup helpers — append project data into the detail boxes
+    # ------------------------------------------------------------------
+    def _append_to_plain_text(
+        self, edit, snippet: str,
+    ) -> None:
+        """Append ``snippet`` to a QPlainTextEdit, separated by a
+        blank line when the box isn't empty. Mutates in place."""
+        existing = edit.toPlainText().rstrip()
+        text = (f"{existing}\n\n{snippet.strip()}"
+                if existing else snippet.strip())
+        edit.setPlainText(text)
+        # Scroll to the bottom so the new content is visible.
+        bar = edit.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def _on_lookup_character(self) -> None:
+        chars = list(
+            getattr(self._project, "characters", []) or [])
+        if not chars:
+            QMessageBox.information(
+                self, "No characters",
+                "This project has no characters yet — add them in "
+                "the Characters tab first.")
+            return
+        from src.ui.image_generator_widget import (
+            EntityPickerDialog, _character_snippet,
+        )
+        items = []
+        for ch in chars:
+            name = (
+                getattr(ch, "name", "") or "").strip() or "(unnamed)"
+            kind = (
+                getattr(ch, "character_type", "") or "").strip()
+            label = name + (f"  —  {kind}" if kind else "")
+            items.append((label, _character_snippet(ch)))
+        dlg = EntityPickerDialog(
+            "Insert character details", items, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            snippet = dlg.selected_snippet()
+            if snippet:
+                self._append_to_plain_text(
+                    self._character_details_edit, snippet)
+
+    def _on_lookup_place(self) -> None:
+        wb = getattr(self._project, "worldbuilding", None)
+        places = list(getattr(wb, "places", []) or [])
+        if not places:
+            QMessageBox.information(
+                self, "No places",
+                "This project has no worldbuilding places yet — "
+                "add them in the Worldbuilding tab first.")
+            return
+        from src.ui.image_generator_widget import (
+            EntityPickerDialog, _place_snippet,
+        )
+        items = []
+        for p in places:
+            name = (
+                getattr(p, "name", "") or "").strip() or "(unnamed)"
+            items.append((name, _place_snippet(p)))
+        dlg = EntityPickerDialog(
+            "Insert setting details", items, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            snippet = dlg.selected_snippet()
+            if snippet:
+                self._append_to_plain_text(
+                    self._setting_details_edit, snippet)
+
     def _on_pull_from_chapter(self) -> None:
         """Open the chapter-text picker.
 
@@ -747,6 +1114,10 @@ class SceneEditorDialog(QDialog):
         push into the scene's description so the storyboard card's
         actions stay grounded in what's actually written.
         """
+        # Commit form first so the picker's AI-highlight call sees
+        # the writer's freshest scene context (especially the prompt
+        # and description boxes the highlighter grounds against).
+        self._commit_form_to_scene()
         chapters = self._chapters_in_project()
         if not chapters:
             QMessageBox.information(
@@ -940,6 +1311,7 @@ class SceneEditorDialog(QDialog):
         action = self._scene.add_action(
             name="New action",
             description="")
+        self._actions_dirty = True
         self._refresh_actions_list()
         # Open the edit dialog immediately so the user can fill it
         # in without an extra click.
@@ -960,18 +1332,38 @@ class SceneEditorDialog(QDialog):
         from src.ui.video_studio.scene_action_dialog import (
             SceneActionDialog,
         )
+        # Commit the scene-level form first so the action editor's
+        # prompt composition (which fuses scene baseline with per-
+        # action overrides) sees the writer's freshest scene-level
+        # character / setting / additional-instructions / prompt
+        # edits — not whatever was last persisted via Save.
+        self._commit_form_to_scene()
+        # Pass the image-generator callback regardless of scene
+        # mode — writers need preview renders in video mode too,
+        # to lock in the action description before burning a video
+        # clip. The mode only changes the slide-deck inclusion
+        # semantics, not whether per-action images can be generated.
         dlg = SceneActionDialog(
             action=action,
             scene_mode=self._scene.mode,
             project=self._project,
-            generate_image_callback=(
-                self._make_action_image_callback()
-                if self._scene.mode == "slideshow" else None),
+            generate_image_callback=self._make_action_image_callback(),
             scene=self._scene,
             llm_provider=self._llm_provider,
             rag_provider=self._rag_provider,
+            refine_action_prompt=self._refine_action_prompt_cb,
+            upload_image_callback=self._upload_action_image_cb,
             parent=self)
-        dlg.exec()
+        # Even on a Cancel the writer might have triggered an image
+        # generation or an enrich, which mutate the action in
+        # place — be conservative and mark dirty whenever the
+        # sub-dialog actually opened.
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._actions_dirty = True
+        else:
+            # Sub-dialog enrich / image-gen / etc mutate even on
+            # cancel — flag dirty so the host saves.
+            self._actions_dirty = True
         self._refresh_actions_list()
 
     def _on_remove_action(self) -> None:
@@ -996,6 +1388,7 @@ class SceneEditorDialog(QDialog):
                 except Exception as e:
                     print(f"[scene] action image cleanup failed: {e}")
         self._scene.remove_action(action_id)
+        self._actions_dirty = True
         self._refresh_actions_list()
 
     def _on_move_action(self, delta: int) -> None:
@@ -1003,6 +1396,7 @@ class SceneEditorDialog(QDialog):
         if action_id is None:
             return
         if self._scene.move_action(action_id, delta):
+            self._actions_dirty = True
             self._refresh_actions_list()
             # Restore selection on the moved row.
             from PyQt6.QtCore import Qt as _Qt
@@ -1016,6 +1410,11 @@ class SceneEditorDialog(QDialog):
         """Ask the LLM to break the scene into actions."""
         if self._llm_provider is None:
             return
+        # Commit form so the extractor's prompt grounding uses the
+        # writer's freshest scene prompt + character / setting /
+        # additional-instructions detail rather than the last-saved
+        # snapshot.
+        self._commit_form_to_scene()
         try:
             llm = self._llm_provider()
         except Exception:
@@ -1076,6 +1475,7 @@ class SceneEditorDialog(QDialog):
                 a.get("scenery_details", ""))
             self._scene.actions[-1].prose_excerpt = (
                 a.get("prose_excerpt", ""))
+        self._actions_dirty = True
         self._refresh_actions_list()
 
     def _on_mode_changed(self, _index: int) -> None:
@@ -1115,6 +1515,7 @@ class SceneEditorDialog(QDialog):
                 img = self._image_generator(a)
                 if img is not None:
                     created += 1
+                    self._actions_dirty = True
             except Exception as e:
                 print(f"[scene] action image gen failed: {e}")
         self._refresh_actions_list()
@@ -1160,6 +1561,13 @@ class SceneEditorDialog(QDialog):
         refs_raw = self._character_refs_edit.text().strip()
         self._scene.character_refs = [
             r.strip() for r in refs_raw.split(",") if r.strip()]
+        self._scene.character_details = (
+            self._character_details_edit.toPlainText().strip())
+        self._scene.setting_details = (
+            self._setting_details_edit.toPlainText().strip())
+        self._scene.additional_instructions = (
+            self._additional_instructions_edit
+                .toPlainText().strip())
         # Persist the source prose excerpt the writer chose / edited.
         self._scene.source_prose = (
             self._source_prose_edit.toPlainText().strip())
@@ -1191,6 +1599,34 @@ class SceneEditorDialog(QDialog):
     def _on_save(self) -> None:
         self._commit_form_to_scene()
         self.accept()
+
+    def _on_close_commit(self) -> None:
+        """Close button — routes through ``reject()`` so the same
+        commit logic applies whether the writer clicks Close, hits
+        Esc, or closes the window via the OS chrome."""
+        self.reject()
+
+    def reject(self) -> None:
+        """Override the default Qt reject so writers don't lose
+        form-level edits when they reach for Close / Esc / X.
+        Commits first, then signals Accepted so the host treats
+        the dialog as a save."""
+        try:
+            self._commit_form_to_scene()
+        except Exception as e:
+            print(f"[scene_editor] close commit failed: {e}")
+        # Accepted result so the host's contentChanged fires
+        # unconditionally.
+        self.done(QDialog.DialogCode.Accepted)
+
+    def closeEvent(self, event) -> None:
+        """Window-X / OS-quit — commit form changes first."""
+        try:
+            self._commit_form_to_scene()
+            self.setResult(QDialog.DialogCode.Accepted)
+        except Exception as e:
+            print(f"[scene_editor] closeEvent commit failed: {e}")
+        super().closeEvent(event)
 
 
 # ---------------------------------------------------------------------

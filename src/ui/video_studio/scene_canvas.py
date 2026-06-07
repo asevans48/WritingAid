@@ -350,6 +350,8 @@ class SceneCanvasView(QGraphicsView):
     stitchSlideDeckRequested = pyqtSignal(str)  # action images → mp4
     openLastClipRequested = pyqtSignal(str)     # open favorite clip
     openOutputFolderRequested = pyqtSignal(str)  # open scene dir
+    copyPromptRequested = pyqtSignal(str)       # copy generation prompt
+    uploadClipRequested = pyqtSignal(str)       # upload image/video file
     switchModeRequested = pyqtSignal(str, str)  # scene_id, "video"|"slideshow"
     sceneMoved = pyqtSignal(str, int, int)      # scene_id, col, row
 
@@ -649,6 +651,12 @@ class SceneCanvasView(QGraphicsView):
         menu.addAction(
             "Open output folder",
             lambda: self.openOutputFolderRequested.emit(scene_id))
+        menu.addAction(
+            "Copy generation prompt",
+            lambda: self.copyPromptRequested.emit(scene_id))
+        menu.addAction(
+            "📤 Upload image / video…",
+            lambda: self.uploadClipRequested.emit(scene_id))
         menu.addSeparator()
         # Quick render-mode toggle so writers can mix video and
         # slideshow scenes on one board without opening the editor
