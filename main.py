@@ -7,6 +7,29 @@ import sys
 import os
 from pathlib import Path
 
+# Fix bitsandbytes CUDA version detection on newer CUDA runtimes (13.1+).
+# bnb ships DLLs up to cu130; the cu130 binary is forward-compatible so
+# we pin bnb to it when no exact match exists for the runtime CUDA version.
+if sys.platform == "win32" and not os.environ.get("BNB_CUDA_VERSION"):
+    try:
+        _bnb_dir = Path(sys.prefix) / "Lib" / "site-packages" / "bitsandbytes"
+        if _bnb_dir.exists():
+            import torch
+            if torch.cuda.is_available():
+                _cuda_ver = torch.version.cuda  # e.g. "13.2"
+                _cuda_tag = _cuda_ver.replace(".", "")  # "132"
+                _dll = _bnb_dir / f"libbitsandbytes_cuda{_cuda_tag}.dll"
+                if not _dll.exists():
+                    # Find highest available CUDA DLL
+                    _available = sorted(
+                        _bnb_dir.glob("libbitsandbytes_cuda*.dll"))
+                    if _available:
+                        _best = _available[-1].stem.replace(
+                            "libbitsandbytes_cuda", "")
+                        os.environ["BNB_CUDA_VERSION"] = _best
+    except Exception:
+        pass
+
 # Check Python version and warn if incorrect
 def check_python_version():
     """Warn if using wrong Python version."""

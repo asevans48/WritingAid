@@ -761,51 +761,138 @@ Keep it under 150 words. Focus on VISUAL storytelling."""
         """Generate image using PyTorch (NVIDIA/CPU)."""
         try:
             import torch
+            import gc
             from diffusers import DiffusionPipeline
 
-            model_id = self.settings.get("image_model_id", "black-forest-labs/FLUX.1-dev")
+            # Clear any sticky CUDA error state from prior operations
+            # (e.g. a failed bitsandbytes load or LLM generation).
+            # Without this, a prior assert poisons ALL subsequent calls.
+            if torch.cuda.is_available():
+                try:
+                    torch.cuda.synchronize()
+                except RuntimeError:
+                    pass
+                torch.cuda.empty_cache()
+                gc.collect()
+                # Test if CUDA is actually usable — if a prior error
+                # left it in a broken state, fall back to CPU.
+                try:
+                    _test = torch.zeros(1, device="cuda")
+                    del _test
+                except RuntimeError as e:
+                    logger.warning(
+                        f"CUDA in error state, falling back to CPU: {e}")
+                    torch.cuda.empty_cache()
+                    # Mark CUDA as unavailable for this call
+                    os.environ["_IMGGEN_FORCE_CPU"] = "1"
+
+            model_id = self.settings.get("image_model_id", "black-forest-labs/FLUX.2-klein-4B")
 
             logger.info(f"Loading PyTorch model: {model_id}")
 
-            # Determine device
-            if torch.cuda.is_available():
+            # Unload any local LLM models to free VRAM and clear any
+            # poisoned CUDA state from bitsandbytes quantized models.
+            from src.ai.llm_client import unload_all_local_clients
+            n_unloaded = unload_all_local_clients(clear_cuda=True, clear_mlx=False)
+            if n_unloaded:
+                logger.info(f"Unloaded {n_unloaded} local LLM(s) to free VRAM")
+
+            # Determine device and dtype
+            import os as _os
+            _force_cpu = _os.environ.pop("_IMGGEN_FORCE_CPU", None)
+            if torch.cuda.is_available() and not _force_cpu:
                 device = "cuda"
-                dtype = torch.float16
-            elif torch.backends.mps.is_available():
+                # Blackwell (CC 12.0+) and Ampere+ (CC 8.0+) prefer bfloat16
+                cc = torch.cuda.get_device_capability(0)
+                dtype = torch.bfloat16 if cc[0] >= 8 else torch.float16
+            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
                 device = "mps"
                 dtype = torch.float16
             else:
                 device = "cpu"
                 dtype = torch.float32
 
-            logger.info(f"Using device: {device}")
+            logger.info(f"Using device: {device}, dtype: {dtype}")
+
+            # Detect model family for parameter adjustments
+            model_lower = model_id.lower()
+            is_flux = "flux" in model_lower
+            is_flux2 = "flux.2" in model_lower or "flux2" in model_lower
+
+            # Get HF token for gated models
+            hf_token = self._get_huggingface_token()
+            pipe_kwargs = {"torch_dtype": dtype, "use_safetensors": True}
+            if hf_token:
+                pipe_kwargs["token"] = hf_token
 
             # Load pipeline
-            pipe = DiffusionPipeline.from_pretrained(
-                model_id,
-                torch_dtype=dtype,
-                use_safetensors=True
-            )
-            pipe = pipe.to(device)
+            pipe = DiffusionPipeline.from_pretrained(model_id, **pipe_kwargs)
 
-            # Generate
-            logger.info(f"Generating image with PyTorch ({width}x{height}, {num_steps} steps)")
+            # Memory management: use CPU offload on GPUs with < 14 GB free
+            if device == "cuda":
+                free_mem = torch.cuda.mem_get_info(0)[0] / (1024**3)
+                logger.info(f"GPU free memory: {free_mem:.1f} GB")
+                if free_mem < 14:
+                    try:
+                        pipe.enable_model_cpu_offload()
+                        logger.info("Enabled CPU offload for memory efficiency")
+                    except Exception:
+                        pipe = pipe.to(device)
+                else:
+                    pipe = pipe.to(device)
+            else:
+                pipe = pipe.to(device)
 
-            generator = torch.Generator(device=device).manual_seed(seed)
+            # FLUX-specific parameter overrides
+            if is_flux:
+                # FLUX models don't use negative prompts
+                negative_prompt = None
+                # FLUX.2 Klein uses 4 steps, guidance 1.0
+                # FLUX.1 schnell uses 4 steps, guidance 0.0
+                # FLUX.1 dev uses 20-50 steps, guidance 3.5
+                if is_flux2:
+                    num_steps = min(num_steps, 4) if num_steps <= 4 else num_steps
+                    if num_steps > 8:
+                        num_steps = 4
+                    guidance_scale = 1.0
+                elif "schnell" in model_lower:
+                    num_steps = 4
+                    guidance_scale = 0.0
+                else:
+                    # FLUX.1-dev
+                    guidance_scale = 3.5
+                # FLUX likes multiples of 16
+                width = max(512, (width // 16) * 16)
+                height = max(512, (height // 16) * 16)
 
-            image = pipe(
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                width=width,
-                height=height,
-                num_inference_steps=num_steps,
-                guidance_scale=guidance_scale,
-                generator=generator
-            ).images[0]
+            logger.info(f"Generating image with PyTorch ({width}x{height}, {num_steps} steps, guidance={guidance_scale})")
+
+            # Generator on CPU to avoid device-side asserts on newer architectures
+            generator = torch.Generator(device="cpu").manual_seed(seed)
+
+            # Build generation kwargs
+            gen_kwargs = {
+                "prompt": prompt,
+                "width": width,
+                "height": height,
+                "num_inference_steps": num_steps,
+                "guidance_scale": guidance_scale,
+                "generator": generator,
+            }
+            if negative_prompt and not is_flux:
+                gen_kwargs["negative_prompt"] = negative_prompt
+
+            image = pipe(**gen_kwargs).images[0]
 
             # Save
+            save_path.parent.mkdir(parents=True, exist_ok=True)
             image.save(str(save_path))
             logger.info(f"Image saved to: {save_path}")
+
+            # Free VRAM
+            del pipe
+            if device == "cuda":
+                torch.cuda.empty_cache()
 
             return save_path
 

@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import (
 )
 
 from src.video_studio.models import ActionImage, SceneAction
+from src.ui.video_studio.conversation_panel import CreativeConversationPanel
 
 
 class SceneActionDialog(QDialog):
@@ -418,6 +419,16 @@ class SceneActionDialog(QDialog):
         images_layout.addLayout(refine_row)
         layout.addWidget(images_box, stretch=1)
 
+        # ── AI conversation panel for iterative refinement ────────
+        self._conversation_panel = CreativeConversationPanel(
+            llm_provider=self._llm_provider,
+            context_mode="action",
+        )
+        self._conversation_panel.apply_suggestion.connect(
+            self._on_chat_apply_suggestion)
+        self._conversation_panel.setMaximumHeight(250)
+        layout.addWidget(self._conversation_panel)
+
         # Wrap the content in the scroll area and pin Save/Cancel
         # to the bottom outside the scroll viewport.
         scroll.setWidget(content)
@@ -468,6 +479,35 @@ class SceneActionDialog(QDialog):
         # Image list is now always visible (slideshow + video both
         # benefit from preview renders to verify the description).
         self._refresh_image_list()
+        self._sync_conversation_context()
+
+    def _sync_conversation_context(self) -> None:
+        """Push current form state into the conversation panel."""
+        self._conversation_panel.set_context({
+            "name": self._name_edit.text(),
+            "description": self._description_edit.toPlainText(),
+            "character_refs": self._character_edit.text(),
+            "character_details": self._character_details_edit.toPlainText(),
+            "setting_details": self._setting_details_edit.toPlainText(),
+            "scenery_details": self._scenery_edit.toPlainText(),
+            "additional_instructions": self._additional_instructions_edit.toPlainText(),
+            "source_prose": self._prose_excerpt_edit.toPlainText(),
+        })
+
+    def _on_chat_apply_suggestion(self, field: str, value: str) -> None:
+        """Handle apply_suggestion from the conversation panel."""
+        if field == "prompt" or field == "description":
+            self._description_edit.setPlainText(value)
+        elif field == "character_details":
+            self._character_details_edit.setPlainText(value)
+        elif field == "setting_details":
+            self._setting_details_edit.setPlainText(value)
+        elif field == "scenery_details":
+            self._scenery_edit.setPlainText(value)
+        elif field == "additional_instructions":
+            self._additional_instructions_edit.setPlainText(value)
+        else:
+            self._description_edit.setPlainText(value)
 
     def _on_save(self) -> None:
         a = self._action

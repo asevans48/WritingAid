@@ -10243,7 +10243,7 @@ class MainWindow(QMainWindow):
     # ── Writer Q&A registry (Phase-1 cycle prevention) ───────────────
 
     @staticmethod
-    def _extract_questions_from_response(text: str) -> List[str]:
+    def _extract_questions_from_response(text: str) -> list[str]:
         """Pull question-shaped lines out of a model response.
 
         Heuristic: a question is a line that ends with '?'. Lines are

@@ -287,19 +287,33 @@ class LLMClient:
                 quantization_enabled = False
                 if self.hf_config.quantization in ["4bit", "8bit"]:
                     if can_use_quantization(device_name):
-                        from transformers import BitsAndBytesConfig
-                        if self.hf_config.quantization == "4bit":
-                            model_kwargs["quantization_config"] = BitsAndBytesConfig(
-                                load_in_4bit=True,
-                                bnb_4bit_compute_dtype=torch.float16
+                        # Check if GPU architecture supports bitsandbytes.
+                        # Blackwell (sm_120 / CC 12.0+) is not yet supported
+                        # by bnb's CUDA kernels — skip quantization and load
+                        # in bfloat16 instead. A 7B model in bf16 fits 16 GB.
+                        _cc = torch.cuda.get_device_capability(0)
+                        if _cc[0] >= 12:
+                            print(
+                                f"Note: Skipping {self.hf_config.quantization} "
+                                f"quantization — bitsandbytes does not yet "
+                                f"support compute capability {_cc[0]}.{_cc[1]} "
+                                f"(Blackwell). Loading in bfloat16 instead."
                             )
-                        else:  # 8bit
-                            model_kwargs["quantization_config"] = BitsAndBytesConfig(
-                                load_in_8bit=True
-                            )
-                        model_kwargs["device_map"] = "auto"
-                        quantization_enabled = True
-                        print(f"Using {self.hf_config.quantization} quantization on CUDA")
+                            dtype = torch.bfloat16
+                        else:
+                            from transformers import BitsAndBytesConfig
+                            if self.hf_config.quantization == "4bit":
+                                model_kwargs["quantization_config"] = BitsAndBytesConfig(
+                                    load_in_4bit=True,
+                                    bnb_4bit_compute_dtype=torch.bfloat16
+                                )
+                            else:  # 8bit
+                                model_kwargs["quantization_config"] = BitsAndBytesConfig(
+                                    load_in_8bit=True
+                                )
+                            model_kwargs["device_map"] = "auto"
+                            quantization_enabled = True
+                            print(f"Using {self.hf_config.quantization} quantization on CUDA")
                     else:
                         print(f"Warning: {self.hf_config.quantization} quantization only works with CUDA. Using standard precision on {device_name}.")
 

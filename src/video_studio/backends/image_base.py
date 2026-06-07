@@ -115,4 +115,5 @@ class ImageBackend(abc.ABC):
             payload.update(extra)
         sidecar_path.parent.mkdir(parents=True, exist_ok=True)
         sidecar_path.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False))
+            json.dumps(payload, indent=2, ensure_ascii=False),
+            encoding="utf-8")

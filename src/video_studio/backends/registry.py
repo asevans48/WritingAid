@@ -7,6 +7,7 @@ from typing import List, Optional
 from .base import VideoBackend
 from .cogvideox import CogVideoX2BBackend, CogVideoX5BBackend
 from .flux_schnell import FluxSchnellBackend
+from .flux2 import Flux2Backend
 from .configured_image import ConfiguredImageBackend
 from .image_base import ImageBackend
 from .image_placeholder import PlaceholderImageBackend
@@ -42,6 +43,7 @@ _IMAGE_BACKENDS: List[ImageBackend] = [
     ConfiguredImageBackend(),   # uses Settings → Image Generation
     SDXLBackend(),              # legacy: direct diffusers, ~8 GB VRAM
     FluxSchnellBackend(),       # legacy: direct diffusers, ~16 GB VRAM
+    Flux2Backend(),             # FLUX.2, ~18 GB VRAM
 ]
 
 

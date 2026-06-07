@@ -140,6 +140,36 @@ MLX_IMAGE_MODELS: List[ImageGenModelInfo] = [
 # PyTorch Models for NVIDIA GPUs
 TORCH_IMAGE_MODELS: List[ImageGenModelInfo] = [
     ImageGenModelInfo(
+        model_id="black-forest-labs/FLUX.2-klein-4B",
+        display_name="FLUX.2 Klein 4B (Fast)",
+        provider=ImageGenProvider.LOCAL_TORCH,
+        vram_gb=10.0,
+        ram_gb=16.0,
+        description="FLUX.2 Klein 4B - fast 4-step generation, excellent quality-to-speed ratio",
+        best_for="Fast high-quality generation, fits 12 GB GPUs",
+        platform="nvidia"
+    ),
+    ImageGenModelInfo(
+        model_id="black-forest-labs/FLUX.2-klein-9B",
+        display_name="FLUX.2 Klein 9B (Quality)",
+        provider=ImageGenProvider.LOCAL_TORCH,
+        vram_gb=18.0,
+        ram_gb=26.0,
+        description="FLUX.2 Klein 9B - state-of-the-art 4-step generation, top-tier detail",
+        best_for="Highest quality character portraits and scenes",
+        platform="nvidia"
+    ),
+    ImageGenModelInfo(
+        model_id="black-forest-labs/FLUX.2-dev",
+        display_name="FLUX.2 Dev (12B, Max Quality)",
+        provider=ImageGenProvider.LOCAL_TORCH,
+        vram_gb=22.0,
+        ram_gb=32.0,
+        description="FLUX.2 Dev - full 12B model, maximum quality (gated, requires HF token)",
+        best_for="Maximum quality, best prompt adherence",
+        platform="nvidia"
+    ),
+    ImageGenModelInfo(
         model_id="black-forest-labs/FLUX.1-dev",
         display_name="FLUX.1 Dev (12B)",
         provider=ImageGenProvider.LOCAL_TORCH,
@@ -320,7 +350,7 @@ class GenAIConfig:
             default_model = "mflux/flux2-klein-9b"  # Use FLUX 2 Klein 9B for 32GB RAM
         else:
             default_provider = "local_torch"
-            default_model = "black-forest-labs/FLUX.1-dev"
+            default_model = "black-forest-labs/FLUX.2-klein-4B"
 
         # Get platform-specific default for prompt enhancement LLM
         from src.ai.agent_suite import get_default_local_model
