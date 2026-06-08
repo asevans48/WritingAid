@@ -337,6 +337,8 @@ class VideoStudioWidget(QWidget):
         self._canvas.addSceneRequested.connect(self._add_scene_at_pos)
         self._canvas.connectRequested.connect(self._connect_scenes)
         self._canvas.deleteSceneRequested.connect(self._delete_scene)
+        self._canvas.manageHopsRequested.connect(
+            self._open_hop_manager)
         self._canvas.generateClipRequested.connect(
             self._generate_clip_for_scene)
         self._canvas.generateImageRequested.connect(
@@ -872,6 +874,9 @@ class VideoStudioWidget(QWidget):
         sc = Scene(name=f"Scene {len(studio.scenes) + 1}")
         studio.add_scene(sc)
         self._canvas.refresh_all()
+        # Offer to inherit hops from a recently-deleted scene before
+        # opening the editor so the writer sees the question first.
+        self._offer_rebind_orphaned_hops(sc)
         self._open_editor(sc.id)
         self.contentChanged.emit()
 
@@ -887,6 +892,10 @@ class VideoStudioWidget(QWidget):
                    grid_col=max(col, 0), grid_row=max(row, 0))
         studio.add_scene(sc)
         self._canvas.refresh_all()
+        # If a previously-deleted scene lived at this cell, offer
+        # to reattach its hops — the common "swap one card for
+        # another mid-chain" workflow.
+        self._offer_rebind_orphaned_hops(sc)
         self._open_editor(sc.id)
         self.contentChanged.emit()
 
@@ -904,6 +913,33 @@ class VideoStudioWidget(QWidget):
             f"be deleted.")
         if reply != QMessageBox.StandardButton.Yes:
             return
+        # Capture the hops that touched this scene BEFORE delete
+        # cascades them away. Stash on a session-scoped memory
+        # keyed by (col, row, name) so the writer can re-bind them
+        # to a fresh scene placed at the same spot — a common flow
+        # when a beat gets reworked into a new card.
+        from time import time as _time
+        hops_in = [
+            (h.from_scene_id, h.label) for h in studio.hops
+            if h.to_scene_id == scene_id]
+        hops_out = [
+            (h.to_scene_id, h.label) for h in studio.hops
+            if h.from_scene_id == scene_id]
+        if hops_in or hops_out:
+            if not hasattr(self, "_orphaned_hops_memory"):
+                self._orphaned_hops_memory: list = []
+            self._orphaned_hops_memory.append({
+                "deleted_at": _time(),
+                "col": s.grid_col,
+                "row": s.grid_row,
+                "name": s.name or "",
+                "hops_in": hops_in,
+                "hops_out": hops_out,
+            })
+            # Cap memory so a long session doesn't accumulate
+            # forever — 30 most recent deletions is plenty.
+            self._orphaned_hops_memory = (
+                self._orphaned_hops_memory[-30:])
         # Clean clip files first; ignore failures so a deleted-on-
         # disk clip doesn't block the scene removal.
         for c in s.clips:
@@ -919,6 +955,94 @@ class VideoStudioWidget(QWidget):
         studio.delete_scene(scene_id)
         self._canvas.refresh_all()
         self.contentChanged.emit()
+
+    def _offer_rebind_orphaned_hops(self, new_scene) -> None:
+        """When a new scene lands on the canvas, see if a recently-
+        deleted scene matches its grid cell (or was deleted within
+        the last 60 s) and ask the writer whether to re-attach the
+        old hops to the new scene. This makes the swap-a-card-mid-
+        chain workflow painless — delete the old beat, add the new
+        beat, click Yes to keep the predecessor/successor links.
+        """
+        if not getattr(self, "_orphaned_hops_memory", None):
+            return
+        from time import time as _time
+        now = _time()
+        studio = self._studio()
+        if studio is None:
+            return
+        # Prefer same-cell match; fall back to most-recent within 60 s.
+        same_cell = [
+            m for m in self._orphaned_hops_memory
+            if m["col"] == new_scene.grid_col
+            and m["row"] == new_scene.grid_row]
+        if same_cell:
+            memory = same_cell[-1]
+        else:
+            recent = [
+                m for m in self._orphaned_hops_memory
+                if now - m["deleted_at"] <= 60.0]
+            if not recent:
+                return
+            memory = recent[-1]
+        # Filter the remembered hops down to ones whose other
+        # endpoint still exists.
+        live_in = [
+            (other, label) for other, label in memory["hops_in"]
+            if studio.get_scene(other) is not None]
+        live_out = [
+            (other, label) for other, label in memory["hops_out"]
+            if studio.get_scene(other) is not None]
+        n_in = len(live_in)
+        n_out = len(live_out)
+        if not (n_in or n_out):
+            return
+        prev_name = memory["name"] or "the previous scene"
+        msg = (
+            f"'{prev_name}' was just deleted with "
+            f"{n_in} incoming and {n_out} outgoing hop"
+            + ("s" if (n_in + n_out) != 1 else "")
+            + ".\n\nReattach those hops to "
+            f"'{new_scene.name or 'this new scene'}'?")
+        reply = QMessageBox.question(
+            self, "Inherit hops from deleted scene?", msg)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        added = 0
+        for other_id, label in live_in:
+            if studio.add_hop(other_id, new_scene.id, label):
+                added += 1
+        for other_id, label in live_out:
+            if studio.add_hop(new_scene.id, other_id, label):
+                added += 1
+        # Drop the memory entry so a second new scene doesn't get
+        # offered the same hops.
+        self._orphaned_hops_memory = [
+            m for m in self._orphaned_hops_memory
+            if m is not memory]
+        self._canvas.refresh_all()
+        self.contentChanged.emit()
+        self._update_status(
+            f"Reattached {added} hop"
+            + ("s" if added != 1 else "")
+            + f" to '{new_scene.name}'.")
+
+    def _open_hop_manager(self, scene_id: str) -> None:
+        """Open the list-based hop editor for one scene. The dialog
+        mutates the studio in place; we just refresh + emit on close
+        so the canvas redraws hops and autosave runs."""
+        studio = self._studio()
+        if studio is None:
+            return
+        from src.ui.video_studio.hop_manager_dialog import (
+            HopManagerDialog,
+        )
+        before = len(studio.hops)
+        dlg = HopManagerDialog(studio, scene_id, parent=self)
+        dlg.exec()
+        if len(studio.hops) != before:
+            self._canvas.refresh_all()
+            self.contentChanged.emit()
 
     def _connect_scenes(self, from_id: str, to_id: str) -> None:
         studio = self._studio()

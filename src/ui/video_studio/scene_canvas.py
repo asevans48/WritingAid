@@ -343,6 +343,7 @@ class SceneCanvasView(QGraphicsView):
     sceneEditRequested = pyqtSignal(str)        # scene_id
     addSceneRequested = pyqtSignal(QPointF)     # canvas (scene) pos
     connectRequested = pyqtSignal(str, str)     # from_id, to_id
+    manageHopsRequested = pyqtSignal(str)       # scene_id
     deleteSceneRequested = pyqtSignal(str)
     generateClipRequested = pyqtSignal(str)     # video clip
     generateImageRequested = pyqtSignal(str)    # image still
@@ -601,6 +602,9 @@ class SceneCanvasView(QGraphicsView):
         menu = QMenu(self)
         menu.addAction("Edit scene", lambda:
                        self.sceneEditRequested.emit(scene_id))
+        menu.addAction(
+            "Manage hops…",
+            lambda: self.manageHopsRequested.emit(scene_id))
         if self._connect_from_id is None:
             menu.addAction(
                 "Connect to … (then click another card)",
