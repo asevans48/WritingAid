@@ -17,7 +17,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 
 @dataclass
@@ -206,6 +206,157 @@ class MuxResult:
 MISMATCH_MODES = (
     "trim", "loop", "fade_extend", "extend_silent",
 )
+
+
+def mix_voiceover_segments(
+    segments: List[Any],
+    scene_visual_duration: float,
+    action_starts: Optional[dict] = None,
+    output_path: Optional[Path] = None,
+) -> "MuxResult":
+    """Render a single audio track from a scene's voiceover takes.
+
+    Each segment carries: ``audio_path``, ``start_at``,
+    ``in_point``, ``out_point``, ``gain_db``, ``fade_in_seconds``,
+    ``fade_out_seconds``, ``muted``, ``anchored_to_action_id``.
+    We build one ffmpeg ``filter_complex`` graph that:
+
+      * loads each non-muted segment as an input
+      * trims with ``atrim`` (in/out points within the source)
+      * applies ``volume`` for gain
+      * applies ``afade`` for fade-in / fade-out
+      * delays via ``adelay`` so each segment lands at the right
+        offset on the master timeline (anchor-resolved or raw)
+      * mixes everything into a single stereo track via ``amix``
+      * pads / trims to the scene's visual duration so the final
+        clip's audio aligns with the video / image / deck
+
+    Returns a ``MuxResult``. Caller uses the output_path with
+    ``mux_audio`` to attach the mixed track to the visuals.
+    """
+    if not ffmpeg_available():
+        return MuxResult(
+            success=False,
+            output_path=output_path or Path("voiceover.wav"),
+            error="ffmpeg not found on PATH.")
+    if output_path is None:
+        return MuxResult(
+            success=False, output_path=Path("voiceover.wav"),
+            error="output_path is required.")
+    active = [
+        s for s in (segments or [])
+        if not getattr(s, "muted", False)
+        and getattr(s, "audio_path", "")
+        and Path(s.audio_path).exists()
+        and Path(s.audio_path).stat().st_size > 0
+    ]
+    if not active:
+        return MuxResult(
+            success=False, output_path=output_path,
+            error="No active voiceover segments to mix.")
+    # Resolve each segment's start time. When the segment is
+    # anchored to an action, the action's slide-start wins —
+    # caller supplies ``action_starts`` (action_id → seconds).
+    action_starts = action_starts or {}
+    inputs: List[str] = []
+    filter_parts: List[str] = []
+    mix_labels: List[str] = []
+    for idx, seg in enumerate(active):
+        inputs.extend(["-i", str(Path(seg.audio_path).resolve())])
+        in_pt = float(getattr(seg, "in_point", 0.0) or 0.0)
+        out_pt = float(getattr(seg, "out_point", 0.0) or 0.0)
+        gain_db = float(getattr(seg, "gain_db", 0.0) or 0.0)
+        fade_in = float(getattr(seg, "fade_in_seconds", 0.0) or 0.0)
+        fade_out = float(getattr(seg, "fade_out_seconds", 0.0) or 0.0)
+        anchor = getattr(seg, "anchored_to_action_id", None)
+        start = action_starts.get(anchor) if anchor else None
+        if start is None:
+            start = float(getattr(seg, "start_at", 0.0) or 0.0)
+        start = max(0.0, start)
+        # Build the per-segment filter chain.
+        chain: List[str] = []
+        if out_pt > in_pt > 0:
+            chain.append(f"atrim={in_pt:.3f}:{out_pt:.3f}")
+        elif in_pt > 0:
+            chain.append(f"atrim=start={in_pt:.3f}")
+        elif out_pt > 0:
+            chain.append(f"atrim=end={out_pt:.3f}")
+        # asetpts so trims re-base to 0 — without this adelay
+        # would skip over the trimmed lead-in.
+        chain.append("asetpts=PTS-STARTPTS")
+        if gain_db != 0.0:
+            # Convert dB to linear ratio. ffmpeg's volume filter
+            # also accepts dB directly via ``volume=NdB`` but
+            # explicit ratio is clearer.
+            chain.append(f"volume={gain_db:.2f}dB")
+        if fade_in > 0:
+            chain.append(
+                f"afade=t=in:st=0:d={fade_in:.3f}")
+        if fade_out > 0:
+            played = (
+                (out_pt - in_pt) if (out_pt > in_pt) else
+                float(
+                    getattr(seg, "source_duration_seconds", 0.0))
+                or 0.0)
+            if played > 0:
+                fade_start = max(0.0, played - fade_out)
+                chain.append(
+                    f"afade=t=out:"
+                    f"st={fade_start:.3f}:d={fade_out:.3f}")
+        if start > 0:
+            chain.append(
+                f"adelay={int(start * 1000)}|{int(start * 1000)}")
+        # Force stereo so amix doesn't fail on mono ↔ stereo mix.
+        chain.append("aformat=channel_layouts=stereo")
+        label = f"a{idx}"
+        filter_parts.append(
+            f"[{idx}:a]" + ",".join(chain) + f"[{label}]")
+        mix_labels.append(f"[{label}]")
+    # Mix everything down. ``normalize=0`` keeps perceptual loudness
+    # consistent with the writer's chosen gains (default amix
+    # normalises which writers usually don't want).
+    mix_filter = (
+        "".join(mix_labels)
+        + f"amix=inputs={len(mix_labels)}:duration=longest:normalize=0[mix]")
+    filter_parts.append(mix_filter)
+    # Pad / trim to scene visual duration.
+    if scene_visual_duration > 0:
+        filter_parts.append(
+            f"[mix]apad=pad_dur=0,"
+            f"atrim=0:{scene_visual_duration:.3f}[out]")
+        out_label = "out"
+    else:
+        out_label = "mix"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg", "-y",
+        *inputs,
+        "-filter_complex", ";".join(filter_parts),
+        "-map", f"[{out_label}]",
+        "-c:a", "pcm_s16le",
+        str(output_path),
+    ]
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=600)
+        if proc.returncode != 0:
+            return MuxResult(
+                success=False, output_path=output_path,
+                error=(
+                    "ffmpeg voiceover mix failed. stderr "
+                    "(last 400 chars):\n"
+                    + (proc.stderr or "")[-400:]))
+        return MuxResult(
+            success=True, output_path=output_path,
+            effective_duration=float(scene_visual_duration))
+    except subprocess.TimeoutExpired:
+        return MuxResult(
+            success=False, output_path=output_path,
+            error="ffmpeg voiceover mix timed out after 10 minutes.")
+    except Exception as e:
+        return MuxResult(
+            success=False, output_path=output_path,
+            error=f"ffmpeg voiceover mix raised: {e}")
 
 
 def mux_audio(

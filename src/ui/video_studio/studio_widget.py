@@ -1790,11 +1790,16 @@ class VideoStudioWidget(QWidget):
 
     def _stitch_slide_deck_for_scene(self, scene_id: str) -> None:
         """Stitch this scene's per-action images into a single
-        slide-deck video. Walks the actions in order, picks the
-        favorite image for each (or the first ``included_in_slideshow``
-        if no favorite set), and holds each slide for either the
-        action's own ``display_seconds`` or — when that's 0 — the
-        scene's ``image_display_seconds``.
+        slide-deck video. Walks the actions in order and takes
+        each action's ``favorite_image()`` (the favorite when the
+        writer has starred one, otherwise the first generated
+        image as a safe default) as that action's slide. Each
+        slide holds for the action's own ``display_seconds`` or,
+        when that's 0, the scene's ``image_display_seconds``.
+
+        Actions with no images at all — or whose favorite file is
+        gone from disk — are skipped with a confirmation so the
+        writer doesn't accidentally ship a half-finished deck.
 
         The resulting MP4 is attached to the scene as a VideoClip
         with ``clip_type="slideshow"`` so it surfaces in the
@@ -1816,43 +1821,95 @@ class VideoStudioWidget(QWidget):
                 "it (brew install ffmpeg / apt install ffmpeg) and "
                 "try again.")
             return
-        # Collect one image per action, in order. Favorite first;
-        # fall back to first included; skip the action when no
-        # included image exists so the user sees a clean error
-        # instead of a half-stitched deck.
+        # One slide per action, in action order. The favorite is
+        # the writer's chosen "best take" for that beat — that's
+        # the slide we use. If no favorite is set explicitly we
+        # fall back to the first image so an action with a single
+        # generation Just Works without forcing a star click.
         clip_paths: List[Path] = []
         clip_durations: List[float] = []
         scene_default = float(scene.image_display_seconds or 4.0)
         missing_actions: List[str] = []
-        for action in scene.actions:
-            included = action.included_images()
-            if not included:
-                missing_actions.append(action.name or action.id)
+        # Console trace of the selection — writers debugging
+        # "missing actions" or "deck cut at a minute" can read
+        # this to see exactly which image fed each slide, what
+        # duration it held, and why any action was skipped.
+        print(
+            f"[slide-deck] '{scene.name or scene.id}' — "
+            f"{len(scene.actions)} action(s); "
+            f"scene default hold {scene_default:.2f}s")
+        for idx, action in enumerate(scene.actions, start=1):
+            chosen = action.favorite_image()
+            label = action.name or action.id
+            if chosen is None:
+                missing_actions.append(label)
+                print(
+                    f"  [{idx}] {label}: skipped "
+                    f"(no images on action)")
                 continue
-            chosen = action.favorite_image() or included[0]
-            if (not chosen or not chosen.file_path
-                    or not Path(chosen.file_path).exists()):
-                missing_actions.append(action.name or action.id)
+            if not chosen.file_path:
+                missing_actions.append(label)
+                print(
+                    f"  [{idx}] {label}: skipped "
+                    f"(image record has empty file_path)")
+                continue
+            path = Path(chosen.file_path)
+            try:
+                if not path.exists():
+                    missing_actions.append(label)
+                    print(
+                        f"  [{idx}] {label}: skipped "
+                        f"(file not found: {path})")
+                    continue
+                if path.stat().st_size == 0:
+                    missing_actions.append(label)
+                    print(
+                        f"  [{idx}] {label}: skipped "
+                        f"(file is 0 bytes: {path})")
+                    continue
+            except Exception as e:
+                missing_actions.append(label)
+                print(
+                    f"  [{idx}] {label}: skipped "
+                    f"(stat error: {e})")
                 continue
             dur = float(action.display_seconds or 0.0)
-            if dur <= 0:
+            using_default = dur <= 0
+            if using_default:
                 dur = scene_default
-            clip_paths.append(Path(chosen.file_path))
-            clip_durations.append(max(0.5, dur))
+            dur = max(0.5, dur)
+            why = (
+                "favorite" if action.favorite_image_id
+                else "first-image fallback")
+            print(
+                f"  [{idx}] {label}: include {path.name} "
+                f"({why}); hold {dur:.2f}s"
+                + (" [scene default]" if using_default else ""))
+            clip_paths.append(path)
+            clip_durations.append(dur)
+        total_runtime = sum(clip_durations)
+        print(
+            f"[slide-deck] '{scene.name or scene.id}' — "
+            f"{len(clip_paths)} slide(s) selected, "
+            f"~{total_runtime:.2f}s total; "
+            f"{len(missing_actions)} skipped")
         if not clip_paths:
             QMessageBox.information(
                 self, "Nothing to stitch",
-                "This scene has no included action images yet. "
-                "Click the 📑 Deck button (or use 'Generate slide "
-                "deck' from the right-click menu) first, then try "
-                "again.")
+                "No actions have a favorite image yet. Click the "
+                "📑 Deck button (or use 'Generate slide deck' from "
+                "the right-click menu) to render images, then mark "
+                "a favorite per action in the action editor.")
             return
         if missing_actions:
-            # Confirm — partial stitches are common while iterating.
+            # Partial stitches are common while iterating — confirm
+            # rather than block. The skip list calls out which
+            # actions had no favorite image so the writer can
+            # decide whether to fix them first or ship as-is.
             reply = QMessageBox.question(
-                self, "Skip actions without images?",
-                f"{len(missing_actions)} action(s) have no included "
-                f"image yet and will be skipped:\n  • "
+                self, "Skip actions without a favorite image?",
+                f"{len(missing_actions)} action(s) don't have a "
+                f"favorite image yet and will be skipped:\n  • "
                 + "\n  • ".join(missing_actions[:6])
                 + ("\n  • …" if len(missing_actions) > 6 else "")
                 + f"\n\nStitch the remaining {len(clip_paths)} "
@@ -1890,6 +1947,14 @@ class VideoStudioWidget(QWidget):
             clip_type="slideshow",
         )
         scene.add_clip(clip)
+        # The newly-stitched deck IS the current truth for this
+        # scene — always make it the favorite so chapter export
+        # pulls the latest assembly. Without this, a writer who
+        # adds actions and re-stitches keeps shipping the stale
+        # earlier stitch (add_clip only sets favorite when none
+        # exists), which is the actions-cut-off symptom reported
+        # during deck exports.
+        scene.favorite_clip_id = clip.id
         self._canvas.refresh_scene_card(scene_id)
         self.contentChanged.emit()
         self._update_status(
@@ -2284,6 +2349,247 @@ class VideoStudioWidget(QWidget):
     # ------------------------------------------------------------------
     # Stitching
     # ------------------------------------------------------------------
+    def _classify_chapter_export_scenes(
+        self, scenes: list,
+    ) -> tuple:
+        """Split chapter scenes into (ready, stitchable, missing)
+        based on whether their output is usable for the deck.
+
+        Ready
+            Has a real (non-placeholder, on-disk) favorite clip.
+            ``favorite_clip()`` falls back to the first clip when
+            no favorite is set, so unfavorited-but-rendered scenes
+            count as ready.
+        Stitchable
+            Slideshow scene with no usable scene-level clip yet,
+            BUT every (or enough) action has a favorite image on
+            disk. The export can stitch these on the fly without
+            asking the writer to generate anything new — the
+            images they starred ARE the deck.
+        Missing
+            No images anywhere, only placeholders, or the favorite
+            file is gone. These are the scenes the writer can be
+            offered "generate now?" for.
+        """
+        ready: list = []
+        stitchable: list = []
+        missing: list = []
+        for scene in scenes:
+            has_clip = self._scene_has_usable_favorite_clip(scene)
+            can_stitch = (
+                self._scene_can_stitch_from_action_favorites(scene))
+            if has_clip:
+                # For slideshow scenes, a stale stitch (the writer
+                # added new action images after the last stitch)
+                # would otherwise ship as ready and the chapter
+                # deck would cut off the newer beats. Force re-
+                # stitch whenever a fresher action image exists.
+                if (scene.mode == "slideshow"
+                        and can_stitch
+                        and not self._slideshow_stitch_is_current(
+                            scene)):
+                    stitchable.append(scene)
+                    continue
+                ready.append(scene)
+                continue
+            if can_stitch:
+                stitchable.append(scene)
+                continue
+            missing.append(scene)
+        return ready, stitchable, missing
+
+    def _slideshow_stitch_is_current(self, scene) -> bool:
+        """True when the scene's latest stitched-slideshow clip is
+        as fresh as (or fresher than) every action's favorite
+        image. False when the writer added / re-rolled an image
+        after the last stitch — that's the signal to re-stitch so
+        the new beats actually land in the deck.
+
+        Non-slideshow scenes return True (the check doesn't apply).
+        """
+        if scene.mode != "slideshow":
+            return True
+        latest_stitch = None
+        for c in scene.clips:
+            if getattr(c, "clip_type", "") != "slideshow":
+                continue
+            if (latest_stitch is None
+                    or c.created_at > latest_stitch.created_at):
+                latest_stitch = c
+        if latest_stitch is None:
+            return False
+        latest_image_time = None
+        for a in getattr(scene, "actions", None) or []:
+            img = a.favorite_image()
+            if img is None:
+                continue
+            t = getattr(img, "created_at", None)
+            if t is None:
+                continue
+            if (latest_image_time is None
+                    or t > latest_image_time):
+                latest_image_time = t
+        if latest_image_time is None:
+            return True
+        return latest_stitch.created_at >= latest_image_time
+
+    def _scene_has_usable_favorite_clip(self, scene) -> bool:
+        """True when the scene already has a real clip on disk —
+        either explicitly favorited or as a fallback non-placeholder
+        clip the writer rendered without starring."""
+        clip = scene.favorite_clip()
+        if clip is None:
+            return False
+        file_path = (clip.file_path or "").strip()
+        if not file_path:
+            return False
+        try:
+            p = Path(file_path)
+            if not p.exists() or p.stat().st_size == 0:
+                return False
+        except Exception:
+            return False
+        if not getattr(clip, "is_placeholder", False):
+            return True
+        # Placeholder favorite — accept the scene if a real backup
+        # clip exists elsewhere on it (writer rendered without
+        # re-marking favorite).
+        for c in scene.clips:
+            if (c.file_path
+                    and not c.is_placeholder
+                    and Path(c.file_path).exists()
+                    and Path(c.file_path).stat().st_size > 0):
+                return True
+        return False
+
+    def _scene_can_stitch_from_action_favorites(
+        self, scene,
+    ) -> bool:
+        """True when this is a slideshow scene with at least one
+        action whose favorite image is real and on disk. The
+        chapter export uses this to stitch silently — no need to
+        prompt the writer for generation when the images they
+        already favorited can become the deck right now."""
+        if scene.mode != "slideshow":
+            return False
+        actions = getattr(scene, "actions", None) or []
+        if not actions:
+            return False
+        for a in actions:
+            img = a.favorite_image()
+            if img is None:
+                continue
+            path_str = (img.file_path or "").strip()
+            if not path_str:
+                continue
+            try:
+                p = Path(path_str)
+                if p.exists() and p.stat().st_size > 0:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _can_generate_now(self) -> bool:
+        """True when we have at least an image backend installed —
+        enough to render an image still or per-action slide.
+        Chapter export doesn't need a video backend; image is the
+        common denominator across slideshow + single-still + video
+        modes."""
+        b = self._current_image_backend
+        try:
+            return bool(b is not None and b.is_installed())
+        except Exception:
+            return False
+
+    def _generate_for_chapter_export(
+        self, missing_scenes: list,
+    ) -> tuple:
+        """Best-effort generate a usable favorite for each scene
+        that the deck would otherwise skip. Slideshow scenes get
+        their per-action slide deck rendered + stitched; other
+        scenes get a single image still.
+
+        Returns (filled, still_missing) — scenes that now have a
+        usable favorite vs. those generation couldn't help.
+        """
+        filled: list = []
+        still_missing: list = []
+        for scene in missing_scenes:
+            self._update_status(
+                f"Generating for '{scene.name or scene.id}'…")
+            try:
+                if (scene.mode == "slideshow"
+                        and getattr(scene, "actions", None)):
+                    # Per-action images, then stitch. Each action's
+                    # favorite_image() is the slide; we only stitch
+                    # when at least one action has one so the
+                    # stitch path doesn't pop its own "nothing to
+                    # do" dialog during the batch.
+                    self._generate_slide_deck_for_scene(scene.id)
+                    if any(
+                        a.favorite_image() is not None
+                        for a in scene.actions):
+                        self._stitch_slide_deck_for_scene(
+                            scene.id)
+                else:
+                    self._generate_image_for_scene(scene.id)
+            except Exception as e:
+                print(
+                    f"[video_studio] auto-gen for "
+                    f"'{scene.name}' raised: {e}")
+            # Re-classify just this one scene. ``ready`` OR
+            # ``stitchable`` both count as filled — the export
+            # auto-stitches stitchable scenes a moment later, no
+            # extra writer input needed.
+            ready, stitchable, _ = (
+                self._classify_chapter_export_scenes([scene]))
+            if ready or stitchable:
+                filled.append(scene)
+            else:
+                still_missing.append(scene)
+        return filled, still_missing
+
+    def _auto_stitch_for_chapter_export(
+        self, stitchable_scenes: list,
+    ) -> list:
+        """Stitch each ``stitchable`` slideshow scene silently from
+        its existing per-action favorites so the chapter deck has a
+        usable scene-level clip to pick up. Returns the list of
+        scenes that still aren't ready after the silent pass
+        (e.g. ffmpeg failed) so the caller can warn or skip them.
+        """
+        still_missing: list = []
+        # Patch QMessageBox briefly so the existing per-scene stitch
+        # helper's confirm-skip and ffmpeg dialogs don't interrupt
+        # the batch. We only suppress the "skip actions without a
+        # favorite" prompt (Yes by default), and the "Nothing to
+        # stitch" info; real errors still propagate via the return
+        # classification.
+        from PyQt6.QtWidgets import QMessageBox
+        orig_question = QMessageBox.question
+        orig_info = QMessageBox.information
+        QMessageBox.question = staticmethod(
+            lambda *a, **kw: QMessageBox.StandardButton.Yes)
+        QMessageBox.information = staticmethod(
+            lambda *a, **kw: None)
+        try:
+            for scene in stitchable_scenes:
+                try:
+                    self._stitch_slide_deck_for_scene(scene.id)
+                except Exception as e:
+                    print(
+                        f"[video_studio] auto-stitch for "
+                        f"'{scene.name}' raised: {e}")
+                ready, stitchable, _ = (
+                    self._classify_chapter_export_scenes([scene]))
+                if not (ready or stitchable):
+                    still_missing.append(scene)
+        finally:
+            QMessageBox.question = orig_question
+            QMessageBox.information = orig_info
+        return still_missing
+
     def _export_chapter_deck(self) -> None:
         """Stitch every scene in one chapter into a single deck.
 
@@ -2330,20 +2636,120 @@ class VideoStudioWidget(QWidget):
         if not chapter_id:
             return
         with_titles = dlg.include_title_cards()
+        export_format = dlg.selected_format()
         scenes = collect_chapter_scenes(studio, chapter_id)
         if not scenes:
             QMessageBox.information(
                 self, "No scenes",
                 "That chapter has no scenes linked to it yet.")
             return
-        # Resolve chapter label + scene title text for the title
-        # cards (passed to deck_export.build_deck_entries).
+        # ── Pre-pass: figure out which scenes already have a real
+        # favorite image / video, which can be stitched from
+        # already-favorited action images, and which truly need
+        # generation. We auto-stitch the stitchable bucket
+        # silently — the writer already starred favorites per
+        # action, so prompting them to "generate" would be wrong.
+        ready, stitchable, missing = (
+            self._classify_chapter_export_scenes(scenes))
+        if stitchable:
+            self._update_status(
+                f"Stitching {len(stitchable)} slide deck"
+                + ("s" if len(stitchable) != 1 else "")
+                + " from existing favorites…")
+            still_pending = self._auto_stitch_for_chapter_export(
+                stitchable)
+            # Re-classify so the next prompt sees the freshly-
+            # stitched scenes as ready; anything stitcher couldn't
+            # save lands back in the missing bucket.
+            ready, _, missing = (
+                self._classify_chapter_export_scenes(scenes))
+        if missing:
+            can_gen = self._can_generate_now()
+            if can_gen:
+                names = [
+                    s.name or f"Scene {i+1}"
+                    for i, s in enumerate(missing)]
+                prompt_text = (
+                    f"{len(missing)} of {len(scenes)} scene"
+                    + ("s" if len(scenes) != 1 else "")
+                    + " in this chapter don't have a favorite "
+                    "image / video yet:\n  • "
+                    + "\n  • ".join(names[:8])
+                    + ("\n  • …" if len(names) > 8 else "")
+                    + "\n\nGenerate them now using the current "
+                    "image backend?")
+                box = QMessageBox(self)
+                box.setIcon(QMessageBox.Icon.Question)
+                box.setWindowTitle(
+                    "Generate missing scene images?")
+                box.setText(prompt_text)
+                gen_btn = box.addButton(
+                    "Generate now",
+                    QMessageBox.ButtonRole.AcceptRole)
+                skip_btn = box.addButton(
+                    "Skip them",
+                    QMessageBox.ButtonRole.ActionRole)
+                cancel_btn = box.addButton(
+                    "Cancel export",
+                    QMessageBox.ButtonRole.RejectRole)
+                box.setDefaultButton(gen_btn)
+                box.exec()
+                clicked = box.clickedButton()
+                if clicked == cancel_btn:
+                    self._update_status(
+                        "Chapter deck export cancelled.")
+                    return
+                if clicked == gen_btn:
+                    filled, still_missing = (
+                        self._generate_for_chapter_export(
+                            missing))
+                    if filled:
+                        ready = ready + filled
+                    missing = still_missing
+            # else: no usable image backend → fall through to
+            # build_deck_entries which already reports each skip.
+        if not ready:
+            QMessageBox.information(
+                self, "Nothing to stitch",
+                "No scenes have a usable favorite output yet."
+                + (" Configure an image backend in Settings to "
+                   "enable in-place generation."
+                   if not self._can_generate_now() else
+                   " Try generating per-scene first."))
+            return
+        # Resolve chapter label for filenames + (video) title cards.
         chapter_label = next(
             (label for cid, label, _ in chapters_with_counts
              if cid == chapter_id),
             "Chapter")
         out_root = self._studio_root_dir() / "chapter_decks"
         out_root.mkdir(parents=True, exist_ok=True)
+        safe_label = (
+            chapter_label.replace("/", "-")
+                         .replace(":", "-").strip() or "chapter")
+        if export_format == "pptx":
+            self._save_chapter_deck_as_pptx(
+                scenes=scenes,
+                chapter_label=chapter_label,
+                out_root=out_root,
+                safe_label=safe_label)
+        else:
+            self._save_chapter_deck_as_video(
+                scenes=scenes,
+                chapter_id=chapter_id,
+                chapter_label=chapter_label,
+                with_titles=with_titles,
+                out_root=out_root,
+                safe_label=safe_label)
+
+    def _save_chapter_deck_as_video(
+        self, *, scenes, chapter_id, chapter_label, with_titles,
+        out_root, safe_label,
+    ) -> None:
+        """Stitch the chapter into a single MP4 — the legacy path,
+        broken out so the PPTX branch stays parallel."""
+        from src.video_studio.deck_export import build_deck_entries
+        from src.video_studio.stitcher import stitch_clips
         title_card_dir = (
             out_root / f"{chapter_id}_titles" if with_titles else None)
         paths, durations, skipped = build_deck_entries(
@@ -2360,11 +2766,6 @@ class VideoStudioWidget(QWidget):
                 + "\n  • ".join(skipped[:8])
                 + ("\n  • …" if len(skipped) > 8 else ""))
             return
-        # Suggest a filename that survives a re-export — bump
-        # ``_<n>`` if a file at the same base name already exists.
-        safe_label = (
-            chapter_label.replace("/", "-")
-                         .replace(":", "-").strip() or "chapter")
         suggested = out_root / f"{safe_label}_deck.mp4"
         n = 1
         while suggested.exists():
@@ -2400,6 +2801,52 @@ class VideoStudioWidget(QWidget):
         QMessageBox.information(self, "Chapter deck exported", msg)
         self._update_status(
             f"Chapter deck saved: {Path(out_str).name}")
+
+    def _save_chapter_deck_as_pptx(
+        self, *, scenes, chapter_label, out_root, safe_label,
+    ) -> None:
+        """Compose the chapter into a .pptx via the deck_export
+        helper. One slide per scene; embedded images, embedded
+        movies for video / slideshow clips. python-pptx is an
+        optional dep — when missing we surface a clear hint."""
+        from src.video_studio.deck_export import (
+            export_chapter_pptx)
+        suggested = out_root / f"{safe_label}_deck.pptx"
+        n = 1
+        while suggested.exists():
+            n += 1
+            suggested = (
+                out_root / f"{safe_label}_deck_{n:02d}.pptx")
+        out_str, _ = QFileDialog.getSaveFileName(
+            self, "Save chapter deck",
+            str(suggested), "PowerPoint (*.pptx)")
+        if not out_str:
+            return
+        self._update_status(
+            f"Composing PowerPoint deck — "
+            f"{len(scenes)} scene(s)…")
+        success, message, skipped = export_chapter_pptx(
+            scenes=scenes,
+            output_path=Path(out_str),
+            chapter_title=chapter_label)
+        if not success:
+            QMessageBox.warning(
+                self, "Export failed", message)
+            self._update_status("")
+            return
+        body = (
+            f"Saved PowerPoint deck:\n{out_str}\n\n"
+            f"Composed {len(scenes)} slide(s) for "
+            f"{chapter_label}.")
+        if skipped:
+            body += (
+                f"\n\nNotes:\n  • "
+                + "\n  • ".join(skipped[:10])
+                + ("\n  • …" if len(skipped) > 10 else ""))
+        QMessageBox.information(
+            self, "Chapter deck exported", body)
+        self._update_status(
+            f"PowerPoint deck saved: {Path(out_str).name}")
 
     def _enumerate_chapters_with_scenes(
         self, studio: Any,

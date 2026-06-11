@@ -40,9 +40,10 @@ class ChapterDeckExportDialog(QDialog):
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(
-            "Pick a chapter to export as a single video. Each "
-            "scene's favorite output (image, video, or stitched "
-            "slide deck) lands in the chapter deck in scene order."))
+            "Pick a chapter and the output format. Each scene's "
+            "favorite output (image, video, or stitched slide "
+            "deck) becomes one segment of the export, in scene "
+            "order."))
         form = QFormLayout()
         self._chapter_combo = QComboBox()
         for ch_id, label, count in self._chapters:
@@ -55,13 +56,36 @@ class ChapterDeckExportDialog(QDialog):
         # case but defensive-disable here keeps the dialog honest
         # if it's ever opened directly from a test or harness.
         form.addRow("Chapter", self._chapter_combo)
+
+        # Format picker — Video (MP4) or PowerPoint (PPTX).
+        # PowerPoint output skips title-card images (it makes its
+        # own title slides) and embeds each scene's favorite still
+        # as the slide image; videos are written as media objects
+        # so they play when the deck is opened.
+        self._format_combo = QComboBox()
+        self._format_combo.addItem(
+            "🎬 Video (MP4, stitched)", "video")
+        self._format_combo.addItem(
+            "📊 PowerPoint (PPTX, one slide per scene)", "pptx")
+        self._format_combo.setToolTip(
+            "Video: ffmpeg-stitched MP4, ideal for a single shareable "
+            "render. PowerPoint: one slide per scene with the scene "
+            "title, description, and embedded image / video — easier "
+            "to hand to a co-writer or edit further in Keynote / "
+            "Slides.")
+        self._format_combo.currentIndexChanged.connect(
+            self._on_format_changed)
+        form.addRow("Format", self._format_combo)
+
         self._title_card_check = QCheckBox(
             "Add a title card before each scene")
         self._title_card_check.setChecked(True)
         self._title_card_check.setToolTip(
             "Renders a clean dark slate with the scene name + "
             "description, held for ~2.5 seconds. Disable for a "
-            "tighter deck without breaks between scenes.")
+            "tighter deck without breaks between scenes. "
+            "PowerPoint format ignores this — slides already "
+            "carry their own titles.")
         form.addRow("", self._title_card_check)
         layout.addLayout(form)
         self._summary_label = QLabel("")
@@ -99,14 +123,37 @@ class ChapterDeckExportDialog(QDialog):
         if idx < 0:
             return
         _id, label, count = self._chapters[idx]
-        self._summary_label.setText(
-            f"Will stitch {count} scene"
-            + ("s" if count != 1 else "")
-            + f" from {label}. Each scene's favorite clip / image / "
-            "stitched slide deck contributes one segment.")
+        fmt = self._format_combo.currentData()
+        if fmt == "video":
+            self._summary_label.setText(
+                f"Will stitch {count} scene"
+                + ("s" if count != 1 else "")
+                + f" from {label} into a stitched slide deck. "
+                "Each scene's favorite image / video / stitched "
+                "slide deck contributes one segment.")
+        else:
+            self._summary_label.setText(
+                f"Will compose a PowerPoint deck from {label} — "
+                "one slide per action favorite image (or per "
+                "scene when the scene has no actions). No text "
+                "or titles — just the images, so you can arrange "
+                "and annotate freely in PowerPoint, Keynote, or "
+                "Slides.")
+
+    def _on_format_changed(self, _index: int) -> None:
+        is_video = (self._format_combo.currentData() == "video")
+        # Title cards only make sense for the video stitch — PPTX
+        # gives every slide a real title already.
+        self._title_card_check.setEnabled(is_video)
+        self._refresh_summary()
 
     def selected_chapter_id(self) -> Optional[str]:
         return self._chapter_combo.currentData()
 
     def include_title_cards(self) -> bool:
         return self._title_card_check.isChecked()
+
+    def selected_format(self) -> str:
+        """Return ``"video"`` or ``"pptx"`` — the host branches on
+        this to pick stitch_clips vs. the python-pptx exporter."""
+        return self._format_combo.currentData() or "video"

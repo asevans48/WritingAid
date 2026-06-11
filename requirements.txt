@@ -82,6 +82,12 @@ psutil>=5.9.0
 Pillow>=11.1.0
 requests>=2.32.0
 
+# PowerPoint export — used by the Video Studio's chapter-deck
+# exporter when the writer picks a .pptx output. Optional at
+# runtime: the exporter degrades to a clear "install python-pptx"
+# message if the import fails.
+python-pptx>=1.0.0
+
 # Apple Silicon (MLX) - Local LLM Inference
 # These are macOS/Apple Silicon only. Install on Mac with:
 #   pip install mlx mlx-lm mlx-vlm

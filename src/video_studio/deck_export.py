@@ -213,6 +213,267 @@ def collect_chapter_scenes(
         members, key=lambda s: (s.grid_row, s.grid_col))
 
 
+def export_chapter_pptx(
+    scenes: List[Any],
+    output_path: Path,
+    chapter_title: str = "",
+) -> Tuple[bool, str, List[str]]:
+    """Compose a PowerPoint (.pptx) from the chapter's action images.
+
+    One slide per ACTION favorite image (or per scene when the
+    scene has no actions). Slides are intentionally empty — no
+    titles, no descriptions, no overlays — so the writer can take
+    the deck into PowerPoint / Keynote / Slides and arrange,
+    annotate, or re-time freely without first deleting our text.
+    Each image is fitted to the slide preserving its aspect ratio
+    and centered on a black background.
+
+    Selection rule per scene:
+      * Slideshow scenes → walk every action and use
+        ``action.favorite_image()`` (the favorite when starred,
+        or the first generated image as fallback).
+      * Non-slideshow scenes (single image or video mode) → use
+        ``scene.favorite_clip()`` so the writer still gets one
+        slide per scene to insert / replace later.
+
+    Returns ``(success, message, skipped)``. ``skipped`` is a list
+    of human-readable per-action / per-scene reasons.
+
+    python-pptx is an optional dependency. When unavailable, the
+    return value is ``(False, "python-pptx not installed: …", [])``
+    so the host can surface a clear install hint.
+    """
+    try:
+        from pptx import Presentation
+        from pptx.util import Emu, Inches
+        from pptx.dml.color import RGBColor
+    except Exception as e:
+        return (
+            False,
+            (
+                "python-pptx isn't installed in this environment. "
+                "Install it with:\n  pip install python-pptx\n\n"
+                f"Underlying error: {e}"),
+            [])
+    if not scenes:
+        return (
+            False, "No scenes to export.", [])
+    # 16:9 widescreen — the universal slide deck aspect ratio.
+    prs = Presentation()
+    prs.slide_width = Inches(13.333)
+    prs.slide_height = Inches(7.5)
+    blank_layout = prs.slide_layouts[6]
+    slide_w_emu = int(prs.slide_width)
+    slide_h_emu = int(prs.slide_height)
+    skipped: List[str] = []
+
+    IMAGE_EXTS = {
+        ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+    VIDEO_EXTS = {
+        ".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"}
+
+    def _add_image_slide(
+        image_path: Path, label: str,
+    ) -> None:
+        """Drop one full-bleed image slide on a black background.
+        No text — the deck is a sequence of images the writer can
+        edit / re-arrange directly in PowerPoint."""
+        slide = prs.slides.add_slide(blank_layout)
+        _set_slide_background(slide, RGBColor(0x00, 0x00, 0x00))
+        try:
+            left, top, width, height = _fit_to_slide(
+                image_path, slide_w_emu, slide_h_emu)
+            slide.shapes.add_picture(
+                str(image_path), left, top,
+                width=width, height=height)
+        except Exception as e:
+            skipped.append(
+                f"{label}: PPTX embed failed ({e})")
+
+    def _add_video_slide(
+        video_path: Path, label: str,
+    ) -> None:
+        """Drop one full-bleed embedded video on a black slide.
+        The poster frame (when ffmpeg is available) shows up
+        before play; otherwise PowerPoint renders an empty
+        placeholder until the writer clicks."""
+        slide = prs.slides.add_slide(blank_layout)
+        _set_slide_background(slide, RGBColor(0x00, 0x00, 0x00))
+        try:
+            poster = _make_video_poster(video_path)
+            if poster is not None:
+                left, top, width, height = _fit_to_slide(
+                    poster, slide_w_emu, slide_h_emu)
+            else:
+                left = top = Emu(0)
+                width = slide_w_emu
+                height = slide_h_emu
+            slide.shapes.add_movie(
+                str(video_path), left, top, width, height,
+                poster_frame_image=(
+                    str(poster) if poster else None))
+        except Exception as e:
+            skipped.append(
+                f"{label}: PPTX embed failed ({e})")
+
+    def _emit_clip_slide(
+        clip_path: Path, label: str,
+    ) -> None:
+        suffix = clip_path.suffix.lower()
+        if suffix in IMAGE_EXTS:
+            _add_image_slide(clip_path, label)
+        elif suffix in VIDEO_EXTS:
+            _add_video_slide(clip_path, label)
+        else:
+            skipped.append(
+                f"{label}: unsupported format ({suffix})")
+
+    def _media_is_usable(path_str: str) -> Tuple[bool, str]:
+        if not path_str:
+            return False, "empty path"
+        try:
+            p = Path(path_str)
+        except Exception:
+            return False, "invalid path"
+        if not p.exists():
+            return False, f"file not found ({p.name})"
+        try:
+            if p.stat().st_size == 0:
+                return False, f"file is 0 bytes ({p.name})"
+        except Exception as e:
+            return False, f"stat error ({e})"
+        return True, ""
+
+    for idx, scene in enumerate(scenes, start=1):
+        scene_label = scene.name or f"Scene {idx}"
+        actions = (
+            getattr(scene, "actions", None) or []
+            if (getattr(scene, "mode", "") == "slideshow")
+            else [])
+        if actions:
+            # One slide per action — favorite image first, then
+            # fall back to images[0] via favorite_image().
+            for a_idx, action in enumerate(actions, start=1):
+                a_label = (
+                    f"{scene_label} → "
+                    + (action.name or f"action {a_idx}"))
+                chosen = action.favorite_image()
+                if chosen is None:
+                    skipped.append(
+                        f"{a_label}: no images on action")
+                    continue
+                ok, why = _media_is_usable(chosen.file_path)
+                if not ok:
+                    skipped.append(f"{a_label}: {why}")
+                    continue
+                if getattr(chosen, "is_placeholder", False):
+                    skipped.append(
+                        f"{a_label}: placeholder only")
+                _add_image_slide(
+                    Path(chosen.file_path), a_label)
+            continue
+        # Non-slideshow scene — use the scene's favorite clip so
+        # the writer still gets one slide per scene for re-arranging.
+        clip = scene.favorite_clip()
+        if clip is None:
+            skipped.append(f"{scene_label}: no favorite output")
+            continue
+        ok, why = _media_is_usable(clip.file_path)
+        if not ok:
+            skipped.append(f"{scene_label}: {why}")
+            continue
+        if getattr(clip, "is_placeholder", False):
+            skipped.append(f"{scene_label}: placeholder only")
+        _emit_clip_slide(Path(clip.file_path), scene_label)
+
+    if len(prs.slides) == 0:
+        return (
+            False,
+            "No usable images / clips in this chapter. "
+            "Generate or upload images for the scene actions "
+            "first, then try again.",
+            skipped)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        prs.save(str(output_path))
+    except Exception as e:
+        return (False, f"PowerPoint save failed: {e}", skipped)
+    return (
+        True,
+        f"PowerPoint deck saved to {output_path}.",
+        skipped)
+
+
+def _set_slide_background(slide, rgb_color) -> None:
+    """Set a solid-color background on a single slide. python-pptx
+    doesn't expose this directly so we drill through the XML."""
+    bg = slide.background
+    fill = bg.fill
+    fill.solid()
+    fill.fore_color.rgb = rgb_color
+
+
+def _fit_to_slide(
+    image_path: Path, slide_w_emu: int, slide_h_emu: int,
+) -> Tuple[int, int, int, int]:
+    """Compute (left, top, width, height) in EMUs that fits the
+    image inside the slide while preserving its aspect ratio and
+    centering it. Falls back to a full-bleed rect when the image
+    dimensions can't be probed.
+    """
+    try:
+        from PIL import Image
+        with Image.open(image_path) as im:
+            img_w, img_h = im.size
+    except Exception:
+        return (0, 0, slide_w_emu, slide_h_emu)
+    if img_w <= 0 or img_h <= 0:
+        return (0, 0, slide_w_emu, slide_h_emu)
+    slide_aspect = slide_w_emu / slide_h_emu
+    img_aspect = img_w / img_h
+    if img_aspect > slide_aspect:
+        # Wider than slide — fit to slide width.
+        width = slide_w_emu
+        height = int(slide_w_emu / img_aspect)
+        left = 0
+        top = (slide_h_emu - height) // 2
+    else:
+        # Taller than (or equal to) slide — fit to slide height.
+        height = slide_h_emu
+        width = int(slide_h_emu * img_aspect)
+        top = 0
+        left = (slide_w_emu - width) // 2
+    return (left, top, width, height)
+
+
+def _make_video_poster(video_path: Path) -> Optional[Path]:
+    """Best-effort poster frame for an embedded video — grabs
+    a single still ~1 second in via ffmpeg. Returns the path on
+    success, or None when ffmpeg is missing / extraction fails.
+    The pptx exporter shows a blank media tile rather than crash
+    when None is returned."""
+    import shutil as _shutil
+    import subprocess as _sp
+    if not _shutil.which("ffmpeg"):
+        return None
+    try:
+        poster = video_path.with_suffix(
+            video_path.suffix + ".poster.png")
+        if poster.exists():
+            return poster
+        proc = _sp.run(
+            ["ffmpeg", "-y", "-ss", "1",
+             "-i", str(video_path),
+             "-frames:v", "1",
+             str(poster)],
+            capture_output=True, text=True, timeout=30)
+        if proc.returncode == 0 and poster.exists():
+            return poster
+    except Exception:
+        return None
+    return None
+
+
 def build_deck_entries(
     scenes: List[Any],
     title_card_dir: Optional[Path] = None,

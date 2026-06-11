@@ -259,6 +259,72 @@ class Narration(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
 
 
+class VoiceoverSegment(BaseModel):
+    """One audio clip placed on the scene's voiceover timeline.
+
+    The scene's visuals (video clip, image still, or slide deck)
+    run from 0 → ``scene.effective_duration``. Each segment
+    references a SOURCE audio file (the recording or import) and
+    plays a slice of it at a chosen ``start_at`` on that timeline.
+    Multiple segments mix together — writers can layer narration
+    over ambient music, drop a beat-specific cue right before a
+    slide flip, or thread several short reads across a longer
+    video.
+
+    Sound-edit metadata is intentionally simple — gain in dB, fade
+    in/out in seconds, and trim points within the source — so the
+    UI can offer immediate sliders and the stitcher can render
+    everything in a single ffmpeg ``filter_complex`` pass at mux
+    time.
+    """
+    id: str = Field(default_factory=lambda: f"vo_{uuid4().hex[:10]}")
+    label: str = ""                    # human label ("intro", "stinger")
+    audio_path: str = ""               # absolute path to the source file
+    sidecar_path: str = ""
+    source: str = "imported"          # "imported" | "recorded" | "tts"
+    # Where on the scene's timeline this segment begins, in seconds.
+    start_at: float = 0.0
+    # Trim points within the SOURCE audio. ``in_point`` clips off
+    # the head; ``out_point`` clips the tail (0.0 means "to end").
+    # The played duration is roughly ``out_point - in_point`` if
+    # out_point > in_point, else ``source_duration - in_point``.
+    in_point: float = 0.0
+    out_point: float = 0.0
+    # Source media length probed via ffprobe at import. Lets the
+    # editor render a timeline ruler accurately without re-probing
+    # on every redraw.
+    source_duration_seconds: float = 0.0
+    # Sound controls. ``gain_db`` is amplification (negative =
+    # quieter, 0 = unchanged, +6 ≈ 2× perceived volume). Fades use
+    # linear curves so the stitcher's afade filter does the right
+    # thing without extra config.
+    gain_db: float = 0.0
+    fade_in_seconds: float = 0.0
+    fade_out_seconds: float = 0.0
+    muted: bool = False
+    # Slide anchoring — when the scene is in slideshow mode the
+    # writer can pin a segment to start exactly at the chosen
+    # slide's transition. Stitcher resolves the slide's start
+    # time at mux time, so the segment automatically moves if the
+    # writer changes per-action display_seconds. None → use the
+    # raw ``start_at`` time instead.
+    anchored_to_action_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
+
+    def effective_duration(self) -> float:
+        """Length of the slice this segment plays. 0 means
+        "to end of source" when source_duration is unknown."""
+        if self.out_point > self.in_point > 0:
+            return max(0.0, self.out_point - self.in_point)
+        if self.out_point > 0:
+            return max(0.0, self.out_point - self.in_point)
+        if self.source_duration_seconds > 0:
+            return max(0.0,
+                       self.source_duration_seconds - self.in_point)
+        return 0.0
+
+
 # Valid handlers for video-vs-audio length mismatches. The stitcher
 # reads ``Scene.video_audio_mismatch`` to pick one when muxing.
 VIDEO_AUDIO_MISMATCH_MODES = (
@@ -338,6 +404,13 @@ class Scene(BaseModel):
     # stitcher mixes it into the scene's clip using the rule named by
     # ``video_audio_mismatch`` to reconcile any length difference.
     narration: Optional[Narration] = None
+    # Voiceover timeline — zero or more audio clips arranged across
+    # the scene's visual duration. Mixed by the stitcher into a
+    # single audio track at mux time. Coexists with the legacy
+    # single-track ``narration`` field for backward compatibility:
+    # when both are set, the stitcher mixes them.
+    voiceover_segments: List["VoiceoverSegment"] = Field(
+        default_factory=list)
     # How to reconcile video length vs. narration audio length.
     # Defaults to "trim" — the safest, matches the default ffmpeg
     # behavior. Other options:

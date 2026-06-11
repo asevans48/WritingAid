@@ -217,7 +217,11 @@ class SceneActionDialog(QDialog):
         # uniform cadence on the scene and only override the beats
         # that should linger or flash by.
         self._display_seconds_spin = QDoubleSpinBox()
-        self._display_seconds_spin.setRange(0.0, 30.0)
+        # 0–600 s (10 min) per-slide hold. The earlier 30 s ceiling
+        # silently clamped longer holds the writer typed, which
+        # showed up downstream as a slide deck that "cut at a
+        # minute" once a couple of long beats stacked up.
+        self._display_seconds_spin.setRange(0.0, 600.0)
         self._display_seconds_spin.setDecimals(1)
         self._display_seconds_spin.setSingleStep(0.5)
         self._display_seconds_spin.setSpecialValueText(

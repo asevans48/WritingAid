@@ -314,7 +314,10 @@ class SceneEditorDialog(QDialog):
         # Both fall back to the studio default at runtime.
         duration_row = QHBoxLayout()
         self._target_duration_spin = QDoubleSpinBox()
-        self._target_duration_spin.setRange(0.0, 60.0)
+        # 0–600 s (10 min) — the prior 60 s cap silently clamped
+        # writer input, which surfaced as decks "cut at a minute"
+        # in long slideshow scenes.
+        self._target_duration_spin.setRange(0.0, 600.0)
         self._target_duration_spin.setDecimals(1)
         self._target_duration_spin.setSingleStep(0.5)
         self._target_duration_spin.setSpecialValueText(
@@ -327,7 +330,11 @@ class SceneEditorDialog(QDialog):
         duration_row.addWidget(self._target_duration_spin)
         duration_row.addSpacing(20)
         self._image_display_spin = QDoubleSpinBox()
-        self._image_display_spin.setRange(1.0, 60.0)
+        # 1–600 s (10 min) — the prior 60 s cap clamped writer
+        # input so long-held title cards or 90 s slide holds
+        # silently became 60 s. That's the symptom behind decks
+        # that "cut everything at a minute."
+        self._image_display_spin.setRange(1.0, 600.0)
         self._image_display_spin.setDecimals(1)
         self._image_display_spin.setSingleStep(0.5)
         self._image_display_spin.setSuffix(" s")
@@ -611,6 +618,20 @@ class SceneEditorDialog(QDialog):
         gen_row2.addWidget(self._stitch_deck_btn)
         gen_row2.addWidget(self._open_folder_btn)
         gen_layout.addLayout(gen_row2)
+        # Voiceover editor — record / import audio takes,
+        # arrange them on a per-second timeline, trim + fade +
+        # gain. Always available since voiceover doesn't need a
+        # generated visual yet; writers may want to lay down a
+        # narration track before they pick a backend.
+        self._voiceover_btn = QPushButton(
+            "🎤 Voiceover editor…")
+        self._voiceover_btn.setToolTip(
+            "Record, import, and arrange voiceover takes for "
+            "this scene. Multiple takes mix together at stitch "
+            "time.")
+        self._voiceover_btn.clicked.connect(
+            self._on_open_voiceover_editor)
+        gen_layout.addWidget(self._voiceover_btn)
         # Until the host wires callbacks (via
         # set_generation_callbacks), every generation button stays
         # disabled with a clear tooltip — the writer sees the
@@ -856,6 +877,24 @@ class SceneEditorDialog(QDialog):
         if self._open_output_folder_cb is None:
             return
         self._open_output_folder_cb(self._scene)
+
+    def _on_open_voiceover_editor(self) -> None:
+        """Open the voiceover editor for this scene. Recording and
+        imports land in the scene's audio directory (same place
+        TTS narration uses) so the project stays self-contained."""
+        from src.ui.video_studio.voiceover_editor import (
+            VoiceoverEditorDialog,
+        )
+        audio_dir = self._scene_audio_dir()
+        dlg = VoiceoverEditorDialog(
+            self._scene, audio_dir, parent=self)
+        before = len(self._scene.voiceover_segments)
+        dlg.exec()
+        if len(self._scene.voiceover_segments) != before:
+            # Mark dirty so the scene editor's host fires
+            # contentChanged on close even if the writer reaches
+            # for Cancel.
+            self._actions_dirty = True
 
     def _on_preview_refined_clicked(self) -> None:
         """Compose the structured prompt, ask the host to refine

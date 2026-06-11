@@ -305,16 +305,132 @@ PYTORCH_MODELS: List[LocalModelInfo] = [
 
 
 def get_available_models() -> List[LocalModelInfo]:
-    """Return the *running* catalog appropriate for this host.
+    """Return the *running* catalog appropriate for this host plus
+    any user-added custom models.
 
-    MLX models on Apple Silicon, PyTorch models everywhere else. This
-    is the catalog the Local Models picker uses — large 4B+ instruct
-    models tuned for inference. The Training Studio uses a separate
-    catalog (``TRAINING_BASE_MODELS``) of smaller fine-tunable bases.
+    MLX models on Apple Silicon, PyTorch models everywhere else. The
+    user's custom models (saved via the Local Models picker's
+    "+ Add custom model" row) are appended so new HF releases work
+    without waiting for a code-side catalog update — handy when a
+    fresh model lands between releases (e.g. a brand-new Gemma).
     """
-    if can_use_mlx():
-        return MLX_MODELS
-    return PYTORCH_MODELS
+    base = MLX_MODELS if can_use_mlx() else PYTORCH_MODELS
+    # Dedupe by model_id when the writer adds a custom that
+    # already exists in the built-in catalog.
+    seen = {m.model_id for m in base}
+    extras = [
+        m for m in load_custom_models()
+        if m.model_id not in seen
+    ]
+    return base + extras
+
+
+# ── Custom model registry — writers add new models without waiting
+# for a built-in catalog update. Persists across sessions as JSON
+# under the user's config dir so a writer who tested Gemma 5 on
+# Monday still sees it on Tuesday.
+_CUSTOM_MODELS_FILENAME = "custom_models.json"
+
+
+def _custom_models_path():
+    """JSON store for user-added models. Mirrors how the rest of
+    the app stores per-user state under ``~/.writer_platform``."""
+    from pathlib import Path as _P
+    cfg_dir = _P.home() / ".writer_platform"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    return cfg_dir / _CUSTOM_MODELS_FILENAME
+
+
+def load_custom_models() -> List[LocalModelInfo]:
+    """Read user-added models. Returns [] when the file is
+    missing or unparseable — degrade quietly so a corrupt file
+    doesn't break the model picker."""
+    path = _custom_models_path()
+    if not path.exists():
+        return []
+    try:
+        import json
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"[model_picker] custom_models load failed: {e}")
+        return []
+    out: List[LocalModelInfo] = []
+    for entry in data if isinstance(data, list) else []:
+        try:
+            out.append(LocalModelInfo(
+                model_id=str(entry.get("model_id", "")).strip(),
+                display_name=str(entry.get(
+                    "display_name",
+                    entry.get("model_id", ""))).strip(),
+                size_gb=float(entry.get("size_gb", 0.0)),
+                description=str(entry.get(
+                    "description", "User-added model.")),
+                ram_required=str(entry.get(
+                    "ram_required", "Unknown")),
+                best_for=str(entry.get(
+                    "best_for", "Writer-curated.")),
+                requires_trust_remote_code=bool(entry.get(
+                    "requires_trust_remote_code", False)),
+            ))
+        except Exception:
+            continue
+    return [m for m in out if m.model_id]
+
+
+def save_custom_model(model: LocalModelInfo) -> None:
+    """Append (or update) a custom model in the persistent store.
+    Keyed by ``model_id`` so re-adding the same id replaces
+    instead of duplicating."""
+    import json
+    existing = load_custom_models()
+    by_id = {m.model_id: m for m in existing}
+    by_id[model.model_id] = model
+    path = _custom_models_path()
+    payload = [
+        {
+            "model_id": m.model_id,
+            "display_name": m.display_name,
+            "size_gb": m.size_gb,
+            "description": m.description,
+            "ram_required": m.ram_required,
+            "best_for": m.best_for,
+            "requires_trust_remote_code":
+                m.requires_trust_remote_code,
+        }
+        for m in by_id.values()
+    ]
+    path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False),
+        encoding="utf-8")
+
+
+def delete_custom_model(model_id: str) -> bool:
+    """Drop a custom model from the persistent store. Returns True
+    when something was removed. Built-in catalog entries can't be
+    deleted this way — they're code-defined."""
+    import json
+    existing = load_custom_models()
+    keep = [m for m in existing if m.model_id != model_id]
+    if len(keep) == len(existing):
+        return False
+    path = _custom_models_path()
+    payload = [
+        {
+            "model_id": m.model_id,
+            "display_name": m.display_name,
+            "size_gb": m.size_gb,
+            "description": m.description,
+            "ram_required": m.ram_required,
+            "best_for": m.best_for,
+            "requires_trust_remote_code":
+                m.requires_trust_remote_code,
+        }
+        for m in keep
+    ]
+    path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False),
+        encoding="utf-8")
+    return True
 
 
 # ── Training base models ─────────────────────────────────────
@@ -688,11 +804,58 @@ class ModelPickerWidget(QGroupBox):
         self.download_btn.setEnabled(False)
         self.download_btn.clicked.connect(self._download_selected)
         btns.addWidget(self.download_btn)
+        # Update button — re-runs snapshot_download for an already-
+        # downloaded model so HuggingFace's hash check fetches any
+        # changed weights (newer revision, fixed tokenizer, etc.).
+        # Cheap when nothing's changed, fast for incremental fixes.
+        self.update_btn = QPushButton("🔄 Update Selected")
+        self.update_btn.setEnabled(False)
+        self.update_btn.setToolTip(
+            "Re-fetch this model from HuggingFace. Files that "
+            "haven't changed remotely stay cached; anything updated "
+            "upstream is pulled fresh. Use after the model author "
+            "ships a patched revision.")
+        self.update_btn.clicked.connect(self._update_selected)
+        btns.addWidget(self.update_btn)
         self.refresh_btn = QPushButton("Check Downloaded Models")
         self.refresh_btn.clicked.connect(self._refresh_downloaded)
         btns.addWidget(self.refresh_btn)
         btns.addStretch()
         layout.addLayout(btns)
+
+        # ── Custom model row ─────────────────────────────────────
+        # The built-in catalog can't ship a model that landed on HF
+        # five minutes ago — let writers paste any model id and
+        # download it. The entry persists so it shows up in the
+        # list next session.
+        custom_row = QHBoxLayout()
+        custom_row.addWidget(QLabel("+ Add custom model:"))
+        self.custom_id_edit = QLineEdit()
+        self.custom_id_edit.setPlaceholderText(
+            "HF id, e.g. google/gemma-5-26b-it or "
+            "mlx-community/gemma-5-26b-it-4bit")
+        self.custom_id_edit.setToolTip(
+            "Any HuggingFace model id. Saved as a custom entry "
+            "in the catalog so it survives across sessions.")
+        self.custom_id_edit.returnPressed.connect(
+            self._add_and_download_custom)
+        custom_row.addWidget(self.custom_id_edit, stretch=1)
+        self.custom_add_btn = QPushButton("Add && Download")
+        self.custom_add_btn.setToolTip(
+            "Append this id to the catalog and start downloading. "
+            "Cancel the download and the entry still sticks.")
+        self.custom_add_btn.clicked.connect(
+            self._add_and_download_custom)
+        custom_row.addWidget(self.custom_add_btn)
+        self.custom_remove_btn = QPushButton("Remove custom")
+        self.custom_remove_btn.setToolTip(
+            "Drop the selected CUSTOM entry from the catalog. "
+            "Built-in entries can't be removed this way.")
+        self.custom_remove_btn.setEnabled(False)
+        self.custom_remove_btn.clicked.connect(
+            self._remove_selected_custom)
+        custom_row.addWidget(self.custom_remove_btn)
+        layout.addLayout(custom_row)
 
         self.downloaded_label = QLabel("")
         self.downloaded_label.setWordWrap(True)
