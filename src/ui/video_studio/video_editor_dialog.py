@@ -61,7 +61,16 @@ class VideoEditorDialog(QDialog):
         super().__init__(None)
         self.setWindowTitle(f"Video editor — {source_path.name}")
         self.setModal(False)
-        self.setWindowFlag(Qt.WindowType.Window, True)
+        # Use ``setWindowFlags`` (plural) to fully replace the
+        # flag set in one call. Calling ``setWindowFlag`` after
+        # show() on macOS triggers a hide → re-show cycle that
+        # re-runs the focus-stealing path; setting the flags once
+        # here at construction avoids the whole class of bug.
+        self.setWindowFlags(
+            Qt.WindowType.Window
+            | Qt.WindowType.WindowSystemMenuHint
+            | Qt.WindowType.WindowMinMaxButtonsHint
+            | Qt.WindowType.WindowCloseButtonHint)
         # Pull-on-open callback that returns the project's chapter
         # snapshots — a list of (chapter_id, label, text). The
         # "Read chapter prose" button uses it to spawn a non-modal

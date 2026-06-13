@@ -66,7 +66,17 @@ class SlideEditorDialog(QDialog):
         self.setWindowTitle(
             f"Slide editor — {deck.name or 'Slide deck'}")
         self.setModal(False)
-        self.setWindowFlag(Qt.WindowType.Window, True)
+        # Use ``setWindowFlags`` (plural) to set the COMPLETE flag
+        # set in one call. ``setWindowFlag`` (singular) is an
+        # add/remove operation that on macOS triggers a hide →
+        # re-show cycle, which is the focus-stealing path the
+        # writer flagged. We set flags once at construction and
+        # never touch them again after show().
+        self.setWindowFlags(
+            Qt.WindowType.Window
+            | Qt.WindowType.WindowSystemMenuHint
+            | Qt.WindowType.WindowMinMaxButtonsHint
+            | Qt.WindowType.WindowCloseButtonHint)
         # Pull-on-open callback that returns (chapter_id, label,
         # text) triples — drives the "📖 Read chapter prose"
         # button. When None, the button is hidden. The slide

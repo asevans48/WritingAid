@@ -64,7 +64,22 @@ class SocialUploadDialog(QDialog):
         super().__init__(None)
         self.setWindowTitle("📤 Publish to social")
         self.setModal(False)
-        self.setWindowFlag(Qt.WindowType.Window, True)
+        # ``Qt.Tool`` instead of ``Qt.Window`` — see ChapterProse
+        # Window for the long explanation. On macOS, opening
+        # ``Qt.Window`` instances from another window triggers
+        # the focus-stealing path that minimizes peers and can
+        # blank a secondary display. Tool windows accept clicks,
+        # stay above the editor that spawned them, but coexist
+        # with the rest of the app cleanly. Flags are set ONCE
+        # here; we never call ``setWindowFlag(s)`` again after
+        # show() to avoid the hide → re-show cycle that re-runs
+        # the same heuristic.
+        flags = (
+            Qt.WindowType.Tool
+            | Qt.WindowType.WindowSystemMenuHint
+            | Qt.WindowType.WindowCloseButtonHint
+            | Qt.WindowType.WindowMinimizeButtonHint)
+        self.setWindowFlags(flags)
         screen = QGuiApplication.primaryScreen()
         avail = screen.availableGeometry() if screen else None
         target_w = 720
