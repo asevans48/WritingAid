@@ -208,6 +208,157 @@ MISMATCH_MODES = (
 )
 
 
+def stitch_with_transitions(
+    clip_paths: List[Path],
+    output_path: Path,
+    clip_durations: List[float],
+    transitions: List[Tuple[str, float]],
+    width: int = 1280,
+    height: int = 720,
+    fps: int = 30,
+) -> "StitchResult":
+    """Stitch clips with per-boundary transitions via ffmpeg's
+    ``xfade`` filter.
+
+    Each entry in ``transitions`` is the transition that plays
+    INTO the matching clip (so ``transitions[0]`` is ignored — the
+    first clip has nothing to transition from). ``"cut"`` produces
+    a hard cut (no overlap); any other value matches an xfade
+    transition name (``fade``, ``fadeblack``, ``dissolve``,
+    ``slideleft``, ``wipeleft``, ``circleopen``, …).
+
+    Image inputs (PNG / JPG / WebP / GIF) are staged into short
+    MP4 segments first (same approach as ``stitch_clips``) so
+    every input is a real video by the time xfade runs.
+    """
+    if not ffmpeg_available():
+        return StitchResult(
+            success=False, output_path=output_path,
+            error="ffmpeg not found on PATH.")
+    if not clip_paths:
+        return StitchResult(
+            success=False, output_path=output_path,
+            error="No clips selected.")
+    if len(clip_paths) != len(clip_durations):
+        return StitchResult(
+            success=False, output_path=output_path,
+            error=(
+                f"Path / duration length mismatch: "
+                f"{len(clip_paths)} vs {len(clip_durations)}."))
+    while len(transitions) < len(clip_paths):
+        transitions.append(("cut", 0.0))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    staging_dir: Optional[Path] = None
+    temp_segments: List[Path] = []
+    try:
+        staged_paths: List[Path] = []
+        staged_durations: List[float] = list(clip_durations)
+        for i, (p, dur) in enumerate(zip(clip_paths, clip_durations)):
+            if _looks_like_image(p):
+                if staging_dir is None:
+                    staging_dir = Path(tempfile.mkdtemp(
+                        prefix="wa_xstitch_"))
+                seg = staging_dir / f"still_{i:03d}.mp4"
+                err = _render_image_segment(
+                    p, seg, duration=max(1.0, float(dur)))
+                if err:
+                    return StitchResult(
+                        success=False, output_path=output_path,
+                        error=(
+                            f"Could not render '{p.name}' as a "
+                            f"video segment: {err}"))
+                staged_paths.append(seg)
+                temp_segments.append(seg)
+            else:
+                staged_paths.append(p)
+        # Build the filter_complex graph. Every input is first
+        # scaled + padded to the target resolution so xfade has
+        # matching dimensions and pixel formats — clips from
+        # different backends often disagree on either.
+        inputs: List[str] = []
+        for p in staged_paths:
+            inputs.extend(["-i", str(p.resolve())])
+        scale_pad = (
+            f"scale={width}:{height}:force_original_aspect_ratio="
+            f"decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:"
+            f"black,setsar=1,format=yuv420p,fps={fps}")
+        filter_parts: List[str] = []
+        for i in range(len(staged_paths)):
+            filter_parts.append(
+                f"[{i}:v]{scale_pad}[v{i}]")
+        # Chain xfades. Track elapsed time so each xfade's
+        # ``offset`` lands at the right moment in the running
+        # composition.
+        cumulative = 0.0
+        last_label = "v0"
+        for i in range(1, len(staged_paths)):
+            kind, secs = transitions[i] if (
+                i < len(transitions)) else ("cut", 0.0)
+            kind = (kind or "cut").lower()
+            secs = max(0.0, float(secs or 0.0))
+            prev_dur = max(1.0, float(staged_durations[i - 1]))
+            if kind == "cut" or secs <= 0:
+                # No xfade — pass-through concat via ``concat``
+                # filter. ``xfade`` requires an overlap so we
+                # can't use it for cut.
+                cumulative += prev_dur
+                new_label = f"x{i}"
+                filter_parts.append(
+                    f"[{last_label}][v{i}]concat=n=2:v=1:a=0"
+                    f"[{new_label}]")
+                last_label = new_label
+            else:
+                # xfade boundary — offset must be the timestamp on
+                # the FIRST input where the transition starts. The
+                # first input plays from 0 to (prev_dur - secs),
+                # then crossfades to the second over ``secs``.
+                offset = max(0.0, cumulative + prev_dur - secs)
+                cumulative = cumulative + prev_dur - secs
+                new_label = f"x{i}"
+                filter_parts.append(
+                    f"[{last_label}][v{i}]xfade=transition={kind}:"
+                    f"duration={secs:.3f}:offset={offset:.3f}"
+                    f"[{new_label}]")
+                last_label = new_label
+        filter_str = ";".join(filter_parts)
+        cmd = [
+            "ffmpeg", "-y",
+            *inputs,
+            "-filter_complex", filter_str,
+            "-map", f"[{last_label}]",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-r", str(fps),
+            str(output_path),
+        ]
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=600)
+            if proc.returncode != 0:
+                return StitchResult(
+                    success=False, output_path=output_path,
+                    error=(
+                        "ffmpeg xfade stitch failed. stderr "
+                        "(last 400 chars):\n"
+                        + (proc.stderr or "")[-400:]))
+            return StitchResult(
+                success=True, output_path=output_path)
+        except subprocess.TimeoutExpired:
+            return StitchResult(
+                success=False, output_path=output_path,
+                error="ffmpeg xfade timed out after 10 minutes.")
+    finally:
+        for seg in temp_segments:
+            try:
+                seg.unlink(missing_ok=True)
+            except Exception:
+                pass
+        if staging_dir is not None:
+            try:
+                shutil.rmtree(staging_dir, ignore_errors=True)
+            except Exception:
+                pass
+
+
 def mix_voiceover_segments(
     segments: List[Any],
     scene_visual_duration: float,

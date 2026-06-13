@@ -259,6 +259,150 @@ class Narration(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
 
 
+# Transitions the chapter-deck editor can place between adjacent
+# segments. Mapped 1:1 onto ffmpeg's ``xfade`` filter options so
+# the stitcher passes them through directly. ``cut`` is the
+# zero-frame default (no crossfade) used by the legacy stitcher.
+CHAPTER_TRANSITIONS = (
+    ("cut", "Hard cut (no transition)"),
+    ("fade", "Crossfade — soft blend"),
+    ("fadeblack", "Fade through black"),
+    ("fadewhite", "Fade through white"),
+    ("dissolve", "Dissolve — pixel mix"),
+    ("slideleft", "Slide left"),
+    ("slideright", "Slide right"),
+    ("slideup", "Slide up"),
+    ("slidedown", "Slide down"),
+    ("wipeleft", "Wipe left"),
+    ("wiperight", "Wipe right"),
+    ("circleopen", "Circle open"),
+    ("circleclose", "Circle close"),
+    ("radial", "Radial wipe"),
+)
+
+
+class ChapterDeckSegment(BaseModel):
+    """One segment in the chapter-deck editor's timeline.
+
+    Wraps a reference to a scene (``scene_id``) OR an arbitrary
+    file path (``custom_path``) the writer dropped in to fill a
+    gap. Holds the transition that plays INTO this segment (so the
+    first segment's ``transition_in`` is ignored). Optional
+    ``duration_override`` lets the writer hold a still or trim a
+    clip without re-rendering the scene.
+    """
+    id: str = Field(
+        default_factory=lambda: f"seg_{uuid4().hex[:10]}")
+    scene_id: Optional[str] = None
+    custom_path: str = ""
+    label: str = ""
+    transition_in: str = "cut"
+    transition_seconds: float = 0.7
+    duration_override: float = 0.0
+    order: int = 0
+
+
+class ChapterDeck(BaseModel):
+    """Editable chapter-level deck.
+
+    Lives on the studio so the writer can iterate on a finished
+    deck — re-order, retime, add transitions, layer voiceover —
+    without losing the per-scene work. ``segments`` is the ordered
+    list of clips that play; ``voiceovers`` are master-timeline
+    voiceover takes mixed over everything; ``transition_default``
+    is applied to every segment that hasn't been overridden.
+    """
+    id: str = Field(
+        default_factory=lambda: f"deck_{uuid4().hex[:10]}")
+    chapter_id: str = ""
+    name: str = ""
+    segments: List[ChapterDeckSegment] = Field(default_factory=list)
+    voiceovers: List["VoiceoverSegment"] = Field(default_factory=list)
+    transition_default: str = "fade"
+    transition_seconds_default: float = 0.7
+    output_width: int = 1280
+    output_height: int = 720
+    output_fps: int = 30
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
+
+
+class SlidePage(BaseModel):
+    """One page of a SlideDeckProject — an image with a narration
+    take, a duration the stitcher honors, and optional script text
+    the AI timing pass measures.
+
+    ``image_path`` is the slide visual (PNG / JPG / WebP). Each
+    page has at most one ``audio_path`` (record-and-replace flow);
+    ``locked_duration`` lets the writer keep a slide at exactly N
+    seconds even if a longer audio take lands on it.
+    """
+    id: str = Field(
+        default_factory=lambda: f"page_{uuid4().hex[:10]}")
+    index: int = 0
+    label: str = ""
+    image_path: str = ""
+    audio_path: str = ""
+    audio_duration_seconds: float = 0.0
+    duration_seconds: float = 4.0
+    locked_duration: bool = False
+    script_text: str = ""
+    group_id: Optional[str] = None
+    # Transition that plays INTO this slide. ``cut`` (the default
+    # on the first slide) is no-op; any other value is an xfade
+    # name (matches ``CHAPTER_TRANSITIONS``) for the MP4 export
+    # AND a PowerPoint transition type for the PPTX export.
+    transition_in: str = "cut"
+    transition_seconds: float = 0.7
+    # Source provenance — when the page was seeded from a scene's
+    # action, we remember which one so re-syncs (regenerating
+    # action images, etc.) can find the right slide later.
+    source_scene_id: Optional[str] = None
+    source_action_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
+
+
+class SlideGroup(BaseModel):
+    """A named cluster of slides that share editorial intent —
+    "Opening", "Confrontation", "Coda". Groups let the writer
+    distribute a total duration evenly across member slides or
+    apply a shared transition / treatment in one go."""
+    id: str = Field(
+        default_factory=lambda: f"sgrp_{uuid4().hex[:10]}")
+    name: str = ""
+    page_ids: List[str] = Field(default_factory=list)
+    # When > 0, the editor evenly distributes this duration across
+    # the unlocked pages in the group (locked pages keep their
+    # exact times; the remainder splits across the rest).
+    target_total_seconds: float = 0.0
+    created_at: datetime = Field(default_factory=datetime.now)
+
+
+class SlideDeckProject(BaseModel):
+    """An editable slide deck — built from a chapter's scenes /
+    action favorites, with per-slide audio + timing + groups.
+
+    The slide editor uses this as the live model; ``working_dir``
+    is where extracted slide images and recorded audio land. On
+    export the stitcher walks pages in order, mixes each page's
+    audio with its image-as-still segment, and concatenates."""
+    id: str = Field(
+        default_factory=lambda: f"sdp_{uuid4().hex[:10]}")
+    name: str = ""
+    chapter_id: str = ""
+    working_dir: str = ""
+    pages: List[SlidePage] = Field(default_factory=list)
+    groups: List[SlideGroup] = Field(default_factory=list)
+    # Average reading speed used by ``suggest_timings_from_script``
+    # (words per minute). 150 wpm is a slightly slow voiceover
+    # pace, which gives a forgiving timing budget; writers can
+    # bump up if they speak faster.
+    wpm_estimate: int = 150
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
+
+
 class VoiceoverSegment(BaseModel):
     """One audio clip placed on the scene's voiceover timeline.
 
@@ -548,6 +692,14 @@ class VideoStudio(BaseModel):
     """
     scenes: List[Scene] = Field(default_factory=list)
     hops: List[SceneHop] = Field(default_factory=list)
+    # Chapter-deck editor projects — saved across sessions so the
+    # writer can come back to a half-edited finished deck without
+    # losing transitions, voiceover takes, or reorders.
+    chapter_decks: List["ChapterDeck"] = Field(default_factory=list)
+    # Slide-deck editor projects — one per chapter the writer has
+    # opened in the slide editor. Persists per-slide audio takes,
+    # script text, durations, and groups across sessions.
+    slide_decks: List["SlideDeckProject"] = Field(default_factory=list)
     character_references: List[CharacterReference] = Field(
         default_factory=list)
     backend_preference: str = ""

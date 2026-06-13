@@ -1,0 +1,666 @@
+"""Slide-deck editor helpers: build a project from chapter scenes,
+distribute timings from a pasted script, and stitch the result
+into an MP4 (image stills + per-slide audio).
+
+Kept separate from the chapter-deck export module because the
+slide editor's model is finer-grained — one slide per action
+favorite — and the audio handling is per-slide rather than a
+single master mix.
+"""
+
+from __future__ import annotations
+
+import re
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import Any, List, Optional, Tuple
+
+from src.video_studio.models import (
+    SlideDeckProject, SlideGroup, SlidePage,
+)
+from src.video_studio.stitcher import (
+    ffmpeg_available, stitch_clips, stitch_with_transitions,
+)
+
+
+# Minimum duration we clamp a slide to. Anything shorter and the
+# stitcher's image-to-MP4 conversion produces noisy output, and
+# the audio mux can drop the slide entirely on some ffmpeg builds.
+MIN_SLIDE_SECONDS = 1.0
+
+
+def build_slide_deck_from_chapter(
+    chapter_scenes: List[Any],
+    working_dir: Path,
+    chapter_id: str = "",
+    chapter_label: str = "",
+    default_duration_seconds: float = 4.0,
+) -> SlideDeckProject:
+    """Walk the chapter's scenes and assemble a SlideDeckProject.
+
+    Per scene:
+      * Slideshow mode → one page per action's favorite image.
+      * Other modes → one page per scene's favorite clip when the
+        favorite is an image (videos are skipped — the slide
+        editor works with stills).
+    """
+    deck = SlideDeckProject(
+        name=chapter_label or "Slide deck",
+        chapter_id=chapter_id,
+        working_dir=str(working_dir),
+        wpm_estimate=150,
+    )
+    page_index = 0
+    for scene in chapter_scenes:
+        scene_label = scene.name or f"Scene {page_index + 1}"
+        if (getattr(scene, "mode", "video") == "slideshow"
+                and (getattr(scene, "actions", None) or [])):
+            for action in scene.actions:
+                img = action.favorite_image()
+                if img is None:
+                    continue
+                path_str = (img.file_path or "").strip()
+                if not path_str:
+                    continue
+                p = Path(path_str)
+                if not p.exists() or p.stat().st_size == 0:
+                    continue
+                page = SlidePage(
+                    index=page_index,
+                    label=f"{scene_label} → "
+                          + (action.name or f"action {page_index + 1}"),
+                    image_path=str(p),
+                    duration_seconds=max(
+                        MIN_SLIDE_SECONDS,
+                        float(
+                            action.display_seconds
+                            or scene.image_display_seconds
+                            or default_duration_seconds)),
+                    source_scene_id=scene.id,
+                    source_action_id=action.id,
+                )
+                deck.pages.append(page)
+                page_index += 1
+            continue
+        # Non-slideshow scene — single slide from the favorite
+        # clip when it's an image.
+        clip = scene.favorite_clip()
+        if clip is None or not clip.file_path:
+            continue
+        p = Path(clip.file_path)
+        if (not p.exists()
+                or p.stat().st_size == 0
+                or p.suffix.lower() not in
+                {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}):
+            continue
+        page = SlidePage(
+            index=page_index,
+            label=scene_label,
+            image_path=str(p),
+            duration_seconds=max(
+                MIN_SLIDE_SECONDS,
+                float(
+                    scene.image_display_seconds
+                    or default_duration_seconds)),
+            source_scene_id=scene.id,
+        )
+        deck.pages.append(page)
+        page_index += 1
+    return deck
+
+
+def suggest_timings_from_script(
+    deck: SlideDeckProject,
+    script_text: str,
+) -> Tuple[int, str]:
+    """Split the script into per-slide chunks (one blank-line
+    paragraph per slide), assign each chunk to its slide, and
+    compute each slide's duration from word count + WPM. Returns
+    ``(slides_touched, message)``.
+
+    Honors ``locked_duration`` — locked slides keep their
+    explicit time and the script chunk still lands on them as
+    text so the writer can read along.
+
+    Pure heuristic — no LLM call. Writers can override per slide
+    afterward or paste a more detailed script and re-run.
+    """
+    if not deck.pages:
+        return (0, "No slides in deck.")
+    text = (script_text or "").strip()
+    if not text:
+        return (0, "No script text provided.")
+    # Split on blank lines. Falls back to one-chunk-per-sentence
+    # when the writer pasted prose without paragraph breaks.
+    chunks = [
+        c.strip() for c in re.split(r"\n\s*\n", text)
+        if c.strip()
+    ]
+    if len(chunks) <= 1:
+        # Sentence split as the fallback so a single paragraph
+        # still distributes across slides instead of all landing
+        # on slide 1.
+        sentences = re.split(r"(?<=[.!?])\s+", chunks[0] if chunks else text)
+        chunks = [s.strip() for s in sentences if s.strip()]
+    if not chunks:
+        return (0, "No usable script chunks found.")
+    pages = deck.pages
+    # When the writer gave us more chunks than slides, pool the
+    # tail into the last slide. When fewer chunks, distribute
+    # evenly across slides.
+    per_slide: List[str] = ["" for _ in pages]
+    if len(chunks) <= len(pages):
+        # Distribute by stretching — chunk i lands on page
+        # round(i * pages / chunks). This keeps order without
+        # leaving early slides starved.
+        n_pages = len(pages)
+        n_chunks = len(chunks)
+        for i, chunk in enumerate(chunks):
+            target = int(round(i * (n_pages - 1) / max(1, n_chunks - 1))) \
+                if n_chunks > 1 else 0
+            if per_slide[target]:
+                per_slide[target] += "\n\n" + chunk
+            else:
+                per_slide[target] = chunk
+    else:
+        # More chunks than slides: assign chunk i to slide
+        # floor(i * pages / chunks). Tail chunks pool on the last.
+        for i, chunk in enumerate(chunks):
+            target = min(
+                len(pages) - 1,
+                int(i * len(pages) / len(chunks)))
+            if per_slide[target]:
+                per_slide[target] += "\n\n" + chunk
+            else:
+                per_slide[target] = chunk
+    wpm = max(60, int(deck.wpm_estimate or 150))
+    touched = 0
+    for page, chunk in zip(pages, per_slide):
+        if not chunk:
+            continue
+        page.script_text = chunk
+        if not page.locked_duration:
+            words = max(1, len(chunk.split()))
+            secs = max(
+                MIN_SLIDE_SECONDS,
+                round(words / (wpm / 60.0), 2))
+            page.duration_seconds = secs
+        touched += 1
+    return (
+        touched,
+        f"Distributed {len(chunks)} chunk(s) across "
+        f"{touched} slide(s) at ~{wpm} WPM.")
+
+
+def adjust_slide_to_audio(page: SlidePage) -> bool:
+    """When a recorded / imported audio take is attached, set the
+    slide's duration to match. Honors ``locked_duration``. Returns
+    True when the duration changed."""
+    if page.locked_duration:
+        return False
+    if (page.audio_duration_seconds <= 0
+            or not page.audio_path):
+        return False
+    new_dur = max(MIN_SLIDE_SECONDS,
+                  round(page.audio_duration_seconds + 0.2, 2))
+    if abs(new_dur - page.duration_seconds) < 0.05:
+        return False
+    page.duration_seconds = new_dur
+    return True
+
+
+def distribute_group_timings(
+    deck: SlideDeckProject,
+    group: SlideGroup,
+) -> int:
+    """Evenly split a group's ``target_total_seconds`` across its
+    UNLOCKED pages. Locked pages keep their exact times; the
+    remainder splits equally across the rest. Returns the count
+    of pages whose duration changed."""
+    if group.target_total_seconds <= 0:
+        return 0
+    pages_by_id = {p.id: p for p in deck.pages}
+    members = [
+        pages_by_id[pid] for pid in group.page_ids
+        if pid in pages_by_id]
+    if not members:
+        return 0
+    locked = [p for p in members if p.locked_duration]
+    unlocked = [p for p in members if not p.locked_duration]
+    if not unlocked:
+        return 0
+    locked_total = sum(p.duration_seconds for p in locked)
+    remainder = max(
+        0.0, group.target_total_seconds - locked_total)
+    if remainder <= 0:
+        return 0
+    per_page = max(
+        MIN_SLIDE_SECONDS, remainder / len(unlocked))
+    changed = 0
+    for p in unlocked:
+        if abs(p.duration_seconds - per_page) > 0.05:
+            p.duration_seconds = round(per_page, 2)
+            changed += 1
+    return changed
+
+
+def export_slide_deck_to_pptx(
+    deck: SlideDeckProject,
+    output_path: Path,
+) -> Tuple[bool, str, List[str]]:
+    """Render a SlideDeckProject as a PowerPoint file.
+
+    One slide per ``SlidePage`` with its image as the only visual.
+    Per-slide audio is embedded (if present) and configured to
+    play on slide entry, so when the deck is opened in PowerPoint
+    / Keynote / Slides the narration runs automatically. Each
+    slide's advance time is set to its ``duration_seconds`` so a
+    slideshow presentation matches the recorded timings.
+
+    No text overlays — the writer can edit freely in their slide
+    tool. Returns ``(success, message, skipped)``.
+    """
+    try:
+        from pptx import Presentation
+        from pptx.util import Inches
+        from pptx.dml.color import RGBColor
+        from pptx.oxml.ns import qn
+        from lxml import etree
+    except Exception as e:
+        return (
+            False,
+            (
+                "python-pptx isn't installed. Install it with:\n"
+                "  pip install python-pptx\n\n"
+                f"Underlying error: {e}"),
+            [])
+    pages = [
+        p for p in deck.pages
+        if p.image_path and Path(p.image_path).exists()]
+    if not pages:
+        return (
+            False,
+            "No slides with usable images on disk.",
+            [])
+    prs = Presentation()
+    prs.slide_width = Inches(13.333)
+    prs.slide_height = Inches(7.5)
+    blank_layout = prs.slide_layouts[6]
+    slide_w_emu = int(prs.slide_width)
+    slide_h_emu = int(prs.slide_height)
+    skipped: List[str] = []
+    AUDIO_EXTS = {
+        ".wav", ".mp3", ".m4a", ".aac", ".ogg", ".flac",
+        ".opus", ".aiff", ".aif"}
+    for page in pages:
+        slide = prs.slides.add_slide(blank_layout)
+        # Pure black background — the image is the show.
+        bg = slide.background.fill
+        bg.solid()
+        bg.fore_color.rgb = RGBColor(0x00, 0x00, 0x00)
+        # Image, fitted preserving aspect ratio.
+        try:
+            left, top, width, height = _fit_image_to_slide(
+                Path(page.image_path),
+                slide_w_emu, slide_h_emu)
+            slide.shapes.add_picture(
+                page.image_path, left, top,
+                width=width, height=height)
+        except Exception as e:
+            skipped.append(
+                f"{page.label or page.id}: image embed failed "
+                f"({e})")
+            continue
+        # Per-slide audio — embedded via add_movie. PowerPoint
+        # treats audio files (.wav / .mp3 / etc.) as media objects
+        # too. We tuck the speaker icon offscreen and patch the XML
+        # to play automatically + hide while playing — that's
+        # what writers expect for narration.
+        if (page.audio_path
+                and Path(page.audio_path).exists()
+                and Path(page.audio_path).suffix.lower()
+                in AUDIO_EXTS):
+            try:
+                # 32 EMU ≈ ~0.03 inch — effectively invisible.
+                from pptx.util import Emu
+                icon_w = Emu(304800)  # 0.5 in
+                icon_h = Emu(304800)
+                # Park the speaker icon in the bottom-right corner
+                # off the visible canvas, so writers can still find
+                # it to edit if needed.
+                left = slide_w_emu - icon_w - Emu(91440)
+                top = slide_h_emu - icon_h - Emu(91440)
+                movie = slide.shapes.add_movie(
+                    page.audio_path, left, top, icon_w, icon_h,
+                    mime_type="audio/x-wav")
+                # Patch the timing XML so the audio auto-plays on
+                # slide entry. python-pptx leaves this as
+                # ``click`` by default.
+                _patch_media_autoplay(slide, movie)
+            except Exception as e:
+                skipped.append(
+                    f"{page.label or page.id}: audio embed "
+                    f"failed ({e})")
+        # Per-slide advance time — slideshow honors this as the
+        # auto-advance interval. The XML lives on the slide's
+        # transition element.
+        try:
+            secs = max(
+                MIN_SLIDE_SECONDS,
+                float(page.duration_seconds))
+            _set_slide_advance_time(slide, secs)
+        except Exception as e:
+            skipped.append(
+                f"{page.label or page.id}: advance-time set "
+                f"failed ({e})")
+        # Per-slide transition effect. The first slide ignores its
+        # transition (no previous slide). PowerPoint stores the
+        # transition on the SLIDE you're transitioning INTO, which
+        # matches the writer's "transition_in" semantic.
+        if (page.index > 0
+                and (page.transition_in or "cut") != "cut"):
+            try:
+                _set_slide_transition_effect(
+                    slide,
+                    page.transition_in,
+                    float(page.transition_seconds or 0.7))
+            except Exception as e:
+                skipped.append(
+                    f"{page.label or page.id}: transition set "
+                    f"failed ({e})")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        prs.save(str(output_path))
+    except Exception as e:
+        return (
+            False, f"PowerPoint save failed: {e}", skipped)
+    return (
+        True,
+        f"PowerPoint deck saved to {output_path}.",
+        skipped)
+
+
+def _fit_image_to_slide(
+    image_path: Path, slide_w_emu: int, slide_h_emu: int,
+) -> Tuple[int, int, int, int]:
+    """Compute (left, top, width, height) in EMUs that fits the
+    image in the slide preserving its aspect ratio. Falls back to
+    full-bleed when the image can't be probed."""
+    try:
+        from PIL import Image
+        with Image.open(image_path) as im:
+            img_w, img_h = im.size
+    except Exception:
+        return (0, 0, slide_w_emu, slide_h_emu)
+    if img_w <= 0 or img_h <= 0:
+        return (0, 0, slide_w_emu, slide_h_emu)
+    slide_aspect = slide_w_emu / slide_h_emu
+    img_aspect = img_w / img_h
+    if img_aspect > slide_aspect:
+        width = slide_w_emu
+        height = int(slide_w_emu / img_aspect)
+        left = 0
+        top = (slide_h_emu - height) // 2
+    else:
+        height = slide_h_emu
+        width = int(slide_h_emu * img_aspect)
+        top = 0
+        left = (slide_w_emu - width) // 2
+    return (left, top, width, height)
+
+
+def _patch_media_autoplay(slide, movie) -> None:
+    """Replace the click-to-play trigger on a movie shape with an
+    auto-play-on-slide-entry trigger, and hide the speaker icon
+    while presenting.
+
+    PowerPoint stores this in the slide's ``<p:timing>`` element.
+    python-pptx exposes the underlying XML so we can walk it,
+    swap ``clickEffect`` → ``withEffect``, and add a
+    ``showMediaCtrls=0`` attribute on the picture.
+    """
+    from pptx.oxml.ns import qn
+    timing = slide.element.find(qn("p:timing"))
+    if timing is None:
+        return
+    # Find every condition that triggers on click and flip it.
+    for cond in timing.iter(qn("p:cond")):
+        evt = cond.get("evt")
+        if evt == "onClick":
+            cond.set("evt", "afterEffect")
+    # Mark every video filter so PowerPoint hides the speaker
+    # icon during playback (it's already tucked offscreen, but
+    # belt and braces).
+    media_id = movie.shape_id
+    for video_shape in slide.element.iter(qn("p:pic")):
+        nvSpPr = video_shape.find(qn("p:nvPicPr"))
+        if nvSpPr is None:
+            continue
+        cNvPr = nvSpPr.find(qn("p:cNvPr"))
+        if cNvPr is None:
+            continue
+        if cNvPr.get("id") == str(media_id):
+            # Hide media controls while the slide plays.
+            cNvPr.set("hidden", "1")
+            break
+
+
+def _set_slide_advance_time(slide, seconds: float) -> None:
+    """Configure the slide's transition so PowerPoint auto-
+    advances after ``seconds`` seconds during a slideshow.
+
+    PPT stores advance time in milliseconds on the
+    ``<p:transition>`` element via the ``advTm`` attribute.
+    ``advClick="0"`` keeps the click-advance off so the auto-time
+    is the only trigger.
+    """
+    from pptx.oxml.ns import qn
+    from lxml import etree
+    transition = slide.element.find(qn("p:transition"))
+    if transition is None:
+        transition = etree.SubElement(
+            slide.element, qn("p:transition"))
+    transition.set("advClick", "0")
+    transition.set("advTm", str(int(seconds * 1000)))
+
+
+# Map our shared xfade transition keys (CHAPTER_TRANSITIONS) to
+# PowerPoint transition element names. Some xfade options have
+# no exact PPT analogue — we substitute the visually closest
+# option so writers don't lose the cue.
+_PPT_TRANSITION_MAP = {
+    "cut": None,
+    "fade": ("fade", {}),
+    "fadeblack": ("fade", {"thruBlk": "1"}),
+    "fadewhite": ("fade", {"thruBlk": "1"}),
+    "dissolve": ("fade", {}),
+    "slideleft": ("push", {"dir": "l"}),
+    "slideright": ("push", {"dir": "r"}),
+    "slideup": ("push", {"dir": "u"}),
+    "slidedown": ("push", {"dir": "d"}),
+    "wipeleft": ("wipe", {"dir": "l"}),
+    "wiperight": ("wipe", {"dir": "r"}),
+    "circleopen": ("circle", {}),
+    "circleclose": ("circle", {}),
+    "radial": ("wheel", {"spokes": "1"}),
+}
+
+
+def _set_slide_transition_effect(
+    slide, xfade_key: str, seconds: float,
+) -> None:
+    """Attach a PowerPoint-style transition effect to the slide
+    based on the writer's xfade pick. ``cut`` is a no-op.
+
+    PowerPoint expresses transitions via a child element of
+    ``<p:transition>`` (e.g. ``<p:fade/>``, ``<p:wipe dir="l"/>``).
+    The transition's speed is ``"fast"``/``"med"``/``"slow"`` —
+    mapped from seconds.
+    """
+    from pptx.oxml.ns import qn
+    from lxml import etree
+    mapping = _PPT_TRANSITION_MAP.get(
+        (xfade_key or "cut").lower())
+    if mapping is None:
+        return
+    transition = slide.element.find(qn("p:transition"))
+    if transition is None:
+        transition = etree.SubElement(
+            slide.element, qn("p:transition"))
+    # Pick speed based on duration.
+    if seconds <= 0.4:
+        speed = "fast"
+    elif seconds >= 1.2:
+        speed = "slow"
+    else:
+        speed = "med"
+    transition.set("spd", speed)
+    name, attrs = mapping
+    effect = etree.SubElement(
+        transition, qn(f"p:{name}"))
+    for k, v in attrs.items():
+        effect.set(k, v)
+
+
+def stitch_slide_deck_to_mp4(
+    deck: SlideDeckProject,
+    output_path: Path,
+    width: int = 1280,
+    height: int = 720,
+    fps: int = 30,
+) -> Tuple[bool, str]:
+    """Render the deck into a single MP4: each page is an image
+    held for its duration with its audio mixed in.
+
+    Returns ``(success, message)``. Uses the existing
+    ``stitch_clips`` for the visual concat, then ffmpeg with
+    filter_complex to attach per-slide audio offsets.
+    """
+    if not ffmpeg_available():
+        return (
+            False,
+            "ffmpeg not found on PATH. Install ffmpeg and try again.")
+    pages = [
+        p for p in deck.pages
+        if p.image_path and Path(p.image_path).exists()]
+    if not pages:
+        return (False, "No slides with usable images.")
+    # Stitch images (no audio) first.
+    image_paths = [Path(p.image_path) for p in pages]
+    image_durations = [
+        max(MIN_SLIDE_SECONDS, float(p.duration_seconds))
+        for p in pages]
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    silent_path = output_path.with_name(
+        output_path.stem + "_silent.mp4")
+    # When any slide has a non-cut transition, route through the
+    # transition stitcher (xfade) so writers' picks land in the
+    # final render. Otherwise stick with the simpler concat path.
+    has_transitions = any(
+        (p.transition_in or "cut") != "cut"
+        and float(p.transition_seconds or 0.0) > 0
+        for p in pages[1:])
+    if has_transitions:
+        transitions = [
+            (p.transition_in or "cut",
+             float(p.transition_seconds or 0.0))
+            for p in pages]
+        visual_result = stitch_with_transitions(
+            image_paths, silent_path,
+            clip_durations=image_durations,
+            transitions=transitions,
+            width=width, height=height, fps=fps)
+        # Each non-cut transition compresses the timeline by
+        # ``transition_seconds`` — adjust the per-slide start
+        # offsets we use later for audio mixing.
+        offsets_adjusted = True
+    else:
+        visual_result = stitch_clips(
+            image_paths, silent_path,
+            clip_durations=image_durations)
+        offsets_adjusted = False
+    if not visual_result.success:
+        return (False, visual_result.error)
+    # No audio at all? Done.
+    audio_pages = [
+        (i, p) for i, p in enumerate(pages)
+        if p.audio_path and Path(p.audio_path).exists()
+        and Path(p.audio_path).stat().st_size > 0
+    ]
+    if not audio_pages:
+        try:
+            silent_path.rename(output_path)
+        except Exception as e:
+            return (
+                False,
+                f"Could not finalize file: {e}")
+        return (True, f"Slide deck saved to {output_path}.")
+    # Compute per-page start offsets so each audio take lines up
+    # with its slide. When transitions are present, each non-cut
+    # boundary's seconds shorten the cumulative timeline (xfade
+    # overlaps the prior clip's tail with the next clip's head).
+    starts: List[float] = []
+    running = 0.0
+    for i, d in enumerate(image_durations):
+        starts.append(running)
+        running += d
+        if has_transitions and i + 1 < len(pages):
+            next_page = pages[i + 1]
+            kind = next_page.transition_in or "cut"
+            secs = float(next_page.transition_seconds or 0.0)
+            if kind != "cut" and secs > 0:
+                running -= secs
+    # Build the audio mix filter.
+    inputs: List[str] = ["-i", str(silent_path.resolve())]
+    filter_parts: List[str] = []
+    mix_labels: List[str] = []
+    for idx, (page_idx, page) in enumerate(audio_pages, start=1):
+        inputs.extend(
+            ["-i", str(Path(page.audio_path).resolve())])
+        start = starts[page_idx]
+        chain = ["asetpts=PTS-STARTPTS"]
+        if start > 0:
+            chain.append(
+                f"adelay={int(start * 1000)}|{int(start * 1000)}")
+        chain.append("aformat=channel_layouts=stereo")
+        label = f"a{idx}"
+        filter_parts.append(
+            f"[{idx}:a]" + ",".join(chain) + f"[{label}]")
+        mix_labels.append(f"[{label}]")
+    filter_parts.append(
+        "".join(mix_labels)
+        + f"amix=inputs={len(mix_labels)}:duration=longest:"
+          "normalize=0[mix]")
+    filter_str = ";".join(filter_parts)
+    # The visual track is authoritative — we want the full slide
+    # run-time even when a slide has shorter (or no) audio. Using
+    # ``-shortest`` here would cut the deck the moment the last
+    # audio take ends, dropping any trailing silent slides.
+    cmd = [
+        "ffmpeg", "-y",
+        *inputs,
+        "-filter_complex", filter_str,
+        "-map", "0:v:0", "-map", "[mix]",
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-t", f"{running:.3f}",
+        str(output_path),
+    ]
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=900)
+        if proc.returncode != 0:
+            return (
+                False,
+                "ffmpeg slide mux failed. stderr (last 400):\n"
+                + (proc.stderr or "")[-400:])
+    except subprocess.TimeoutExpired:
+        return (False, "ffmpeg slide mux timed out (15 min).")
+    finally:
+        try:
+            silent_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+    return (True, f"Slide deck saved to {output_path}.")

@@ -210,6 +210,21 @@ class VideoStudioWidget(QWidget):
         self._stitch_btn.clicked.connect(self._stitch_favorites)
         toolbar_row1.addWidget(self._stitch_btn)
 
+        # Chapter-deck editor — arrange + transition + voiceover
+        # the finished deck before exporting. Sits next to the
+        # plain export button so writers who just want a quick MP4
+        # don't have to wade through the editor first.
+        self._slide_editor_btn = QPushButton("🎤 Slide editor")
+        self._slide_editor_btn.setToolTip(
+            "Open the chapter's action images as a slide editor: "
+            "record audio per slide, pick transitions between "
+            "slides, auto-fit times to the recording, paste a "
+            "script and ✨ Suggest timings, group slides, then "
+            "export as PowerPoint or MP4 with per-slide narration.")
+        self._slide_editor_btn.clicked.connect(
+            self._open_slide_editor)
+        toolbar_row1.addWidget(self._slide_editor_btn)
+
         self._export_deck_btn = QPushButton("📑 Export deck")
         self._export_deck_btn.setToolTip(
             "Stitch every scene in a chapter (their chosen image / "
@@ -2590,6 +2605,153 @@ class VideoStudioWidget(QWidget):
             QMessageBox.information = orig_info
         return still_missing
 
+    def _open_slide_editor(self) -> None:
+        """Open the slide editor directly.
+
+        Behavior is designed to be a single click in the common
+        case:
+          * 0 chapters with scenes → friendly message, no picker.
+          * 1 chapter with scenes → open the editor on it directly.
+          * 2+ chapters → tiny chapter-only picker (no format combo,
+            no title-card toggle — those belong in the export
+            flow, not in "open the editor").
+        """
+        from src.video_studio.deck_export import (
+            collect_chapter_scenes)
+        from src.video_studio.slide_deck import (
+            build_slide_deck_from_chapter)
+        studio = self._studio()
+        if studio is None or not studio.scenes:
+            QMessageBox.information(
+                self, "Nothing to edit",
+                "Add scenes first.")
+            return
+        chapters_with_counts = self._enumerate_chapters_with_scenes(
+            studio)
+        if not chapters_with_counts:
+            QMessageBox.information(
+                self, "No chapters",
+                "None of your scenes are linked to a chapter yet. "
+                "Open a scene editor and use 'Pull from chapter' "
+                "to associate scenes with chapters.")
+            return
+        chapter_id = self._pick_chapter_for_editor(
+            chapters_with_counts,
+            title="Slide editor",
+            prompt=(
+                "Pick a chapter to open in the slide editor. "
+                "Each action's favorite image becomes one slide; "
+                "you can record audio, fit timings, add "
+                "transitions, and export to MP4 or PowerPoint."))
+        if chapter_id is None:
+            return
+        chapter_label = next(
+            (lbl for cid, lbl, _ in chapters_with_counts
+             if cid == chapter_id),
+            "Chapter")
+        scenes = collect_chapter_scenes(studio, chapter_id)
+        if not scenes:
+            QMessageBox.information(
+                self, "No scenes",
+                "That chapter has no scenes linked to it.")
+            return
+        # Working dir for recordings + the rendered MP4.
+        working_dir = (
+            self._studio_root_dir() / "slide_decks" / chapter_id)
+        working_dir.mkdir(parents=True, exist_ok=True)
+        # Re-use an existing slide deck project for this chapter,
+        # otherwise seed a fresh one from the scenes.
+        deck = next(
+            (d for d in studio.slide_decks
+             if d.chapter_id == chapter_id),
+            None)
+        if deck is None:
+            deck = build_slide_deck_from_chapter(
+                scenes, working_dir,
+                chapter_id=chapter_id,
+                chapter_label=chapter_label)
+            studio.slide_decks.append(deck)
+        if not deck.pages:
+            QMessageBox.information(
+                self, "No slides",
+                "None of this chapter's scenes have a favorite "
+                "image on disk. Generate or mark favorites first.")
+            return
+        from src.ui.video_studio.slide_editor_dialog import (
+            SlideEditorDialog)
+        dlg = SlideEditorDialog(
+            deck,
+            chapters_provider=self._chapters_snapshot_for_reading,
+            save_chapter_text=self._save_chapter_text,
+            open_in_writer=self._jump_to_writer,
+            parent=self)
+        # Non-modal show so the floating chapter prose window
+        # remains interactive — a modal slide editor would block
+        # input to every other window in the app. Hold a
+        # reference so Python doesn't GC the window the moment
+        # this method returns.
+        self._active_slide_editor = dlg
+        # Defer the contentChanged emit until the writer actually
+        # closes the editor — the deck mutates as they work and
+        # firing immediately would just write the freshly-seeded
+        # deck to disk. ``finished`` is a QDialog signal that
+        # carries the close result.
+        dlg.finished.connect(
+            lambda *_: self.contentChanged.emit())
+        # ``show()`` alone — no raise_() / activateWindow(). On
+        # macOS those force-grab focus and trigger the focus-
+        # stealing path that minimizes other open windows of the
+        # app and (on dual-screen setups) blanks the second
+        # monitor. The OS handles stacking just fine when we
+        # don't fight it. Writers can always click the editor in
+        # the taskbar / Mission Control if it ended up behind
+        # something else.
+        dlg.show()
+
+    def _pick_chapter_for_editor(
+        self,
+        chapters_with_counts,
+        *, title: str, prompt: str,
+    ):
+        """Lightweight chapter picker — combo + OK / Cancel only.
+        Auto-skips the dialog when there's exactly one chapter to
+        pick from. Returns the chosen ``chapter_id`` or None when
+        the writer cancels.
+        """
+        if len(chapters_with_counts) == 1:
+            return chapters_with_counts[0][0]
+        from PyQt6.QtWidgets import (
+            QComboBox, QDialog, QDialogButtonBox, QLabel,
+            QVBoxLayout)
+        dlg = QDialog(self)
+        dlg.setWindowTitle(title)
+        dlg.setModal(True)
+        dlg.resize(460, 200)
+        v = QVBoxLayout(dlg)
+        label = QLabel(prompt)
+        label.setWordWrap(True)
+        v.addWidget(label)
+        combo = QComboBox()
+        for cid, lbl, count in chapters_with_counts:
+            combo.addItem(
+                f"{lbl}  —  {count} scene"
+                + ("s" if count != 1 else ""),
+                cid)
+        v.addWidget(combo)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(
+            QDialogButtonBox.StandardButton.Ok
+        ).setText("Open editor")
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        v.addWidget(buttons)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return combo.currentData()
+
+
     def _export_chapter_deck(self) -> None:
         """Stitch every scene in one chapter into a single deck.
 
@@ -2960,9 +3122,163 @@ class VideoStudioWidget(QWidget):
             QMessageBox.warning(
                 self, "Stitch failed", result.error)
             return
-        msg = (
-            f"Saved stitched video to:\n{result.output_path}\n\n"
-            f"Combined {len(clip_paths)} clip(s)."
-            + (f"\nSkipped {skipped} (no favorite / placeholder / "
-               f"missing)." if skipped else ""))
-        QMessageBox.information(self, "Stitched", msg)
+        # The stitch's true purpose is to hand the writer a finished
+        # MP4 they can lay voiceover over — open the video editor
+        # immediately rather than make them confirm. The editor
+        # itself is dismissable if they decide they're done.
+        skipped_note = (
+            f" Skipped {skipped} (no favorite / placeholder / "
+            f"missing)."
+            if skipped else "")
+        self._update_status(
+            f"Stitched {len(clip_paths)} clip(s) → "
+            f"{Path(result.output_path).name}.{skipped_note}")
+        self._open_video_editor(Path(result.output_path))
+
+    def _open_video_editor(self, video_path: Path) -> None:
+        """Open the post-stitch video editor on a finished MP4.
+
+        Reusable from anywhere that produces a final video (the
+        favorites stitcher today; the slide editor's MP4 export
+        wires through here too on demand)."""
+        from src.ui.video_studio.video_editor_dialog import (
+            VideoEditorDialog)
+        if not video_path.exists():
+            QMessageBox.warning(
+                self, "Missing file",
+                f"Could not find {video_path}. The stitch may "
+                "have failed silently — check the status line.")
+            return
+        self._update_status(
+            f"Opening video editor on {video_path.name}…")
+        working_dir = (
+            self._studio_root_dir() / "video_editor_takes"
+            / video_path.stem)
+        working_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            editor = VideoEditorDialog(
+                source_path=video_path,
+                working_dir=working_dir,
+                chapters_provider=(
+                    self._chapters_snapshot_for_reading),
+                save_chapter_text=self._save_chapter_text,
+                open_in_writer=self._jump_to_writer,
+                parent=self)
+        except Exception as e:
+            # Catch any construction failure (multimedia plugin
+            # missing, codec init crash, etc.) and surface it
+            # instead of letting the call site silently swallow it.
+            QMessageBox.critical(
+                self, "Video editor failed to open",
+                f"The video editor couldn't be constructed:\n\n{e}"
+                f"\n\nThe stitched file is still saved at:\n"
+                f"{video_path}")
+            return
+        # Hold a reference so Python doesn't garbage-collect the
+        # non-modal window the instant this method returns.
+        self._active_video_editor = editor
+        # Non-modal show — the writer can keep the studio in
+        # focus, the dialog still surfaces on its own. show +
+        # raise + activate force focus across platforms.
+        # ``show()`` alone — see the slide-editor opener for why
+        # raise_() / activateWindow() are bad here. macOS treats
+        # the focus grab as "this app wants to take over the
+        # display" and starts minimizing peers + can blank a
+        # second monitor.
+        editor.show()
+
+    # ------------------------------------------------------------------
+    # Chapter access for the slim prose editor
+    # ------------------------------------------------------------------
+    def _save_chapter_text(
+        self, chapter_id: str, new_text: str,
+    ) -> bool:
+        """Write the slim editor's edits back to the live
+        chapter. Looks up the chapter on
+        ``project.manuscript.chapters`` by id and assigns
+        ``chapter.content``. Returns True on success so the
+        prose window can clear its dirty flag.
+
+        The studio's ``contentChanged`` signal fires after the
+        write so the main window's autosave timer picks the
+        change up the same way it does for any other in-app edit.
+        """
+        project = self._project
+        if project is None or not chapter_id:
+            return False
+        manuscript = getattr(project, "manuscript", None)
+        if manuscript is None:
+            return False
+        for ch in getattr(manuscript, "chapters", []) or []:
+            if getattr(ch, "id", "") == chapter_id:
+                try:
+                    ch.content = new_text
+                except Exception:
+                    return False
+                from datetime import datetime
+                try:
+                    ch.updated_at = datetime.now()
+                except Exception:
+                    pass
+                self.contentChanged.emit()
+                return True
+        return False
+
+    # Signal the main window listens for to jump to the writer
+    # tab and focus a specific chapter. The handler usually:
+    #   * Switches the main tab widget to the Writer pane.
+    #   * Opens the chapter in the manuscript editor.
+    # When nothing is connected, the click is a no-op (with a
+    # gentle status message) so the dialog at least stops being
+    # confusing.
+    jumpToWriterRequested = pyqtSignal(str)  # chapter_id
+
+    def _jump_to_writer(self, chapter_id: str) -> None:
+        """Emitted from the slim editor's 📝 Open in writer
+        button. Lets the main window route the writer to the
+        correct chapter."""
+        self.jumpToWriterRequested.emit(chapter_id or "")
+
+    def _chapters_snapshot_for_reading(self):
+        """Flatten the project's chapters into a list of
+        ``(chapter_id, label, text)`` triples suitable for the
+        floating ChapterProseWindow. Tolerates different shapes
+        of the project model — the writer's project carries
+        chapters as ``manuscript.chapters`` with ``content`` or
+        ``html_content`` text fields."""
+        project = self._project
+        if project is None:
+            return []
+        manuscript = getattr(project, "manuscript", None)
+        if manuscript is None:
+            return []
+        out = []
+        for ch in getattr(manuscript, "chapters", []) or []:
+            cid = getattr(ch, "id", "") or ""
+            title = (getattr(ch, "title", "") or "").strip()
+            number = getattr(ch, "chapter_number", None)
+            if title and number is not None:
+                label = f"Ch. {number} — {title}"
+            elif number is not None:
+                label = f"Chapter {number}"
+            elif title:
+                label = title
+            else:
+                label = f"Chapter ({cid[:8]}…)" if cid else "Chapter"
+            text = (
+                getattr(ch, "content", "")
+                or getattr(ch, "text", "")
+                or "")
+            # Strip basic HTML when present — the prose window
+            # shows plain text only. Falls back to the raw string
+            # if BeautifulSoup isn't around.
+            if text and "<" in text and ">" in text:
+                try:
+                    from bs4 import BeautifulSoup
+                    text = BeautifulSoup(
+                        text, "html.parser").get_text(
+                            separator="\n")
+                except Exception:
+                    pass
+            out.append((cid, label, text))
+        return out

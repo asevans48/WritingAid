@@ -3226,6 +3226,13 @@ class MainWindow(QMainWindow):
             self._auto_save_project)
         self.video_studio_widget.contentChanged.connect(
             self._video_studio_autosave_timer.start)
+        # Slim chapter editor inside the slide / video editors
+        # routes "📝 Open in writer" back to the main window via
+        # this signal. Switches to the Write tab and (best
+        # effort) opens the requested chapter in the manuscript
+        # editor.
+        self.video_studio_widget.jumpToWriterRequested.connect(
+            self._jump_to_writer_for_chapter)
 
         # Connect grader widget signals
         self.grader_widget.go_to_line_requested.connect(self._go_to_critique_line)
@@ -13900,6 +13907,30 @@ class MainWindow(QMainWindow):
             "Features worldbuilding, character development, story planning, "
             "manuscript editing, AI assistance, and more."
         )
+
+    def _jump_to_writer_for_chapter(self, chapter_id: str) -> None:
+        """Handle "📝 Open in writer" from the video / slide
+        editor's slim chapter editor. Switches the main tab widget
+        to the Write pane and (best-effort) opens the requested
+        chapter. Empty ``chapter_id`` just switches tabs.
+        """
+        try:
+            self.tab_widget.setCurrentWidget(self.manuscript_editor)
+        except Exception:
+            return
+        if not chapter_id:
+            return
+        try:
+            for i in range(
+                    self.manuscript_editor.chapter_list.count()):
+                item = self.manuscript_editor.chapter_list.item(i)
+                if (item.data(Qt.ItemDataRole.UserRole)
+                        == chapter_id):
+                    self.manuscript_editor.chapter_list.setCurrentItem(
+                        item)
+                    break
+        except Exception:
+            pass
 
     def _jump_to_annotation(self, chapter_id: str, annotation_id: str):
         """Jump to specific annotation in manuscript editor."""
