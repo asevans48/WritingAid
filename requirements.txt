@@ -71,6 +71,15 @@ spacy>=3.8.0
 # because we import it directly.
 numpy>=1.26.0
 
+# Audio capture + WAV file IO. We do mic recording through
+# sounddevice (PortAudio) + soundfile rather than QMediaRecorder
+# — Qt's Wave recorder produces empty files on macOS PyQt6
+# builds, which is the recurring "mic shows level but no audio
+# saved" bug. sounddevice + soundfile are tiny, cross-platform,
+# and deterministic.
+sounddevice>=0.4.6
+soundfile>=0.12.0
+
 # System utilities
 # psutil is used to size the model cache against available RAM and
 # to gate large training runs against system memory. Lazy-imported

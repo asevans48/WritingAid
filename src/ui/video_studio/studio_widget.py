@@ -3163,6 +3163,10 @@ class VideoStudioWidget(QWidget):
                     self._chapters_snapshot_for_reading),
                 save_chapter_text=self._save_chapter_text,
                 open_in_writer=self._jump_to_writer,
+                load_session=self._load_video_editor_session,
+                save_session=self._save_video_editor_session,
+                session_record_provider=(
+                    self._video_editor_session_record),
                 parent=self)
         except Exception as e:
             # Catch any construction failure (multimedia plugin
@@ -3190,6 +3194,100 @@ class VideoStudioWidget(QWidget):
     # ------------------------------------------------------------------
     # Chapter access for the slim prose editor
     # ------------------------------------------------------------------
+    def _load_video_editor_session(
+        self, source_path,
+    ):
+        """Find the saved video-editor session for ``source_path``
+        and return its voiceover list (deep-copied so the editor
+        can mutate freely without touching the project until it
+        calls back into ``_save_video_editor_session``). Returns
+        an empty list when no prior session exists or when the
+        project isn't ready."""
+        from pathlib import Path as _P
+        studio = self._studio()
+        if studio is None:
+            return []
+        key = str(_P(source_path).resolve())
+        for sess in (
+                getattr(studio, "video_editor_sessions", [])
+                or []):
+            if (sess.source_path
+                    and _P(sess.source_path).resolve()
+                    == _P(key).resolve()):
+                # Deep-copy so the editor's mutations don't
+                # leak into the stored model until it explicitly
+                # saves them back through the save callback.
+                return [v.model_copy(deep=True)
+                        for v in sess.voiceovers]
+        return []
+
+    def _video_editor_session_record(self, source_path):
+        """Return the live (mutable) ``VideoEditorSession`` so
+        callers like the video editor's mic picker can read
+        ``microphone_device_name`` without copying. Returns None
+        when no session exists or the project isn't ready."""
+        from pathlib import Path as _P
+        studio = self._studio()
+        if studio is None:
+            return None
+        key = str(_P(source_path).resolve())
+        for sess in (
+                getattr(studio, "video_editor_sessions", [])
+                or []):
+            if (sess.source_path
+                    and _P(sess.source_path).resolve()
+                    == _P(key).resolve()):
+                return sess
+        return None
+
+    def _save_video_editor_session(
+        self, source_path, voiceovers, working_dir=None,
+        microphone_device_name=None,
+    ) -> bool:
+        """Persist the editor's current voiceover list back to
+        the studio's ``video_editor_sessions``. Creates a new
+        session when none exists for this source path; otherwise
+        replaces the voiceovers list and bumps ``updated_at``.
+        Fires ``contentChanged`` so the autosave timer flushes
+        the project file shortly after."""
+        from pathlib import Path as _P
+        from datetime import datetime as _dt
+        from src.video_studio.models import VideoEditorSession
+        studio = self._studio()
+        if studio is None:
+            return False
+        key = str(_P(source_path).resolve())
+        target = None
+        for sess in (
+                getattr(studio, "video_editor_sessions", [])
+                or []):
+            if (sess.source_path
+                    and _P(sess.source_path).resolve()
+                    == _P(key).resolve()):
+                target = sess
+                break
+        if target is None:
+            target = VideoEditorSession(
+                source_path=key,
+                working_dir=str(working_dir or ""))
+            if not hasattr(studio, "video_editor_sessions"):
+                studio.video_editor_sessions = []
+            studio.video_editor_sessions.append(target)
+        # Replace the voiceovers list with deep copies so the
+        # editor's later edits don't shadow the saved state.
+        target.voiceovers = [
+            v.model_copy(deep=True) for v in voiceovers]
+        target.updated_at = _dt.now()
+        if working_dir and not target.working_dir:
+            target.working_dir = str(working_dir)
+        # Mic name is opt-in via kwarg so callers that don't care
+        # don't overwrite a previously-saved choice with empty.
+        if microphone_device_name is not None:
+            target.microphone_device_name = (
+                microphone_device_name or "")
+        self.contentChanged.emit()
+        return True
+
     def _save_chapter_text(
         self, chapter_id: str, new_text: str,
     ) -> bool:

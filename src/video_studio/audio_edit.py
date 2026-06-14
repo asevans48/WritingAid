@@ -1,0 +1,129 @@
+"""Audio editing helpers — trim, denoise, gain.
+
+Used by ``AudioEditorDialog`` to apply the writer's edits to a
+recorded take. Everything routes through ffmpeg's audio filter
+graph: ``afftdn`` for FFT-based noise reduction, ``volume`` for
+gain, and the ``-ss`` / ``-t`` flags for trimming. ffmpeg ships
+with the studio's stitcher already, so no new dependencies.
+"""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional, Tuple
+
+
+@dataclass
+class AudioEditResult:
+    success: bool
+    output_path: Path
+    duration_seconds: float = 0.0
+    error: str = ""
+
+
+def ffmpeg_available() -> bool:
+    return shutil.which("ffmpeg") is not None
+
+
+def edit_audio(
+    src: Path,
+    dest: Path,
+    *,
+    in_point_seconds: float = 0.0,
+    out_point_seconds: float = 0.0,
+    denoise: bool = False,
+    denoise_strength_db: float = -25.0,
+    gain_db: float = 0.0,
+    normalize: bool = False,
+) -> AudioEditResult:
+    """Apply an edit chain to ``src`` and write the result to
+    ``dest``. Empty / zero parameters are no-ops, so callers can
+    use this for any subset of trim / denoise / gain.
+
+    ``in_point_seconds`` clips the head; ``out_point_seconds``
+    sets the absolute end timestamp (not the slice length). When
+    ``out_point_seconds == 0`` the cut runs to end-of-file.
+    ``denoise_strength_db`` is the noise floor that ``afftdn``
+    interprets: more negative = more aggressive (typical range
+    -10 to -40). ``gain_db`` runs through ``volume``; positive
+    boosts, negative attenuates. ``normalize`` is shorthand for
+    ``loudnorm`` (target -16 LUFS).
+
+    Returns ``AudioEditResult(success=False, error=...)`` instead
+    of raising so callers can surface the message in a dialog.
+    """
+    if not ffmpeg_available():
+        return AudioEditResult(
+            success=False, output_path=dest,
+            error="ffmpeg not found on PATH.")
+    if not src.exists() or src.stat().st_size == 0:
+        return AudioEditResult(
+            success=False, output_path=dest,
+            error=f"Source missing or empty: {src}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    cmd: list = ["ffmpeg", "-y"]
+    if in_point_seconds > 0:
+        cmd += ["-ss", f"{in_point_seconds:.3f}"]
+    cmd += ["-i", str(src.resolve())]
+    if out_point_seconds > 0 and out_point_seconds > in_point_seconds:
+        duration = out_point_seconds - in_point_seconds
+        cmd += ["-t", f"{duration:.3f}"]
+    filters: list = []
+    if denoise:
+        # ``afftdn`` accepts ``nr`` (noise reduction in dB,
+        # default 12) and ``nf`` (noise floor, default -30).
+        # Treat ``denoise_strength_db`` as the noise floor —
+        # more negative → more aggressive.
+        filters.append(f"afftdn=nf={denoise_strength_db:.1f}")
+    if gain_db != 0:
+        filters.append(f"volume={gain_db:.2f}dB")
+    if normalize:
+        # EBU R128 target. Two-pass ``loudnorm`` is more
+        # accurate but slower; single-pass is fine for voiceover.
+        filters.append(
+            "loudnorm=I=-16:TP=-1.5:LRA=11")
+    if filters:
+        cmd += ["-af", ",".join(filters)]
+    cmd += ["-c:a", "pcm_s16le", str(dest.resolve())]
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        return AudioEditResult(
+            success=False, output_path=dest,
+            error="ffmpeg timed out after 5 minutes.")
+    except Exception as e:
+        return AudioEditResult(
+            success=False, output_path=dest,
+            error=f"ffmpeg raised: {e}")
+    if proc.returncode != 0:
+        return AudioEditResult(
+            success=False, output_path=dest,
+            error=(
+                "ffmpeg failed (last 400 chars):\n"
+                + (proc.stderr or "")[-400:]))
+    duration = _probe_duration(dest)
+    return AudioEditResult(
+        success=True, output_path=dest,
+        duration_seconds=duration)
+
+
+def _probe_duration(path: Path) -> float:
+    """ffprobe duration, 0 on failure."""
+    if not shutil.which("ffprobe"):
+        return 0.0
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error",
+             "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1",
+             str(path.resolve())],
+            capture_output=True, text=True, timeout=15)
+        if proc.returncode != 0:
+            return 0.0
+        return float((proc.stdout or "0").strip())
+    except Exception:
+        return 0.0

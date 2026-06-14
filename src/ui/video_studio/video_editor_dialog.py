@@ -52,6 +52,9 @@ class VideoEditorDialog(QDialog):
         chapters_provider=None,
         save_chapter_text=None,
         open_in_writer=None,
+        load_session=None,
+        save_session=None,
+        session_record_provider=None,
         parent: Optional[QWidget] = None,
     ):
         # Independent top-level so the writer can keep it open
@@ -82,6 +85,19 @@ class VideoEditorDialog(QDialog):
         # handoff back to the main writer when needed.
         self._save_chapter_text_cb = save_chapter_text
         self._open_in_writer_cb = open_in_writer
+        # Session persistence callbacks. ``load_session`` is
+        # called once at construction to populate the takes from
+        # any prior session; ``save_session`` is fired after
+        # every mutation so closing the editor mid-edit (or the
+        # whole app crashing) doesn't lose the writer's work.
+        # Both default to no-ops so the dialog still works
+        # standalone in tests.
+        self._load_session_cb = load_session
+        self._save_session_cb = save_session
+        # Optional accessor that returns the full session record
+        # (not just the voiceovers list) so the mic picker can
+        # seed itself with the saved device description.
+        self._session_record_provider = session_record_provider
         self._prose_window = None
         screen = QGuiApplication.primaryScreen()
         avail = screen.availableGeometry() if screen else None
@@ -103,7 +119,18 @@ class VideoEditorDialog(QDialog):
         self._video_duration_seconds = (
             probe_audio_duration_seconds(source_path) or 0.0)
 
+        # Hydrate the takes from any prior session for this MP4
+        # so the editor opens exactly where the writer left it
+        # before. The callback returns deep copies — mutations
+        # here only round-trip back through ``_persist_session``.
         self._voiceovers: List[VoiceoverSegment] = []
+        if self._load_session_cb is not None:
+            try:
+                seeded = self._load_session_cb(source_path) or []
+                self._voiceovers.extend(seeded)
+            except Exception as e:
+                print(
+                    f"[video_editor] load_session failed: {e}")
         self._selected_id: Optional[str] = None
 
         # Playback (video + audio).
@@ -116,12 +143,23 @@ class VideoEditorDialog(QDialog):
             self._on_video_position_changed)
 
         # Recording.
+        # Legacy Qt-recorder slots — left as ``None`` since the
+        # PortAudio recorder took over. Cleanup paths still
+        # touch them defensively.
         self._record_session: Optional[QMediaCaptureSession] = None
         self._recorder: Optional[QMediaRecorder] = None
         self._audio_input: Optional[QAudioInput] = None
         self._record_target_path: Optional[Path] = None
+        # PortAudio-backed recorder — created on first use.
+        self._sd_recorder = None
 
         self._build_ui()
+        # Render the seeded takes once the widget tree exists. We
+        # avoid a save round-trip here because nothing has changed
+        # yet — load_session_cb is supposed to mirror what's
+        # already on the model.
+        if self._voiceovers:
+            self._refresh_list()
 
     # ------------------------------------------------------------------
     # UI
@@ -145,9 +183,21 @@ class VideoEditorDialog(QDialog):
         left_v.setContentsMargins(0, 0, 0, 0)
         left_v.addWidget(self._video_widget, stretch=1)
         controls = QHBoxLayout()
+        # Play / Pause toggles on the same button so the writer
+        # can pause without losing position. Replay rewinds to 0
+        # and plays — the standard "pause + replay" pair.
         self._play_btn = QPushButton("▶ Play")
-        self._play_btn.clicked.connect(self._on_play_video)
+        self._play_btn.setToolTip(
+            "Play / pause toggle. Pausing keeps the current "
+            "position; resuming picks up from the same spot.")
+        self._play_btn.clicked.connect(
+            self._on_play_or_pause_video)
         controls.addWidget(self._play_btn)
+        self._replay_btn = QPushButton("⟲ Replay")
+        self._replay_btn.setToolTip(
+            "Rewind to the start and play from the top.")
+        self._replay_btn.clicked.connect(self._on_replay_video)
+        controls.addWidget(self._replay_btn)
         self._stop_btn = QPushButton("■ Stop")
         self._stop_btn.clicked.connect(self._on_stop_video)
         controls.addWidget(self._stop_btn)
@@ -181,6 +231,28 @@ class VideoEditorDialog(QDialog):
         right.setFrameShape(QScrollArea.Shape.NoFrame)
         right_inner = QWidget()
         right_v = QVBoxLayout(right_inner)
+        # Mic picker — persists on the video editor session so
+        # the writer's chosen input device is remembered across
+        # sessions. Falls back to system default if missing.
+        from src.ui.video_studio.microphone_picker import (
+            MicrophonePicker)
+        # The session description was loaded by ``_load_session_cb``
+        # but stored on the session record, not exposed via
+        # voiceovers — we look it up here best-effort.
+        initial_mic = ""
+        try:
+            sess = self._lookup_session_record()
+            if sess is not None:
+                initial_mic = (
+                    getattr(sess, "microphone_device_name", "")
+                    or "")
+        except Exception:
+            initial_mic = ""
+        self._mic_picker = MicrophonePicker(
+            initial_description=initial_mic)
+        self._mic_picker.device_changed.connect(
+            self._on_mic_changed)
+        right_v.addWidget(self._mic_picker)
         right_v.addWidget(QLabel("Voiceover takes:"))
         self._vo_list = QListWidget()
         self._vo_list.itemSelectionChanged.connect(
@@ -193,10 +265,17 @@ class VideoEditorDialog(QDialog):
         self._record_btn.clicked.connect(self._on_record_toggled)
         self._import_btn = QPushButton("📥 Import…")
         self._import_btn.clicked.connect(self._on_import)
+        self._edit_audio_btn = QPushButton("✏️ Edit…")
+        self._edit_audio_btn.setToolTip(
+            "Trim, denoise, or normalize the selected take's "
+            "source file.")
+        self._edit_audio_btn.clicked.connect(
+            self._on_edit_audio)
         self._remove_btn = QPushButton("Remove")
         self._remove_btn.clicked.connect(self._on_remove)
         take_btns.addWidget(self._record_btn)
         take_btns.addWidget(self._import_btn)
+        take_btns.addWidget(self._edit_audio_btn)
         take_btns.addWidget(self._remove_btn)
         take_btns.addStretch()
         right_v.addLayout(take_btns)
@@ -287,11 +366,96 @@ class VideoEditorDialog(QDialog):
     # ------------------------------------------------------------------
     # Playback
     # ------------------------------------------------------------------
-    def _on_play_video(self) -> None:
+    def _on_play_or_pause_video(self) -> None:
+        from PyQt6.QtMultimedia import QMediaPlayer
+        state = self._player.playbackState()
+        if state == QMediaPlayer.PlaybackState.PlayingState:
+            self._player.pause()
+            self._play_btn.setText("▶ Resume")
+            return
+        if state == QMediaPlayer.PlaybackState.PausedState:
+            self._player.play()
+            self._play_btn.setText("⏸ Pause")
+            return
+        # Stopped — start fresh.
         self._player.play()
+        self._play_btn.setText("⏸ Pause")
+
+    def _on_replay_video(self) -> None:
+        """Rewind to 0 and play. Works from any state."""
+        self._player.stop()
+        # ``setSource`` on the same URL also resets position to 0
+        # on Qt 6, but we set position explicitly too in case the
+        # player decides to keep state.
+        self._player.setSource(
+            QUrl.fromLocalFile(str(self._source_path.resolve())))
+        self._player.setPosition(0)
+        self._player.play()
+        self._play_btn.setText("⏸ Pause")
 
     def _on_stop_video(self) -> None:
         self._player.stop()
+        self._play_btn.setText("▶ Play")
+
+    def _lookup_session_record(self):
+        """Best-effort fetch of the saved
+        ``VideoEditorSession`` for the current source path. Used
+        by the mic picker to seed itself with the writer's last
+        chosen device. Returns None when no session exists or
+        when no load callback was wired."""
+        if self._load_session_cb is None:
+            return None
+        # The standard load_session callback returns the
+        # voiceovers list but not the session record. We provide
+        # a separate hook callers can wire if they want to surface
+        # the full record; meanwhile fall back to None.
+        getter = getattr(
+            self, "_session_record_provider", None)
+        if getter is None:
+            return None
+        try:
+            return getter(self._source_path)
+        except Exception:
+            return None
+
+    def _on_mic_changed(self, description: str) -> None:
+        """Push the writer's new mic pick through the save
+        callback so it persists on the session record. Wipes
+        the cached recorder so the next recording uses the new
+        device."""
+        if self._record_session is not None:
+            try:
+                if self._recorder is not None:
+                    self._recorder.stop()
+            except Exception:
+                pass
+            self._record_session = None
+            self._recorder = None
+            self._audio_input = None
+        # Re-persist the session with the new mic description.
+        # The save callback's optional ``microphone_device_name``
+        # keyword (added on the studio side) keeps the device
+        # choice on the stored session.
+        if self._save_session_cb is None:
+            return
+        try:
+            self._save_session_cb(
+                self._source_path,
+                list(self._voiceovers),
+                self._working_dir,
+                microphone_device_name=description or "")
+        except TypeError:
+            # Older save callbacks didn't accept the mic kwarg.
+            try:
+                self._save_session_cb(
+                    self._source_path,
+                    list(self._voiceovers),
+                    self._working_dir)
+            except Exception:
+                pass
+        except Exception as e:
+            print(
+                f"[video_editor] mic change save failed: {e}")
 
     def _on_video_position_changed(self, ms: int) -> None:
         self._position_label.setText(
@@ -365,6 +529,25 @@ class VideoEditorDialog(QDialog):
         seg.fade_out_seconds = float(self._fade_out_spin.value())
         seg.updated_at = datetime.now()
         self._refresh_list()
+        self._persist_session()
+
+    def _persist_session(self) -> None:
+        """Push the current voiceover list back to the host so
+        the session survives a close + reopen. The host's
+        autosave timer flushes to disk shortly after.
+
+        No-op when no save callback was wired (e.g. dialog
+        opened standalone in tests)."""
+        if self._save_session_cb is None:
+            return
+        try:
+            self._save_session_cb(
+                self._source_path,
+                list(self._voiceovers),
+                self._working_dir)
+        except Exception as e:
+            print(
+                f"[video_editor] save_session failed: {e}")
 
     def _on_snap_start_to_position(self) -> None:
         seg = self._selected_take()
@@ -374,6 +557,34 @@ class VideoEditorDialog(QDialog):
         self._start_spin.setValue(seconds)
         self._commit_take()
 
+    def _on_edit_audio(self) -> None:
+        seg = self._selected_take()
+        if seg is None or not seg.audio_path:
+            QMessageBox.information(
+                self, "No take",
+                "Pick a take with audio to edit.")
+            return
+        path = Path(seg.audio_path)
+        if not path.exists():
+            QMessageBox.warning(
+                self, "Audio missing",
+                f"The take's source file is gone:\n{path}")
+            return
+        from src.ui.video_studio.audio_editor_dialog import (
+            AudioEditorDialog)
+        def _on_applied(new_path: Path, new_duration: float):
+            seg.audio_path = str(new_path)
+            seg.source_duration_seconds = float(new_duration)
+            seg.updated_at = datetime.now()
+            self._refresh_list()
+            self._persist_session()
+        self._audio_editor = AudioEditorDialog(
+            source_path=path,
+            on_applied=_on_applied,
+            title=f"Edit take — {seg.label or 'voiceover'}",
+            parent=self)
+        self._audio_editor.show()
+
     def _on_remove(self) -> None:
         seg = self._selected_take()
         if seg is None:
@@ -382,6 +593,7 @@ class VideoEditorDialog(QDialog):
             s for s in self._voiceovers if s.id != seg.id]
         self._selected_id = None
         self._refresh_list()
+        self._persist_session()
 
     # ------------------------------------------------------------------
     # Record / import
@@ -393,75 +605,90 @@ class VideoEditorDialog(QDialog):
             self._stop_recording()
 
     def _start_recording(self) -> None:
-        if self._recorder is None:
-            self._record_session = QMediaCaptureSession(self)
-            self._audio_input = QAudioInput(
-                QMediaDevices.defaultAudioInput(), self)
-            self._record_session.setAudioInput(self._audio_input)
-            self._recorder = QMediaRecorder(self)
-            self._record_session.setRecorder(self._recorder)
-            fmt = QMediaFormat()
-            fmt.setFileFormat(QMediaFormat.FileFormat.Wave)
-            fmt.setAudioCodec(QMediaFormat.AudioCodec.Wave)
-            self._recorder.setMediaFormat(fmt)
-            self._recorder.setQuality(
-                QMediaRecorder.Quality.HighQuality)
-            self._recorder.recorderStateChanged.connect(
-                self._on_recorder_state_changed)
+        # See ``slide_editor_dialog._start_recording`` for the
+        # full context — PyQt6 QMediaRecorder + Wave silently
+        # writes empty files on macOS. PortAudio path keeps the
+        # capture deterministic.
+        if self._sd_recorder is None:
+            from src.video_studio.audio_recorder import (
+                AudioRecorder)
+            self._sd_recorder = AudioRecorder()
+        device_name = None
+        try:
+            if hasattr(self, "_mic_picker"):
+                qdev = self._mic_picker.selected_device()
+                if qdev is not None:
+                    device_name = qdev.description()
+        except Exception as e:
+            print(f"[video_editor] mic resolve failed: {e}")
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         n = len(self._voiceovers) + 1
         self._record_target_path = (
             self._working_dir
             / f"vo_{n:03d}_{stamp}.wav")
-        self._recorder.setOutputLocation(
-            QUrl.fromLocalFile(
-                str(self._record_target_path.resolve())))
         # Snap the start time to the video's current position so
         # the writer can record while watching, and the take lands
         # where the cursor was.
         snap_start = self._player.position() / 1000.0
+        try:
+            self._sd_recorder.start(
+                self._record_target_path,
+                device_name=device_name)
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox as _QM
+            _QM.warning(
+                self, "Recording failed",
+                f"Could not start recording: {e}")
+            self._record_btn.blockSignals(True)
+            self._record_btn.setChecked(False)
+            self._record_btn.blockSignals(False)
+            return
         self._record_btn.setText("⏹ Stop recording")
         self._status_label.setText(
             f"Recording from microphone (will land at "
             f"{snap_start:.2f} s)…")
         self._player.play()
         self._pending_start_at = snap_start
-        self._recorder.record()
 
     def _stop_recording(self) -> None:
-        if self._recorder is not None:
-            self._recorder.stop()
+        take = None
+        if self._sd_recorder is not None:
+            try:
+                take = self._sd_recorder.stop()
+            except Exception as e:
+                self._status_label.setText(
+                    f"Stop failed: {e}")
         self._player.pause()
-
-    def _on_recorder_state_changed(self, state) -> None:
-        if state == QMediaRecorder.RecorderState.StoppedState:
-            self._record_btn.blockSignals(True)
-            self._record_btn.setChecked(False)
-            self._record_btn.setText("🎤 Record")
-            self._record_btn.blockSignals(False)
-            QTimer.singleShot(150, self._finalize_recording)
-
-    def _finalize_recording(self) -> None:
-        target = self._record_target_path
-        if target is None or not target.exists():
+        self._record_btn.blockSignals(True)
+        self._record_btn.setChecked(False)
+        self._record_btn.setText("🎤 Record")
+        self._record_btn.blockSignals(False)
+        if take is None:
             return
-        if target.stat().st_size == 0:
-            self._status_label.setText("No audio captured.")
+        if (not take.path.exists()
+                or take.path.stat().st_size == 0):
+            self._status_label.setText(
+                "Recording stopped but no audio was captured. "
+                "Check microphone permissions.")
             return
-        duration = probe_audio_duration_seconds(target)
+        duration = take.duration_seconds
+        if duration <= 0:
+            duration = probe_audio_duration_seconds(take.path)
         seg = VoiceoverSegment(
             label=f"Take {len(self._voiceovers) + 1}",
             source="recorded",
-            audio_path=str(target),
+            audio_path=str(take.path),
             source_duration_seconds=duration,
-            start_at=float(getattr(self, "_pending_start_at", 0.0)),
+            start_at=float(
+                getattr(self, "_pending_start_at", 0.0)),
         )
         self._voiceovers.append(seg)
         self._selected_id = seg.id
         self._refresh_list()
+        self._persist_session()
         self._record_target_path = None
         self._status_label.setText(
-            f"Captured {target.name} (~{duration:.2f} s).")
+            f"Captured {take.path.name} (~{duration:.2f} s).")
 
     def _on_import(self) -> None:
         picked, _ = QFileDialog.getOpenFileNames(
@@ -496,6 +723,7 @@ class VideoEditorDialog(QDialog):
             self._voiceovers.append(seg)
             snap_start += max(0.5, duration)
         self._refresh_list()
+        self._persist_session()
 
     # ------------------------------------------------------------------
     # Export
@@ -625,6 +853,12 @@ class VideoEditorDialog(QDialog):
     def closeEvent(self, event) -> None:
         try:
             self._player.stop()
+        except Exception:
+            pass
+        try:
+            if (self._sd_recorder is not None
+                    and self._sd_recorder.is_recording):
+                self._sd_recorder.stop()
         except Exception:
             pass
         try:

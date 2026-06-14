@@ -359,6 +359,15 @@ class SlidePage(BaseModel):
     # action images, etc.) can find the right slide later.
     source_scene_id: Optional[str] = None
     source_action_id: Optional[str] = None
+    # Timeline position inside the slide's group, measured in
+    # seconds from the start of the group's overlay audio. When
+    # ``None``, the slide hasn't been dropped onto the group
+    # timeline yet — the group editor shows it in the "available
+    # slides" tray. When set, the slide is rendered as a block
+    # on the timeline starting at this offset; its visible
+    # duration runs until the NEXT placed slide (or to the audio
+    # end for the last placed slide).
+    start_time_seconds_in_group: Optional[float] = None
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 
@@ -376,6 +385,25 @@ class SlideGroup(BaseModel):
     # the unlocked pages in the group (locked pages keep their
     # exact times; the remainder splits across the rest).
     target_total_seconds: float = 0.0
+    # Optional audio file that plays OVER every slide in the
+    # group — used for music beds, ambience, or a single read
+    # that spans multiple visuals. Per-slide audio still mixes
+    # over the top so writers can layer narration on a bed.
+    overlay_audio_path: str = ""
+    overlay_audio_duration_seconds: float = 0.0
+    # Non-destructive trim of the overlay audio. The timeline
+    # widget exposes draggable in / out handles; the export
+    # pipeline reads these values and applies an ffmpeg ``-ss``
+    # / ``-t`` on the way out. ``overlay_trim_out_seconds == 0``
+    # means "play to the end of the file" so we don't have to
+    # rewrite the value every time the audio is re-recorded.
+    overlay_trim_in_seconds: float = 0.0
+    overlay_trim_out_seconds: float = 0.0
+    # When True, the group's last slide auto-stretches so the
+    # group's total duration matches the overlay audio's length
+    # (minus any locked-slide times). Keeps the visual + audio
+    # in sync without manually retyping the last slide's seconds.
+    fill_last_slide_to_audio: bool = False
     created_at: datetime = Field(default_factory=datetime.now)
 
 
@@ -399,6 +427,37 @@ class SlideDeckProject(BaseModel):
     # pace, which gives a forgiving timing budget; writers can
     # bump up if they speak faster.
     wpm_estimate: int = 150
+    # Microphone the writer last picked in this editor session.
+    # Stored as the device's description string (e.g. "MacBook Pro
+    # Microphone"). Empty falls back to the system default at
+    # record time. Resolving by description gracefully degrades
+    # when the writer moves to a different machine.
+    microphone_device_name: str = ""
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
+
+
+class VideoEditorSession(BaseModel):
+    """One open session of the video editor — the writer's
+    voiceover takes and ancillary state for a specific MP4 file.
+
+    Looked up by ``source_path`` so closing + reopening the
+    editor on the same file picks up the exact takes (with
+    every trim / gain / fade / start-at preserved) the writer
+    left behind. Working dir holds the recorded WAVs;
+    ``voiceovers`` references them by absolute path so the
+    project stays self-contained.
+    """
+    id: str = Field(
+        default_factory=lambda: f"ves_{uuid4().hex[:10]}")
+    source_path: str = ""
+    working_dir: str = ""
+    voiceovers: List["VoiceoverSegment"] = Field(
+        default_factory=list)
+    # Persisted microphone pick — same shape as the slide deck's
+    # field. Looked up by description; empty falls back to the
+    # system default at record time.
+    microphone_device_name: str = ""
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 
@@ -700,6 +759,12 @@ class VideoStudio(BaseModel):
     # opened in the slide editor. Persists per-slide audio takes,
     # script text, durations, and groups across sessions.
     slide_decks: List["SlideDeckProject"] = Field(default_factory=list)
+    # Video-editor session per stitched MP4. Persists every
+    # voiceover take + its trim / gain / fade / start_at so the
+    # writer can close the editor mid-edit and pick up where
+    # they left off — same flow as the slide-deck editor.
+    video_editor_sessions: List["VideoEditorSession"] = Field(
+        default_factory=list)
     character_references: List[CharacterReference] = Field(
         default_factory=list)
     backend_preference: str = ""

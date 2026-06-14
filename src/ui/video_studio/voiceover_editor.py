@@ -530,10 +530,27 @@ class VoiceoverEditorDialog(QDialog):
             self._recorder.setMediaFormat(fmt)
             self._recorder.setQuality(
                 QMediaRecorder.Quality.HighQuality)
-            self._recorder.recorderStateChanged.connect(
-                self._on_recorder_state_changed)
-            self._recorder.errorOccurred.connect(
-                self._on_recorder_error)
+            # Defensive connect — on some PyQt6 builds the typed
+            # ``recorderStateChanged(RecorderState)`` signal can't
+            # be bound at all and ``connect`` raises at the
+            # lookup stage. We try anyway but ``_stop_recording``
+            # schedules finalization via QTimer so we never
+            # depend on the signal firing.
+            try:
+                self._recorder.recorderStateChanged.connect(
+                    lambda *_a:
+                    self._on_recorder_state_changed())
+            except (TypeError, AttributeError) as e:
+                print(
+                    "[recorder] recorderStateChanged "
+                    f"connect skipped: {e}")
+            try:
+                self._recorder.errorOccurred.connect(
+                    lambda *_a: self._on_recorder_error())
+            except (TypeError, AttributeError) as e:
+                print(
+                    f"[recorder] errorOccurred connect "
+                    f"skipped: {e}")
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         n = len(self._scene.voiceover_segments) + 1
         self._record_target_path = self._audio_dir / (
@@ -549,8 +566,19 @@ class VoiceoverEditorDialog(QDialog):
     def _stop_recording(self) -> None:
         if self._recorder is not None:
             self._recorder.stop()
+        # Drive UI + finalization off the click — see the slide
+        # editor for the why. The recorder gets ~500 ms to flush
+        # before we read the file.
+        self._record_btn.setText("🎤 Record")
+        self._record_btn.blockSignals(True)
+        self._record_btn.setChecked(False)
+        self._record_btn.blockSignals(False)
+        QTimer.singleShot(500, self._finalize_recording)
 
-    def _on_recorder_state_changed(self, state) -> None:
+    def _on_recorder_state_changed(self) -> None:
+        if self._recorder is None:
+            return
+        state = self._recorder.recorderState()
         if state == QMediaRecorder.RecorderState.StoppedState:
             self._record_btn.setText("🎤 Record")
             self._record_btn.blockSignals(True)

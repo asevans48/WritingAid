@@ -103,13 +103,28 @@ class SlideEditorDialog(QDialog):
         self._player = QMediaPlayer(self)
         self._player_audio = QAudioOutput(self)
         self._player.setAudioOutput(self._player_audio)
+        # Legacy Qt-recorder slots — kept ``None`` and unused
+        # now that recording goes through ``_sd_recorder``. The
+        # cleanup path still touches them so the editor stays
+        # tolerant of any restored-from-state recording state.
         self._record_session: Optional[QMediaCaptureSession] = None
         self._recorder: Optional[QMediaRecorder] = None
         self._audio_input: Optional[QAudioInput] = None
+        # PortAudio-backed recorder — created on first use.
+        self._sd_recorder = None
         self._record_target_path: Optional[Path] = None
         self._recording_page_id: Optional[str] = None
 
         self._selected_page_id: Optional[str] = None
+        # Sticky "active" group: the dropdown's current value
+        # persists across slide navigation. When the writer
+        # navigates to an UNTAGGED slide, the active group is
+        # auto-applied to that slide. When they navigate to a
+        # slide that's already in a group, the active follows
+        # the slide so subsequent moves continue the run.
+        # Picking "(none)" clears the active so untagged slides
+        # stay untagged.
+        self._active_group_id: str = ""
         self._build_ui()
         self._refresh_slides()
 
@@ -168,11 +183,30 @@ class SlideEditorDialog(QDialog):
         group_actions = QHBoxLayout()
         self._new_group_btn = QPushButton("+ New group")
         self._new_group_btn.clicked.connect(self._on_new_group)
-        self._add_to_group_btn = QPushButton("Add slide to selected group")
+        self._add_to_group_btn = QPushButton(
+            "Add slide to selected group")
         self._add_to_group_btn.clicked.connect(
             self._on_add_to_selected_group)
+        self._remove_from_group_btn = QPushButton(
+            "Remove slide from group")
+        self._remove_from_group_btn.setToolTip(
+            "Drops the currently-selected slide from whatever "
+            "group it's a member of. The slide stays in the deck "
+            "and the group keeps its other slides.")
+        self._remove_from_group_btn.clicked.connect(
+            self._on_remove_from_group)
+        self._edit_group_btn = QPushButton("🧩 Edit group…")
+        self._edit_group_btn.setToolTip(
+            "Open the interactive group editor: reorder slides, "
+            "set per-slide durations + transitions, attach group "
+            "overlay audio, and auto-fill the last slide to the "
+            "overlay's duration.")
+        self._edit_group_btn.clicked.connect(
+            self._on_edit_group)
         group_actions.addWidget(self._new_group_btn)
         group_actions.addWidget(self._add_to_group_btn)
+        group_actions.addWidget(self._remove_from_group_btn)
+        group_actions.addWidget(self._edit_group_btn)
         group_v.addLayout(group_actions)
         target_row = QHBoxLayout()
         target_row.addWidget(QLabel("Target total:"))
@@ -276,11 +310,24 @@ class SlideEditorDialog(QDialog):
         self._audio_status_label.setStyleSheet(
             "color: #475569; font-size: 11px;")
         av.addWidget(self._audio_status_label)
+        # Microphone picker — saved on the deck so it survives
+        # across sessions; falls back to the system default when
+        # the chosen device is no longer plugged in.
+        from src.ui.video_studio.microphone_picker import (
+            MicrophonePicker)
+        self._mic_picker = MicrophonePicker(
+            initial_description=(
+                getattr(
+                    self._deck,
+                    "microphone_device_name", "") or ""))
+        self._mic_picker.device_changed.connect(
+            self._on_mic_changed)
+        av.addWidget(self._mic_picker)
         rec_row = QHBoxLayout()
         self._record_btn = QPushButton("🎤 Record")
         self._record_btn.setCheckable(True)
         self._record_btn.setToolTip(
-            "Records from the default microphone. The slide image "
+            "Records from the selected microphone. The slide image "
             "stays on the preview pane so you can read along.")
         self._record_btn.clicked.connect(self._on_record_toggled)
         rec_row.addWidget(self._record_btn)
@@ -288,13 +335,37 @@ class SlideEditorDialog(QDialog):
         self._import_audio_btn.clicked.connect(
             self._on_import_audio)
         rec_row.addWidget(self._import_audio_btn)
+        # Play / Pause is one button that toggles based on the
+        # player's actual state. Restart rewinds to 0 and plays.
+        # Together they cover the writer's "pause and replay"
+        # ask without burying anything in a menu.
         self._play_audio_btn = QPushButton("▶ Play")
-        self._play_audio_btn.clicked.connect(self._on_play_audio)
+        self._play_audio_btn.setToolTip(
+            "Play the slide's audio. While playing, this button "
+            "shows '⏸ Pause' to pause without losing position.")
+        self._play_audio_btn.clicked.connect(
+            self._on_play_or_pause_audio)
         rec_row.addWidget(self._play_audio_btn)
+        self._replay_audio_btn = QPushButton("⟲ Replay")
+        self._replay_audio_btn.setToolTip(
+            "Rewind to the start and play from the top.")
+        self._replay_audio_btn.clicked.connect(
+            self._on_replay_audio)
+        rec_row.addWidget(self._replay_audio_btn)
         self._stop_audio_btn = QPushButton("■ Stop")
         self._stop_audio_btn.clicked.connect(self._on_stop_audio)
         rec_row.addWidget(self._stop_audio_btn)
-        self._clear_audio_btn = QPushButton("Clear")
+        self._edit_audio_btn = QPushButton("✏️ Edit audio…")
+        self._edit_audio_btn.setToolTip(
+            "Trim, reduce noise, adjust gain, or normalize the "
+            "slide's audio. Replace the source or save as a new "
+            "file.")
+        self._edit_audio_btn.clicked.connect(self._on_edit_audio)
+        rec_row.addWidget(self._edit_audio_btn)
+        self._clear_audio_btn = QPushButton("🗑 Delete")
+        self._clear_audio_btn.setToolTip(
+            "Detach this slide's audio. Optionally delete the "
+            "underlying WAV file from disk too.")
         self._clear_audio_btn.clicked.connect(self._on_clear_audio)
         rec_row.addWidget(self._clear_audio_btn)
         av.addLayout(rec_row)
@@ -426,6 +497,33 @@ class SlideEditorDialog(QDialog):
     # ------------------------------------------------------------------
     # Slide list
     # ------------------------------------------------------------------
+    def _refresh_slides_text_only(self) -> None:
+        """Refresh each list row's label without recreating the
+        items — preserves selection without re-firing
+        ``itemSelectionChanged`` (which would re-enter the page-
+        load handler we may already be inside)."""
+        for i, page in enumerate(self._deck.pages, start=1):
+            if i - 1 >= self._slide_list.count():
+                break
+            item = self._slide_list.item(i - 1)
+            audio_mark = ""
+            if page.audio_path:
+                audio_mark = (
+                    f" 🔊 {page.audio_duration_seconds:.1f}s")
+            lock_mark = " 🔒" if page.locked_duration else ""
+            group_mark = ""
+            if page.group_id:
+                group = next(
+                    (g for g in self._deck.groups
+                     if g.id == page.group_id),
+                    None)
+                if group:
+                    group_mark = f"  [{group.name}]"
+            item.setText(
+                f"{i}. {page.label or 'Slide'}{group_mark}\n"
+                f"   {page.duration_seconds:.2f}s"
+                f"{audio_mark}{lock_mark}")
+
     def _refresh_slides(self) -> None:
         self._slide_list.clear()
         for i, page in enumerate(self._deck.pages, start=1):
@@ -510,13 +608,15 @@ class SlideEditorDialog(QDialog):
         self._transition_seconds_spin.setEnabled(not is_first)
         self._refresh_audio_status()
         self._show_slide_preview(page)
-        # Sync the group combo to the page's current group.
-        group_id = page.group_id or ""
-        idx = self._group_combo.findData(group_id)
-        self._group_combo.blockSignals(True)
-        self._group_combo.setCurrentIndex(
-            idx if idx >= 0 else 0)
-        self._group_combo.blockSignals(False)
+        # Sticky group picker: the dropdown shows the writer's
+        # last-chosen group as the destination for the next
+        # "Add slide to selected group" click — it does NOT
+        # follow the current slide's existing tag and never
+        # auto-tags anything. The slide's actual group (if any)
+        # is shown on its list-row label. Navigating between
+        # slides leaves the dropdown untouched so the writer can
+        # keep adding a run of slides to the same group with one
+        # button click each.
 
     def _commit_slide_fields(self) -> None:
         page = self._selected_page()
@@ -612,32 +712,39 @@ class SlideEditorDialog(QDialog):
             self._stop_recording()
 
     def _start_recording(self, page: SlidePage) -> None:
-        if self._recorder is None:
-            self._record_session = QMediaCaptureSession(self)
-            default_input = QMediaDevices.defaultAudioInput()
-            self._audio_input = QAudioInput(default_input, self)
-            self._record_session.setAudioInput(self._audio_input)
-            self._recorder = QMediaRecorder(self)
-            self._record_session.setRecorder(self._recorder)
-            fmt = QMediaFormat()
-            fmt.setFileFormat(QMediaFormat.FileFormat.Wave)
-            fmt.setAudioCodec(QMediaFormat.AudioCodec.Wave)
-            self._recorder.setMediaFormat(fmt)
-            self._recorder.setQuality(
-                QMediaRecorder.Quality.HighQuality)
-            self._recorder.recorderStateChanged.connect(
-                self._on_recorder_state_changed)
-            self._recorder.errorOccurred.connect(
-                self._on_recorder_error)
+        # PyQt6 + macOS QMediaRecorder.Wave silently writes a
+        # zero-byte file even when the mic is hot — that was the
+        # recurring "mic works, no audio saved" bug. Switched to
+        # the PortAudio-backed ``AudioRecorder`` which we know
+        # writes a real WAV every time.
+        if self._sd_recorder is None:
+            from src.video_studio.audio_recorder import (
+                AudioRecorder)
+            self._sd_recorder = AudioRecorder()
+        device_name: Optional[str] = None
+        try:
+            qdev = self._mic_picker.selected_device()
+            if qdev is not None:
+                device_name = qdev.description()
+        except Exception as e:
+            print(f"[slide_editor] mic resolve failed: {e}")
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self._record_target_path = (
             self._working_dir
             / f"slide_{page.index:03d}_{stamp}.wav")
         self._recording_page_id = page.id
-        self._recorder.setOutputLocation(
-            QUrl.fromLocalFile(
-                str(self._record_target_path.resolve())))
-        self._recorder.record()
+        try:
+            self._sd_recorder.start(
+                self._record_target_path,
+                device_name=device_name)
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Recording failed",
+                f"Could not start recording: {e}")
+            self._record_btn.blockSignals(True)
+            self._record_btn.setChecked(False)
+            self._record_btn.blockSignals(False)
+            return
         self._record_btn.setText("⏹ Stop recording")
         self._record_status_label.setText(
             "Recording — read along with the slide.")
@@ -645,36 +752,27 @@ class SlideEditorDialog(QDialog):
         self._show_slide_preview(page)
 
     def _stop_recording(self) -> None:
-        if self._recorder is not None:
-            self._recorder.stop()
-
-    def _on_recorder_state_changed(self, state) -> None:
-        if state == QMediaRecorder.RecorderState.StoppedState:
-            self._record_btn.setText("🎤 Record")
-            self._record_btn.blockSignals(True)
-            self._record_btn.setChecked(False)
-            self._record_btn.blockSignals(False)
-            QTimer.singleShot(150, self._finalize_recording)
-
-    def _finalize_recording(self) -> None:
-        target = self._record_target_path
-        if target is None:
+        take = None
+        if self._sd_recorder is not None:
+            try:
+                take = self._sd_recorder.stop()
+            except Exception as e:
+                self._record_status_label.setText(
+                    f"Stop failed: {e}")
+        self._record_btn.setText("🎤 Record")
+        self._record_btn.blockSignals(True)
+        self._record_btn.setChecked(False)
+        self._record_btn.blockSignals(False)
+        if take is None:
             return
-        if not target.exists() or target.stat().st_size == 0:
-            QTimer.singleShot(400, self._finalize_recording_retry)
-            return
-        self._attach_recorded_audio(target)
-
-    def _finalize_recording_retry(self) -> None:
-        target = self._record_target_path
-        if target is None:
-            return
-        if not target.exists() or target.stat().st_size == 0:
+        if (not take.path.exists()
+                or take.path.stat().st_size == 0):
             self._record_status_label.setText(
-                "Recording stopped but no file was written. "
-                "Check microphone permissions.")
+                "Recording stopped but no audio was captured. "
+                "Check microphone permissions in System "
+                "Settings → Privacy & Security → Microphone.")
             return
-        self._attach_recorded_audio(target)
+        self._attach_recorded_audio(take.path)
 
     def _attach_recorded_audio(self, path: Path) -> None:
         page_id = self._recording_page_id
@@ -754,27 +852,153 @@ class SlideEditorDialog(QDialog):
         self._refresh_slides()
         self._refresh_audio_status()
 
-    def _on_play_audio(self) -> None:
+    def _on_play_or_pause_audio(self) -> None:
+        """Toggle between play, pause, and resume.
+
+        When nothing's playing yet, this loads the current slide's
+        audio and starts. When already playing, it pauses without
+        losing the position. When paused, it resumes from the same
+        spot — the "pause and replay" flow the writer asked for.
+        """
+        from PyQt6.QtMultimedia import QMediaPlayer
+        state = self._player.playbackState()
+        if state == QMediaPlayer.PlaybackState.PlayingState:
+            self._player.pause()
+            self._play_audio_btn.setText("▶ Resume")
+            self._record_status_label.setText("Paused.")
+            return
+        if state == QMediaPlayer.PlaybackState.PausedState:
+            self._player.play()
+            self._play_audio_btn.setText("⏸ Pause")
+            self._record_status_label.setText("Playing.")
+            return
+        # Stopped — load the slide's audio and start fresh.
         page = self._selected_page()
         if page is None or not page.audio_path:
             return
         p = Path(page.audio_path)
         if not p.exists():
             return
-        self._player.stop()
-        self._player.setSource(QUrl.fromLocalFile(str(p.resolve())))
+        self._player.setSource(
+            QUrl.fromLocalFile(str(p.resolve())))
         self._player.play()
+        self._play_audio_btn.setText("⏸ Pause")
         self._record_status_label.setText(
             f"Playing {p.name}…")
 
+    def _on_replay_audio(self) -> None:
+        """Rewind to position 0 and play. Works whether currently
+        playing, paused, or stopped."""
+        page = self._selected_page()
+        if page is None or not page.audio_path:
+            return
+        p = Path(page.audio_path)
+        if not p.exists():
+            return
+        # Re-set the source so the player rewinds cleanly even
+        # when ``stop`` + ``play`` had race issues on some Qt
+        # builds.
+        self._player.stop()
+        self._player.setSource(
+            QUrl.fromLocalFile(str(p.resolve())))
+        self._player.setPosition(0)
+        self._player.play()
+        self._play_audio_btn.setText("⏸ Pause")
+        self._record_status_label.setText(
+            f"Replaying {p.name} from start.")
+
     def _on_stop_audio(self) -> None:
         self._player.stop()
+        self._play_audio_btn.setText("▶ Play")
         self._record_status_label.setText("Stopped.")
 
+    def _on_mic_changed(self, description: str) -> None:
+        """Persist the writer's mic pick on the deck. The next
+        recording call resolves the new device by name against
+        PortAudio's device list, so we don't need to tear down
+        anything here. The slide-deck project's autosave flushes
+        the change to disk because the deck instance is the live
+        model on ``VideoStudio.slide_decks``."""
+        self._deck.microphone_device_name = description or ""
+        # If a Qt recording session was ever created (legacy
+        # path), drop it so it can't pin a stale device.
+        if self._record_session is not None:
+            try:
+                if self._recorder is not None:
+                    self._recorder.stop()
+            except Exception:
+                pass
+            self._record_session = None
+            self._recorder = None
+            self._audio_input = None
+        self._refresh_audio_status()
+
+    def _on_edit_audio(self) -> None:
+        """Open the audio editor on the current slide's audio
+        file. The editor mutates the file in place (or writes a
+        new one) and calls back with the new path + duration."""
+        page = self._selected_page()
+        if page is None or not page.audio_path:
+            QMessageBox.information(
+                self, "No audio",
+                "Record or import audio for this slide first.")
+            return
+        path = Path(page.audio_path)
+        if not path.exists():
+            QMessageBox.warning(
+                self, "Audio missing",
+                f"The slide's audio file is gone:\n{path}")
+            return
+        from src.ui.video_studio.audio_editor_dialog import (
+            AudioEditorDialog)
+        def _on_applied(new_path: Path, new_duration: float):
+            page.audio_path = str(new_path)
+            page.audio_duration_seconds = float(new_duration)
+            page.updated_at = datetime.now()
+            self._refresh_slides()
+            self._refresh_audio_status()
+        self._audio_editor = AudioEditorDialog(
+            source_path=path,
+            on_applied=_on_applied,
+            title=f"Edit audio — {page.label or 'slide'}",
+            parent=self)
+        self._audio_editor.show()
+
     def _on_clear_audio(self) -> None:
+        """Detach the slide's audio. Offer to also delete the
+        underlying WAV file — useful when a writer recorded a
+        dud and wants the file gone too, not just unlinked from
+        the slide."""
         page = self._selected_page()
         if page is None:
             return
+        path = (
+            Path(page.audio_path)
+            if page.audio_path else None)
+        # Stop playback first so Windows lets us delete.
+        try:
+            self._player.stop()
+            self._player.setSource(QUrl())
+        except Exception:
+            pass
+        if path is not None and path.exists():
+            choice = QMessageBox.question(
+                self, "Delete audio",
+                f"Detach this slide's audio?\n\nFile: {path}\n\n"
+                "YES = also delete the file from disk.\n"
+                "NO = only detach (file stays).",
+                (QMessageBox.StandardButton.Yes
+                 | QMessageBox.StandardButton.No
+                 | QMessageBox.StandardButton.Cancel))
+            if choice == QMessageBox.StandardButton.Cancel:
+                return
+            if choice == QMessageBox.StandardButton.Yes:
+                try:
+                    path.unlink()
+                except Exception as e:
+                    QMessageBox.warning(
+                        self, "Delete failed",
+                        f"Could not delete file:\n{e}")
         page.audio_path = ""
         page.audio_duration_seconds = 0.0
         page.updated_at = datetime.now()
@@ -807,16 +1031,21 @@ class SlideEditorDialog(QDialog):
     # Groups
     # ------------------------------------------------------------------
     def _refresh_groups(self) -> None:
+        # Rebuild the combo items, but DO NOT change the writer's
+        # sticky pick. The combo represents the destination for
+        # the next "Add slide to selected group" click — it
+        # follows ``_active_group_id`` rather than the current
+        # slide's existing group. The slide's actual group (if
+        # any) shows up on its list-row label.
         self._group_combo.blockSignals(True)
         self._group_combo.clear()
         self._group_combo.addItem("(none)", "")
         for g in self._deck.groups:
             self._group_combo.addItem(g.name or g.id, g.id)
-        page = self._selected_page()
-        if page is not None and page.group_id:
-            idx = self._group_combo.findData(page.group_id)
-            if idx >= 0:
-                self._group_combo.setCurrentIndex(idx)
+        idx = self._group_combo.findData(
+            self._active_group_id or "")
+        self._group_combo.setCurrentIndex(
+            idx if idx >= 0 else 0)
         self._group_combo.blockSignals(False)
         self._refresh_group_target_spin()
 
@@ -842,13 +1071,24 @@ class SlideEditorDialog(QDialog):
         self._distribute_btn.setEnabled(True)
 
     def _on_group_combo_changed(self, _idx: int) -> None:
+        # The combo is a pure destination picker now — picking
+        # a group only updates the sticky ``_active_group_id``
+        # and refreshes the target-time spin. No slide is
+        # modified until the writer explicitly clicks
+        # "Add slide to selected group".
+        self._active_group_id = (
+            self._group_combo.currentData() or "")
         self._refresh_group_target_spin()
-        # Update the selected slide's group membership too.
-        page = self._selected_page()
-        if page is None:
-            return
-        new_gid = self._group_combo.currentData() or None
-        if new_gid == page.group_id:
+
+    def _assign_page_to_group(
+        self, page, new_gid: Optional[str],
+    ) -> None:
+        """Move ``page`` from its current group (if any) to
+        ``new_gid``. Idempotent on no-ops, safe when ``new_gid``
+        is None (drops the slide from its group)."""
+        if new_gid == "":
+            new_gid = None
+        if page.group_id == new_gid:
             return
         # Drop from old group.
         if page.group_id:
@@ -864,7 +1104,6 @@ class SlideEditorDialog(QDialog):
                     g.page_ids.append(page.id)
         page.group_id = new_gid
         page.updated_at = datetime.now()
-        self._refresh_slides()
 
     def _on_new_group(self) -> None:
         name, ok = QInputDialog.getText(
@@ -873,8 +1112,11 @@ class SlideEditorDialog(QDialog):
             return
         g = SlideGroup(name=name.strip())
         self._deck.groups.append(g)
+        # Make the new group the sticky destination so the next
+        # "Add slide to selected group" click drops into it. The
+        # combo selection change updates ``_active_group_id`` via
+        # the standard signal handler — no slide is touched yet.
         self._refresh_groups()
-        # Select the new group in the combo.
         idx = self._group_combo.findData(g.id)
         if idx >= 0:
             self._group_combo.setCurrentIndex(idx)
@@ -884,11 +1126,60 @@ class SlideEditorDialog(QDialog):
         page = self._selected_page()
         if not gid or page is None:
             return
-        page.group_id = gid
-        for g in self._deck.groups:
-            if g.id == gid and page.id not in g.page_ids:
-                g.page_ids.append(page.id)
+        self._assign_page_to_group(page, gid)
+        self._active_group_id = gid
         self._refresh_slides()
+
+    def _on_remove_from_group(self) -> None:
+        """Drop the current slide from its group, if any. The
+        sticky destination in the dropdown stays where it is so
+        the writer can re-add the slide somewhere else."""
+        page = self._selected_page()
+        if page is None or not page.group_id:
+            return
+        self._assign_page_to_group(page, None)
+        self._refresh_slides()
+
+    def _on_edit_group(self) -> None:
+        """Open the interactive GroupEditorDialog on the
+        currently-selected group. Reflect any structural changes
+        (reordered slides, removed members, new overlay audio)
+        back into the deck list when the writer closes it."""
+        gid = self._group_combo.currentData()
+        if not gid:
+            QMessageBox.information(
+                self, "Pick a group",
+                "Select a group in the dropdown first, then click "
+                "Edit group.")
+            return
+        g = next(
+            (gg for gg in self._deck.groups if gg.id == gid),
+            None)
+        if g is None:
+            return
+        from src.ui.video_studio.group_editor_dialog import (
+            GroupEditorDialog)
+        # Hand the editor a way to pull the current mic so
+        # recordings respect the writer's input choice. The
+        # editor mutates the deck/group in place; we just need
+        # to refresh after close.
+        mic_getter = getattr(
+            self._mic_picker, "selected_device", None)
+        dlg = GroupEditorDialog(
+            self._deck, g,
+            mic_device_getter=mic_getter)
+        dlg.finished.connect(
+            lambda *_a: self._after_group_edit())
+        dlg.show()
+        dlg.raise_()
+
+    def _after_group_edit(self) -> None:
+        # The deck mutates in place inside the group editor.
+        # The studio widget persists on this dialog's close
+        # (via the contentChanged emit on `finished`), so we
+        # just refresh the visible lists here.
+        self._refresh_slides()
+        self._refresh_groups()
 
     def _on_group_target_changed(self) -> None:
         gid = self._group_combo.currentData()
@@ -1041,6 +1332,12 @@ class SlideEditorDialog(QDialog):
     def closeEvent(self, event) -> None:
         try:
             self._player.stop()
+        except Exception:
+            pass
+        try:
+            if (self._sd_recorder is not None
+                    and self._sd_recorder.is_recording):
+                self._sd_recorder.stop()
         except Exception:
             pass
         try:
