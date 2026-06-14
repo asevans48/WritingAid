@@ -106,13 +106,19 @@ class VideoEditorDialog(QDialog):
         # (headless tests, broken multi-monitor setups, etc.) —
         # never resize to a zero / negative dimension or the dialog
         # would render invisible.
-        target_w = 1100
-        target_h = 720
+        # Sized for a 1366x768 laptop after dock + menu bar are
+        # subtracted. Minimums dropped from 820x540 → 720x480
+        # so writers on smaller MacBooks aren't stuck with a
+        # dialog that can't fit on screen. The splitter below
+        # is collapsible so the takes pane can fully hide,
+        # giving the video preview every available pixel.
+        target_w = 1000
+        target_h = 640
         if avail is not None:
-            target_w = max(820, min(target_w, int(avail.width() * 0.9)))
-            target_h = max(540, min(target_h, int(avail.height() * 0.85)))
+            target_w = max(720, min(target_w, int(avail.width() * 0.9)))
+            target_h = max(480, min(target_h, int(avail.height() * 0.85)))
         self.resize(target_w, target_h)
-        self.setMinimumSize(820, 540)
+        self.setMinimumSize(720, 480)
         self._source_path = source_path
         self._working_dir = working_dir
         self._working_dir.mkdir(parents=True, exist_ok=True)
@@ -176,6 +182,11 @@ class VideoEditorDialog(QDialog):
         outer.addWidget(header)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        # Both panes can collapse — drag the handle past either
+        # side and that pane folds away. Lets a laptop user give
+        # the video preview the entire window when they're just
+        # watching the cut.
+        splitter.setChildrenCollapsible(True)
 
         # ── Left: video preview + transport ─────────────────────
         left = QWidget()

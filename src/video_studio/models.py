@@ -404,6 +404,13 @@ class SlideGroup(BaseModel):
     # (minus any locked-slide times). Keeps the visual + audio
     # in sync without manually retyping the last slide's seconds.
     fill_last_slide_to_audio: bool = False
+    # Writer-facing preference: when True, inline audio
+    # transforms (right-click on the audio bar in the group
+    # editor) write a NEW sibling file and switch the overlay
+    # to it. When False (default), each transform overwrites
+    # the source WAV in place. Persisted on the group so the
+    # writer doesn't have to re-pick the mode on every reopen.
+    save_audio_edits_as_new: bool = False
     created_at: datetime = Field(default_factory=datetime.now)
 
 

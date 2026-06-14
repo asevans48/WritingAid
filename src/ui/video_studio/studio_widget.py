@@ -2691,13 +2691,19 @@ class VideoStudioWidget(QWidget):
         # reference so Python doesn't GC the window the moment
         # this method returns.
         self._active_slide_editor = dlg
-        # Defer the contentChanged emit until the writer actually
-        # closes the editor — the deck mutates as they work and
-        # firing immediately would just write the freshly-seeded
-        # deck to disk. ``finished`` is a QDialog signal that
-        # carries the close result.
+        # Two save triggers:
+        #   * ``finished`` (close) — historical, catches the
+        #     last possible moment to persist any state that
+        #     skipped the per-mutation signal.
+        #   * ``deck_modified`` (per-mutation) — added so edits
+        #     inside the slide editor (including the nested
+        #     group editor) trigger the 1.2 s debounced autosave
+        #     mid-session. Without this, a writer iterating in
+        #     the group editor for an hour without closing the
+        #     slide editor would lose everything on crash / quit.
         dlg.finished.connect(
             lambda *_: self.contentChanged.emit())
+        dlg.deck_modified.connect(self.contentChanged)
         # ``show()`` alone — no raise_() / activateWindow(). On
         # macOS those force-grab focus and trigger the focus-
         # stealing path that minimizes other open windows of the

@@ -38,10 +38,14 @@ def edit_audio(
     denoise_strength_db: float = -25.0,
     gain_db: float = 0.0,
     normalize: bool = False,
+    fade_in_seconds: float = 0.0,
+    fade_out_seconds: float = 0.0,
+    highpass_hz: float = 0.0,
 ) -> AudioEditResult:
     """Apply an edit chain to ``src`` and write the result to
     ``dest``. Empty / zero parameters are no-ops, so callers can
-    use this for any subset of trim / denoise / gain.
+    use this for any subset of trim / denoise / gain / fade /
+    rumble removal.
 
     ``in_point_seconds`` clips the head; ``out_point_seconds``
     sets the absolute end timestamp (not the slice length). When
@@ -50,7 +54,12 @@ def edit_audio(
     interprets: more negative = more aggressive (typical range
     -10 to -40). ``gain_db`` runs through ``volume``; positive
     boosts, negative attenuates. ``normalize`` is shorthand for
-    ``loudnorm`` (target -16 LUFS).
+    ``loudnorm`` (target -16 LUFS). ``fade_in_seconds`` /
+    ``fade_out_seconds`` add linear fades at the head / tail of
+    the OUTPUT (post-trim, so the writer can hear what they
+    chopped without a pop). ``highpass_hz`` rolls off rumble
+    below the cutoff — voice recordings on cheap mics often
+    benefit from a 80–120 Hz highpass.
 
     Returns ``AudioEditResult(success=False, error=...)`` instead
     of raising so callers can surface the message in a dialog.
@@ -68,10 +77,16 @@ def edit_audio(
     if in_point_seconds > 0:
         cmd += ["-ss", f"{in_point_seconds:.3f}"]
     cmd += ["-i", str(src.resolve())]
+    out_duration_for_fade: Optional[float] = None
     if out_point_seconds > 0 and out_point_seconds > in_point_seconds:
-        duration = out_point_seconds - in_point_seconds
-        cmd += ["-t", f"{duration:.3f}"]
+        out_duration_for_fade = (
+            out_point_seconds - in_point_seconds)
+        cmd += ["-t", f"{out_duration_for_fade:.3f}"]
     filters: list = []
+    if highpass_hz > 0:
+        # Roll off DC + room rumble. Single-pole biquad is
+        # cheap and good enough for voice.
+        filters.append(f"highpass=f={highpass_hz:.0f}")
     if denoise:
         # ``afftdn`` accepts ``nr`` (noise reduction in dB,
         # default 12) and ``nf`` (noise floor, default -30).
@@ -85,6 +100,23 @@ def edit_audio(
         # accurate but slower; single-pass is fine for voiceover.
         filters.append(
             "loudnorm=I=-16:TP=-1.5:LRA=11")
+    if fade_in_seconds > 0:
+        # Linear fade from silence over the first N seconds of
+        # the trimmed output (start_time=0 because -ss has
+        # already advanced the input cursor).
+        filters.append(
+            f"afade=t=in:st=0:d={fade_in_seconds:.3f}")
+    if fade_out_seconds > 0:
+        # Need the OUTPUT duration to place the fade. Falls
+        # back to probing the source when no trim was set.
+        out_dur = out_duration_for_fade
+        if out_dur is None:
+            out_dur = _probe_duration(src) - in_point_seconds
+        if out_dur > fade_out_seconds > 0:
+            start = max(0.0, out_dur - fade_out_seconds)
+            filters.append(
+                f"afade=t=out:st={start:.3f}:"
+                f"d={fade_out_seconds:.3f}")
     if filters:
         cmd += ["-af", ",".join(filters)]
     cmd += ["-c:a", "pcm_s16le", str(dest.resolve())]

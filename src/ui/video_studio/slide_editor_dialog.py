@@ -1,18 +1,17 @@
-"""Slide editor dialog — record audio per slide, fit timings to
-audio, paste script + AI-suggest timings, group slides, and
-preview the deck.
+"""Slide editor dialog — arrange slides, set per-slide timings
+and transitions, paste scripts + AI-suggest timings, group
+slides, and preview the deck.
 
 Built around a ``SlideDeckProject`` the host seeds from a chapter
 (via ``slide_deck.build_slide_deck_from_chapter``). The dialog
 mutates the project in place; on close the studio's autosave
 timer flushes it to disk.
 
-Recording is wired to the writer's default microphone via
-``QMediaRecorder``. While recording, the selected slide's image
-is held on the right pane so the writer can read along; when
-stop is hit, the take's duration probes ffprobe and (when the
-slide isn't ``locked_duration``) the slide's time auto-fits the
-audio length.
+Recording moved to the group editor (see
+``group_editor_dialog``). The slide editor only plays / imports
+/ edits / deletes audio that's already attached to a slide; the
+mic and Record button live in the group editor, which is where
+the writer arranges slides on a single continuous audio track.
 """
 
 from __future__ import annotations
@@ -21,18 +20,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, List, Optional
 
-from PyQt6.QtCore import Qt, QTimer, QUrl
+from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QPixmap
-from PyQt6.QtMultimedia import (
-    QAudioInput, QAudioOutput, QMediaCaptureSession, QMediaFormat,
-    QMediaPlayer, QMediaRecorder, QMediaDevices,
-)
+from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
     QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QInputDialog,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
-    QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QSplitter,
-    QVBoxLayout, QWidget,
+    QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy,
+    QSpinBox, QSplitter, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from src.video_studio.models import (
@@ -48,6 +44,14 @@ from src.video_studio.tts.base import probe_audio_duration_seconds
 
 class SlideEditorDialog(QDialog):
     """Editor for a SlideDeckProject."""
+
+    # Fires when the editor (or its child group editor) mutates
+    # the deck. The studio widget wires this to its
+    # ``contentChanged`` and the 1.2 s debounced autosave —
+    # before this signal existed, deck mutations only persisted
+    # when the editor finally closed, so a long editing session
+    # without a close meant no autosaves.
+    deck_modified = pyqtSignal()
 
     def __init__(
         self,
@@ -89,8 +93,16 @@ class SlideEditorDialog(QDialog):
         self._save_chapter_text_cb = save_chapter_text
         self._open_in_writer_cb = open_in_writer
         self._prose_window = None
-        self.resize(1180, 740)
-        self.setMinimumSize(960, 600)
+        # Sized for a 1366x768 laptop with the dock + menu bar
+        # subtracted — the old 1180x740 / 960x600 wouldn't fit
+        # on common laptop screens once the OS chrome ate its
+        # share, and writers complained about the three columns
+        # being "smashed together". The layout below puts the
+        # slide list on the left and a tabbed work surface on
+        # the right so only ONE big section needs horizontal
+        # room at a time.
+        self.resize(1100, 680)
+        self.setMinimumSize(880, 560)
         self._deck = deck
         self._working_dir = Path(deck.working_dir) if deck.working_dir else None
         if self._working_dir is None or not self._working_dir.exists():
@@ -99,21 +111,18 @@ class SlideEditorDialog(QDialog):
             self._working_dir = Path.home() / ".writingaid_slides" / deck.id
         self._working_dir.mkdir(parents=True, exist_ok=True)
 
-        # Playback + recording.
+        # Playback only — slide-level recording moved to the
+        # group editor. The remaining player is what powers the
+        # ▶ Play / ■ Stop buttons on existing per-slide takes
+        # (imported audio, or audio recorded back when slide-
+        # level recording existed).
         self._player = QMediaPlayer(self)
         self._player_audio = QAudioOutput(self)
         self._player.setAudioOutput(self._player_audio)
-        # Legacy Qt-recorder slots — kept ``None`` and unused
-        # now that recording goes through ``_sd_recorder``. The
-        # cleanup path still touches them so the editor stays
-        # tolerant of any restored-from-state recording state.
-        self._record_session: Optional[QMediaCaptureSession] = None
-        self._recorder: Optional[QMediaRecorder] = None
-        self._audio_input: Optional[QAudioInput] = None
-        # PortAudio-backed recorder — created on first use.
-        self._sd_recorder = None
-        self._record_target_path: Optional[Path] = None
-        self._recording_page_id: Optional[str] = None
+        # Floating preview window — lazily created on first
+        # 🖥 Preview click. Held here so the slide editor can
+        # push selection changes into it while it's open.
+        self._preview_window = None
 
         self._selected_page_id: Optional[str] = None
         # Sticky "active" group: the dropdown's current value
@@ -144,9 +153,17 @@ class SlideEditorDialog(QDialog):
         header.setStyleSheet("color: #475569; font-size: 11px;")
         outer.addWidget(header)
 
+        # Outer horizontal splitter — slide list on the left,
+        # tabbed work surface on the right. Both panes are
+        # collapsible so a writer on a small screen can fully
+        # hide the list and use the tabs at full width while
+        # reading prose into the mic. Default stretch favors
+        # the tabs (3:1) since the per-slide form + preview
+        # need most of the room.
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setChildrenCollapsible(True)
 
-        # ── Left column: slide list + group controls ─────────────
+        # ── Left pane: slide list only ───────────────────────────
         left = QWidget()
         left_v = QVBoxLayout(left)
         left_v.setContentsMargins(0, 0, 0, 0)
@@ -170,7 +187,32 @@ class SlideEditorDialog(QDialog):
         slide_btns.addWidget(self._remove_slide_btn)
         slide_btns.addStretch()
         left_v.addLayout(slide_btns)
+        left.setMinimumWidth(180)
+        splitter.addWidget(left)
 
+        # ── Right pane: tabbed work surface ──────────────────────
+        # Three tabs:
+        #   * Slide     — per-slide form + audio controls + the
+        #                 preview thumb (split inside the tab so
+        #                 writers can still see what they're
+        #                 recording).
+        #   * Groups    — group combo + group actions. Lives in
+        #                 its own tab because the group editor
+        #                 (see ``group_editor_dialog``) is where
+        #                 the real arrangement work happens; the
+        #                 tab is just a launcher.
+        #   * Script    — master script paste, WPM, AI Suggest.
+        #                 Only used at the start of a session,
+        #                 so out-of-the-way is fine.
+        self._tabs = QTabWidget()
+        self._tabs.setDocumentMode(True)
+
+        # ── Groups tab body ──────────────────────────────────
+        # The real arrangement work happens inside the
+        # interactive group editor (``group_editor_dialog``);
+        # this panel is just for picking the active group,
+        # adding the current slide to it, and launching the
+        # editor.
         group_box = QGroupBox("Slide groups")
         group_v = QVBoxLayout(group_box)
         group_v.addWidget(QLabel(
@@ -230,16 +272,8 @@ class SlideEditorDialog(QDialog):
             self._on_distribute_group)
         target_row.addWidget(self._distribute_btn)
         group_v.addLayout(target_row)
-        left_v.addWidget(group_box)
-        splitter.addWidget(left)
 
-        # ── Center column: per-slide controls ─────────────────────
-        center = QScrollArea()
-        center.setWidgetResizable(True)
-        center.setFrameShape(QScrollArea.Shape.NoFrame)
-        center_inner = QWidget()
-        center_v = QVBoxLayout(center_inner)
-
+        # ── Slide tab body: form + script + audio ────────────
         slide_box = QGroupBox("Selected slide")
         form = QFormLayout(slide_box)
         self._label_edit = QLineEdit()
@@ -298,7 +332,13 @@ class SlideEditorDialog(QDialog):
         self._script_edit = QPlainTextEdit()
         self._script_edit.setPlaceholderText(
             "Paste the narration for THIS slide…")
-        self._script_edit.setFixedHeight(140)
+        # Flexible vertical sizing — the old ``setFixedHeight(140)``
+        # capped this box even when the writer had room and forced
+        # a scrollbar on long prose. Now it grows with the tab.
+        self._script_edit.setMinimumHeight(80)
+        self._script_edit.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding)
         self._script_edit.textChanged.connect(
             self._commit_slide_fields)
         sv.addWidget(self._script_edit)
@@ -310,35 +350,36 @@ class SlideEditorDialog(QDialog):
         self._audio_status_label.setStyleSheet(
             "color: #475569; font-size: 11px;")
         av.addWidget(self._audio_status_label)
-        # Microphone picker — saved on the deck so it survives
-        # across sessions; falls back to the system default when
-        # the chosen device is no longer plugged in.
-        from src.ui.video_studio.microphone_picker import (
-            MicrophonePicker)
-        self._mic_picker = MicrophonePicker(
-            initial_description=(
-                getattr(
-                    self._deck,
-                    "microphone_device_name", "") or ""))
-        self._mic_picker.device_changed.connect(
-            self._on_mic_changed)
-        av.addWidget(self._mic_picker)
+        # Recording moved to the group editor — see the
+        # 🧩 Groups tab → 🧩 Edit group… The slide editor only
+        # plays / imports / edits / deletes audio that's
+        # already attached to the slide, so it doesn't need a
+        # mic picker or a record button anymore. Keeping
+        # recording in just one surface also means there's only
+        # one place where the writer hits the sounddevice
+        # dependency, which keeps the install hint discoverable.
+        recording_hint = QLabel(
+            "🎤 To <b>record</b>, open the group editor: "
+            "<b>🧩 Groups → 🧩 Edit group…</b> "
+            "Recording lives there because each group plays "
+            "one continuous audio track under its slides."
+        )
+        recording_hint.setWordWrap(True)
+        recording_hint.setStyleSheet(
+            "color: #475569; font-size: 11px; "
+            "padding: 4px 6px; background: #f1f5f9; "
+            "border: 1px solid #cbd5e1; border-radius: 4px;")
+        av.addWidget(recording_hint)
         rec_row = QHBoxLayout()
-        self._record_btn = QPushButton("🎤 Record")
-        self._record_btn.setCheckable(True)
-        self._record_btn.setToolTip(
-            "Records from the selected microphone. The slide image "
-            "stays on the preview pane so you can read along.")
-        self._record_btn.clicked.connect(self._on_record_toggled)
-        rec_row.addWidget(self._record_btn)
-        self._import_audio_btn = QPushButton("📥 Import audio…")
+        self._import_audio_btn = QPushButton(
+            "📥 Import audio…")
+        self._import_audio_btn.setToolTip(
+            "Attach a pre-recorded audio file to this slide.")
         self._import_audio_btn.clicked.connect(
             self._on_import_audio)
         rec_row.addWidget(self._import_audio_btn)
         # Play / Pause is one button that toggles based on the
         # player's actual state. Restart rewinds to 0 and plays.
-        # Together they cover the writer's "pause and replay"
-        # ask without burying anything in a menu.
         self._play_audio_btn = QPushButton("▶ Play")
         self._play_audio_btn.setToolTip(
             "Play the slide's audio. While playing, this button "
@@ -355,7 +396,7 @@ class SlideEditorDialog(QDialog):
         self._stop_audio_btn = QPushButton("■ Stop")
         self._stop_audio_btn.clicked.connect(self._on_stop_audio)
         rec_row.addWidget(self._stop_audio_btn)
-        self._edit_audio_btn = QPushButton("✏️ Edit audio…")
+        self._edit_audio_btn = QPushButton("✏️ Edit…")
         self._edit_audio_btn.setToolTip(
             "Trim, reduce noise, adjust gain, or normalize the "
             "slide's audio. Replace the source or save as a new "
@@ -368,23 +409,60 @@ class SlideEditorDialog(QDialog):
             "underlying WAV file from disk too.")
         self._clear_audio_btn.clicked.connect(self._on_clear_audio)
         rec_row.addWidget(self._clear_audio_btn)
+        rec_row.addStretch()
         av.addLayout(rec_row)
         form.addRow(audio_box)
 
-        center_v.addWidget(slide_box)
+        # Slide tab assembly: form fills the whole tab. The
+        # preview used to live here as a right-pane splitter,
+        # but on a 1366x768 laptop the form ate so much space
+        # that the preview was reduced to a thumbnail. Pop-out
+        # window now (see ``slide_preview_window``).
+        slide_tab = QWidget()
+        slide_tab_v = QVBoxLayout(slide_tab)
+        slide_tab_v.setContentsMargins(0, 0, 0, 0)
+        # Top action row: Preview pop-out + status hint.
+        preview_row = QHBoxLayout()
+        self._open_preview_btn = QPushButton(
+            "🖥 Preview…")
+        self._open_preview_btn.setToolTip(
+            "Open a floating preview window. Hit Play in the "
+            "window to run through the deck — each slide stays "
+            "on for its duration and group-overlay audio plays "
+            "in sync.")
+        self._open_preview_btn.clicked.connect(
+            self._on_open_preview)
+        preview_row.addWidget(self._open_preview_btn)
+        self._preview_hint = QLabel(
+            "Opens in a separate window — park it anywhere.")
+        self._preview_hint.setStyleSheet(
+            "color: #6b7280; font-size: 11px;")
+        preview_row.addWidget(self._preview_hint)
+        preview_row.addStretch()
+        slide_tab_v.addLayout(preview_row)
+        # Scrollable form: form + script + audio controls.
+        slide_form_scroll = QScrollArea()
+        slide_form_scroll.setWidgetResizable(True)
+        slide_form_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        slide_form_inner = QWidget()
+        slide_form_v = QVBoxLayout(slide_form_inner)
+        slide_form_v.setContentsMargins(0, 0, 0, 0)
+        slide_form_v.addWidget(slide_box)
+        slide_form_v.addStretch()
+        slide_form_scroll.setWidget(slide_form_inner)
+        slide_tab_v.addWidget(slide_form_scroll, stretch=1)
 
-        # ── Master script + AI timing ─────────────────────────────
-        master_box = QGroupBox("Master script (paste, then ✨ Suggest)")
+        # ── Master script tab body ───────────────────────────
+        master_box = QGroupBox(
+            "Master script (paste, then ✨ Suggest)")
         mv = QVBoxLayout(master_box)
         # "Read chapter prose" button — opens a floating non-modal
         # window so the writer can scroll prose while reading
-        # along into the mic. The button lives on its own row so
-        # the description text below doesn't squeeze it off-
-        # screen when the dialog is narrow. Hidden when no
-        # chapter provider was wired in (e.g. dialog used
-        # standalone in a test).
+        # along into the mic. Hidden when no chapter provider was
+        # wired in (e.g. dialog used standalone in a test).
         prose_row = QHBoxLayout()
-        self._read_prose_btn = QPushButton("📖 Read chapter prose…")
+        self._read_prose_btn = QPushButton(
+            "📖 Read chapter prose…")
         self._read_prose_btn.setToolTip(
             "Open the chapter's prose in a floating window so "
             "you can scroll through it while recording. The "
@@ -404,8 +482,14 @@ class SlideEditorDialog(QDialog):
         self._master_script_edit = QPlainTextEdit()
         self._master_script_edit.setPlaceholderText(
             "Paste the full chapter narration here…")
-        self._master_script_edit.setFixedHeight(140)
-        mv.addWidget(self._master_script_edit)
+        # Flex vertically — the master script tab is mostly
+        # this box; capping it at 140 px wasted the rest of
+        # the surface on whitespace.
+        self._master_script_edit.setMinimumHeight(140)
+        self._master_script_edit.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding)
+        mv.addWidget(self._master_script_edit, stretch=1)
         wpm_row = QHBoxLayout()
         wpm_row.addWidget(QLabel("Reading speed:"))
         self._wpm_spin = QSpinBox()
@@ -423,35 +507,39 @@ class SlideEditorDialog(QDialog):
             self._on_suggest_timings)
         wpm_row.addWidget(self._suggest_btn)
         mv.addLayout(wpm_row)
-        center_v.addWidget(master_box)
 
-        center_v.addStretch()
-        center.setWidget(center_inner)
-        splitter.addWidget(center)
+        # Tab wrappers (each tab gets its own QWidget so it can
+        # set its own margins without bleeding into the group
+        # box layouts).
+        groups_tab = QWidget()
+        groups_tab_v = QVBoxLayout(groups_tab)
+        groups_tab_v.setContentsMargins(6, 6, 6, 6)
+        groups_tab_v.addWidget(group_box)
+        groups_tab_v.addStretch()
 
-        # ── Right column: slide preview + record indicator ───────
-        right = QWidget()
-        right_v = QVBoxLayout(right)
-        right_v.setContentsMargins(0, 0, 0, 0)
-        right_v.addWidget(QLabel("Preview (plays during record):"))
-        self._preview_label = QLabel("Select a slide.")
-        self._preview_label.setAlignment(
-            Qt.AlignmentFlag.AlignCenter)
-        self._preview_label.setMinimumHeight(360)
-        self._preview_label.setStyleSheet(
-            "border: 1px solid #cbd5e1; background: #0f172a; "
-            "color: #94a3b8;")
-        right_v.addWidget(self._preview_label, stretch=1)
-        self._record_status_label = QLabel("Idle.")
-        self._record_status_label.setStyleSheet(
-            "color: #6b7280; font-size: 11px;")
-        right_v.addWidget(self._record_status_label)
-        splitter.addWidget(right)
+        script_tab = QWidget()
+        script_tab_v = QVBoxLayout(script_tab)
+        script_tab_v.setContentsMargins(6, 6, 6, 6)
+        script_tab_v.addWidget(master_box)
 
+        self._tabs.addTab(slide_tab, "🎞 Slide")
+        self._tabs.addTab(groups_tab, "🧩 Groups")
+        self._tabs.addTab(script_tab, "📝 Master script")
+        splitter.addWidget(self._tabs)
+        # Tabs claim ~3x the room of the slide list — the list
+        # is just a navigator, the tabs are the workspace.
         splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 2)
-        splitter.setStretchFactor(2, 2)
+        splitter.setStretchFactor(1, 3)
         outer.addWidget(splitter, stretch=1)
+
+        # Slim status bar — used by playback / export progress
+        # messages. Used to live in the (now removed) preview
+        # pane; keeping a single line at the dialog bottom is
+        # cheap and survives across tab switches.
+        self._status_label = QLabel("Idle.")
+        self._status_label.setStyleSheet(
+            "color: #6b7280; font-size: 11px; padding: 2px 4px;")
+        outer.addWidget(self._status_label)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Close)
@@ -488,9 +576,9 @@ class SlideEditorDialog(QDialog):
         for w in (
             self._label_edit, self._duration_spin, self._lock_check,
             self._transition_combo, self._transition_seconds_spin,
-            self._script_edit, self._record_btn,
-            self._import_audio_btn, self._play_audio_btn,
-            self._stop_audio_btn, self._clear_audio_btn,
+            self._script_edit, self._import_audio_btn,
+            self._play_audio_btn, self._stop_audio_btn,
+            self._clear_audio_btn,
         ):
             w.setEnabled(enabled)
 
@@ -556,8 +644,7 @@ class SlideEditorDialog(QDialog):
         if self._selected_page_id is not None:
             self._selected_page_id = None
             self._set_slide_panel_enabled(False)
-            self._preview_label.setText("Select a slide.")
-            self._preview_label.setPixmap(QPixmap())
+            self._sync_preview_window_selection(None)
 
     def _selected_page(self) -> Optional[SlidePage]:
         if self._selected_page_id is None:
@@ -607,7 +694,7 @@ class SlideEditorDialog(QDialog):
         self._transition_combo.setEnabled(not is_first)
         self._transition_seconds_spin.setEnabled(not is_first)
         self._refresh_audio_status()
-        self._show_slide_preview(page)
+        self._sync_preview_window_selection(page.id)
         # Sticky group picker: the dropdown shows the writer's
         # last-chosen group as the destination for the next
         # "Add slide to selected group" click — it does NOT
@@ -671,23 +758,46 @@ class SlideEditorDialog(QDialog):
         self._selected_page_id = None
         self._refresh_slides()
 
-    def _show_slide_preview(self, page: SlidePage) -> None:
-        if not page.image_path or not Path(page.image_path).exists():
-            self._preview_label.setText(
-                "(slide image missing on disk)")
-            self._preview_label.setPixmap(QPixmap())
-            return
-        pix = QPixmap(page.image_path)
-        if pix.isNull():
-            self._preview_label.setText("(cannot load image)")
-            return
-        scaled = pix.scaled(
-            self._preview_label.width(),
-            self._preview_label.height(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation)
-        self._preview_label.setPixmap(scaled)
-        self._preview_label.setText("")
+    def _on_open_preview(self) -> None:
+        """Open the floating preview window (or focus it if
+        already open). The window is non-modal; the writer can
+        keep editing while it plays through the deck.
+
+        We reuse a single instance so the writer doesn't end up
+        with a stack of preview windows after clicking the
+        button several times.
+        """
+        from src.ui.video_studio.slide_preview_window import (
+            SlidePreviewWindow)
+        if (self._preview_window is None
+                or not self._preview_window.isVisible()):
+            self._preview_window = SlidePreviewWindow(
+                self._deck,
+                initial_slide_id=self._selected_page_id)
+            self._preview_window.show()
+        else:
+            # Already open — just refresh the deck snapshot
+            # (it might have changed since open) and bring it
+            # to the front.
+            self._preview_window.set_deck(self._deck)
+            self._preview_window.set_current(
+                self._selected_page_id)
+            self._preview_window.raise_()
+            self._preview_window.activateWindow()
+
+    def _sync_preview_window_selection(
+            self, slide_id: Optional[str]) -> None:
+        """Push a slide-list selection change into the preview
+        window when one is open. No-op otherwise — opening the
+        window picks up the current selection in
+        ``_on_open_preview``."""
+        if (self._preview_window is not None
+                and self._preview_window.isVisible()):
+            try:
+                self._preview_window.set_current(slide_id)
+            except Exception as e:
+                print(
+                    f"[slide_editor] preview sync failed: {e}")
 
     # ------------------------------------------------------------------
     # Audio
@@ -700,121 +810,6 @@ class SlideEditorDialog(QDialog):
         self._audio_status_label.setText(
             f"🔊 {Path(page.audio_path).name} "
             f"— {page.audio_duration_seconds:.2f}s")
-
-    def _on_record_toggled(self, checked: bool) -> None:
-        page = self._selected_page()
-        if page is None:
-            self._record_btn.setChecked(False)
-            return
-        if checked:
-            self._start_recording(page)
-        else:
-            self._stop_recording()
-
-    def _start_recording(self, page: SlidePage) -> None:
-        # PyQt6 + macOS QMediaRecorder.Wave silently writes a
-        # zero-byte file even when the mic is hot — that was the
-        # recurring "mic works, no audio saved" bug. Switched to
-        # the PortAudio-backed ``AudioRecorder`` which we know
-        # writes a real WAV every time.
-        if self._sd_recorder is None:
-            from src.video_studio.audio_recorder import (
-                AudioRecorder)
-            self._sd_recorder = AudioRecorder()
-        device_name: Optional[str] = None
-        try:
-            qdev = self._mic_picker.selected_device()
-            if qdev is not None:
-                device_name = qdev.description()
-        except Exception as e:
-            print(f"[slide_editor] mic resolve failed: {e}")
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self._record_target_path = (
-            self._working_dir
-            / f"slide_{page.index:03d}_{stamp}.wav")
-        self._recording_page_id = page.id
-        try:
-            self._sd_recorder.start(
-                self._record_target_path,
-                device_name=device_name)
-        except Exception as e:
-            QMessageBox.warning(
-                self, "Recording failed",
-                f"Could not start recording: {e}")
-            self._record_btn.blockSignals(True)
-            self._record_btn.setChecked(False)
-            self._record_btn.blockSignals(False)
-            return
-        self._record_btn.setText("⏹ Stop recording")
-        self._record_status_label.setText(
-            "Recording — read along with the slide.")
-        # Visual cue: keep the preview pinned to the recording slide.
-        self._show_slide_preview(page)
-
-    def _stop_recording(self) -> None:
-        take = None
-        if self._sd_recorder is not None:
-            try:
-                take = self._sd_recorder.stop()
-            except Exception as e:
-                self._record_status_label.setText(
-                    f"Stop failed: {e}")
-        self._record_btn.setText("🎤 Record")
-        self._record_btn.blockSignals(True)
-        self._record_btn.setChecked(False)
-        self._record_btn.blockSignals(False)
-        if take is None:
-            return
-        if (not take.path.exists()
-                or take.path.stat().st_size == 0):
-            self._record_status_label.setText(
-                "Recording stopped but no audio was captured. "
-                "Check microphone permissions in System "
-                "Settings → Privacy & Security → Microphone.")
-            return
-        self._attach_recorded_audio(take.path)
-
-    def _attach_recorded_audio(self, path: Path) -> None:
-        page_id = self._recording_page_id
-        self._recording_page_id = None
-        if page_id is None:
-            return
-        page = next(
-            (p for p in self._deck.pages if p.id == page_id),
-            None)
-        if page is None:
-            return
-        duration = probe_audio_duration_seconds(path)
-        page.audio_path = str(path)
-        page.audio_duration_seconds = float(duration)
-        page.updated_at = datetime.now()
-        changed = adjust_slide_to_audio(page)
-        msg = (
-            f"Captured {path.name} (~{duration:.2f}s)."
-            + (" Slide duration auto-fit."
-               if changed else
-               " Slide kept its locked duration."))
-        self._record_status_label.setText(msg)
-        # Sync the spinner with the new duration when not locked.
-        if self._selected_page_id == page_id:
-            self._duration_spin.blockSignals(True)
-            self._duration_spin.setValue(
-                float(page.duration_seconds))
-            self._duration_spin.blockSignals(False)
-        self._refresh_slides()
-        self._refresh_audio_status()
-        self._record_target_path = None
-
-    def _on_recorder_error(self, *_args) -> None:
-        if self._recorder is None:
-            return
-        err = self._recorder.errorString() or "Unknown error"
-        self._record_status_label.setText(
-            f"Recorder error: {err}")
-        self._record_btn.blockSignals(True)
-        self._record_btn.setChecked(False)
-        self._record_btn.setText("🎤 Record")
-        self._record_btn.blockSignals(False)
 
     def _on_import_audio(self) -> None:
         page = self._selected_page()
@@ -865,12 +860,12 @@ class SlideEditorDialog(QDialog):
         if state == QMediaPlayer.PlaybackState.PlayingState:
             self._player.pause()
             self._play_audio_btn.setText("▶ Resume")
-            self._record_status_label.setText("Paused.")
+            self._status_label.setText("Paused.")
             return
         if state == QMediaPlayer.PlaybackState.PausedState:
             self._player.play()
             self._play_audio_btn.setText("⏸ Pause")
-            self._record_status_label.setText("Playing.")
+            self._status_label.setText("Playing.")
             return
         # Stopped — load the slide's audio and start fresh.
         page = self._selected_page()
@@ -883,7 +878,7 @@ class SlideEditorDialog(QDialog):
             QUrl.fromLocalFile(str(p.resolve())))
         self._player.play()
         self._play_audio_btn.setText("⏸ Pause")
-        self._record_status_label.setText(
+        self._status_label.setText(
             f"Playing {p.name}…")
 
     def _on_replay_audio(self) -> None:
@@ -904,34 +899,13 @@ class SlideEditorDialog(QDialog):
         self._player.setPosition(0)
         self._player.play()
         self._play_audio_btn.setText("⏸ Pause")
-        self._record_status_label.setText(
+        self._status_label.setText(
             f"Replaying {p.name} from start.")
 
     def _on_stop_audio(self) -> None:
         self._player.stop()
         self._play_audio_btn.setText("▶ Play")
-        self._record_status_label.setText("Stopped.")
-
-    def _on_mic_changed(self, description: str) -> None:
-        """Persist the writer's mic pick on the deck. The next
-        recording call resolves the new device by name against
-        PortAudio's device list, so we don't need to tear down
-        anything here. The slide-deck project's autosave flushes
-        the change to disk because the deck instance is the live
-        model on ``VideoStudio.slide_decks``."""
-        self._deck.microphone_device_name = description or ""
-        # If a Qt recording session was ever created (legacy
-        # path), drop it so it can't pin a stale device.
-        if self._record_session is not None:
-            try:
-                if self._recorder is not None:
-                    self._recorder.stop()
-            except Exception:
-                pass
-            self._record_session = None
-            self._recorder = None
-            self._audio_input = None
-        self._refresh_audio_status()
+        self._status_label.setText("Stopped.")
 
     def _on_edit_audio(self) -> None:
         """Open the audio editor on the current slide's audio
@@ -1159,27 +1133,32 @@ class SlideEditorDialog(QDialog):
             return
         from src.ui.video_studio.group_editor_dialog import (
             GroupEditorDialog)
-        # Hand the editor a way to pull the current mic so
-        # recordings respect the writer's input choice. The
-        # editor mutates the deck/group in place; we just need
-        # to refresh after close.
-        mic_getter = getattr(
-            self._mic_picker, "selected_device", None)
-        dlg = GroupEditorDialog(
-            self._deck, g,
-            mic_device_getter=mic_getter)
+        # The group editor owns its own mic picker (recording
+        # lives there now), so we don't need to pass a device
+        # getter through. It mutates the deck/group in place;
+        # we just refresh after close.
+        dlg = GroupEditorDialog(self._deck, g)
         dlg.finished.connect(
             lambda *_a: self._after_group_edit())
+        # Forward every group-editor mutation up to the studio
+        # widget's autosave path. Without this, edits made
+        # while the group editor is open would only persist when
+        # the SLIDE editor closes (its ``finished`` emit is
+        # what currently triggers the studio's autosave) —
+        # writers reported that closing the group editor without
+        # also closing the slide editor lost in-flight edits on
+        # crash / quit.
+        dlg.deck_modified.connect(self.deck_modified)
         dlg.show()
         dlg.raise_()
 
     def _after_group_edit(self) -> None:
-        # The deck mutates in place inside the group editor.
-        # The studio widget persists on this dialog's close
-        # (via the contentChanged emit on `finished`), so we
-        # just refresh the visible lists here.
         self._refresh_slides()
         self._refresh_groups()
+        # Final emit on close — covers anything that might have
+        # mutated state without going through a handler that
+        # already emitted (defensive belt + suspenders).
+        self.deck_modified.emit()
 
     def _on_group_target_changed(self) -> None:
         gid = self._group_combo.currentData()
@@ -1223,14 +1202,14 @@ class SlideEditorDialog(QDialog):
             "MP4 video (*.mp4)")
         if not out_str:
             return
-        self._record_status_label.setText("Rendering MP4…")
+        self._status_label.setText("Rendering MP4…")
         ok, msg = stitch_slide_deck_to_mp4(
             self._deck, Path(out_str))
         if not ok:
             QMessageBox.warning(
                 self, "Export failed", msg)
             return
-        self._record_status_label.setText(
+        self._status_label.setText(
             f"Saved {Path(out_str).name}.")
         QMessageBox.information(
             self, "Slide deck rendered", msg)
@@ -1259,16 +1238,16 @@ class SlideEditorDialog(QDialog):
             "PowerPoint (*.pptx)")
         if not out_str:
             return
-        self._record_status_label.setText(
+        self._status_label.setText(
             "Composing PowerPoint…")
         ok, msg, skipped = export_slide_deck_to_pptx(
             self._deck, Path(out_str))
         if not ok:
             QMessageBox.warning(
                 self, "Export failed", msg)
-            self._record_status_label.setText("")
+            self._status_label.setText("")
             return
-        self._record_status_label.setText(
+        self._status_label.setText(
             f"Saved {Path(out_str).name}.")
         body = msg
         if skipped:
@@ -1335,20 +1314,15 @@ class SlideEditorDialog(QDialog):
         except Exception:
             pass
         try:
-            if (self._sd_recorder is not None
-                    and self._sd_recorder.is_recording):
-                self._sd_recorder.stop()
-        except Exception:
-            pass
-        try:
-            if self._recorder is not None:
-                self._recorder.stop()
-        except Exception:
-            pass
-        try:
             if self._prose_window is not None:
                 self._prose_window.close()
                 self._prose_window = None
+        except Exception:
+            pass
+        try:
+            if self._preview_window is not None:
+                self._preview_window.close()
+                self._preview_window = None
         except Exception:
             pass
         super().closeEvent(event)

@@ -66,6 +66,11 @@ class AudioRecorder:
         self._frames_written = 0
         self._lock = threading.Lock()
         self._error: Optional[str] = None
+        # Sample rate the stream actually opened at — populated
+        # by ``start()`` once PortAudio agrees to a value. May
+        # differ from ``self._samplerate`` when the device
+        # rejected the requested rate.
+        self._actual_samplerate: int = self._samplerate
 
     # ------------------------------------------------------------------
     # Public API
@@ -87,9 +92,32 @@ class AudioRecorder:
         ``None``, we resolve ``device_name`` against PortAudio's
         device list and fall back to the system default when no
         match is found.
+
+        Raises ``ModuleNotFoundError`` with an install hint when
+        ``sounddevice`` / ``soundfile`` are missing — they were
+        added to ``requirements.txt`` so this only fires when a
+        writer is on a checkout that pre-dates the audio refactor
+        and hasn't ``pip install -r requirements.txt`` since.
+
+        Other failures (e.g. macOS mic permission, sample rate
+        mismatch) get raised as ``RuntimeError`` with the
+        underlying PortAudio message and the chosen device name
+        baked into the text — the dialog can show that directly.
         """
-        import sounddevice as sd  # local import — keeps cold start cheap
-        import soundfile as sf
+        try:
+            import sounddevice as sd  # local import — keeps cold start cheap
+            import soundfile as sf
+        except ImportError as exc:
+            raise ModuleNotFoundError(
+                "Audio recording needs the `sounddevice` and "
+                "`soundfile` Python packages. They were added "
+                "to requirements.txt when QMediaRecorder.Wave "
+                "turned out to silently produce empty files on "
+                "macOS. Install them with:\n\n"
+                "    pip install -r requirements.txt\n\n"
+                "(or `pip install sounddevice soundfile` if "
+                "you're managing deps by hand)."
+            ) from exc
 
         if self.is_recording:
             raise RuntimeError("Recorder is already running.")
@@ -107,13 +135,43 @@ class AudioRecorder:
             resolved_index = self._lookup_device_index(
                 device_name)
 
+        # Pick the actual sample rate to negotiate with the
+        # device. USB mics like the HyperX QuadCast often
+        # advertise 48 kHz natively and reject 44.1 kHz outright
+        # on macOS — that was the silent "record button does
+        # nothing" symptom. Strategy:
+        #   1. Query the device's reported default input rate.
+        #   2. If it differs from ``self._samplerate`` (44.1k),
+        #      use it. Better to honor the device than to ask
+        #      PortAudio to resample on a real-time thread.
+        #   3. If the query fails, fall back to 44.1k.
+        # The WAV header is written at the chosen rate, so the
+        # file matches what was actually captured.
+        chosen_rate = self._samplerate
+        device_label = ""
+        try:
+            info = sd.query_devices(resolved_index, kind="input")
+            device_label = str(info.get("name", ""))
+            default_rate = int(round(float(
+                info.get("default_samplerate", 0) or 0)))
+            if default_rate > 0:
+                chosen_rate = default_rate
+        except Exception as exc:
+            print(
+                f"[recorder] device query failed "
+                f"(idx={resolved_index}): {exc}")
+        print(
+            f"[recorder] opening device "
+            f"idx={resolved_index} name={device_label!r} "
+            f"rate={chosen_rate} channels={self._channels}")
+
         # Open the SoundFile up-front so the writer thread can
         # just stream into it. PortAudio's callback runs on a
         # real-time thread and must NEVER block on disk IO, so we
         # buffer through a queue.
         sf_writer = sf.SoundFile(
             str(self._dest), mode="w",
-            samplerate=self._samplerate,
+            samplerate=chosen_rate,
             channels=self._channels,
             subtype=self._subtype)
 
@@ -153,22 +211,80 @@ class AudioRecorder:
                 with self._lock:
                     self._error = str(exc)
 
+        last_exc: Optional[Exception] = None
+        # Try the device's native rate; if that throws (which
+        # happens when the device reports a rate it doesn't
+        # actually support, or under macOS mic-permission
+        # denial), fall back to 44.1k.
+        rates_to_try = [chosen_rate]
+        if 44100 not in rates_to_try:
+            rates_to_try.append(44100)
+        if 48000 not in rates_to_try:
+            rates_to_try.append(48000)
+        for rate in rates_to_try:
+            try:
+                self._stream = sd.InputStream(
+                    samplerate=rate,
+                    channels=self._channels,
+                    dtype="float32",
+                    device=resolved_index,
+                    callback=_callback)
+                self._stream.start()
+                if rate != chosen_rate:
+                    # Rewrite the writer at the rate that
+                    # actually opened, otherwise the WAV's
+                    # header lies about timing.
+                    try:
+                        sf_writer.close()
+                    except Exception:
+                        pass
+                    sf_writer = sf.SoundFile(
+                        str(self._dest), mode="w",
+                        samplerate=rate,
+                        channels=self._channels,
+                        subtype=self._subtype)
+                    chosen_rate = rate
+                # Remember what we actually opened at so
+                # ``stop()`` can compute the duration correctly.
+                self._actual_samplerate = rate
+                return
+            except Exception as exc:
+                last_exc = exc
+                print(
+                    f"[recorder] open at {rate}Hz failed: {exc}")
+                # Clean up the half-built stream before retrying.
+                try:
+                    if self._stream is not None:
+                        self._stream.close()
+                except Exception:
+                    pass
+                self._stream = None
+        # Every rate failed — tear down + raise with the LAST
+        # PortAudio error message embedded so the dialog can
+        # surface it.
         try:
-            self._stream = sd.InputStream(
-                samplerate=self._samplerate,
-                channels=self._channels,
-                dtype="float32",
-                device=resolved_index,
-                callback=_callback)
-            self._stream.start()
+            sf_writer.close()
         except Exception:
-            # Tear down the writer before re-raising so we don't
-            # leak threads on a failed open.
-            self._frame_queue.put(None)
-            if self._writer_thread is not None:
-                self._writer_thread.join(timeout=2.0)
-            self._writer_thread = None
-            raise
+            pass
+        self._frame_queue.put(None)
+        if self._writer_thread is not None:
+            self._writer_thread.join(timeout=2.0)
+        self._writer_thread = None
+        # Strip the file we partially wrote — otherwise next
+        # take overlaps an old WAV header.
+        try:
+            self._dest.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"PortAudio refused to open the input device "
+            f"({device_label or '<default>'}). Last error: "
+            f"{last_exc}\n\n"
+            f"On macOS this is almost always microphone "
+            f"permission. Open System Settings → Privacy & "
+            f"Security → Microphone and toggle this app on, "
+            f"then restart the studio."
+        ) from last_exc
 
     def stop(self) -> Optional[RecordedTake]:
         """Flush the input stream and finalize the WAV file.
@@ -192,13 +308,14 @@ class AudioRecorder:
             print(f"[recorder] writer error: {self._error}")
         if self._dest is None:
             return None
+        rate = self._actual_samplerate or self._samplerate
         duration = (
-            self._frames_written / float(self._samplerate)
-            if self._samplerate > 0 else 0.0)
+            self._frames_written / float(rate)
+            if rate > 0 else 0.0)
         take = RecordedTake(
             path=self._dest,
             duration_seconds=duration,
-            samplerate=self._samplerate,
+            samplerate=rate,
             channels=self._channels)
         self._dest = None
         return take
@@ -233,9 +350,16 @@ def list_input_devices() -> list[tuple[int, str]]:
     """Return ``(portaudio_index, name)`` tuples for every
     input device PortAudio sees. Used as a fallback when the Qt
     ``QMediaDevices`` enumeration returns no devices (which has
-    happened on fresh macOS installs without mic permission)."""
+    happened on fresh macOS installs without mic permission).
+
+    Returns an empty list when sounddevice isn't installed —
+    don't crash the UI just for device enumeration.
+    """
     try:
         import sounddevice as sd
+    except ImportError:
+        return []
+    try:
         out: list[tuple[int, str]] = []
         for idx, info in enumerate(sd.query_devices()):
             if info.get("max_input_channels", 0) > 0:
@@ -244,3 +368,16 @@ def list_input_devices() -> list[tuple[int, str]]:
     except Exception as exc:
         print(f"[recorder] list_input_devices failed: {exc}")
         return []
+
+
+def recorder_dependencies_available() -> bool:
+    """Cheap up-front check the UI can call before exposing the
+    record button. Avoids the writer pressing record only to get
+    a long traceback. Caches nothing — both imports are tiny.
+    """
+    try:
+        import sounddevice  # noqa: F401
+        import soundfile  # noqa: F401
+    except ImportError:
+        return False
+    return True

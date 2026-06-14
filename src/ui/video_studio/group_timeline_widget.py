@@ -35,6 +35,7 @@ times to a crawl on long takes.
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
 from PyQt6.QtCore import (
@@ -50,13 +51,18 @@ from src.video_studio.models import SlideDeckProject, SlideGroup, SlidePage
 
 # Layout constants. Picked once instead of computed from font
 # metrics so the widget stays readable when the writer makes
-# the dialog very wide.
-TRACK_HEIGHT = 220
-AUDIO_BAR_TOP = 24
-AUDIO_BAR_HEIGHT = 36
+# the dialog very wide. The audio bar got a bump (36 → 56) and
+# the slide band got a bigger one (110 → 160) when writers
+# called out the visualization being too small to use on a
+# laptop. TRACK_HEIGHT is the *minimum*; the widget's vertical
+# policy is ``MinimumExpanding`` so the dialog can give it
+# more room when it has it.
+TRACK_HEIGHT = 300
+AUDIO_BAR_TOP = 28
+AUDIO_BAR_HEIGHT = 56
 RULER_HEIGHT = 14
-SLIDE_BAND_TOP = AUDIO_BAR_TOP + AUDIO_BAR_HEIGHT + RULER_HEIGHT + 8
-SLIDE_BAND_HEIGHT = 110
+SLIDE_BAND_TOP = AUDIO_BAR_TOP + AUDIO_BAR_HEIGHT + RULER_HEIGHT + 10
+SLIDE_BAND_HEIGHT = 160
 LEFT_PAD = 14
 RIGHT_PAD = 14
 
@@ -74,6 +80,11 @@ class GroupTimelineWidget(QWidget):
     slideDoubleClicked = pyqtSignal(str)         # page_id
     timelineChanged = pyqtSignal()               # any mutation
     trimChanged = pyqtSignal(float, float)       # in_secs, out_secs
+    # Right-click anywhere on the audio bar emits this with a
+    # GLOBAL QPoint — the host dialog uses it to position a
+    # context menu over the click. Emitted only when audio is
+    # loaded; right-clicking an empty bar is a no-op.
+    audioContextRequested = pyqtSignal(object)
 
     def __init__(
         self,
@@ -91,17 +102,35 @@ class GroupTimelineWidget(QWidget):
         self._drag_page_id: Optional[str] = None
         self._drag_grab_dx_pixels: int = 0
         self._dragging_trim_handle: Optional[str] = None  # "in"/"out"/None
+        # Selection-drag state. Left-clicking on the audio bar
+        # (away from a trim handle) anchors here; mouse motion
+        # past ``_SELECT_DRAG_THRESHOLD_PX`` flips into selection
+        # mode and starts updating ``overlay_trim_in/out`` live.
+        # A press without significant motion stays a click and
+        # scrubs the playhead instead.
+        self._select_anchor_seconds: Optional[float] = None
+        self._select_anchor_x: int = 0
+        self._in_selection_drag: bool = False
         # Playhead time in seconds, set by the dialog as media plays.
         self._playhead_seconds: float = 0.0
         # Pixmap cache so we don't reload every slide image on
         # each paint. Cleared when the group changes.
         self._pixmap_cache: dict[str, QPixmap] = {}
+        # Waveform peaks cache — invalidated when the audio path
+        # changes (see ``refresh_waveform``). Loaded lazily on
+        # the first paint so opening the dialog stays snappy.
+        self._waveform_peaks = None
+        self._waveform_audio_path = ""
         self.setAcceptDrops(True)
         self.setMouseTracking(True)
         self.setMinimumHeight(TRACK_HEIGHT)
+        # Both axes expand — the dialog dedicates most of its
+        # vertical space to the timeline now that the tray
+        # tucked underneath as a thin strip and the transforms
+        # / detail panels moved into tabs.
         self.setSizePolicy(
             QSizePolicy.Policy.MinimumExpanding,
-            QSizePolicy.Policy.Fixed)
+            QSizePolicy.Policy.MinimumExpanding)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
     # ------------------------------------------------------------------
@@ -112,7 +141,17 @@ class GroupTimelineWidget(QWidget):
         self._deck = deck
         self._group = group
         self._pixmap_cache.clear()
+        self._waveform_peaks = None
+        self._waveform_audio_path = ""
         self._selected_page_id = None
+        self.update()
+
+    def refresh_waveform(self) -> None:
+        """Drop the cached peaks so the next paint reloads them.
+        Call after recording / importing / applying transforms —
+        anything that mutates the underlying audio file."""
+        self._waveform_peaks = None
+        self._waveform_audio_path = ""
         self.update()
 
     def set_playhead(self, seconds: float) -> None:
@@ -176,10 +215,15 @@ class GroupTimelineWidget(QWidget):
         return out
 
     def _visible_duration(self) -> float:
-        dur = self._audio_duration()
-        if dur <= 0:
-            return 0.0
-        return max(0.1, self._trim_out() - self._trim_in())
+        """The full audio duration — the bar always renders the
+        WHOLE file. The trim window is a *selection overlay* on
+        top of the bar, not a viewport crop. Previously this
+        returned ``trim_out − trim_in``, which made the
+        pixel↔seconds mapping shrink to the trim window while
+        the waveform stayed drawn at full-file scale — clicks
+        landed at the wrong time, the user's "selection not
+        tracking the mouse" report."""
+        return self._audio_duration()
 
     def _track_rect(self) -> QRect:
         return QRect(
@@ -194,31 +238,34 @@ class GroupTimelineWidget(QWidget):
             SLIDE_BAND_HEIGHT)
 
     def _seconds_to_x(self, seconds: float) -> int:
-        """Map a time IN GROUP COORDS (i.e. relative to trim_in)
-        to a pixel x on this widget."""
+        """Map an absolute time in the full audio file to a
+        pixel x on this widget. The bar's pixel range matches
+        the full file's 0..duration range — trim is a selection
+        drawn over the top, not a viewport shift."""
         rect = self._track_rect()
-        dur = self._visible_duration()
+        dur = self._audio_duration()
         if dur > 0:
-            ratio = (seconds - self._trim_in()) / dur
+            ratio = seconds / dur
         else:
             # No audio yet — fall back to a fixed pixel scale so
             # the writer can still arrange slides before audio
-            # lands. We map seconds 1:1 against
-            # PLACEHOLDER_PIXELS_PER_SECOND.
+            # lands. Map seconds 1:1 against the placeholder.
             ratio = seconds / max(0.1, (
                 rect.width() / PLACEHOLDER_PIXELS_PER_SECOND))
         ratio = max(0.0, min(1.0, ratio))
         return rect.left() + int(ratio * rect.width())
 
     def _x_to_seconds(self, x: int) -> float:
+        """Inverse of ``_seconds_to_x`` — pixel back to absolute
+        seconds in the full file."""
         rect = self._track_rect()
         if rect.width() <= 0:
             return 0.0
         ratio = (x - rect.left()) / rect.width()
         ratio = max(0.0, min(1.0, ratio))
-        dur = self._visible_duration()
+        dur = self._audio_duration()
         if dur > 0:
-            return self._trim_in() + ratio * dur
+            return ratio * dur
         return ratio * (
             rect.width() / PLACEHOLDER_PIXELS_PER_SECOND)
 
@@ -309,14 +356,25 @@ class GroupTimelineWidget(QWidget):
         painter.setFont(f)
         header = self._header_text()
         painter.drawText(LEFT_PAD, 16, header)
-        # Audio bar.
+        # Audio bar — base fill + waveform peaks overlay.
         track = self._track_rect()
         audio_color = (
-            QColor("#3b82f6") if self._audio_duration() > 0
+            QColor("#1e3a8a") if self._audio_duration() > 0
             else QColor("#334155"))
         painter.fillRect(track, audio_color)
-        painter.setPen(QPen(QColor("#1e3a8a"), 1))
+        # Trim shading: dim the audio bar outside the trim
+        # window so the kept region pops out visually.
+        if self._audio_duration() > 0:
+            in_x = self._seconds_to_x(self._trim_in())
+            out_x = self._seconds_to_x(self._trim_out())
+            kept = QRect(
+                in_x, track.top(),
+                max(0, out_x - in_x), track.height())
+            painter.fillRect(kept, QColor("#3b82f6"))
+        painter.setPen(QPen(QColor("#1e293b"), 1))
         painter.drawRect(track)
+        # Waveform.
+        self._draw_waveform(painter, track)
         # Trim handles (if there's audio to trim).
         if self._audio_duration() > 0:
             in_x = self._seconds_to_x(self._trim_in())
@@ -336,11 +394,14 @@ class GroupTimelineWidget(QWidget):
             painter.drawText(
                 out_x + 3, track.bottom() + 12,
                 f"out {self._trim_out():.2f}s")
-        # Playhead.
+        # Playhead — visible whenever it's within the file,
+        # not just within the trim window. Writers use it as
+        # the anchor for "Trim before / after playhead", which
+        # would be confusing if the line disappeared the moment
+        # they moved it outside an existing selection.
         if (self._audio_duration() > 0
-                and self._trim_in()
-                <= self._playhead_seconds
-                <= self._trim_out()):
+                and 0 <= self._playhead_seconds
+                <= self._audio_duration()):
             px = self._seconds_to_x(self._playhead_seconds)
             painter.setPen(QPen(QColor("#ef4444"), 2))
             painter.drawLine(
@@ -387,7 +448,9 @@ class GroupTimelineWidget(QWidget):
         f = QFont(painter.font())
         f.setPointSize(8)
         painter.setFont(f)
-        dur = self._visible_duration()
+        # Ruler walks the WHOLE file (the bar now shows the
+        # whole file, not just the trim window).
+        dur = self._audio_duration()
         if dur <= 0:
             return
         step = 1.0
@@ -397,14 +460,75 @@ class GroupTimelineWidget(QWidget):
             step = 5.0
         elif dur > 15:
             step = 2.0
-        t = self._trim_in()
-        end = self._trim_out()
+        t = 0.0
+        end = dur
         while t <= end + 1e-3:
             x = self._seconds_to_x(t)
             painter.drawLine(x, y, x, y + 4)
             painter.drawText(
                 x + 2, y + RULER_HEIGHT - 1, f"{t:.0f}s")
             t += step
+
+    def _draw_waveform(
+            self, painter: QPainter, track: QRect) -> None:
+        """Render peak waveform over the audio bar.
+
+        Loads peaks lazily on first paint after the audio path
+        changes — the writer sees a blank bar for a single
+        repaint, then the wave snaps in. That's preferable to
+        blocking ``paintEvent`` on the disk read.
+        """
+        path_str = getattr(
+            self._group, "overlay_audio_path", "") or ""
+        if not path_str:
+            return
+        # Lazy load + cache invalidation.
+        if (self._waveform_peaks is None
+                or self._waveform_audio_path != path_str):
+            from src.video_studio.audio_waveform import (
+                load_peaks)
+            # Bucket count tracks the visible pixel width so the
+            # wave stays detailed when the writer enlarges the
+            # window. Cap at 2000 to keep the soundfile read
+            # cheap on long takes.
+            num_buckets = min(
+                2000, max(120, track.width()))
+            self._waveform_peaks = load_peaks(
+                Path(path_str), num_buckets=num_buckets)
+            self._waveform_audio_path = path_str
+        peaks = self._waveform_peaks
+        if peaks is None or peaks.num_buckets == 0:
+            return
+        # Peaks span the WHOLE file. Trim handles operate in the
+        # same time axis, so the trim shading is already
+        # painted under us — we just draw the entire wave on
+        # top, and the dim-out outside the trim window does the
+        # visual disambiguation.
+        mid_y = track.top() + track.height() // 2
+        half_h = (track.height() // 2) - 2
+        # One vertical line per bucket, scaled to the track
+        # width. When buckets > pixels we sub-sample; when
+        # buckets < pixels we just stretch.
+        pen = QPen(QColor("#e0f2fe"), 1)
+        painter.setPen(pen)
+        bucket_count = peaks.num_buckets
+        # Map: bucket idx → x. Skip buckets that collide on the
+        # same pixel.
+        last_x = -1
+        for i in range(bucket_count):
+            x_frac = i / float(bucket_count - 1 or 1)
+            x = (track.left()
+                 + int(x_frac * (track.width() - 1)))
+            if x == last_x:
+                continue
+            last_x = x
+            mn = peaks.mins[i]
+            mx = peaks.maxs[i]
+            top_y = mid_y - int(mx * half_h)
+            bot_y = mid_y - int(mn * half_h)
+            if top_y == bot_y:
+                bot_y = top_y + 1
+            painter.drawLine(x, top_y, x, bot_y)
 
     def _draw_slide_block(
         self,
@@ -462,6 +586,8 @@ class GroupTimelineWidget(QWidget):
     # ------------------------------------------------------------------
     # Mouse interaction
     # ------------------------------------------------------------------
+    _SELECT_DRAG_THRESHOLD_PX = 4
+
     def mousePressEvent(self, event) -> None:
         if event.button() != Qt.MouseButton.LeftButton:
             return
@@ -492,16 +618,18 @@ class GroupTimelineWidget(QWidget):
                 self._drag_grab_dx_pixels = pos.x() - x_left
             self.update()
             return
-        # Click on empty audio bar — scrub.
+        # Press on empty audio bar — anchor a potential
+        # selection drag. We don't commit to selection mode
+        # yet; that flips on once the cursor moves past
+        # ``_SELECT_DRAG_THRESHOLD_PX``. A press-and-release
+        # without motion stays a click and just scrubs.
         track = self._track_rect()
-        if track.contains(pos):
-            secs = self._x_to_seconds(pos.x())
-            self._playhead_seconds = secs
-            self.trimChanged.emit(
-                self._trim_in(), self._trim_out())
-            # Use trimChanged as a notify-anything bus; the
-            # dialog also wires a scrub callback for the player.
-            self.update()
+        if track.contains(pos) and self._audio_duration() > 0:
+            self._select_anchor_seconds = self._x_to_seconds(
+                pos.x())
+            self._select_anchor_x = pos.x()
+            self._in_selection_drag = False
+            return
         # Click on empty slide band — clear selection.
         if self._slide_band_rect().contains(pos):
             self._selected_page_id = None
@@ -527,6 +655,37 @@ class GroupTimelineWidget(QWidget):
             self.timelineChanged.emit()
             self.update()
             return
+        # Selection drag: once the cursor's moved far enough
+        # past the anchor, flip into selection mode and update
+        # trim_in / trim_out live (sorted, so the writer can
+        # drag in either direction).
+        if (self._select_anchor_seconds is not None
+                and (event.buttons() & Qt.MouseButton.LeftButton)):
+            if (not self._in_selection_drag
+                    and abs(pos.x() - self._select_anchor_x)
+                    >= self._SELECT_DRAG_THRESHOLD_PX):
+                self._in_selection_drag = True
+            if self._in_selection_drag:
+                dur = self._audio_duration()
+                here = max(
+                    0.0,
+                    min(dur, self._x_to_seconds(pos.x())))
+                anchor = self._select_anchor_seconds
+                lo, hi = (here, anchor) if here < anchor else (
+                    anchor, here)
+                # Guard against zero-width selection — keep at
+                # least one frame so the trim window is sane.
+                if hi - lo < 0.01:
+                    hi = min(dur, lo + 0.01)
+                self._group.overlay_trim_in_seconds = round(
+                    lo, 3)
+                self._group.overlay_trim_out_seconds = round(
+                    hi, 3)
+                self.trimChanged.emit(
+                    self._trim_in(), self._trim_out())
+                self.timelineChanged.emit()
+                self.update()
+                return
         if self._drag_page_id is not None:
             # Initiate a Qt drag once the writer's moved far enough
             # — short clicks shouldn't trigger a drag.
@@ -550,9 +709,61 @@ class GroupTimelineWidget(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, event) -> None:
+        # If the press never crossed the drag threshold, treat
+        # it as a click. Two effects:
+        #   1. Move the playhead to the click time (writers use
+        #      the red line as the anchor for trim-before /
+        #      trim-after).
+        #   2. CLEAR any existing trim selection — the user
+        #      asked for "a new click in the audio to unselect"
+        #      so we don't strand an old selection across
+        #      unrelated clicks.
+        # A real selection drag stays committed to the trim
+        # window we already updated during move.
+        if (self._select_anchor_seconds is not None
+                and not self._in_selection_drag):
+            pos = event.position().toPoint()
+            self._playhead_seconds = self._x_to_seconds(pos.x())
+            had_selection = (
+                float(getattr(
+                    self._group,
+                    "overlay_trim_in_seconds", 0.0) or 0.0)
+                > 0
+                or float(getattr(
+                    self._group,
+                    "overlay_trim_out_seconds", 0.0) or 0.0)
+                > 0)
+            if had_selection:
+                self._group.overlay_trim_in_seconds = 0.0
+                self._group.overlay_trim_out_seconds = 0.0
+                self.timelineChanged.emit()
+            self.trimChanged.emit(
+                self._trim_in(), self._trim_out())
+            self.update()
+        self._select_anchor_seconds = None
+        self._in_selection_drag = False
         self._dragging_trim_handle = None
         self._drag_page_id = None
         self._drag_grab_dx_pixels = 0
+
+    def contextMenuEvent(self, event) -> None:
+        """Right-click on the audio bar (only when audio is
+        loaded) fires ``audioContextRequested`` with a GLOBAL
+        QPoint. The host dialog uses it to position a transform
+        menu over the click."""
+        if self._audio_duration() <= 0:
+            return
+        pos = event.pos()
+        track = self._track_rect()
+        # Allow a few pixels of slop above / below the bar so
+        # writers don't have to hit a 56-pixel target dead-on.
+        if not (track.left() <= pos.x() <= track.right()
+                and track.top() - 8 <= pos.y()
+                <= track.bottom() + 8):
+            return
+        self.audioContextRequested.emit(
+            self.mapToGlobal(pos))
+        event.accept()
 
     def mouseDoubleClickEvent(self, event) -> None:
         pos = event.position().toPoint()
