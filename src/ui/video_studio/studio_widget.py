@@ -3324,6 +3324,12 @@ class VideoStudioWidget(QWidget):
                     ch.updated_at = datetime.now()
                 except Exception:
                     pass
+                # ``contentChanged`` triggers the project
+                # autosave; ``chapterContentChanged`` lets the
+                # main window refresh the Write tab if it's on
+                # the same chapter so the two views stay in
+                # sync.
+                self.chapterContentChanged.emit(chapter_id)
                 self.contentChanged.emit()
                 return True
         return False
@@ -3336,6 +3342,15 @@ class VideoStudioWidget(QWidget):
     # gentle status message) so the dialog at least stops being
     # confusing.
     jumpToWriterRequested = pyqtSignal(str)  # chapter_id
+
+    # Fired AFTER the slim prose editor (slide / video editor)
+    # writes a chapter's new ``content`` back to the project
+    # model. The main window listens so it can refresh the
+    # manuscript editor's visible buffer when the writer is
+    # editing the same chapter in two surfaces — without this
+    # signal, the Write tab kept showing stale prose after a
+    # save from the slide deck editor.
+    chapterContentChanged = pyqtSignal(str)  # chapter_id
 
     def _jump_to_writer(self, chapter_id: str) -> None:
         """Emitted from the slim editor's 📝 Open in writer

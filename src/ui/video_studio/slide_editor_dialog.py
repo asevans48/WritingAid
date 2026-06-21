@@ -1134,10 +1134,15 @@ class SlideEditorDialog(QDialog):
         from src.ui.video_studio.group_editor_dialog import (
             GroupEditorDialog)
         # The group editor owns its own mic picker (recording
-        # lives there now), so we don't need to pass a device
-        # getter through. It mutates the deck/group in place;
-        # we just refresh after close.
-        dlg = GroupEditorDialog(self._deck, g)
+        # lives there now). Forward the same chapter-prose
+        # plumbing the slide editor uses so the group editor's
+        # 📖 Read chapter prose button can pop the same
+        # floating ChapterProseWindow.
+        dlg = GroupEditorDialog(
+            self._deck, g,
+            chapters_provider=self._chapters_provider,
+            save_chapter_text=self._save_chapter_text_cb,
+            open_in_writer=self._open_in_writer_cb)
         dlg.finished.connect(
             lambda *_a: self._after_group_edit())
         # Forward every group-editor mutation up to the studio

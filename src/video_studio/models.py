@@ -372,6 +372,56 @@ class SlidePage(BaseModel):
     updated_at: datetime = Field(default_factory=datetime.now)
 
 
+class GroupAudioClip(BaseModel):
+    """One take inside a group's audio track. Writers record
+    line-by-line into multiple clips; the group editor stitches
+    them into the rendered ``overlay_audio_path`` with auto
+    crossfades, so playback + export still operate on a single
+    file. The clips list is the *source of truth*; the rendered
+    file is a cache that gets re-built whenever the list
+    changes."""
+    id: str = Field(
+        default_factory=lambda: f"aclip_{uuid4().hex[:10]}")
+    # Writer-visible label (auto "Take N" by default).
+    label: str = ""
+    # Path to the raw take on disk. Each Record click writes a
+    # fresh WAV here; deleting a clip just drops the entry,
+    # the file stays unless the writer explicitly purges it.
+    audio_path: str = ""
+    duration_seconds: float = 0.0
+    # Non-destructive trim inside the source file.
+    trim_in_seconds: float = 0.0
+    # 0.0 = play to end of source (matches the legacy overlay
+    # trim semantics so the renderer doesn't need to special-
+    # case "no trim").
+    trim_out_seconds: float = 0.0
+    # Per-clip gain in dB (volume= filter). 0 = no change.
+    gain_db: float = 0.0
+    # Position on the GROUP's timeline (seconds from the
+    # start of the composed overlay). The clip starts playing
+    # at this offset; ``compose_clips`` uses ffmpeg's
+    # ``adelay`` filter to push the source there before
+    # ``amix`` sums everything. ``None`` is the legacy
+    # "auto-place sequentially" mode — the migration path on
+    # group-editor open assigns concrete values so the rest
+    # of the code only sees positioned clips.
+    start_time_seconds: Optional[float] = None
+    # Per-clip fade in / fade out, baked into the recompose
+    # via ffmpeg ``afade``. Replaces the per-overlay fade
+    # that lived on the audio bar's right-click menu — those
+    # used to vanish on the next recompose because they
+    # touched the rendered cache, not the clips.
+    fade_in_seconds: float = 0.0
+    fade_out_seconds: float = 0.0
+    # LEGACY — kept on the model for backward-compat with
+    # decks that pre-date positional placement. The migration
+    # path translates ``crossfade_seconds`` into the equivalent
+    # overlap between adjacent clips' start times, then the
+    # field stops mattering.
+    crossfade_seconds: float = 0.15
+    created_at: datetime = Field(default_factory=datetime.now)
+
+
 class SlideGroup(BaseModel):
     """A named cluster of slides that share editorial intent —
     "Opening", "Confrontation", "Coda". Groups let the writer
@@ -385,10 +435,20 @@ class SlideGroup(BaseModel):
     # the unlocked pages in the group (locked pages keep their
     # exact times; the remainder splits across the rest).
     target_total_seconds: float = 0.0
-    # Optional audio file that plays OVER every slide in the
-    # group — used for music beds, ambience, or a single read
-    # that spans multiple visuals. Per-slide audio still mixes
-    # over the top so writers can layer narration on a bed.
+    # Source-of-truth list of recorded takes / imported clips
+    # that make up the group's audio track. Writers record
+    # line-by-line; on save, ``compose_clips`` renders them
+    # into ``overlay_audio_path`` with auto-crossfades, and
+    # playback + export read from that rendered file. An empty
+    # list means "no audio yet" — first Record click appends
+    # the first clip.
+    audio_clips: List["GroupAudioClip"] = Field(default_factory=list)
+    # Rendered overlay — the result of stitching ``audio_clips``
+    # together. Single file so the existing playback / export
+    # pipelines stay unchanged. Legacy decks that pre-date the
+    # clips refactor still carry an ``overlay_audio_path`` set
+    # directly; the group editor migrates those into a single-
+    # entry ``audio_clips`` list on first open.
     overlay_audio_path: str = ""
     overlay_audio_duration_seconds: float = 0.0
     # Non-destructive trim of the overlay audio. The timeline

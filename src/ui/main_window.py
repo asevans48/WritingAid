@@ -3221,7 +3221,13 @@ class MainWindow(QMainWindow):
         from PyQt6.QtCore import QTimer
         self._video_studio_autosave_timer = QTimer(self)
         self._video_studio_autosave_timer.setSingleShot(True)
-        self._video_studio_autosave_timer.setInterval(1200)
+        # 2.5 s debounce — most editor flows fire several
+        # ``contentChanged`` signals back-to-back (rename +
+        # recompose + refresh). A longer debounce coalesces
+        # them into one disk write. Saves still happen on the
+        # GUI thread, so a faster interval would re-introduce
+        # the "every action freezes" report.
+        self._video_studio_autosave_timer.setInterval(2500)
         self._video_studio_autosave_timer.timeout.connect(
             self._auto_save_project)
         self.video_studio_widget.contentChanged.connect(
@@ -3233,6 +3239,14 @@ class MainWindow(QMainWindow):
         # editor.
         self.video_studio_widget.jumpToWriterRequested.connect(
             self._jump_to_writer_for_chapter)
+        # When the slim prose editor (slide / video editor)
+        # saves a chapter, push the new ``content`` into the
+        # manuscript editor's visible buffer if it's open on
+        # the same chapter. Without this, the Write tab kept
+        # showing stale prose because it caches the chapter's
+        # content in its ChapterEditor's QPlainTextEdit.
+        self.video_studio_widget.chapterContentChanged.connect(
+            self._on_chapter_externally_modified)
 
         # Connect grader widget signals
         self.grader_widget.go_to_line_requested.connect(self._go_to_critique_line)
@@ -3988,22 +4002,63 @@ class MainWindow(QMainWindow):
             )
 
     def _auto_save_project(self):
-        """Auto-save project (e.g., when switching chapters).
+        """Auto-save the project. Runs synchronously on the
+        GUI thread — the previous "send save_project to a
+        QThreadPool runnable" experiment turned out to crash
+        the slide deck editor + prose window: ``save_project``
+        walks a Pydantic model that the GUI thread can mutate
+        concurrently, and the locally-constructed signals
+        object risked being GC'd before the worker emitted.
 
-        Silently saves without showing status messages to avoid interrupting workflow.
+        Reentry guard: if a save is already in progress (we're
+        being called from within a Qt signal handler that the
+        prior save's collect step triggered) we set a pending
+        flag and return; the running save reschedules itself
+        on completion.
         """
         if not self.current_project or self._loading_project:
             return
-
-        if self.current_project.project_path:
+        if not self.current_project.project_path:
+            return
+        if getattr(self, "_autosave_in_flight", False):
+            self._autosave_pending = True
+            return
+        self._autosave_in_flight = True
+        self._autosave_pending = False
+        try:
             try:
                 self._collect_project_data()
-                self.current_project.save_project(self.current_project.project_path)
-                # Update window title to remove unsaved indicator
-                self.setWindowTitle(f"Writer Platform - {self.current_project.name}")
             except Exception as e:
-                # Log error but don't interrupt user
-                print(f"Auto-save failed: {e}")
+                print(f"Auto-save (collect) failed: {e}")
+                return
+            try:
+                self.current_project.save_project(
+                    self.current_project.project_path)
+            except Exception as e:
+                print(f"Auto-save (write) failed: {e}")
+                try:
+                    if (hasattr(self, "statusBar")
+                            and self.statusBar()):
+                        self.statusBar().showMessage(
+                            f"Auto-save failed: {e}", 5000)
+                except Exception:
+                    pass
+                return
+            try:
+                self.setWindowTitle(
+                    f"Writer Platform - "
+                    f"{self.current_project.name}")
+            except Exception:
+                pass
+        finally:
+            self._autosave_in_flight = False
+            if getattr(self, "_autosave_pending", False):
+                # Schedule a follow-up save via the event loop
+                # so the call stack unwinds first — avoids
+                # deep recursion if signals keep firing.
+                self._autosave_pending = False
+                from PyQt6.QtCore import QTimer as _QT
+                _QT.singleShot(0, self._auto_save_project)
 
     def _sync_outline_panel_to_chapter(self) -> None:
         """Bind the AI Assistant's outline panel to the current chapter.
@@ -13907,6 +13962,119 @@ class MainWindow(QMainWindow):
             "Features worldbuilding, character development, story planning, "
             "manuscript editing, AI assistance, and more."
         )
+
+    def _on_chapter_externally_modified(
+            self, chapter_id: str) -> None:
+        """The slim prose editor (slide / video editor) just
+        wrote new content to this chapter. If the manuscript
+        editor is currently showing it, swap in the fresh
+        text so the two views stay in sync.
+
+        The whole body runs under a try/except wrapper because
+        this handler is invoked from a signal that can fire
+        DURING save chains (re-entrant). If any widget under
+        ``current_chapter_editor`` has been deleted on the C++
+        side, naive Python attribute access succeeds while the
+        actual Qt call segfaults — that was the "slide deck
+        editor crashes on every action" report. Catching the
+        RuntimeError sip raises for deleted widgets keeps the
+        save path alive.
+        """
+        try:
+            self._refresh_write_tab_for_external_chapter(
+                chapter_id)
+        except RuntimeError as exc:
+            # ``wrapped C++ object has been deleted`` lives
+            # here. Swallow + log; the chapter model already
+            # has the new content, so the next time the Write
+            # tab opens that chapter it'll show the fresh text.
+            print(
+                f"[main_window] chapter sync skipped "
+                f"(widget gone): {exc}")
+        except Exception as exc:  # pragma: no cover
+            print(
+                f"[main_window] chapter sync failed: {exc}")
+
+    def _refresh_write_tab_for_external_chapter(
+            self, chapter_id: str) -> None:
+        if not chapter_id:
+            return
+        editor = getattr(
+            self, "manuscript_editor", None)
+        if editor is None:
+            return
+        # ``sip.isdeleted`` is the only reliable way to detect
+        # that a C++ QObject's Python wrapper is a zombie.
+        # Falls back gracefully when PyQt6's sip module isn't
+        # importable (older Qt builds).
+        try:
+            from PyQt6 import sip as _sip
+            if _sip.isdeleted(editor):
+                return
+        except Exception:
+            pass
+        if getattr(editor, "_current_chapter_id", None) != chapter_id:
+            return
+        chapter_editor = getattr(
+            editor, "current_chapter_editor", None)
+        if chapter_editor is None:
+            return
+        try:
+            from PyQt6 import sip as _sip
+            if _sip.isdeleted(chapter_editor):
+                return
+        except Exception:
+            pass
+        text_widget = getattr(chapter_editor, "editor", None)
+        if text_widget is None:
+            return
+        try:
+            from PyQt6 import sip as _sip
+            if _sip.isdeleted(text_widget):
+                return
+        except Exception:
+            pass
+        chapter = editor.get_current_chapter() if hasattr(
+            editor, "get_current_chapter") else None
+        new_text = (
+            getattr(chapter, "content", None) if chapter
+            else None)
+        if new_text is None:
+            return
+        current_text = text_widget.toPlainText()
+        if current_text == new_text:
+            return
+        is_dirty = bool(getattr(chapter_editor, "is_dirty",
+                                getattr(chapter_editor,
+                                        "_dirty", False)))
+        if is_dirty:
+            print(
+                f"[main_window] Chapter {chapter_id} was "
+                "modified in the slide / video editor but "
+                "the Write tab has unsaved edits — leaving "
+                "the Write tab's content alone. Save or "
+                "discard in the Write tab to pick up the "
+                "update.")
+            try:
+                if hasattr(self, "statusBar") and self.statusBar():
+                    self.statusBar().showMessage(
+                        "Chapter updated in slide editor — "
+                        "Write tab has unsaved edits, "
+                        "refresh skipped.", 4000)
+            except Exception:
+                pass
+            return
+        cursor = text_widget.textCursor()
+        offset = cursor.position()
+        text_widget.blockSignals(True)
+        try:
+            text_widget.setPlainText(new_text)
+            new_cursor = text_widget.textCursor()
+            new_cursor.setPosition(
+                min(offset, len(new_text)))
+            text_widget.setTextCursor(new_cursor)
+        finally:
+            text_widget.blockSignals(False)
 
     def _jump_to_writer_for_chapter(self, chapter_id: str) -> None:
         """Handle "📝 Open in writer" from the video / slide

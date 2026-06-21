@@ -33,7 +33,9 @@ from pathlib import Path
 from typing import Any, Callable, List, Optional
 
 from PyQt6.QtCore import Qt, QUrl, QTimer, pyqtSignal
-from PyQt6.QtGui import QGuiApplication, QPixmap
+from PyQt6.QtGui import (
+    QGuiApplication, QKeySequence, QPixmap, QShortcut,
+)
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog,
@@ -53,6 +55,43 @@ from src.video_studio.models import (
     CHAPTER_TRANSITIONS, SlideDeckProject, SlideGroup, SlidePage,
 )
 from src.video_studio.tts.base import probe_audio_duration_seconds
+
+
+class _ClipDragList(QListWidget):
+    """The audio-clip list widget. Drag starts our custom
+    audio-clip-id QDrag (consumed by the timeline) regardless
+    of where the cursor moves. The previous attempt routed the
+    drag through a manual ``mouseMoveEvent`` check, but Qt's
+    own internal-move ``startDrag`` fired first and stole the
+    event — so the writer's drag never reached our handler.
+    Overriding ``startDrag`` runs once Qt has already decided
+    a drag is happening, which is the right hook to substitute
+    our payload."""
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        # Drag is enabled so Qt's drag-distance threshold +
+        # OS-native pickup behavior fire normally. We DON'T
+        # use ``InternalMove`` — that would consume the drag
+        # and prevent it from reaching the timeline. Reorder
+        # lives on the right-click menu (⬆ / ⬇ Move) instead.
+        self.setDragEnabled(True)
+        self.setDragDropMode(
+            QListWidget.DragDropMode.DragOnly)
+
+    def startDrag(self, supportedActions) -> None:
+        item = self.currentItem()
+        if item is None:
+            return
+        clip_id = item.data(Qt.ItemDataRole.UserRole)
+        if not clip_id:
+            return
+        # Don't fall through to ``super().startDrag`` — we
+        # provide the full payload ourselves so the timeline's
+        # drop handler picks up our audio-clip-id MIME.
+        from src.ui.video_studio.group_timeline_widget import (
+            start_audio_clip_drag)
+        start_audio_clip_drag(self, clip_id, item.text())
 
 
 class _SlideTray(QListWidget):
@@ -136,6 +175,9 @@ class GroupEditorDialog(QDialog):
         deck: SlideDeckProject,
         group: SlideGroup,
         mic_device_getter: Optional[Callable[[], Any]] = None,
+        chapters_provider: Optional[Callable[[], Any]] = None,
+        save_chapter_text: Optional[Callable[[str, str], None]] = None,
+        open_in_writer: Optional[Callable[[str], None]] = None,
         parent: Optional[QWidget] = None,
     ):
         super().__init__(None)
@@ -168,6 +210,25 @@ class GroupEditorDialog(QDialog):
         self._deck = deck
         self._group = group
         self._mic_device_getter = mic_device_getter
+        # Chapter-prose plumbing — same shape the slide editor
+        # uses for its Master script tab. The 📖 Read chapter
+        # prose button is hidden when no ``chapters_provider``
+        # was wired (e.g. dialog opened standalone in a test).
+        self._chapters_provider = chapters_provider
+        self._save_chapter_text_cb = save_chapter_text
+        self._open_in_writer_cb = open_in_writer
+        # Single shared prose window — re-used so the writer
+        # doesn't end up with a stack of duplicate windows when
+        # they click the button more than once.
+        self._prose_window = None
+        # ── Multi-clip audio migration ────────────────────────
+        # Legacy decks carry ``overlay_audio_path`` directly.
+        # Promote it to a single-entry ``audio_clips`` list so
+        # the rest of the editor speaks one language. Subsequent
+        # records APPEND to this list; recompose stitches them
+        # back into ``overlay_audio_path`` (the rendered file
+        # that playback + export still read).
+        self._maybe_migrate_overlay_to_clips()
         # Player for overlay-audio preview.
         self._player = QMediaPlayer(self)
         self._player_audio = QAudioOutput(self)
@@ -191,6 +252,128 @@ class GroupEditorDialog(QDialog):
         self._refresh_tray()
         self._refresh_overlay_status()
         self._refresh_detail_panel()
+
+    # ------------------------------------------------------------------
+    # Multi-clip overlay
+    # ------------------------------------------------------------------
+    def _maybe_migrate_overlay_to_clips(self) -> None:
+        """Older decks have a single ``overlay_audio_path`` and
+        no ``audio_clips`` — promote it to a one-entry clips
+        list so the rest of the editor only sees clips. Then
+        ensure every clip has a concrete ``start_time_seconds``
+        (auto-place sequentially using ``crossfade_seconds`` as
+        the overlap). Idempotent and safe to call every open."""
+        from src.video_studio.models import GroupAudioClip
+        clips = getattr(self._group, "audio_clips", None)
+        if not clips:
+            path = getattr(
+                self._group, "overlay_audio_path", "") or ""
+            if path:
+                dur = float(
+                    getattr(
+                        self._group,
+                        "overlay_audio_duration_seconds",
+                        0.0) or 0.0)
+                self._group.audio_clips = [
+                    GroupAudioClip(
+                        label="Take 1",
+                        audio_path=path,
+                        duration_seconds=dur,
+                        trim_in_seconds=float(
+                            getattr(
+                                self._group,
+                                "overlay_trim_in_seconds",
+                                0.0) or 0.0),
+                        trim_out_seconds=float(
+                            getattr(
+                                self._group,
+                                "overlay_trim_out_seconds",
+                                0.0) or 0.0),
+                        start_time_seconds=0.0,
+                    )
+                ]
+        # Backfill ``start_time_seconds`` for any clip that
+        # arrived without one (older save written before the
+        # positional refactor). Walk in list order, honoring
+        # the legacy ``crossfade_seconds`` as overlap so the
+        # rendered output matches what the writer last heard.
+        clips = getattr(self._group, "audio_clips", None) or []
+        running = 0.0
+        for i, clip in enumerate(clips):
+            if clip.start_time_seconds is not None:
+                running = clip.start_time_seconds + \
+                    self._clip_kept_seconds(clip)
+                continue
+            xf = float(
+                getattr(clip, "crossfade_seconds", 0.15)
+                or 0.0)
+            start = 0.0 if i == 0 else max(0.0, running - xf)
+            clip.start_time_seconds = start
+            running = start + self._clip_kept_seconds(clip)
+
+    def _recompose_overlay(self) -> bool:
+        """Stitch ``audio_clips`` into a fresh rendered overlay
+        WAV. Updates ``overlay_audio_path`` /
+        ``overlay_audio_duration_seconds`` so the existing
+        playback + export pipelines pick up the new file with
+        no further changes. Returns True on success.
+
+        Called after any structural mutation (record, delete,
+        reorder, per-clip transform). Cheap on small clip lists
+        because ffmpeg's acrossfade chain is essentially copy +
+        a brief overlap.
+        """
+        clips = getattr(self._group, "audio_clips", None) or []
+        if not clips:
+            # No clips left — clear the rendered overlay so the
+            # timeline goes back to the "no audio yet" state.
+            self._group.overlay_audio_path = ""
+            self._group.overlay_audio_duration_seconds = 0.0
+            self._group.overlay_trim_in_seconds = 0.0
+            self._group.overlay_trim_out_seconds = 0.0
+            self._refresh_overlay_status()
+            self._timeline.refresh_waveform()
+            self._timeline.update()
+            self._maybe_recompute_durations()
+            self.deck_modified.emit()
+            return True
+        from src.video_studio.audio_edit import compose_clips
+        from datetime import datetime as _dt
+        dest_dir = Path(
+            self._deck.working_dir
+            or (Path.home() / ".writingaid_slides")
+        ) / "group_overlay"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        stamp = _dt.now().strftime("%Y%m%d_%H%M%S")
+        dest = dest_dir / (
+            f"{self._group.id}_composed_{stamp}.wav")
+        # Stop the player so the OS lets us replace the file
+        # we're about to render (Windows).
+        try:
+            self._player.stop()
+            self._player.setSource(QUrl())
+        except Exception:
+            pass
+        result = compose_clips(clips, dest)
+        if not result.success:
+            QMessageBox.warning(
+                self, "Compose failed",
+                result.error or "Unknown ffmpeg error.")
+            return False
+        self._group.overlay_audio_path = str(dest)
+        self._group.overlay_audio_duration_seconds = float(
+            result.duration_seconds)
+        # The composed file IS the trimmed result — reset any
+        # leftover whole-overlay trim handles since they don't
+        # apply to the freshly-stitched file.
+        self._group.overlay_trim_in_seconds = 0.0
+        self._group.overlay_trim_out_seconds = 0.0
+        self._refresh_overlay_status()
+        self._timeline.refresh_waveform()
+        self._timeline.update()
+        self._maybe_recompute_durations()
+        self.deck_modified.emit()
+        return True
 
     # ------------------------------------------------------------------
     # UI
@@ -311,6 +494,23 @@ class GroupEditorDialog(QDialog):
             self._test_mic_btn.setEnabled(False)
             self._test_mic_btn.setToolTip(deps_diag)
         ab.addWidget(self._test_mic_btn)
+        # 📖 Read chapter prose — opens a floating ChapterProseWindow
+        # so the writer can scroll the script alongside the audio
+        # bar while recording. Mirrors the slide editor's Master
+        # script tab control. Hidden when no chapters provider
+        # was wired (dialog opened standalone in a test).
+        self._read_prose_btn = QPushButton(
+            "📖 Read chapter prose…")
+        self._read_prose_btn.setToolTip(
+            "Open the chapter's prose in a floating window so "
+            "you can scroll through it while recording the "
+            "group's narration. The window stays on top by "
+            "default and saves edits back to the chapter.")
+        self._read_prose_btn.clicked.connect(
+            self._on_read_prose)
+        self._read_prose_btn.setVisible(
+            self._chapters_provider is not None)
+        ab.addWidget(self._read_prose_btn)
         self._import_btn = QPushButton("📥 Import…")
         self._import_btn.clicked.connect(self._on_import)
         ab.addWidget(self._import_btn)
@@ -318,11 +518,31 @@ class GroupEditorDialog(QDialog):
         # strip below the timeline. The old modal Edit Audio
         # dialog used to live here.
         self._play_btn = QPushButton("▶ Play")
+        self._play_btn.setToolTip(
+            "Play from the red line. ⏸ Pause keeps the player "
+            "position; ■ Stop ends playback but the red line "
+            "stays where it was so the next ▶ Play resumes "
+            "from the same spot. Use ↺ Reset to rewind the "
+            "red line to 0.")
         self._play_btn.clicked.connect(self._on_play_pause)
         ab.addWidget(self._play_btn)
         self._stop_btn = QPushButton("■ Stop")
+        self._stop_btn.setToolTip(
+            "End playback. The red line stays where it was "
+            "(use ↺ Reset to rewind it).")
         self._stop_btn.clicked.connect(self._on_stop)
         ab.addWidget(self._stop_btn)
+        # Reset = red line back to t=0. Separate from Stop so
+        # writers don't lose their scrub position every time
+        # they want to halt playback.
+        self._reset_btn = QPushButton("↺ Reset")
+        self._reset_btn.setToolTip(
+            "Rewind the red line to the start of the "
+            "timeline. The next ▶ Play starts from the very "
+            "beginning of the first clip.")
+        self._reset_btn.clicked.connect(
+            self._on_reset_playhead)
+        ab.addWidget(self._reset_btn)
         self._delete_btn = QPushButton("🗑 Delete")
         self._delete_btn.setToolTip(
             "Detach the audio from the group. Optionally "
@@ -330,6 +550,15 @@ class GroupEditorDialog(QDialog):
         self._delete_btn.clicked.connect(self._on_delete_audio)
         ab.addWidget(self._delete_btn)
         ab.addStretch()
+        # Now-playing readout — updated on every player
+        # positionChanged tick and after every reset. Shows
+        # which clip the red line is on + the time within
+        # that clip + the absolute timeline time.
+        self._play_status_label = QLabel("")
+        self._play_status_label.setStyleSheet(
+            "color: #f97316; font-size: 11px; "
+            "font-weight: bold;")
+        ab.addWidget(self._play_status_label)
         self._overlay_status = QLabel("(no overlay)")
         self._overlay_status.setStyleSheet(
             "color: #6b7280; font-size: 11px;")
@@ -343,6 +572,55 @@ class GroupEditorDialog(QDialog):
             "Right-click the audio to trim, reduce noise, "
             "or apply other transforms.</i>"))
         outer.addWidget(audio_box)
+
+        # ── Clip list ─────────────────────────────────────────
+        # Each Record click appends a take here. Writers can
+        # reorder (drag), rename inline, or delete. After any
+        # mutation we call ``_recompose_overlay`` which restitches
+        # the rendered file the timeline / playback use.
+        clips_box = QGroupBox(
+            "Audio clips (record line-by-line, "
+            "auto-crossfaded)")
+        cb = QVBoxLayout(clips_box)
+        cb_hint = QLabel(
+            "<i>Each Record adds a new take. <b>Drag a row "
+            "onto the timeline</b> to set its start time; on "
+            "the timeline, drag block edges to trim and drag "
+            "the block body to reposition. Right-click a row "
+            "(or block) for delete / move up / move down / "
+            "fade / gain.</i>")
+        cb_hint.setStyleSheet(
+            "color: #6b7280; font-size: 11px;")
+        cb.addWidget(cb_hint)
+        self._clip_list = _ClipDragList()
+        self._clip_list.setMaximumHeight(140)
+        # InternalMove is gone — the subclass overrides
+        # ``startDrag`` to fire our audio-clip drag instead, and
+        # InternalMove would steal that event. Reorder via the
+        # right-click ⬆ / ⬇ Move entries.
+        self._clip_list.itemChanged.connect(
+            self._on_clip_renamed)
+        # Delete / Backspace on the focused clip row deletes
+        # via the same shift-aware helper the right-click menu
+        # uses. ``WidgetShortcut`` scopes the binding so it
+        # only fires when the clip list has focus — won't
+        # collide with anywhere else Delete is meaningful (the
+        # script editor, etc.).
+        for keyseq in (
+                QKeySequence(QKeySequence.StandardKey.Delete),
+                QKeySequence(Qt.Key.Key_Backspace)):
+            sc = QShortcut(keyseq, self._clip_list)
+            sc.setContext(
+                Qt.ShortcutContext.WidgetShortcut)
+            sc.activated.connect(
+                self._on_delete_selected_clip)
+        self._clip_list.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu)
+        self._clip_list.customContextMenuRequested.connect(
+            self._on_clip_context_menu)
+        cb.addWidget(self._clip_list)
+        outer.addWidget(clips_box)
+        self._refresh_clip_list()
 
         # ── Center: timeline on top, tray underneath ──────────
         # Vertical stack — the timeline (audio + slide drop
@@ -385,6 +663,21 @@ class GroupEditorDialog(QDialog):
         # surface now that the bottom strip is gone.
         self._timeline.audioContextRequested.connect(
             self._on_audio_context_menu)
+        # Per-clip block interaction on the audio bar — click
+        # to select a clip (highlights the matching row in the
+        # clip list), drag to reposition, right-click for trim
+        # / fade / gain / delete.
+        self._timeline.audioClipSelected.connect(
+            self._on_audio_clip_selected_from_timeline)
+        self._timeline.audioClipContextRequested.connect(
+            self._on_audio_clip_context_from_timeline)
+        self._timeline.audioClipMoved.connect(
+            self._on_audio_clip_moved_from_timeline)
+        # Slide block right-click → per-slide menu with
+        # remove-from-timeline + remove-from-group + open-
+        # preview.
+        self._timeline.slideContextRequested.connect(
+            self._on_slide_context_from_timeline)
         cv.addWidget(self._timeline)
 
         # Tray row.
@@ -405,6 +698,14 @@ class GroupEditorDialog(QDialog):
         # mouse-move based and unaffected.
         self._tray.itemDoubleClicked.connect(
             self._on_tray_double_clicked)
+        # Right-click on a tray thumbnail offers an explicit
+        # "Place at end of timeline" path — discoverable
+        # alternative to drag for writers who didn't realize
+        # they could drag, or who prefer keyboard / menu nav.
+        self._tray.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu)
+        self._tray.customContextMenuRequested.connect(
+            self._on_tray_context_menu)
         cv.addWidget(self._tray)
         outer.addWidget(center_panel, stretch=1)
 
@@ -568,6 +869,75 @@ class GroupEditorDialog(QDialog):
         page_id = item.data(Qt.ItemDataRole.UserRole)
         if page_id:
             self._view_slide(str(page_id))
+
+    def _on_tray_context_menu(self, point) -> None:
+        """Right-click on a tray thumbnail — offer to place
+        the slide on the timeline (alternative to drag) or
+        open the full-size viewer."""
+        item = self._tray.itemAt(point)
+        if item is None:
+            return
+        page_id = item.data(Qt.ItemDataRole.UserRole)
+        page = self._find_page(page_id) if page_id else None
+        if page is None:
+            return
+        menu = QMenu(self)
+        menu.setToolTipsVisible(True)
+        view_act = menu.addAction("🔍  Preview slide image…")
+        menu.addSeparator()
+        place_act = menu.addAction(
+            "📥  Place at end of timeline")
+        place_act.setToolTip(
+            "Add this slide to the timeline right after the "
+            "last placed slide. You can also drag the thumb "
+            "directly onto the timeline to position it.")
+        action = menu.exec(
+            self._tray.viewport().mapToGlobal(point))
+        if action is view_act:
+            self._view_slide(page_id)
+        elif action is place_act:
+            self._place_slide_at_end(page)
+
+    def _place_slide_at_end(self, page) -> None:
+        """Drop an unplaced slide back onto the timeline,
+        landing just after the last currently-placed slide.
+        Mirrors ``_place_audio_clip_at_end`` for the audio
+        path."""
+        if page is None:
+            return
+        placed = [
+            p for p in self._deck.pages
+            if p.id != page.id
+            and p.group_id == self._group.id
+            and p.start_time_seconds_in_group is not None
+        ]
+        if not placed:
+            new_start = 0.0
+        else:
+            last = max(
+                placed,
+                key=lambda p: float(
+                    getattr(p, "start_time_seconds_in_group",
+                            0.0) or 0.0)
+                + max(0.25, float(
+                    getattr(p, "duration_seconds", 0.0)
+                    or 0.0)))
+            new_start = (
+                float(
+                    getattr(
+                        last,
+                        "start_time_seconds_in_group", 0.0)
+                    or 0.0)
+                + max(0.25, float(
+                    getattr(last, "duration_seconds", 0.0)
+                    or 0.0)))
+        page.start_time_seconds_in_group = round(
+            max(0.0, new_start), 3)
+        page.updated_at = datetime.now()
+        self._refresh_tray()
+        self._timeline.update()
+        self._maybe_recompute_durations()
+        self.deck_modified.emit()
 
     def _view_slide(self, page_id: str) -> None:
         """Open (or focus) the floating preview window showing
@@ -964,6 +1334,58 @@ class GroupEditorDialog(QDialog):
         except Exception:
             pass
 
+    def _on_read_prose(self) -> None:
+        """Open the chapter prose in a floating non-modal
+        window so the writer can scroll the script while
+        recording the group's narration. Mirrors the slide
+        editor's master-script tab control."""
+        if (self._prose_window is not None
+                and self._prose_window.isVisible()):
+            self._prose_window.raise_()
+            self._prose_window.activateWindow()
+            return
+        chapters = []
+        if self._chapters_provider is not None:
+            try:
+                chapters = self._chapters_provider() or []
+            except Exception as e:
+                QMessageBox.warning(
+                    self, "Could not load chapters", f"{e}")
+                return
+        if not chapters:
+            QMessageBox.information(
+                self, "No chapters",
+                "This project has no chapters with prose yet. "
+                "Open the writer to draft prose first, then "
+                "come back here to read along.")
+            return
+        from src.ui.video_studio.chapter_prose_window import (
+            ChapterProseWindow)
+        # Pre-select the deck's chapter when it matches one in
+        # the snapshot, so the writer doesn't have to pick again
+        # for the obvious case.
+        initial = getattr(self._deck, "chapter_id", None) or None
+        self._prose_window = ChapterProseWindow(
+            chapters=chapters,
+            initial_chapter_id=initial,
+            on_save=self._save_chapter_text_cb,
+            on_open_in_writer=(
+                self._wrap_open_in_writer(
+                    self._open_in_writer_cb)
+                if self._open_in_writer_cb else None),
+            parent=self)
+        self._prose_window.show()
+
+    def _wrap_open_in_writer(self, cb):
+        """Wrap the host's open-in-writer callback so this
+        dialog closes too — keeps focus moving in one direction
+        so the writer doesn't end up with a stack of half-open
+        windows when they hand off to the main writer."""
+        def _wrapped(chapter_id: str) -> None:
+            cb(chapter_id)
+            self.close()
+        return _wrapped
+
     def _resolve_mic_name(self) -> Optional[str]:
         """Pull a device description from the mic picker, with
         the optional ``_mic_device_getter`` callback as a
@@ -1043,7 +1465,12 @@ class GroupEditorDialog(QDialog):
                 "empty. Check microphone permissions in System "
                 "Settings → Privacy & Security → Microphone.")
             return
-        self._attach_overlay(
+        # APPEND the take to the clips list, then recompose so
+        # playback / export see a single rendered file. The
+        # crossfade default (0.15 s) hides the click that bare
+        # WAV concat would otherwise produce between takes —
+        # writers no longer hear harsh joins between lines.
+        self._append_audio_clip(
             take.path, duration=take.duration_seconds)
 
     def _pulse_record_label(self) -> None:
@@ -1072,7 +1499,52 @@ class GroupEditorDialog(QDialog):
         except Exception as e:
             QMessageBox.warning(self, "Import failed", str(e))
             return
-        self._attach_overlay(dest)
+        # Imports are clips too — append + recompose, same as
+        # record. Lets writers mix recorded takes with imported
+        # bed music / SFX without any special-case path.
+        self._append_audio_clip(dest)
+
+    def _append_audio_clip(
+            self, path: Path,
+            duration: Optional[float] = None) -> None:
+        """Add ``path`` as a new clip placed at the end of the
+        current timeline. With ``start_time_seconds`` set the
+        writer can immediately drag the block in the timeline
+        to a different position; the default behavior matches
+        the old append-and-stitch flow."""
+        from src.video_studio.models import GroupAudioClip
+        if duration is None or duration <= 0:
+            duration = (
+                probe_audio_duration_seconds(path) or 0.0)
+        clips = getattr(self._group, "audio_clips", None)
+        if clips is None:
+            self._group.audio_clips = []
+            clips = self._group.audio_clips
+        # Auto-position at the END of the existing arrangement.
+        # If the previous take has a positive trailing fade, we
+        # tuck the new clip under that fade by the same amount
+        # so transitions stay smooth without manual tweaking.
+        place_at = 0.0
+        if clips:
+            last = clips[-1]
+            last_end = (
+                (last.start_time_seconds or 0.0)
+                + self._clip_kept_seconds(last))
+            # Default 0.15 s overlap so a writer reading line
+            # by line doesn't get a hard cut between takes.
+            place_at = max(0.0, last_end - 0.15)
+        # First clip ignores crossfade_seconds (no previous to
+        # fade from), but we still store the default so a later
+        # reorder doesn't suddenly need a value.
+        idx = len(clips) + 1
+        clips.append(GroupAudioClip(
+            label=f"Take {idx}",
+            audio_path=str(path),
+            duration_seconds=float(duration),
+            start_time_seconds=place_at,
+        ))
+        self._refresh_clip_list()
+        self._recompose_overlay()
 
     def _attach_overlay(
             self, path: Path,
@@ -1166,21 +1638,44 @@ class GroupEditorDialog(QDialog):
             "discarded.")
         trim_act.triggered.connect(self._op_trim_to_selection)
 
-        trim_before_act = menu.addAction(
-            "⏪  Trim before red line (keep what comes after)")
+        # Per-clip variants when the playhead is sitting on a
+        # clip block; whole-overlay fallback when it's in a gap.
+        # Label calls out the active scope so the writer knows
+        # whether they're chopping one clip or the rendered mix.
+        under_clip = None
+        if playhead_inside:
+            under_clip = self._clip_under_playhead(playhead)
+        if under_clip is not None:
+            before_label = (
+                f"⏪  Trim '{under_clip.label}' from start to "
+                "red line (keep the tail)")
+            after_label = (
+                f"⏩  Trim '{under_clip.label}' from red line "
+                "to end (keep the head)")
+        else:
+            before_label = (
+                "⏪  Trim before red line (keep what comes "
+                "after)")
+            after_label = (
+                "⏩  Trim after red line (keep what comes "
+                "before)")
+        trim_before_act = menu.addAction(before_label)
         trim_before_act.setEnabled(playhead_inside)
         trim_before_act.setToolTip(
-            "Discard audio from 0 → playhead. Use this to chop "
-            "off a noisy intro.")
+            "Scoped to the clip the red line is on when it's "
+            "sitting on a block; falls back to whole-overlay "
+            "trim when the playhead is in a gap. The trim is "
+            "stored on the clip itself, so it survives the "
+            "next recompose.")
         trim_before_act.triggered.connect(
             self._op_trim_before_playhead)
 
-        trim_after_act = menu.addAction(
-            "⏩  Trim after red line (keep what comes before)")
+        trim_after_act = menu.addAction(after_label)
         trim_after_act.setEnabled(playhead_inside)
         trim_after_act.setToolTip(
-            "Discard audio from playhead → end. Use this to "
-            "stop the take early without re-recording.")
+            "Scoped to the clip the red line is on. Survives "
+            "recompose because it writes to the clip's "
+            "trim_out, not the rendered cache.")
         trim_after_act.triggered.connect(
             self._op_trim_after_playhead)
 
@@ -1250,25 +1745,42 @@ class GroupEditorDialog(QDialog):
                 "overlay_trim_out_seconds", 0.0) or 0.0)
         if trim_out <= trim_in:
             return
-        self._apply_audio_op(
-            "Trim",
-            in_point_seconds=trim_in,
-            out_point_seconds=trim_out)
+        self._apply_overlay_trim(trim_in, trim_out)
 
     def _op_trim_before_playhead(self) -> None:
-        """Discard audio from 0 → playhead. Keeps the tail."""
+        """Chop a single clip from its start to the red line.
+
+        Scoped to the clip the playhead is *over* — bumps that
+        clip's ``trim_in`` to the playhead time (in source
+        coordinates), leaves every other clip alone. If the
+        playhead is over empty timeline (a gap between clips),
+        falls back to the legacy whole-overlay behavior so
+        writers can still trim the head of a multi-clip
+        arrangement.
+        """
         playhead = float(
             getattr(
                 self._timeline, "_playhead_seconds", 0.0))
         if playhead <= 0:
             return
-        self._apply_audio_op(
-            "Trim before red line",
-            in_point_seconds=playhead,
-            out_point_seconds=0.0)
+        clip = self._clip_under_playhead(playhead)
+        if clip is not None:
+            self._trim_clip_to_playhead(
+                clip, playhead, side="in")
+            return
+        composed = float(
+            getattr(
+                self._group,
+                "overlay_audio_duration_seconds", 0.0) or 0.0)
+        if composed <= 0:
+            return
+        self._apply_overlay_trim(playhead, composed)
 
     def _op_trim_after_playhead(self) -> None:
-        """Discard audio from playhead → end. Keeps the head."""
+        """Chop a single clip from the red line to its end.
+        Symmetric to ``_op_trim_before_playhead`` — scoped to
+        the clip the playhead is on. The playhead-in-a-gap
+        fallback drops to the legacy whole-overlay path."""
         playhead = float(
             getattr(
                 self._timeline, "_playhead_seconds", 0.0))
@@ -1278,10 +1790,177 @@ class GroupEditorDialog(QDialog):
                 "overlay_audio_duration_seconds", 0.0) or 0.0)
         if playhead <= 0 or playhead >= duration:
             return
-        self._apply_audio_op(
-            "Trim after red line",
-            in_point_seconds=0.0,
-            out_point_seconds=playhead)
+        clip = self._clip_under_playhead(playhead)
+        if clip is not None:
+            self._trim_clip_to_playhead(
+                clip, playhead, side="out")
+            return
+        self._apply_overlay_trim(0.0, playhead)
+
+    def _clip_under_playhead(
+            self, playhead: float):
+        """Find the clip whose timeline block covers
+        ``playhead``. Routed through the timeline widget so
+        we use one consistent definition of "effective
+        duration"."""
+        if not hasattr(self, "_timeline"):
+            return None
+        clip_id = self._timeline.audio_clip_at_seconds(
+            playhead)
+        if not clip_id:
+            return None
+        for c in (
+                getattr(
+                    self._group, "audio_clips", []) or []):
+            if c.id == clip_id:
+                return c
+        return None
+
+    def _trim_clip_to_playhead(
+            self, clip, playhead: float,
+            *, side: str) -> None:
+        """Adjust ``clip.trim_in`` or ``clip.trim_out`` so the
+        clip's visible window ends at the playhead. The math
+        translates playhead (group-timeline time) into source
+        time by:
+            source_offset = playhead - clip.start_time
+                            + current_trim_in
+        Clamps to leave at least 10 ms of audio so we don't
+        ask ffmpeg to render a zero-length clip.
+        """
+        start = float(
+            getattr(clip, "start_time_seconds", 0.0) or 0.0)
+        full = float(
+            getattr(clip, "duration_seconds", 0.0) or 0.0)
+        tin = max(0.0, float(
+            getattr(clip, "trim_in_seconds", 0.0) or 0.0))
+        tout = float(
+            getattr(clip, "trim_out_seconds", 0.0) or 0.0)
+        if tout <= 0 or tout > full:
+            tout = full
+        offset_in_source = tin + max(0.0, playhead - start)
+        offset_in_source = max(
+            tin + 0.01,
+            min(full - 0.01, offset_in_source))
+        if side == "in":
+            # Keep tail: shift trim_in forward.
+            if offset_in_source >= tout:
+                return
+            clip.trim_in_seconds = round(
+                offset_in_source, 3)
+        else:
+            # Keep head: pull trim_out back.
+            if offset_in_source <= tin:
+                return
+            clip.trim_out_seconds = (
+                0.0
+                if abs(offset_in_source - full) < 0.005
+                else round(offset_in_source, 3))
+        self._refresh_clip_list()
+        self._recompose_overlay()
+
+    def _apply_overlay_trim(
+            self, trim_in: float, trim_out: float) -> None:
+        """Map a trim selection on the COMPOSED overlay back to
+        per-clip trim_in/out values so the trim survives the
+        next recompose. Three cases:
+
+          1. No clips (legacy decks that escaped migration) →
+             fall back to the old ``_apply_audio_op`` which
+             bakes a trim into the rendered file directly.
+          2. Single clip → apply to that clip.
+          3. Multi-clip → translate the selection into
+             cumulative offsets, then update the first
+             enclosed clip's trim_in + the last enclosed
+             clip's trim_out, dropping any clips that fall
+             entirely outside the kept window.
+
+        Without this routing the writer's trim would silently
+        get undone the next time they recorded a take, because
+        ``compose_clips`` always restitches from the original
+        sources.
+        """
+        clips = getattr(self._group, "audio_clips", None) or []
+        if not clips:
+            self._apply_audio_op(
+                "Trim",
+                in_point_seconds=trim_in,
+                out_point_seconds=trim_out)
+            return
+        if len(clips) == 1:
+            c = clips[0]
+            c.trim_in_seconds = round(max(0.0, trim_in), 3)
+            full = float(
+                getattr(c, "duration_seconds", 0.0) or 0.0)
+            c.trim_out_seconds = (
+                0.0
+                if abs(trim_out - full) < 0.01
+                else round(trim_out, 3))
+            self._refresh_clip_list()
+            # Clear the overlay handles — their job is done now
+            # that the trim lives on the clip.
+            self._group.overlay_trim_in_seconds = 0.0
+            self._group.overlay_trim_out_seconds = 0.0
+            self._recompose_overlay()
+            return
+        # Multi-clip path. Walk clips to find which contain
+        # the trim_in / trim_out markers in composed-time.
+        offsets: list[float] = []
+        running = 0.0
+        for i, c in enumerate(clips):
+            if i > 0:
+                xf = max(
+                    0.0, float(
+                        getattr(c, "crossfade_seconds", 0.15)
+                        or 0.0))
+                running -= xf
+            offsets.append(running)
+            running += self._clip_kept_seconds(c)
+        # offsets[i] = start of clip i in composed coordinates.
+        end_offsets = [
+            offsets[i] + self._clip_kept_seconds(clips[i])
+            for i in range(len(clips))]
+        first_idx = next(
+            (i for i in range(len(clips))
+             if end_offsets[i] > trim_in + 1e-3),
+            None)
+        last_idx = next(
+            (i for i in range(len(clips) - 1, -1, -1)
+             if offsets[i] < trim_out - 1e-3),
+            None)
+        if first_idx is None or last_idx is None or first_idx > last_idx:
+            QMessageBox.warning(
+                self, "Trim selection out of range",
+                "The selection didn't land on any clip.")
+            return
+        kept = clips[first_idx:last_idx + 1]
+        # Adjust the in/out of the EDGE clips. Each adjustment
+        # is in clip-source coordinates: subtract the
+        # composed-time offset of the clip's start, then add
+        # the clip's existing trim_in (because the source's
+        # zero is shifted by the writer's earlier trim).
+        first_clip = kept[0]
+        delta_in = max(0.0, trim_in - offsets[first_idx])
+        first_clip.trim_in_seconds = round(
+            (first_clip.trim_in_seconds or 0.0) + delta_in, 3)
+        last_clip = kept[-1]
+        last_full = float(
+            getattr(last_clip, "duration_seconds", 0.0) or 0.0)
+        last_existing_in = float(
+            getattr(last_clip, "trim_in_seconds", 0.0) or 0.0)
+        delta_kept = max(
+            0.0, trim_out - offsets[last_idx])
+        new_last_out = last_existing_in + delta_kept
+        if new_last_out >= last_full:
+            last_clip.trim_out_seconds = 0.0
+        else:
+            last_clip.trim_out_seconds = round(
+                new_last_out, 3)
+        self._group.audio_clips = kept
+        self._group.overlay_trim_in_seconds = 0.0
+        self._group.overlay_trim_out_seconds = 0.0
+        self._refresh_clip_list()
+        self._recompose_overlay()
 
     def _op_clear_selection(self) -> None:
         """Drop the trim window without touching the audio file
@@ -1467,6 +2146,13 @@ class GroupEditorDialog(QDialog):
             f"Audio is now {result.duration_seconds:.2f} s.")
 
     def _on_play_pause(self) -> None:
+        """Play / pause toggle. Play picks up FROM the current
+        red-line position so the writer can scrub via double-
+        click (or stop mid-clip and resume from there) instead
+        of always replaying from the beginning. Pause leaves
+        the player position alone; the player itself remembers
+        where it was. Stop is a separate button — it ends
+        playback without rewinding."""
         path_str = getattr(
             self._group, "overlay_audio_path", "") or ""
         if not path_str:
@@ -1484,20 +2170,55 @@ class GroupEditorDialog(QDialog):
         if state == QMediaPlayer.PlaybackState.PausedState:
             self._player.play()
             return
+        # Stopped state — fresh load + seek to the playhead so
+        # play resumes from wherever the writer parked the red
+        # line (via scrub, double-click, or last Stop click).
         self._player.setSource(
             QUrl.fromLocalFile(str(path.resolve())))
-        # Seek to trim_in so preview honors the trim handles.
-        trim_in_ms = int(
-            (getattr(
+        seek_seconds = max(
+            0.0,
+            float(
+                getattr(
+                    self._timeline,
+                    "_playhead_seconds", 0.0)))
+        # If playhead sits past the file end we'd never get a
+        # ``positionChanged`` event — clamp to a hair before
+        # the end so play loads but immediately stops.
+        composed_dur = float(
+            getattr(
                 self._group,
-                "overlay_trim_in_seconds", 0.0) or 0.0) * 1000)
-        if trim_in_ms > 0:
-            self._player.setPosition(trim_in_ms)
+                "overlay_audio_duration_seconds", 0.0) or 0.0)
+        if composed_dur > 0:
+            seek_seconds = min(
+                seek_seconds, max(0.0, composed_dur - 0.05))
+        # Legacy single-clip trims still get honored when the
+        # writer hasn't moved the playhead.
+        trim_in = float(
+            getattr(
+                self._group,
+                "overlay_trim_in_seconds", 0.0) or 0.0)
+        if seek_seconds <= 0 and trim_in > 0:
+            seek_seconds = trim_in
+        self._player.setPosition(int(seek_seconds * 1000))
         self._player.play()
 
     def _on_stop(self) -> None:
+        """End playback but leave the red line where it landed
+        — the next ▶ Play resumes from there. Use the ↺ Reset
+        button to rewind the playhead to 0."""
+        self._player.stop()
+        # Don't touch ``_playhead_seconds`` — Qt's stop()
+        # already cleared the player's internal cursor, but
+        # our visual playhead is independent and the writer
+        # expects it to mark "where I stopped."
+
+    def _on_reset_playhead(self) -> None:
+        """Send the red line back to t=0 and stop any playback
+        in progress so the next ▶ Play starts at the very
+        beginning."""
         self._player.stop()
         self._timeline.set_playhead(0.0)
+        self._refresh_play_status()
 
     def _refresh_play_button(self) -> None:
         state = self._player.playbackState()
@@ -1516,6 +2237,50 @@ class GroupEditorDialog(QDialog):
                 "overlay_trim_out_seconds", 0.0) or 0.0)
         if trim_out > 0 and seconds >= trim_out:
             self._player.pause()
+        # Update the now-playing readout (block name + time
+        # within the block) on every position tick.
+        self._refresh_play_status()
+
+    def _refresh_play_status(self) -> None:
+        """Write the playhead's clip + within-clip offset into
+        the status label. Empty when no audio is loaded."""
+        if not hasattr(self, "_play_status_label"):
+            return
+        composed = float(
+            getattr(
+                self._group,
+                "overlay_audio_duration_seconds", 0.0) or 0.0)
+        if composed <= 0:
+            self._play_status_label.setText("")
+            return
+        ph = float(
+            getattr(
+                self._timeline, "_playhead_seconds", 0.0))
+        clip_id = self._timeline.audio_clip_at_seconds(ph)
+        if clip_id:
+            clip = next(
+                (c for c in (
+                    getattr(
+                        self._group, "audio_clips", [])
+                    or [])
+                 if c.id == clip_id),
+                None)
+            if clip is not None:
+                start = float(
+                    getattr(
+                        clip, "start_time_seconds", 0.0)
+                    or 0.0)
+                offset_in_clip = max(0.0, ph - start)
+                eff = self._clip_kept_seconds(clip)
+                self._play_status_label.setText(
+                    f"▶ {clip.label}  ·  "
+                    f"{offset_in_clip:.2f}s / {eff:.2f}s  "
+                    f"  (timeline {ph:.2f}s)")
+                return
+        # Playhead is in a gap or past the end.
+        self._play_status_label.setText(
+            f"⏸ (between clips)  ·  timeline {ph:.2f}s "
+            f"/ {composed:.2f}s")
 
     def _on_delete_audio(self) -> None:
         path_str = getattr(
@@ -1559,6 +2324,820 @@ class GroupEditorDialog(QDialog):
         self._timeline.update()
         self.deck_modified.emit()
 
+    # ------------------------------------------------------------------
+    # Clip list handlers
+    # ------------------------------------------------------------------
+    def _refresh_clip_list(self) -> None:
+        """Rebuild the QListWidget rows from ``audio_clips``.
+        Bails when the widget isn't built yet (called from
+        ``_append_audio_clip`` before ``_build_ui`` exists)."""
+        if not hasattr(self, "_clip_list"):
+            return
+        from PyQt6.QtWidgets import QListWidgetItem
+        from pathlib import Path as _P
+        self._clip_list.blockSignals(True)
+        self._clip_list.clear()
+        from PyQt6.QtGui import QBrush, QColor
+        for idx, clip in enumerate(
+                getattr(self._group, "audio_clips", []) or []):
+            label = clip.label or f"Take {idx + 1}"
+            name = _P(clip.audio_path).name if clip.audio_path else "—"
+            dur = clip.duration_seconds or 0.0
+            xf = (
+                f"  · ⤳{clip.crossfade_seconds:.2f}s"
+                if idx > 0 else "")
+            # Mark unplaced clips clearly so the writer can
+            # see at a glance which clips are on the timeline
+            # vs parked in the list. Right-click → Add to
+            # timeline puts them back; drag-from-list also
+            # works.
+            unplaced = (
+                getattr(clip, "start_time_seconds", None)
+                is None)
+            placement_mark = (
+                "🚫 unplaced — " if unplaced else "")
+            text = (
+                f"{idx + 1}.  {placement_mark}{label}    "
+                f"({dur:.2f}s · {name}){xf}")
+            item = QListWidgetItem(text)
+            item.setData(Qt.ItemDataRole.UserRole, clip.id)
+            # Allow inline rename via F2 / double-click.
+            item.setFlags(
+                item.flags() | Qt.ItemFlag.ItemIsEditable)
+            if unplaced:
+                # Dimmed slate text so the row reads as
+                # "inactive" without making it unreadable.
+                item.setForeground(
+                    QBrush(QColor("#94a3b8")))
+            self._clip_list.addItem(item)
+        self._clip_list.blockSignals(False)
+
+    def _on_clips_reordered(self, *_a) -> None:
+        """The list widget reordered itself via internal D&D.
+        Sync the model's ``audio_clips`` list to match the new
+        visual order, then recompose."""
+        new_ids = []
+        for i in range(self._clip_list.count()):
+            item = self._clip_list.item(i)
+            new_ids.append(
+                item.data(Qt.ItemDataRole.UserRole))
+        by_id = {
+            c.id: c
+            for c in (
+                getattr(self._group, "audio_clips", []) or [])}
+        reordered = [by_id[i] for i in new_ids if i in by_id]
+        self._group.audio_clips = reordered
+        self._refresh_clip_list()
+        self._recompose_overlay()
+
+    def _on_clip_renamed(self, item) -> None:
+        """Inline rename from the list — strip the rendered
+        prefix back off so we just store the writer's label."""
+        cid = item.data(Qt.ItemDataRole.UserRole)
+        clip = next(
+            (c for c in (
+                getattr(self._group, "audio_clips", []) or [])
+             if c.id == cid),
+            None)
+        if clip is None:
+            return
+        # The rendered text is "{n}.  {label}    (...)" — extract
+        # the writer-typed slice before the metadata in parens.
+        # The optional "🚫 unplaced — " marker prefix for off-
+        # timeline clips needs to be stripped too, otherwise
+        # renaming an unplaced clip would bake the marker into
+        # its stored label.
+        raw = item.text() or ""
+        import re
+        m = re.match(r"^\s*\d+\.\s*(.*?)\s*(?:\(.*)?$", raw)
+        candidate = (
+            m.group(1).strip() if m else raw.strip())
+        if candidate.startswith("🚫 unplaced — "):
+            candidate = candidate[
+                len("🚫 unplaced — "):].strip()
+        clip.label = candidate
+        self._refresh_clip_list()
+        # Block labels live on the timeline canvas — repaint
+        # so the new name shows up on the clip block too. The
+        # now-playing readout also reads from the label so it
+        # picks up the rename on the next position tick (or
+        # immediately for whoever's paused on this clip).
+        self._timeline.update()
+        self._refresh_play_status()
+        self.deck_modified.emit()
+
+    def _on_slide_context_from_timeline(
+            self, page_id: str, global_pos) -> None:
+        """Right-click on a slide block. Pops a slim menu at
+        the click with view + remove-from-timeline +
+        remove-from-group. Mirrors the audio-clip menu so the
+        writer learns one set of gestures."""
+        page = next(
+            (p for p in self._deck.pages if p.id == page_id),
+            None)
+        if page is None:
+            return
+        self._timeline.select_audio_clip(None)
+        self._timeline._selected_page_id = page_id
+        self._timeline.update()
+        menu = QMenu(self)
+        menu.setToolTipsVisible(True)
+        # Header — non-actionable, shows label + position.
+        raw = page.label or "(unnamed)"
+        disp = raw if len(raw) <= 24 else raw[:21] + "…"
+        start = float(
+            getattr(
+                page, "start_time_seconds_in_group", 0.0)
+            or 0.0)
+        header = menu.addAction(
+            f"🖼  {disp}  ·  at {start:.2f}s")
+        header.setEnabled(False)
+        menu.addSeparator()
+        view_act = menu.addAction("🔍  Preview slide image…")
+        unplace_act = menu.addAction(
+            "⤴  Remove from timeline (keep in group)")
+        unplace_act.setToolTip(
+            "Drops the block off the timeline; the slide "
+            "stays a member of the group. Drag it from the "
+            "tray to put it back on the timeline.")
+        menu.addSeparator()
+        remove_act = menu.addAction(
+            "🗑  Remove from group entirely")
+        remove_act.setToolTip(
+            "Drops the slide from the group's member list. "
+            "The slide stays in the deck and other groups.")
+        action = menu.exec(global_pos)
+        if action is None:
+            return
+        if action is view_act:
+            self._view_slide(page_id)
+        elif action is unplace_act:
+            # ``_on_unplace_selected`` reads the selected page
+            # from the timeline; the right-click already set
+            # the selection above, so this unplaces the right
+            # slide.
+            self._on_unplace_selected()
+        elif action is remove_act:
+            self._on_remove_from_group()
+
+    def _on_audio_clip_selected_from_timeline(
+            self, clip_id: str) -> None:
+        """A timeline block was clicked. Highlight the matching
+        row in the clip list (and clear the row selection when
+        ``clip_id`` is empty / not found)."""
+        if not hasattr(self, "_clip_list"):
+            return
+        for i in range(self._clip_list.count()):
+            item = self._clip_list.item(i)
+            if (item is not None
+                    and item.data(Qt.ItemDataRole.UserRole)
+                    == clip_id):
+                self._clip_list.setCurrentItem(item)
+                return
+        self._clip_list.clearSelection()
+
+    def _on_audio_clip_context_from_timeline(
+            self, clip_id: str, global_pos) -> None:
+        """Right-click on a timeline audio block. Pops a slim
+        menu AT THE CLICK with a non-actionable header showing
+        the clip's truncated name + its current start time. The
+        old path forwarded to the clip-list menu, which both
+        showed the wrong items (Move up/down don't apply
+        from the timeline) and rendered in the wrong screen
+        location."""
+        clip = next(
+            (c for c in (
+                getattr(self._group, "audio_clips", []) or [])
+             if c.id == clip_id),
+            None)
+        if clip is None:
+            return
+        # Mirror the selection into the clip list so the
+        # writer can see which clip the menu is operating on
+        # without leaving the timeline.
+        if hasattr(self, "_clip_list"):
+            for i in range(self._clip_list.count()):
+                item = self._clip_list.item(i)
+                if (item is not None
+                        and item.data(Qt.ItemDataRole.UserRole)
+                        == clip_id):
+                    self._clip_list.setCurrentItem(item)
+                    break
+        menu = QMenu(self)
+        menu.setToolTipsVisible(True)
+        # Header — disabled action that just shows the clip
+        # label (truncated) + position. The truncation keeps
+        # the menu narrow when a writer named their take
+        # something long; we want them to see ~24 chars and
+        # the ellipsis tells them the rest exists.
+        raw_label = clip.label or "(unnamed)"
+        if len(raw_label) > 24:
+            disp_label = raw_label[:21] + "…"
+        else:
+            disp_label = raw_label
+        start = float(
+            getattr(clip, "start_time_seconds", 0.0) or 0.0)
+        kept = self._clip_kept_seconds(clip)
+        header = menu.addAction(
+            f"🔊  {disp_label}  ·  at {start:.2f}s  "
+            f"·  {kept:.2f}s long")
+        header.setEnabled(False)
+        menu.addSeparator()
+        rename_act = menu.addAction("✏️  Rename…")
+        trim_act = menu.addAction(
+            f"✂️  Trim clip…  (kept: {kept:.2f}s of "
+            f"{clip.duration_seconds:.2f}s)")
+        # Playhead-relative trim entries — only meaningful when
+        # the red line is sitting inside THIS clip's block. The
+        # actions chop from the clip's start to the playhead
+        # (before) or from the playhead to the clip's end
+        # (after); the source WAV stays untouched, the trim is
+        # baked into the clip's ``trim_in`` / ``trim_out``.
+        playhead = float(
+            getattr(
+                self._timeline, "_playhead_seconds", 0.0))
+        clip_end = start + kept
+        playhead_in_clip = (
+            start + 0.01 < playhead < clip_end - 0.01)
+        before_label = (
+            "⏪  Trim from start to red line"
+            if playhead_in_clip
+            else "⏪  Trim from start to red line "
+                 "(red line not in this clip)")
+        trim_before_act = menu.addAction(before_label)
+        trim_before_act.setEnabled(playhead_in_clip)
+        trim_before_act.setToolTip(
+            "Move this clip's trim_in to the playhead "
+            "position. The discarded slice stays in the "
+            "source file — you can drag the left handle "
+            "back to recover it later.")
+        after_label = (
+            "⏩  Trim from red line to end"
+            if playhead_in_clip
+            else "⏩  Trim from red line to end "
+                 "(red line not in this clip)")
+        trim_after_act = menu.addAction(after_label)
+        trim_after_act.setEnabled(playhead_in_clip)
+        trim_after_act.setToolTip(
+            "Move this clip's trim_out to the playhead "
+            "position. The discarded slice stays in the "
+            "source file.")
+        fade_in_act = menu.addAction(
+            f"🌅  Fade in… (current: "
+            f"{clip.fade_in_seconds:.2f} s)")
+        fade_out_act = menu.addAction(
+            f"🌇  Fade out… (current: "
+            f"{clip.fade_out_seconds:.2f} s)")
+        gain_act = menu.addAction(
+            f"🔊  Gain… (current: {clip.gain_db:+.1f} dB)")
+        start_act = menu.addAction(
+            f"⏱️  Start time… (current: {start:.2f} s)")
+        menu.addSeparator()
+        # Non-destructive remove: drops the block off the
+        # timeline but keeps the clip in the list (and the
+        # source WAV on disk). The writer can re-add by
+        # dragging from the list back onto the timeline OR
+        # via the list's right-click "Add to timeline".
+        unplace_act = menu.addAction(
+            "⤴  Remove from timeline (keep in clip list)")
+        unplace_act.setToolTip(
+            "The clip stays in the list — drag it from there "
+            "back onto the timeline whenever you want it "
+            "playing again.")
+        menu.addSeparator()
+        delete_act = menu.addAction("🗑  Delete clip")
+        action = menu.exec(global_pos)
+        if action is None:
+            return
+        if action is unplace_act:
+            self._unplace_audio_clip(clip)
+            return
+        if action is rename_act:
+            if hasattr(self, "_clip_list"):
+                item = self._clip_list.currentItem()
+                if item is not None:
+                    self._clip_list.editItem(item)
+        elif action is trim_act:
+            self._open_clip_trim_dialog(clip)
+        elif action is trim_before_act:
+            # Bake the playhead into this clip's trim_in. The
+            # generic ``_trim_clip_to_playhead`` math handles
+            # the source-coordinate translation + recompose.
+            self._trim_clip_to_playhead(
+                clip, playhead, side="in")
+        elif action is trim_after_act:
+            self._trim_clip_to_playhead(
+                clip, playhead, side="out")
+        elif action is fade_in_act:
+            eff = self._clip_kept_seconds(clip)
+            val = self._param_popup(
+                "Clip fade in",
+                f"Fade-in length for '{clip.label}'.",
+                value=clip.fade_in_seconds,
+                min_v=0.0, max_v=max(0.05, eff),
+                decimals=2, step=0.05, suffix=" s")
+            if val is not None:
+                clip.fade_in_seconds = float(val)
+                self._refresh_clip_list()
+                self._recompose_overlay()
+        elif action is fade_out_act:
+            eff = self._clip_kept_seconds(clip)
+            val = self._param_popup(
+                "Clip fade out",
+                f"Fade-out length for '{clip.label}'.",
+                value=clip.fade_out_seconds,
+                min_v=0.0, max_v=max(0.05, eff),
+                decimals=2, step=0.05, suffix=" s")
+            if val is not None:
+                clip.fade_out_seconds = float(val)
+                self._refresh_clip_list()
+                self._recompose_overlay()
+        elif action is gain_act:
+            val = self._param_popup(
+                "Clip gain",
+                f"Gain for '{clip.label}' in dB.",
+                value=clip.gain_db, min_v=-30.0, max_v=30.0,
+                decimals=1, step=0.5, suffix=" dB")
+            if val is not None:
+                clip.gain_db = float(val)
+                self._refresh_clip_list()
+                self._recompose_overlay()
+        elif action is start_act:
+            val = self._param_popup(
+                "Clip start time",
+                "Seconds from the start of the timeline.",
+                value=start, min_v=0.0, max_v=3600.0,
+                decimals=3, step=0.1, suffix=" s")
+            if val is not None:
+                clip.start_time_seconds = float(val)
+                self._refresh_clip_list()
+                self._recompose_overlay()
+        elif action is delete_act:
+            self._delete_audio_clip(clip)
+
+    def _on_audio_clip_moved_from_timeline(
+            self, clip_id: str, new_start: float) -> None:
+        """The writer dragged (or dropped) a clip block on
+        the timeline. Recompose so the rendered overlay
+        reflects the new position, and refresh the list so
+        its rendered metadata (start time) matches."""
+        # ``audio_clip_drag`` already mutated the clip in
+        # place during the drag, so we just need to publish
+        # + recompose.
+        self._refresh_clip_list()
+        self._recompose_overlay()
+
+    def _on_clip_context_menu(self, point) -> None:
+        """Right-click on a clip row — delete, change
+        crossfade, set gain."""
+        item = self._clip_list.itemAt(point)
+        if item is None:
+            return
+        cid = item.data(Qt.ItemDataRole.UserRole)
+        clips = (
+            getattr(self._group, "audio_clips", []) or [])
+        clip = next(
+            (c for c in clips if c.id == cid), None)
+        if clip is None:
+            return
+        clip_idx = clips.index(clip)
+        menu = QMenu(self)
+        rename_act = menu.addAction("✏️  Rename…")
+        # Per-clip trim — operates on the SOURCE file's range,
+        # so the cropped region survives every recompose. The
+        # audio-bar trim used to silently lose its setting on
+        # the next take because compose_clips always re-stitches
+        # from the original sources.
+        trim_act = menu.addAction(
+            f"✂️  Trim clip…  (kept: "
+            f"{self._clip_kept_seconds(clip):.2f}s of "
+            f"{clip.duration_seconds:.2f}s)")
+        fade_in_act = menu.addAction(
+            f"🌅  Fade in… (current: "
+            f"{clip.fade_in_seconds:.2f} s)")
+        fade_out_act = menu.addAction(
+            f"🌇  Fade out… (current: "
+            f"{clip.fade_out_seconds:.2f} s)")
+        gain_act = menu.addAction(
+            f"🔊  Gain… (current: {clip.gain_db:+.1f} dB)")
+        # Per-clip start time editor — useful when the writer
+        # wants a precise number instead of dragging the block.
+        start_act = menu.addAction(
+            f"⏱️  Start time… (current: "
+            f"{float(getattr(clip, 'start_time_seconds', 0.0) or 0.0):.2f} s)")
+        if clip_idx > 0:
+            xf_act = menu.addAction(
+                f"⤳  Crossfade from previous… "
+                f"(current: {clip.crossfade_seconds:.2f} s)")
+        else:
+            xf_act = None
+        # Reorder shortcuts — drag also works, but right-click
+        # gives the writer a discoverable path.
+        menu.addSeparator()
+        move_up_act = menu.addAction("⬆️  Move up")
+        move_up_act.setEnabled(clip_idx > 0)
+        move_down_act = menu.addAction("⬇️  Move down")
+        move_down_act.setEnabled(clip_idx < len(clips) - 1)
+        menu.addSeparator()
+        # Toggle the clip between "placed on the timeline" and
+        # "unplaced" (lives in the list only). Different label
+        # depending on current state so the writer always sees
+        # what the click will DO.
+        if clip.start_time_seconds is None:
+            unplace_act = None
+            place_act = menu.addAction(
+                "📥  Add to timeline (at end)")
+            place_act.setToolTip(
+                "Drop this clip back on the timeline after "
+                "the last placed clip. You can also drag it "
+                "directly from the list to position it.")
+        else:
+            place_act = None
+            unplace_act = menu.addAction(
+                "⤴  Remove from timeline "
+                "(keep in clip list)")
+            unplace_act.setToolTip(
+                "The clip stays in the list — drag it from "
+                "there back onto the timeline whenever you "
+                "want it playing again.")
+        menu.addSeparator()
+        delete_act = menu.addAction("🗑  Delete clip")
+        delete_act.setShortcut(QKeySequence("Backspace"))
+        action = menu.exec(
+            self._clip_list.viewport().mapToGlobal(point))
+        if action is None:
+            return
+        if action is rename_act:
+            self._clip_list.editItem(item)
+        elif action is trim_act:
+            self._open_clip_trim_dialog(clip)
+        elif action is fade_in_act:
+            eff = self._clip_kept_seconds(clip)
+            val = self._param_popup(
+                "Clip fade in",
+                f"Fade-in length for '{clip.label}'. "
+                "Smooths the start of this clip so the join "
+                "from silence (or an overlapping previous "
+                "clip) doesn't click.",
+                value=clip.fade_in_seconds,
+                min_v=0.0,
+                max_v=max(0.05, eff),
+                decimals=2, step=0.05, suffix=" s")
+            if val is not None:
+                clip.fade_in_seconds = float(val)
+                self._refresh_clip_list()
+                self._recompose_overlay()
+        elif action is fade_out_act:
+            eff = self._clip_kept_seconds(clip)
+            val = self._param_popup(
+                "Clip fade out",
+                f"Fade-out length for '{clip.label}'. "
+                "Smooths the end so it doesn't slam-cut into "
+                "the next clip / silence.",
+                value=clip.fade_out_seconds,
+                min_v=0.0,
+                max_v=max(0.05, eff),
+                decimals=2, step=0.05, suffix=" s")
+            if val is not None:
+                clip.fade_out_seconds = float(val)
+                self._refresh_clip_list()
+                self._recompose_overlay()
+        elif action is start_act:
+            current = float(
+                getattr(
+                    clip, "start_time_seconds", 0.0) or 0.0)
+            val = self._param_popup(
+                "Clip start time",
+                "When this clip begins playing inside the "
+                "group's overlay, measured in seconds from "
+                "the start of the timeline. Negative isn't "
+                "allowed; gaps render as silence.",
+                value=current, min_v=0.0, max_v=3600.0,
+                decimals=3, step=0.1, suffix=" s")
+            if val is not None:
+                clip.start_time_seconds = float(val)
+                self._refresh_clip_list()
+                self._recompose_overlay()
+        elif action is move_up_act:
+            self._reorder_clip(clip_idx, clip_idx - 1)
+        elif action is move_down_act:
+            self._reorder_clip(clip_idx, clip_idx + 1)
+        elif action is gain_act:
+            val = self._param_popup(
+                "Clip gain",
+                f"Gain for '{clip.label}' in dB. Positive "
+                "boosts, negative attenuates. Applied during "
+                "recompose, so the source file stays untouched.",
+                value=clip.gain_db, min_v=-30.0, max_v=30.0,
+                decimals=1, step=0.5, suffix=" dB")
+            if val is not None:
+                clip.gain_db = float(val)
+                self._refresh_clip_list()
+                self._recompose_overlay()
+        elif xf_act is not None and action is xf_act:
+            val = self._param_popup(
+                "Crossfade",
+                "Smooth transition between this clip and the "
+                "previous one. Larger values blend more of the "
+                "tail of the previous take with the head of "
+                "this one. Default 0.15 s hides recording-stop "
+                "clicks without making the join obvious.",
+                value=clip.crossfade_seconds, min_v=0.0,
+                max_v=2.0, decimals=2, step=0.05, suffix=" s")
+            if val is not None:
+                clip.crossfade_seconds = float(val)
+                self._refresh_clip_list()
+                self._recompose_overlay()
+        elif unplace_act is not None and action is unplace_act:
+            self._unplace_audio_clip(clip)
+        elif place_act is not None and action is place_act:
+            self._place_audio_clip_at_end(clip)
+        elif action is delete_act:
+            # Routed through the shared helper so the shift-
+            # subsequent-clips behavior matches the timeline
+            # right-click + Delete shortcut paths.
+            self._delete_audio_clip(clip)
+
+    @staticmethod
+    def _clip_kept_seconds(clip) -> float:
+        """trim_out − trim_in (with the sentinel resolved). The
+        amount of the source file that actually plays."""
+        full = float(
+            getattr(clip, "duration_seconds", 0.0) or 0.0)
+        tin = max(0.0, float(
+            getattr(clip, "trim_in_seconds", 0.0) or 0.0))
+        tout = float(
+            getattr(clip, "trim_out_seconds", 0.0) or 0.0)
+        if tout <= 0 or tout > full:
+            tout = full
+        return max(0.0, tout - tin)
+
+    def _unplace_audio_clip(self, clip) -> None:
+        """Take an audio clip off the timeline without
+        deleting it. The clip's row stays in the clip list
+        with an "unplaced" marker; ``start_time_seconds``
+        becomes None so ``compose_clips`` skips it and the
+        timeline stops rendering its block. Subsequent clips
+        slide left to close the gap, mirroring what
+        ``_delete_audio_clip`` does — the writer's intent in
+        both cases is "this clip is gone from playback right
+        now."""
+        if clip is None:
+            return
+        start = float(
+            getattr(clip, "start_time_seconds", 0.0) or 0.0)
+        eff = self._clip_kept_seconds(clip)
+        clips = (
+            getattr(self._group, "audio_clips", []) or [])
+        # Shift placed clips that started AFTER this one to
+        # close the gap.
+        for c in clips:
+            if c.id == clip.id:
+                continue
+            other_start = getattr(
+                c, "start_time_seconds", None)
+            if other_start is None:
+                continue
+            os = float(other_start)
+            if os > start:
+                c.start_time_seconds = round(
+                    max(0.0, os - eff), 3)
+        clip.start_time_seconds = None
+        # Drop selection so the next paint doesn't try to
+        # highlight a block that isn't on the timeline.
+        if hasattr(self, "_timeline"):
+            try:
+                self._timeline.select_audio_clip(None)
+            except Exception:
+                pass
+        self._refresh_clip_list()
+        self._recompose_overlay()
+
+    def _place_audio_clip_at_end(self, clip) -> None:
+        """Drop an unplaced clip back onto the timeline,
+        landing just after the last currently-placed clip
+        (with a 0.15 s overlap so reads stay smooth — same
+        default the append-on-record path uses)."""
+        if clip is None:
+            return
+        clips = (
+            getattr(self._group, "audio_clips", []) or [])
+        placed = [
+            c for c in clips
+            if c.id != clip.id
+            and getattr(c, "start_time_seconds", None)
+            is not None
+        ]
+        if not placed:
+            new_start = 0.0
+        else:
+            last = max(
+                placed,
+                key=lambda c: float(
+                    getattr(c, "start_time_seconds", 0.0)
+                    or 0.0)
+                + self._clip_kept_seconds(c))
+            last_end = (
+                float(
+                    getattr(
+                        last, "start_time_seconds", 0.0)
+                    or 0.0)
+                + self._clip_kept_seconds(last))
+            new_start = max(0.0, last_end - 0.15)
+        clip.start_time_seconds = round(new_start, 3)
+        self._refresh_clip_list()
+        self._recompose_overlay()
+
+    def _delete_audio_clip(
+            self, clip, *, confirm: bool = True) -> None:
+        """Remove a clip and shift every clip that started
+        AFTER it to the left by the deleted clip's effective
+        duration. Same gesture from the clip list, the
+        timeline right-click, and the Delete / Backspace
+        shortcut — they all route here so the shift semantics
+        stay identical."""
+        if clip is None:
+            return
+        if confirm:
+            choice = QMessageBox.question(
+                self, "Delete clip",
+                f"Remove '{clip.label}' from this group?\n\n"
+                "Clips that started AFTER it slide left to "
+                "fill the gap. The source WAV stays on disk; "
+                "only the clip entry is dropped.",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes)
+            if choice != QMessageBox.StandardButton.Yes:
+                return
+        clips = (
+            getattr(self._group, "audio_clips", []) or [])
+        deleted_start = float(
+            getattr(clip, "start_time_seconds", 0.0) or 0.0)
+        deleted_eff = self._clip_kept_seconds(clip)
+        new_clips = []
+        for c in clips:
+            if c.id == clip.id:
+                continue
+            c_start = float(
+                getattr(c, "start_time_seconds", 0.0) or 0.0)
+            # Strict > so a sibling clip that happened to share
+            # the deleted clip's exact start (rare, but
+            # possible when the writer dragged two there) stays
+            # put rather than rewinding into negative time.
+            if c_start > deleted_start:
+                c.start_time_seconds = round(
+                    max(0.0, c_start - deleted_eff), 3)
+            new_clips.append(c)
+        self._group.audio_clips = new_clips
+        # Selection clean-up so the highlight doesn't dangle on
+        # a clip that just disappeared.
+        if hasattr(self, "_timeline"):
+            try:
+                self._timeline.select_audio_clip(None)
+            except Exception:
+                pass
+        self._refresh_clip_list()
+        self._recompose_overlay()
+
+    def _on_delete_selected_clip(self) -> None:
+        """Triggered by Delete / Backspace on the focused clip
+        list row. Reuses ``_delete_audio_clip`` so the shift +
+        confirm flow matches the right-click path."""
+        if not hasattr(self, "_clip_list"):
+            return
+        item = self._clip_list.currentItem()
+        if item is None:
+            return
+        cid = item.data(Qt.ItemDataRole.UserRole)
+        clip = next(
+            (c for c in (
+                getattr(self._group, "audio_clips", []) or [])
+             if c.id == cid),
+            None)
+        if clip is not None:
+            self._delete_audio_clip(clip)
+
+    def _reorder_clip(
+            self, from_idx: int, to_idx: int) -> None:
+        """Move a clip's position in ``audio_clips`` then
+        recompose. Used by the explicit Move up / Move down
+        menu items; drag-to-reorder is wired separately via
+        the QListWidget's rowsMoved signal."""
+        clips = getattr(self._group, "audio_clips", None) or []
+        if not (0 <= from_idx < len(clips)
+                and 0 <= to_idx < len(clips)
+                and from_idx != to_idx):
+            return
+        c = clips.pop(from_idx)
+        clips.insert(to_idx, c)
+        self._refresh_clip_list()
+        self._recompose_overlay()
+
+    def _open_clip_trim_dialog(self, clip) -> None:
+        """Pop a small modal for the writer to set the clip's
+        trim_in / trim_out in seconds. The dialog seeds with
+        the current values and resolves the sentinel
+        ``trim_out == 0`` to the source duration so the writer
+        works in absolute coordinates; on apply we collapse it
+        back to 0 if the writer left ``trim_out`` at the end."""
+        from PyQt6.QtWidgets import (
+            QDialog as _QD, QDoubleSpinBox as _DS,
+            QFormLayout as _FL, QDialogButtonBox as _DBB,
+            QLabel as _QL, QVBoxLayout as _VL,
+        )
+        full = float(
+            getattr(clip, "duration_seconds", 0.0) or 0.0)
+        if full <= 0:
+            QMessageBox.warning(
+                self, "Trim unavailable",
+                "This clip has no known duration to trim "
+                "against.")
+            return
+        current_in = max(0.0, float(
+            getattr(clip, "trim_in_seconds", 0.0) or 0.0))
+        current_out_raw = float(
+            getattr(clip, "trim_out_seconds", 0.0) or 0.0)
+        current_out = (
+            current_out_raw
+            if 0 < current_out_raw <= full else full)
+
+        dlg = _QD(self)
+        dlg.setWindowTitle(f"Trim — {clip.label}")
+        dlg.setModal(True)
+        outer = _VL(dlg)
+        header = _QL(
+            f"Source: <b>{Path(clip.audio_path).name}</b>"
+            f"<br>Full duration: <b>{full:.3f} s</b><br>"
+            "Set the in / out points; everything outside is "
+            "skipped on recompose. The source file stays "
+            "untouched.")
+        header.setWordWrap(True)
+        outer.addWidget(header)
+        form = _FL()
+        in_spin = _DS()
+        in_spin.setRange(0.0, full)
+        in_spin.setDecimals(3)
+        in_spin.setSingleStep(0.05)
+        in_spin.setSuffix(" s")
+        in_spin.setValue(current_in)
+        form.addRow("In", in_spin)
+        out_spin = _DS()
+        out_spin.setRange(0.0, full)
+        out_spin.setDecimals(3)
+        out_spin.setSingleStep(0.05)
+        out_spin.setSuffix(" s")
+        out_spin.setValue(current_out)
+        form.addRow("Out", out_spin)
+        kept_label = _QL("")
+        kept_label.setStyleSheet(
+            "color: #6b7280; font-size: 11px;")
+        form.addRow("Kept", kept_label)
+        outer.addLayout(form)
+
+        def _refresh_kept():
+            kept = max(0.0, out_spin.value() - in_spin.value())
+            kept_label.setText(
+                f"{kept:.3f} s "
+                f"({100 * kept / full:.1f}% of source)")
+        in_spin.valueChanged.connect(lambda _: _refresh_kept())
+        out_spin.valueChanged.connect(lambda _: _refresh_kept())
+        _refresh_kept()
+
+        buttons = _DBB(
+            _DBB.StandardButton.Ok
+            | _DBB.StandardButton.Cancel
+            | _DBB.StandardButton.Reset)
+        outer.addWidget(buttons)
+        reset_btn = buttons.button(
+            _DBB.StandardButton.Reset)
+        reset_btn.setText("↺ Reset (use full source)")
+        def _reset():
+            in_spin.setValue(0.0)
+            out_spin.setValue(full)
+        reset_btn.clicked.connect(_reset)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        if dlg.exec() != _QD.DialogCode.Accepted:
+            return
+        new_in = float(in_spin.value())
+        new_out = float(out_spin.value())
+        if new_out <= new_in + 0.01:
+            QMessageBox.warning(
+                self, "Empty trim",
+                "Out must be at least 10 ms after In.")
+            return
+        clip.trim_in_seconds = round(new_in, 3)
+        # Collapse "out at the end" back to the 0 sentinel so
+        # future recordings of the same source don't suddenly
+        # land past a hard-coded out.
+        clip.trim_out_seconds = (
+            0.0
+            if abs(new_out - full) < 0.01
+            else round(new_out, 3))
+        self._refresh_clip_list()
+        self._recompose_overlay()
+
     def _refresh_overlay_status(self) -> None:
         path_str = getattr(
             self._group, "overlay_audio_path", "") or ""
@@ -1566,7 +3145,7 @@ class GroupEditorDialog(QDialog):
             self._overlay_status.setText("(no overlay)")
             for w in (
                     self._play_btn, self._stop_btn,
-                    self._delete_btn):
+                    self._reset_btn, self._delete_btn):
                 w.setEnabled(False)
             return
         path = Path(path_str)
@@ -1594,8 +3173,12 @@ class GroupEditorDialog(QDialog):
                 f"{path.name}  ·  {duration:.2f} s{kept}")
         for w in (
                 self._play_btn, self._stop_btn,
-                self._delete_btn):
+                self._reset_btn, self._delete_btn):
             w.setEnabled(True)
+        # Now-playing readout starts in sync with the current
+        # red-line position so the writer doesn't see a stale
+        # "▶ Take 1 0.00s" until they actually press Play.
+        self._refresh_play_status()
 
     # ------------------------------------------------------------------
     # Helpers
@@ -1633,6 +3216,14 @@ class GroupEditorDialog(QDialog):
             if self._preview_window is not None:
                 self._preview_window.close()
                 self._preview_window = None
+        except Exception:
+            pass
+        # Same treatment for the chapter prose window so it
+        # doesn't outlive the editor as a dangling top-level.
+        try:
+            if self._prose_window is not None:
+                self._prose_window.close()
+                self._prose_window = None
         except Exception:
             pass
         super().closeEvent(event)

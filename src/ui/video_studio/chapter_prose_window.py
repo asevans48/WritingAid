@@ -24,7 +24,9 @@ from __future__ import annotations
 from typing import Any, Callable, List, Optional
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont, QGuiApplication, QTextCursor
+from PyQt6.QtGui import (
+    QFont, QGuiApplication, QKeySequence, QShortcut, QTextCursor,
+)
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QHBoxLayout, QLabel, QLineEdit,
     QMessageBox, QPlainTextEdit, QPushButton, QSpinBox,
@@ -93,15 +95,29 @@ class ChapterProseWindow(QDialog):
         self._chapters = list(chapters or [])
         self._on_save = on_save
         self._on_open_in_writer = on_open_in_writer
-        # Track which chapter's edits are pending so the autosave
-        # timer flushes the right one even after the writer
+        # Track which chapter's edits are pending so the save
+        # path flushes the right one even after the writer
         # switched chapters mid-edit.
         self._dirty_chapter_id: Optional[str] = None
-        # Debounced autosave — fires 1.2 s after the last keystroke.
-        self._autosave_timer = QTimer(self)
-        self._autosave_timer.setSingleShot(True)
-        self._autosave_timer.setInterval(1200)
-        self._autosave_timer.timeout.connect(self._do_autosave)
+        # Per-keystroke autosave is GONE. It used to fire 1.2 s
+        # after the last keystroke and chain into the host's
+        # ``contentChanged`` → main-window 1.2 s debounce →
+        # ``_collect_project_data`` + full project JSON write
+        # on the GUI thread. For a project with many chapters /
+        # scenes / images the chained save took hundreds of ms
+        # blocking, which felt like the prose editor was
+        # freezing. Writers now save explicitly via Cmd+S /
+        # Ctrl+S or the 💾 Save button. The window still flushes
+        # on chapter switch + close to avoid silent data loss.
+        # The status footer is refreshed on a tiny 200 ms timer
+        # so word-count doesn't run on every keystroke either —
+        # cheap, but no reason to make Qt re-layout the label
+        # on every character.
+        self._status_refresh_timer = QTimer(self)
+        self._status_refresh_timer.setSingleShot(True)
+        self._status_refresh_timer.setInterval(200)
+        self._status_refresh_timer.timeout.connect(
+            self._refresh_status)
         self._build_ui()
         if initial_chapter_id:
             for i, (cid, _, _) in enumerate(self._chapters):
@@ -187,10 +203,15 @@ class ChapterProseWindow(QDialog):
         self._status_label.setStyleSheet(
             "color: #6b7280; font-size: 11px;")
         bottom_row.addWidget(self._status_label, stretch=1)
-        self._save_btn = QPushButton("💾 Save")
+        self._save_btn = QPushButton("💾 Save  (Cmd/Ctrl+S)")
         self._save_btn.setToolTip(
             "Write the current text back to the chapter. "
-            "Auto-save runs ~1 second after each keystroke too.")
+            "Saves are MANUAL — typing no longer triggers a "
+            "background save (that was causing the prose "
+            "window to freeze on big projects). Use Cmd+S / "
+            "Ctrl+S or click this button. The window also "
+            "saves on chapter switch and offers to save on "
+            "close if you have unsaved edits.")
         self._save_btn.clicked.connect(self._on_save_clicked)
         self._save_btn.setVisible(self._on_save is not None)
         bottom_row.addWidget(self._save_btn)
@@ -205,6 +226,17 @@ class ChapterProseWindow(QDialog):
             self._on_open_in_writer is not None)
         bottom_row.addWidget(self._open_writer_btn)
         v.addLayout(bottom_row)
+
+        # Cmd+S on macOS, Ctrl+S elsewhere — the standard
+        # save shortcut. ``QKeySequence.StandardKey.Save`` picks
+        # the right combo per-platform automatically. We also
+        # bind Ctrl+S explicitly so it works on macOS when the
+        # writer has a Windows-style external keyboard.
+        save_sc = QShortcut(
+            QKeySequence(QKeySequence.StandardKey.Save), self)
+        save_sc.activated.connect(self._on_save_clicked)
+        save_sc_ctrl = QShortcut(QKeySequence("Ctrl+S"), self)
+        save_sc_ctrl.activated.connect(self._on_save_clicked)
 
         if not self._chapters:
             self._text_view.setPlainText(
@@ -239,11 +271,13 @@ class ChapterProseWindow(QDialog):
     def _on_chapter_changed(self, _index: int) -> None:
         # Flush any pending edits on the OLD chapter before
         # switching — losing typed text to a chapter change is
-        # the worst kind of papercut.
+        # the worst kind of papercut. The save here is silent
+        # (errors land in the status footer, not a modal) so
+        # the writer's chapter-switch click isn't interrupted.
         if (self._dirty_chapter_id is not None
                 and self._dirty_chapter_id
                 != self._chapter_combo.currentData()):
-            self._do_autosave()
+            self._save_dirty_chapter(show_errors_modal=False)
         self._refresh_text()
 
     def _refresh_status(self) -> None:
@@ -269,31 +303,39 @@ class ChapterProseWindow(QDialog):
     def _on_text_changed(self) -> None:
         if self._on_save is None:
             return
-        # Mark the currently-visible chapter dirty + (re)start the
-        # debounced autosave timer.
+        # Mark the currently-visible chapter dirty. Save is
+        # MANUAL — writers hit Cmd+S / Ctrl+S or the 💾 Save
+        # button. Status refresh is debounced 200 ms so the
+        # word-count + read-time labels don't recompute on
+        # every keystroke. This stays cheap on the GUI thread
+        # even for very long chapters.
         cid = self._chapter_combo.currentData()
         if cid:
             self._dirty_chapter_id = cid
-            self._autosave_timer.start()
-            self._refresh_status()
+            self._status_refresh_timer.start()
 
-    def _do_autosave(self) -> None:
+    def _save_dirty_chapter(self, show_errors_modal: bool) -> bool:
+        """Write the dirty chapter back via ``on_save``. Returns
+        True on success / nothing-to-save. Caller chooses whether
+        save errors pop a modal (manual save, chapter switch) or
+        just land in the status label (auto-flush on close)."""
         if self._on_save is None:
-            return
+            return True
         cid = self._dirty_chapter_id
         if not cid:
-            return
-        # ``_on_chapter_changed`` calls us BEFORE swapping the
-        # combo's text view, so reading from the view here always
-        # reflects the dirty chapter's content even when the combo
-        # just moved to a different entry. The dirty_chapter_id is
-        # the authoritative key.
+            return True
         text = self._text_view.toPlainText()
         try:
             ok = bool(self._on_save(cid, text))
         except Exception as e:
-            self._status_label.setText(f"Save failed: {e}")
-            return
+            if show_errors_modal:
+                QMessageBox.warning(
+                    self, "Save failed",
+                    f"Could not save chapter: {e}")
+            else:
+                self._status_label.setText(
+                    f"Save failed: {e}")
+            return False
         if ok:
             self._dirty_chapter_id = None
             # Mirror the saved text back into the in-memory list
@@ -303,31 +345,22 @@ class ChapterProseWindow(QDialog):
                     self._chapters[i] = (chap_id, label, text)
                     break
             self._refresh_status()
+        return ok
 
     def _on_save_clicked(self) -> None:
         if self._on_save is None:
             return
-        # Cancel any pending debounce so the manual save doesn't
-        # race the timer.
-        self._autosave_timer.stop()
+        # Force the dirty flag onto the currently-visible
+        # chapter — even if the writer hasn't typed since the
+        # last save (e.g. they just hit Cmd+S out of habit) we
+        # still write the current text so they can trust the
+        # button.
         cid = self._chapter_combo.currentData()
         if not cid:
             return
-        text = self._text_view.toPlainText()
-        try:
-            ok = bool(self._on_save(cid, text))
-        except Exception as e:
-            QMessageBox.warning(
-                self, "Save failed",
-                f"Could not save chapter: {e}")
-            return
-        if ok:
-            self._dirty_chapter_id = None
-            for i, (chap_id, label, _t) in enumerate(self._chapters):
-                if chap_id == cid:
-                    self._chapters[i] = (chap_id, label, text)
-                    break
-            self._refresh_status()
+        if self._dirty_chapter_id is None:
+            self._dirty_chapter_id = cid
+        self._save_dirty_chapter(show_errors_modal=True)
 
     def _on_open_in_writer_clicked(self) -> None:
         if self._on_open_in_writer is None:
@@ -335,7 +368,7 @@ class ChapterProseWindow(QDialog):
         # Flush dirty text first so the writer view opens on the
         # freshest content.
         if self._dirty_chapter_id is not None:
-            self._do_autosave()
+            self._save_dirty_chapter(show_errors_modal=True)
         cid = self._chapter_combo.currentData() or ""
         try:
             self._on_open_in_writer(cid)
@@ -402,8 +435,26 @@ class ChapterProseWindow(QDialog):
     # Lifecycle
     # ------------------------------------------------------------------
     def closeEvent(self, event) -> None:
-        # Flush any pending edits so closing doesn't drop them.
-        if self._dirty_chapter_id is not None:
-            self._autosave_timer.stop()
-            self._do_autosave()
+        # If there are unsaved edits, ask before the window
+        # disappears. Three choices map to the standard
+        # Save / Discard / Cancel pattern writers expect from
+        # macOS + Windows text editors.
+        if (self._on_save is not None
+                and self._dirty_chapter_id is not None):
+            choice = QMessageBox.question(
+                self, "Unsaved changes",
+                "You have unsaved changes in this chapter. "
+                "Save them before closing?",
+                (QMessageBox.StandardButton.Save
+                 | QMessageBox.StandardButton.Discard
+                 | QMessageBox.StandardButton.Cancel),
+                QMessageBox.StandardButton.Save)
+            if choice == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
+            if choice == QMessageBox.StandardButton.Save:
+                # Save errors stay non-blocking on close —
+                # the writer already committed to leaving.
+                self._save_dirty_chapter(
+                    show_errors_modal=False)
         super().closeEvent(event)

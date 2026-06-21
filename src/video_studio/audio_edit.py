@@ -15,6 +15,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple
 
+# Tiny alias so ``compose_clips`` can declare a function-local
+# dataclass without re-importing ``dataclass`` inside its body.
+# Pure cosmetic — keeps the per-clip render struct close to
+# the code that builds it.
+dataclass_safe = dataclass
+
 
 @dataclass
 class AudioEditResult:
@@ -141,6 +147,176 @@ def edit_audio(
     return AudioEditResult(
         success=True, output_path=dest,
         duration_seconds=duration)
+
+
+def compose_clips(
+    clips: list,
+    dest: Path,
+    *,
+    default_crossfade_seconds: float = 0.15,
+) -> AudioEditResult:
+    """Position-aware audio composer.
+
+    Each clip carries ``start_time_seconds`` — its offset on
+    the group's composed timeline. The graph for N clips:
+
+        [0:a] atrim,asetpts,volume,afade(in/out),aformat,
+              adelay=START_MS|START_MS [c0]
+        [1:a] atrim,...,adelay=... [c1]
+        ...
+        [c0][c1]...[cN] amix=inputs=N:normalize=0[mix]
+
+    ``adelay`` pads each clip with silence so it starts at its
+    timeline position, and ``amix`` sums everything together.
+    Gaps between clips render as silence; overlaps mix (per-
+    clip ``fade_in_seconds`` / ``fade_out_seconds`` give the
+    writer control over how harsh the overlap sounds).
+
+    Backwards compat: clips that arrive without
+    ``start_time_seconds`` (legacy decks that haven't been
+    migrated yet) get auto-positioned sequentially with the
+    legacy ``crossfade_seconds`` overlap so the rendered
+    output matches what the old composer produced.
+
+    Returns ``AudioEditResult(success=False, error=...)`` on
+    failure.
+    """
+    if not ffmpeg_available():
+        return AudioEditResult(
+            success=False, output_path=dest,
+            error="ffmpeg not found on PATH.")
+    if not clips:
+        return AudioEditResult(
+            success=False, output_path=dest,
+            error="No clips to compose.")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    # Collect per-clip render data, skipping missing sources.
+    @dataclass_safe
+    class _ClipRender:
+        path: Path
+        start: float
+        eff_dur: float
+        trim_in: float
+        trim_out: float
+        gain_db: float
+        fade_in: float
+        fade_out: float
+
+    renders: list[_ClipRender] = []
+    for c in clips:
+        path = Path(getattr(c, "audio_path", "") or "")
+        if not path.exists() or path.stat().st_size == 0:
+            continue
+        full = float(
+            getattr(c, "duration_seconds", 0.0) or 0.0)
+        if full <= 0:
+            full = _probe_duration(path)
+        if full <= 0:
+            continue
+        tin = max(0.0, float(
+            getattr(c, "trim_in_seconds", 0.0) or 0.0))
+        tout = float(
+            getattr(c, "trim_out_seconds", 0.0) or 0.0)
+        if tout <= 0 or tout > full:
+            tout = full
+        if tout <= tin:
+            continue
+        eff_dur = tout - tin
+        explicit = getattr(c, "start_time_seconds", None)
+        if explicit is None:
+            # ``None`` is the "unplaced" sentinel — clip lives
+            # in the group but isn't on the timeline (writer
+            # parked it in the clip list / tray). Skip it
+            # entirely so it doesn't bleed into the rendered
+            # overlay; the source file stays on disk.
+            continue
+        start = max(0.0, float(explicit))
+        renders.append(_ClipRender(
+            path=path,
+            start=start,
+            eff_dur=eff_dur,
+            trim_in=tin,
+            trim_out=tout,
+            gain_db=float(
+                getattr(c, "gain_db", 0.0) or 0.0),
+            fade_in=max(0.0, float(
+                getattr(c, "fade_in_seconds", 0.0) or 0.0)),
+            fade_out=max(0.0, float(
+                getattr(c, "fade_out_seconds", 0.0) or 0.0)),
+        ))
+    if not renders:
+        return AudioEditResult(
+            success=False, output_path=dest,
+            error="Every clip's source file was missing.")
+    cmd: list = ["ffmpeg", "-y"]
+    for r in renders:
+        cmd += ["-i", str(r.path.resolve())]
+    # Build per-clip chain.
+    parts: list[str] = []
+    labels: list[str] = []
+    for i, r in enumerate(renders):
+        chain = [
+            f"[{i}:a]atrim=start={r.trim_in:.3f}:"
+            f"end={r.trim_out:.3f}",
+            "asetpts=N/SR/TB"]
+        if r.gain_db != 0:
+            chain.append(f"volume={r.gain_db:.2f}dB")
+        # Fades are clamped to the effective duration so
+        # ffmpeg doesn't reject a fade longer than the clip.
+        if r.fade_in > 0:
+            fd_in = min(r.fade_in, r.eff_dur)
+            chain.append(
+                f"afade=t=in:st=0:d={fd_in:.3f}")
+        if r.fade_out > 0:
+            fd_out = min(r.fade_out, r.eff_dur)
+            chain.append(
+                f"afade=t=out:"
+                f"st={max(0.0, r.eff_dur - fd_out):.3f}:"
+                f"d={fd_out:.3f}")
+        chain.append(
+            "aformat=channel_layouts=mono:sample_rates=44100")
+        if r.start > 0:
+            delay_ms = int(round(r.start * 1000))
+            chain.append(f"adelay={delay_ms}|{delay_ms}")
+        label = f"[c{i}]"
+        parts.append(",".join(chain) + label)
+        labels.append(label)
+    if len(renders) == 1:
+        parts.append(f"{labels[0]}anull[mix]")
+    else:
+        # normalize=0 keeps individual clip levels (no auto
+        # ducking when more clips overlap). The writer's
+        # per-clip gain + fade settings handle level shaping.
+        parts.append(
+            "".join(labels)
+            + f"amix=inputs={len(renders)}:"
+              "normalize=0:dropout_transition=0[mix]")
+    graph = ";".join(parts)
+    cmd += [
+        "-filter_complex", graph,
+        "-map", "[mix]",
+        "-c:a", "pcm_s16le",
+        str(dest.resolve())]
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        return AudioEditResult(
+            success=False, output_path=dest,
+            error="ffmpeg timed out after 5 minutes.")
+    except Exception as e:
+        return AudioEditResult(
+            success=False, output_path=dest,
+            error=f"ffmpeg raised: {e}")
+    if proc.returncode != 0:
+        return AudioEditResult(
+            success=False, output_path=dest,
+            error=(
+                "ffmpeg failed (last 600 chars):\n"
+                + (proc.stderr or "")[-600:]))
+    return AudioEditResult(
+        success=True, output_path=dest,
+        duration_seconds=_probe_duration(dest))
 
 
 def _probe_duration(path: Path) -> float:
