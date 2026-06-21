@@ -237,6 +237,16 @@ class GroupEditorDialog(QDialog):
             self._on_player_position)
         self._player.playbackStateChanged.connect(
             lambda *_: self._refresh_play_button())
+        # ``setSource`` is async — the file decode happens on a
+        # background thread, so a ``setPosition`` fired right
+        # after returns silently because the media isn't loaded
+        # yet. Result: playback started from 0 instead of from
+        # the red line. We park the requested seek in
+        # ``_pending_seek_ms`` and apply it when the media
+        # reports it's ready.
+        self._pending_seek_ms: Optional[int] = None
+        self._player.mediaStatusChanged.connect(
+            self._on_media_status_changed)
         # Recorder — sounddevice-backed.
         self._recorder = AudioRecorder()
         self._record_target_path: Optional[Path] = None
@@ -2173,8 +2183,6 @@ class GroupEditorDialog(QDialog):
         # Stopped state — fresh load + seek to the playhead so
         # play resumes from wherever the writer parked the red
         # line (via scrub, double-click, or last Stop click).
-        self._player.setSource(
-            QUrl.fromLocalFile(str(path.resolve())))
         seek_seconds = max(
             0.0,
             float(
@@ -2199,8 +2207,46 @@ class GroupEditorDialog(QDialog):
                 "overlay_trim_in_seconds", 0.0) or 0.0)
         if seek_seconds <= 0 and trim_in > 0:
             seek_seconds = trim_in
-        self._player.setPosition(int(seek_seconds * 1000))
+        # Park the seek and let ``_on_media_status_changed``
+        # apply it once the file is actually loaded — calling
+        # setPosition right after setSource silently drops the
+        # seek because the decoder isn't ready yet (that was
+        # the "play always starts from the beginning" report).
+        self._pending_seek_ms = int(seek_seconds * 1000)
+        self._player.setSource(
+            QUrl.fromLocalFile(str(path.resolve())))
+        # Start playback now; the status handler will seek to
+        # ``_pending_seek_ms`` the moment the media reports
+        # LoadedMedia / BufferedMedia.
         self._player.play()
+
+    def _on_media_status_changed(self, status) -> None:
+        """Fires whenever the player's underlying media changes
+        state. We use the loaded / buffered transitions to
+        flush any pending seek that was requested before the
+        decoder was ready."""
+        if self._pending_seek_ms is None:
+            return
+        try:
+            loaded_ok = status in (
+                QMediaPlayer.MediaStatus.LoadedMedia,
+                QMediaPlayer.MediaStatus.BufferedMedia,
+                QMediaPlayer.MediaStatus.BufferingMedia,
+            )
+        except Exception:
+            loaded_ok = True
+        if not loaded_ok:
+            return
+        # Apply once, clear the pending value so a subsequent
+        # status change (e.g. buffering glitches) doesn't snap
+        # the playhead back to the original seek target.
+        seek_ms = self._pending_seek_ms
+        self._pending_seek_ms = None
+        try:
+            self._player.setPosition(int(seek_ms))
+        except Exception as e:
+            print(
+                f"[group_editor] deferred seek failed: {e}")
 
     def _on_stop(self) -> None:
         """End playback but leave the red line where it landed
