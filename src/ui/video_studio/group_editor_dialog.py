@@ -262,6 +262,7 @@ class GroupEditorDialog(QDialog):
         self._refresh_tray()
         self._refresh_overlay_status()
         self._refresh_detail_panel()
+        self._refresh_tracks_count_label()
 
     # ------------------------------------------------------------------
     # Multi-clip overlay
@@ -717,6 +718,17 @@ class GroupEditorDialog(QDialog):
         # the widget grow past its sizeHint. Vertical scroll
         # is off — the outer dialog body scroll handles tall
         # content.
+        # Timeline scroll area — scrolls BOTH dimensions so
+        # the writer can pan to any part of the arrangement
+        # regardless of dialog size:
+        #   * Horizontal: long audio → scroll left/right.
+        #   * Vertical:   stacked tracks → scroll up/down.
+        # ``setWidgetResizable(True)`` lets the widget grow
+        # past the viewport via its own minimumWidth /
+        # minimumHeight (which ``_refresh_min_width`` keeps
+        # in sync with audio duration + lane count). When the
+        # widget's minimum exceeds the viewport in either
+        # axis, the corresponding scrollbar engages.
         self._timeline_scroll = QScrollArea()
         self._timeline_scroll.setWidget(self._timeline)
         self._timeline_scroll.setWidgetResizable(True)
@@ -725,14 +737,56 @@ class GroupEditorDialog(QDialog):
         self._timeline_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._timeline_scroll.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        # Match the timeline's own minimum height so the
-        # scroll area doesn't crush it vertically. The +20
-        # leaves room for the horizontal scrollbar without
-        # cutting into the slide drop band.
-        self._timeline_scroll.setMinimumHeight(
-            self._timeline.minimumHeight() + 20)
-        cv.addWidget(self._timeline_scroll)
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # Fixed minimum viewport — the timeline is the main
+        # work surface so it claims most of the dialog's
+        # vertical room, but we cap the minimum so the dialog
+        # itself can shrink and stay usable. Adding tracks no
+        # longer balloons the dialog; the new lane just
+        # appears under the existing ones and the vertical
+        # scrollbar engages once we exceed this height.
+        self._timeline_scroll.setMinimumHeight(280)
+        # Tracks bar — sits directly above the timeline so the
+        # writer always sees the lane count and has a one-click
+        # path to add a new lane. The audio toolbar's ➕ Track
+        # button has been the only path for a while, but on
+        # narrow windows it scrolled off the right end of the
+        # toolbar; this row is anchored next to the timeline
+        # so it's impossible to miss.
+        tracks_bar = QHBoxLayout()
+        self._tracks_count_label = QLabel("Audio tracks: 1")
+        self._tracks_count_label.setStyleSheet(
+            "color: #94a3b8; font-size: 11px;")
+        tracks_bar.addWidget(self._tracks_count_label)
+        tracks_bar.addStretch()
+        # 🎬 Preview compiles THIS group (slides + overlay
+        # audio + transitions) into a temp MP4 and plays it in
+        # a floating window. Lets writers spot-check what the
+        # final exported deck will look like for the group
+        # without exporting the whole project.
+        self._preview_group_btn = QPushButton(
+            "🎬 Preview")
+        self._preview_group_btn.setToolTip(
+            "Render this group's placed slides + composed "
+            "audio into a temp MP4 and play it in a floating "
+            "window. Same render path the deck export uses, "
+            "so transitions / volumes / clip timings appear "
+            "exactly as they'll ship.")
+        self._preview_group_btn.clicked.connect(
+            self._on_preview_group)
+        tracks_bar.addWidget(self._preview_group_btn)
+        self._add_track_btn_inline = QPushButton(
+            "➕ Add audio track")
+        self._add_track_btn_inline.setToolTip(
+            "Add a new audio lane below the existing ones. "
+            "Stack music, SFX, or alternate takes — clips on "
+            "different lanes mix together at export time "
+            "without competing for timeline slots.")
+        self._add_track_btn_inline.clicked.connect(
+            self._on_add_track)
+        tracks_bar.addWidget(self._add_track_btn_inline)
+        cv.addLayout(tracks_bar)
+        cv.addWidget(self._timeline_scroll, stretch=1)
 
         # Tray row.
         tray_header = QHBoxLayout()
@@ -2303,12 +2357,13 @@ class GroupEditorDialog(QDialog):
         # expects it to mark "where I stopped."
 
     def _on_add_track(self) -> None:
-        """Append a new audio lane. We don't insert a clip on
-        it yet — the writer adds clips by recording / importing
-        and assigning to the new lane (or dragging a clip onto
-        the new lane vertically). The presence of the lane is
-        signaled via ``track_gain_db`` getting a zero-dB key,
-        which is what ``_track_count`` reads from."""
+        """Append a new audio lane below the existing ones.
+        The presence of the lane is signaled via
+        ``track_gain_db`` getting a zero-dB key, which is what
+        ``_track_count`` reads from. We honor the timeline's
+        current count (which already includes the implicit
+        lane 0 when nothing is recorded yet), so the first
+        click creates lane 1, not lane 0."""
         gains = dict(
             getattr(self._group, "track_gain_db", None) or {})
         # Normalize keys to ints; JSON round-trips can turn
@@ -2319,16 +2374,11 @@ class GroupEditorDialog(QDialog):
                 clean_gains[int(k)] = float(v)
             except (TypeError, ValueError):
                 continue
-        # New track index = one past the current highest lane.
-        existing = max(
-            list(clean_gains.keys()) + [
-                int(getattr(c, "track_index", 0) or 0)
-                for c in (
-                    getattr(self._group, "audio_clips", [])
-                    or [])
-            ],
-            default=-1)
-        new_idx = existing + 1
+        # Start at the lane index one past whatever's currently
+        # visible — that's the implicit-or-explicit count from
+        # the timeline. Guarantees a new lane appears every
+        # click, even when the writer hasn't touched lane 0.
+        new_idx = self._timeline._track_count()
         clean_gains[new_idx] = 0.0
         self._group.track_gain_db = clean_gains
         # Friendly default name; writer can rename via the
@@ -2345,7 +2395,167 @@ class GroupEditorDialog(QDialog):
         self._group.track_names = clean_names
         self._timeline._refresh_min_width()
         self._timeline.update()
+        self._refresh_tracks_count_label()
+        # Auto-scroll the timeline scroll area to the bottom
+        # so the writer sees the new lane right away. Without
+        # this, the new lane lives below the viewport and the
+        # writer has to scroll to notice it appeared.
+        try:
+            vbar = self._timeline_scroll.verticalScrollBar()
+            vbar.setValue(vbar.maximum())
+        except Exception:
+            pass
         self.deck_modified.emit()
+
+    def _on_preview_group(self) -> None:
+        """Compile this group into a temp MP4 + play it in a
+        floating window. The render path is the same one the
+        deck export uses (``stitch_slide_deck_to_mp4``), so
+        what the writer sees in the preview is what they'll
+        ship.
+
+        Render shape:
+          * Pull the group's PLACED slides, ordered by start
+            time on the group timeline.
+          * Build a slim synthetic ``SlideDeckProject`` whose
+            ``pages`` are copies of those slides with
+            ``duration_seconds`` adjusted to the gap-to-next-
+            slide (so a placed slide that holds for a long
+            silence renders for that long instead of the
+            ``duration_seconds`` field's bare value).
+          * Attach the group's composed overlay (the file
+            that's already been mixed across all tracks +
+            volume) as the first slide's per-slide audio —
+            ``stitch_slide_deck_to_mp4`` delays it by zero so
+            it plays through the whole render.
+          * Render to ``working_dir/group_previews/<group>_<ts>.mp4``
+            and open in ``GroupPreviewWindow``.
+        """
+        from src.video_studio.models import (
+            SlideDeckProject, SlidePage)
+        from src.video_studio.slide_deck import (
+            stitch_slide_deck_to_mp4)
+        from src.ui.video_studio.group_preview_window import (
+            GroupPreviewWindow)
+        # Gather placed slides in time order.
+        placed = sorted(
+            (p for p in self._deck.pages
+             if p.group_id == self._group.id
+             and p.start_time_seconds_in_group is not None),
+            key=lambda p: float(
+                getattr(
+                    p, "start_time_seconds_in_group", 0.0)
+                or 0.0))
+        if not placed:
+            QMessageBox.information(
+                self, "Nothing to preview",
+                "Place at least one slide on the timeline "
+                "first (drag it from the tray, or use the "
+                "tray's right-click → Place at end of "
+                "timeline).")
+            return
+        # Translate group-timeline positions into back-to-back
+        # render durations. Each slide holds for the gap to
+        # the next slide; the last slide holds for max(its
+        # own duration, the remaining overlay audio).
+        overlay_dur = float(
+            getattr(
+                self._group,
+                "overlay_audio_duration_seconds", 0.0) or 0.0)
+        render_pages = []
+        for i, src in enumerate(placed):
+            cur_start = float(
+                getattr(
+                    src,
+                    "start_time_seconds_in_group", 0.0)
+                or 0.0)
+            if i + 1 < len(placed):
+                next_start = float(
+                    getattr(
+                        placed[i + 1],
+                        "start_time_seconds_in_group", 0.0)
+                    or 0.0)
+                hold = max(0.25, next_start - cur_start)
+            else:
+                own = max(
+                    0.25, float(
+                        getattr(src, "duration_seconds", 0.0)
+                        or 0.0))
+                tail = max(
+                    0.0, overlay_dur - cur_start)
+                hold = max(own, tail) if tail > 0 else own
+            # Copy the slide via Pydantic ``model_copy`` so
+            # mutating ``duration_seconds`` here doesn't
+            # affect the live deck.
+            copy = src.model_copy(deep=False)
+            copy.duration_seconds = round(hold, 3)
+            # Strip per-slide audio — the overlay (attached
+            # below) drives the sound. Per-slide audio in a
+            # group with overlay would double-up.
+            copy.audio_path = ""
+            render_pages.append(copy)
+        # Attach the overlay to slide 0 if we have one.
+        overlay_path = getattr(
+            self._group, "overlay_audio_path", "") or ""
+        if overlay_path and Path(overlay_path).exists():
+            render_pages[0].audio_path = overlay_path
+        synthetic = SlideDeckProject(
+            id=f"preview_{self._group.id}",
+            name=f"Preview of {self._group.name or 'group'}",
+            working_dir=self._deck.working_dir,
+            pages=render_pages,
+        )
+        # Render to a temp file. Stamp with the group id so
+        # concurrent group editors don't clobber each other.
+        out_dir = Path(
+            self._deck.working_dir
+            or (Path.home() / ".writingaid_slides")
+        ) / "group_previews"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        from datetime import datetime as _dt
+        stamp = _dt.now().strftime("%Y%m%d_%H%M%S")
+        out_path = out_dir / (
+            f"{self._group.id}_{stamp}.mp4")
+        # Render synchronously — typical previews are <1 min
+        # so they finish in a few seconds. The button stays
+        # disabled with a label tweak so the writer sees it's
+        # working.
+        self._preview_group_btn.setEnabled(False)
+        self._preview_group_btn.setText("Rendering…")
+        try:
+            ok, msg = stitch_slide_deck_to_mp4(
+                synthetic, out_path)
+        finally:
+            self._preview_group_btn.setEnabled(True)
+            self._preview_group_btn.setText("🎬 Preview")
+        if not ok:
+            QMessageBox.warning(
+                self, "Preview render failed", msg)
+            return
+        # Hold a strong reference so the window survives this
+        # method's return — without this, Qt eats it. Reuse
+        # the slot for repeat clicks so we don't pile windows.
+        try:
+            if (getattr(self, "_group_preview_window", None)
+                    is not None):
+                self._group_preview_window.close()
+        except Exception:
+            pass
+        self._group_preview_window = GroupPreviewWindow(
+            out_path,
+            group_name=self._group.name or "group")
+        self._group_preview_window.show()
+
+    def _refresh_tracks_count_label(self) -> None:
+        """Sync the inline "Audio tracks: N" label with the
+        current lane count. Called from ``_on_add_track`` and
+        from the lane-removal path so the readout stays
+        honest."""
+        if not hasattr(self, "_tracks_count_label"):
+            return
+        n = self._timeline._track_count()
+        self._tracks_count_label.setText(
+            f"Audio tracks: {n}")
 
     def _on_reset_playhead(self) -> None:
         """Send the red line back to t=0 and stop any playback
@@ -2653,6 +2863,7 @@ class GroupEditorDialog(QDialog):
             self._group.track_names = clean_names
             self._timeline._refresh_min_width()
             self._timeline.update()
+            self._refresh_tracks_count_label()
             self._recompose_overlay()
 
     def _on_slide_context_from_timeline(
