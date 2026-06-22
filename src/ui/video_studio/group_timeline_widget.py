@@ -59,14 +59,37 @@ from src.video_studio.models import SlideDeckProject, SlideGroup, SlidePage
 # more room when it has it.
 TRACK_HEIGHT = 300
 AUDIO_BAR_TOP = 28
-AUDIO_BAR_HEIGHT = 56
+# Each audio LANE is the size that the old single-track audio
+# bar used to be. Multi-track layouts stack ``N`` lanes
+# vertically with ``LANE_GAP`` between them. The legacy
+# ``AUDIO_BAR_HEIGHT`` alias is kept because plenty of paint
+# code references it; ``LANE_HEIGHT`` is the source of truth.
+LANE_HEIGHT = 56
+LANE_GAP = 4
+AUDIO_BAR_HEIGHT = LANE_HEIGHT
+# Left strip showing the per-lane name + volume slider. The
+# track bars start at ``LEFT_PAD + LANE_HEADER_WIDTH`` so the
+# header doesn't overlap the waveform area.
+LANE_HEADER_WIDTH = 88
 RULER_HEIGHT = 14
-SLIDE_BAND_TOP = AUDIO_BAR_TOP + AUDIO_BAR_HEIGHT + RULER_HEIGHT + 10
+# Legacy ``SLIDE_BAND_TOP`` constant — kept for any external
+# imports but the runtime layout now computes the slide band's
+# top dynamically from the number of audio lanes (see
+# ``_slide_band_rect``).
+SLIDE_BAND_TOP = AUDIO_BAR_TOP + LANE_HEIGHT + RULER_HEIGHT + 10
 SLIDE_BAND_HEIGHT = 160
 LEFT_PAD = 14
 RIGHT_PAD = 14
 
 PLACEHOLDER_PIXELS_PER_SECOND = 40  # used when no audio yet
+# Lower bound on the timeline's pixel scale. When the host
+# wraps the timeline in a horizontal QScrollArea, the timeline
+# claims AT LEAST ``audio_duration * MIN_PIXELS_PER_SECOND``
+# pixels — narrower windows get a scrollbar, wider windows
+# stretch the bar so the writer never sees crushed clip
+# blocks. 100 px / second keeps a 1 s clip ~100 px wide
+# (room for a label + thumbnail and a useful waveform).
+MIN_PIXELS_PER_SECOND = 100
 
 # Width in pixels of the trim-handle hot zone at each end of
 # an audio clip block. Wide enough to grab on a trackpad but
@@ -92,6 +115,11 @@ class GroupTimelineWidget(QWidget):
     # context menu over the click. Emitted only when audio is
     # loaded; right-clicking an empty bar is a no-op.
     audioContextRequested = pyqtSignal(object)
+    # Right-click on a lane HEADER (the left-side strip with
+    # the track name + dB readout). Carries the lane index +
+    # global position so the host can pop a per-lane menu
+    # (rename, set volume, remove track).
+    audioLaneContextRequested = pyqtSignal(int, object)
     # An audio clip block was selected (or cleared with "").
     audioClipSelected = pyqtSignal(str)          # clip_id ("" = none)
     # Right-click on a specific clip block — the host pops the
@@ -121,6 +149,19 @@ class GroupTimelineWidget(QWidget):
         # Drag state.
         self._drag_page_id: Optional[str] = None
         self._drag_grab_dx_pixels: int = 0
+        # Mirrors ``_audio_clip_drag_started`` — flips True only
+        # after the mouse moves past ``SLIDE_DRAG_THRESHOLD_PX``
+        # so a stray click doesn't shove the block. Without
+        # this, any micro-movement after the mousedown was
+        # treated as a drag and the block jumped to whatever
+        # pixel the cursor happened to land on.
+        self._drag_page_started: bool = False
+        self._drag_page_press_x: int = 0
+        # Slide edge resize state — set on press over an edge
+        # handle, cleared on release. ``side`` is "left" or
+        # "right" depending on which handle the writer grabbed.
+        self._slide_edge_drag_id: Optional[str] = None
+        self._slide_edge_drag_side: Optional[str] = None
         self._dragging_trim_handle: Optional[str] = None  # "in"/"out"/None
         # Selection-drag state. Left-clicking on the audio bar
         # (away from a trim handle) anchors here; mouse motion
@@ -196,6 +237,11 @@ class GroupTimelineWidget(QWidget):
             Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(
             self._on_custom_context_menu_requested)
+        # Initial minimum width (no audio yet) gives the writer
+        # enough room to drop the first clip without a scroll
+        # bar appearing for an empty timeline. ``_refresh_min_width``
+        # bumps this up as soon as audio loads.
+        self.setMinimumWidth(600)
 
     # ------------------------------------------------------------------
     # External API
@@ -209,15 +255,48 @@ class GroupTimelineWidget(QWidget):
         self._waveform_audio_path = ""
         self._clip_peak_cache.clear()
         self._selected_page_id = None
+        self._refresh_min_width()
         self.update()
+
+    def _refresh_min_width(self) -> None:
+        """Set ``minimumWidth`` based on the audio duration so
+        the host's horizontal QScrollArea grows / shrinks
+        appropriately. Floor at 600 px so an empty timeline
+        still has room to drop clips on.
+
+        Called from anywhere the composed duration can
+        change: ``set_group``, ``refresh_waveform``, and
+        explicitly by the host after recompose. The audio bar
+        widens with the timeline because ``_track_rect``
+        reads from ``self.width()``.
+        """
+        # Height also bumps with the lane count so the slide
+        # band has room below all the audio lanes.
+        self.setMinimumHeight(
+            AUDIO_BAR_TOP + self._audio_area_height()
+            + RULER_HEIGHT + 10 + SLIDE_BAND_HEIGHT + 20)
+        dur = self._audio_duration()
+        if dur <= 0:
+            self.setMinimumWidth(
+                600 + LANE_HEADER_WIDTH)
+            return
+        natural_px = int(
+            dur * MIN_PIXELS_PER_SECOND
+            + LEFT_PAD + LANE_HEADER_WIDTH + RIGHT_PAD)
+        self.setMinimumWidth(
+            max(600 + LANE_HEADER_WIDTH, natural_px))
 
     def refresh_waveform(self) -> None:
         """Drop the cached peaks so the next paint reloads them.
         Call after recording / importing / applying transforms —
-        anything that mutates the underlying audio file."""
+        anything that mutates the underlying audio file. The
+        audio duration may have changed (longer or shorter
+        composed overlay), so we also re-tune the minimum
+        width."""
         self._waveform_peaks = None
         self._waveform_audio_path = ""
         self._clip_peak_cache.clear()
+        self._refresh_min_width()
         self.update()
 
     def set_playhead(self, seconds: float) -> None:
@@ -291,16 +370,78 @@ class GroupTimelineWidget(QWidget):
         tracking the mouse" report."""
         return self._audio_duration()
 
-    def _track_rect(self) -> QRect:
+    def _track_count(self) -> int:
+        """How many audio lanes to render. At least 1 so a
+        brand-new group still has an empty lane to drop the
+        first clip on. Otherwise = max(track_index) + 1 so the
+        layout grows with whatever lane the highest-index clip
+        sits on. The dialog's "Add audio track" button just
+        appends a placed clip on the next index."""
+        clips = (
+            getattr(self._group, "audio_clips", None) or [])
+        max_idx = 0
+        for c in clips:
+            idx = int(getattr(c, "track_index", 0) or 0)
+            if idx > max_idx:
+                max_idx = idx
+        # Track gains can reference lanes even when no clip
+        # lives there yet (writer added a track but hasn't
+        # recorded into it) — honor those too.
+        gains = (
+            getattr(self._group, "track_gain_db", None) or {})
+        for k in gains.keys():
+            try:
+                kv = int(k)
+                if kv > max_idx:
+                    max_idx = kv
+            except (TypeError, ValueError):
+                pass
+        return max_idx + 1
+
+    def _audio_area_height(self) -> int:
+        n = self._track_count()
+        return (
+            n * LANE_HEIGHT + max(0, n - 1) * LANE_GAP)
+
+    def _lane_rect(self, track_index: int) -> QRect:
+        """Pixel box of the audio lane with the given index."""
+        top = (
+            AUDIO_BAR_TOP
+            + track_index * (LANE_HEIGHT + LANE_GAP))
+        x_left = LEFT_PAD + LANE_HEADER_WIDTH
         return QRect(
-            LEFT_PAD, AUDIO_BAR_TOP,
-            max(1, self.width() - LEFT_PAD - RIGHT_PAD),
-            AUDIO_BAR_HEIGHT)
+            x_left, top,
+            max(1, self.width() - x_left - RIGHT_PAD),
+            LANE_HEIGHT)
+
+    def _lane_header_rect(
+            self, track_index: int) -> QRect:
+        """Pixel box of the left-side header (name + volume)
+        for the given lane."""
+        top = (
+            AUDIO_BAR_TOP
+            + track_index * (LANE_HEIGHT + LANE_GAP))
+        return QRect(
+            LEFT_PAD, top,
+            LANE_HEADER_WIDTH, LANE_HEIGHT)
+
+    def _track_rect(self) -> QRect:
+        """Legacy single-lane accessor. Returns the rect of
+        lane 0 — most ruler / playhead / trim-handle logic
+        wants "the audio bar" without caring how many lanes
+        there are, and lane 0 is the canonical x-axis."""
+        return self._lane_rect(0)
 
     def _slide_band_rect(self) -> QRect:
+        # Dynamically positioned BELOW the audio lanes so the
+        # band doesn't overlap when the writer adds tracks.
+        top = (
+            AUDIO_BAR_TOP + self._audio_area_height()
+            + RULER_HEIGHT + 10)
+        x_left = LEFT_PAD + LANE_HEADER_WIDTH
         return QRect(
-            LEFT_PAD, SLIDE_BAND_TOP,
-            max(1, self.width() - LEFT_PAD - RIGHT_PAD),
+            x_left, top,
+            max(1, self.width() - x_left - RIGHT_PAD),
             SLIDE_BAND_HEIGHT)
 
     def _seconds_to_x(self, seconds: float) -> int:
@@ -430,24 +571,29 @@ class GroupTimelineWidget(QWidget):
         painter.setFont(f)
         header = self._header_text()
         painter.drawText(LEFT_PAD, 16, header)
-        # Audio bar — black background so gaps between clips
-        # read as silence and the colored clip blocks pop out
-        # against it. The empty (no-audio) state stays slate so
-        # the writer can still tell the bar is there.
-        track = self._track_rect()
+        # Render each audio lane in turn — black background +
+        # the clip blocks that live on THIS lane. Per-lane
+        # waveform is drawn inside each clip block, so there's
+        # no separate "composed waveform" overlay.
         clips = getattr(
             self._group, "audio_clips", None) or []
-        has_audio = (
-            self._audio_duration() > 0 or len(clips) > 0)
-        audio_color = (
-            QColor("#000000") if has_audio
-            else QColor("#334155"))
-        painter.fillRect(track, audio_color)
-        # Trim shading only fires for the single-clip / legacy
-        # case where the whole-overlay trim handles still
-        # mean something. Multi-clip arrangements rely on per-
-        # clip trim, so the writer doesn't need the kept-window
-        # halo bleeding through.
+        n_tracks = self._track_count()
+        for ti in range(n_tracks):
+            lane = self._lane_rect(ti)
+            painter.fillRect(lane, QColor("#000000"))
+            painter.setPen(QPen(QColor("#1e293b"), 1))
+            painter.drawRect(lane)
+            # Lane header on the left: name + volume readout.
+            self._draw_lane_header(painter, ti)
+            # Clip blocks for THIS lane.
+            self._draw_clip_blocks_for_lane(
+                painter, ti, lane)
+        # Legacy "track rect" the trim handles + ruler + playhead
+        # still reference (= lane 0).
+        track = self._track_rect()
+        # Whole-overlay trim shading is only meaningful for the
+        # single-clip legacy case; multi-clip + multi-track
+        # arrangements use per-clip trim instead.
         if (self._audio_duration() > 0
                 and len(clips) <= 1
                 and (self._trim_in() > 0
@@ -459,15 +605,10 @@ class GroupTimelineWidget(QWidget):
                 in_x, track.top(),
                 max(0, out_x - in_x), track.height())
             painter.fillRect(kept, QColor("#3b82f6"))
-        painter.setPen(QPen(QColor("#1e293b"), 1))
-        painter.drawRect(track)
-        # Waveform only for single-clip view — the per-clip
-        # blocks own the visualization when there are
-        # multiple. A composed-overlay waveform would
-        # distract from the block-edge boundaries.
         if len(clips) <= 1:
             self._draw_waveform(painter, track)
-        # Trim handles (if there's audio to trim).
+        # Trim handles (still on lane 0 since they reference the
+        # composed overlay).
         if self._audio_duration() > 0:
             in_x = self._seconds_to_x(self._trim_in())
             out_x = self._seconds_to_x(self._trim_out())
@@ -486,27 +627,21 @@ class GroupTimelineWidget(QWidget):
             painter.drawText(
                 out_x + 3, track.bottom() + 12,
                 f"out {self._trim_out():.2f}s")
-        # Playhead — visible whenever it's within the file,
-        # not just within the trim window. Writers use it as
-        # the anchor for "Trim before / after playhead", which
-        # would be confusing if the line disappeared the moment
-        # they moved it outside an existing selection.
+        # Playhead spans ALL lanes + the slide band — same red
+        # line cuts through every track so the writer can see
+        # where playback is across the whole arrangement.
         if (self._audio_duration() > 0
                 and 0 <= self._playhead_seconds
                 <= self._audio_duration()):
             px = self._seconds_to_x(self._playhead_seconds)
             painter.setPen(QPen(QColor("#ef4444"), 2))
+            slide_bottom = (
+                self._slide_band_rect().bottom() + 4)
             painter.drawLine(
-                px, track.top() - 6,
-                px, SLIDE_BAND_TOP + SLIDE_BAND_HEIGHT + 4)
+                px, AUDIO_BAR_TOP - 6,
+                px, slide_bottom)
         # Ruler ticks every second (or every 5 when track is short).
         self._draw_ruler(painter)
-        # Clip boundary markers — drawn AFTER the waveform so
-        # they sit on top. Each entry in audio_clips contributes
-        # a labeled vertical tick at the cumulative offset; the
-        # ticks visually break the rendered overlay into the
-        # writer's individual takes.
-        self._draw_clip_boundaries(painter, track)
         # Slide band background.
         band = self._slide_band_rect()
         painter.fillRect(band, QColor("#1e293b"))
@@ -567,14 +702,94 @@ class GroupTimelineWidget(QWidget):
                 x + 2, y + RULER_HEIGHT - 1, f"{t:.0f}s")
             t += step
 
+    def _draw_lane_header(
+            self, painter: QPainter,
+            track_index: int) -> None:
+        """Paint the left-side strip for a single audio lane —
+        name + dB readout. Volume editing happens via the
+        right-click menu (see ``audioLaneContextRequested``);
+        the strip is read-only so wide labels don't crowd a
+        slider into the lane's narrow vertical space."""
+        rect = self._lane_header_rect(track_index)
+        painter.fillRect(rect, QColor("#1e293b"))
+        painter.setPen(QPen(QColor("#334155"), 1))
+        painter.drawRect(rect)
+        from PyQt6.QtGui import QFont as _QF
+        f = _QF(painter.font())
+        f.setPointSize(9)
+        f.setBold(True)
+        painter.setFont(f)
+        names = (
+            getattr(self._group, "track_names", None) or {})
+        name = (
+            names.get(track_index)
+            or names.get(str(track_index))
+            or f"Track {track_index + 1}")
+        painter.setPen(QColor("#e2e8f0"))
+        painter.drawText(
+            rect.left() + 6, rect.top() + 18, name)
+        gains = (
+            getattr(self._group, "track_gain_db", None) or {})
+        gain = float(
+            gains.get(track_index,
+                      gains.get(str(track_index), 0.0))
+            or 0.0)
+        gain_text = (
+            "0 dB" if abs(gain) < 0.05
+            else f"{gain:+.1f} dB")
+        f.setBold(False)
+        f.setPointSize(8)
+        painter.setFont(f)
+        painter.setPen(QColor("#94a3b8"))
+        painter.drawText(
+            rect.left() + 6, rect.bottom() - 6,
+            f"vol  {gain_text}")
+
+    def _draw_clip_blocks_for_lane(
+            self, painter: QPainter, track_index: int,
+            lane_rect: QRect) -> None:
+        """Render clip blocks whose ``track_index`` matches
+        ``track_index`` into ``lane_rect``. Filters from the
+        full ``audio_clips`` list so each lane only paints its
+        own takes; the writer sees a clean DAW-style stack
+        instead of every clip piled into one bar."""
+        clips = getattr(self._group, "audio_clips", None) or []
+        if not clips:
+            return
+        if self._audio_duration() <= 0:
+            return
+        from PyQt6.QtGui import (
+            QFont as _QF, QFontMetrics as _QFM)
+        f = _QF(painter.font())
+        f.setPointSize(9)
+        f.setBold(True)
+        painter.setFont(f)
+        fm = _QFM(painter.font())
+        palette = [
+            QColor("#22d3ee"), QColor("#34d399"),
+            QColor("#a78bfa"), QColor("#fb923c"),
+            QColor("#f472b6"), QColor("#facc15"),
+        ]
+        # Walk only the clips that belong on THIS lane.
+        for idx, clip in enumerate(clips):
+            if getattr(
+                    clip, "start_time_seconds", None) is None:
+                continue
+            if int(
+                    getattr(clip, "track_index", 0)
+                    or 0) != track_index:
+                continue
+            self._paint_clip_block(
+                painter, clip, idx, palette, fm,
+                lane_rect)
+
     def _draw_clip_boundaries(
             self, painter: QPainter, track: QRect) -> None:
-        """Render each audio clip as a positioned, colored
-        block on the audio bar — replaces the old "boundary
-        tick" markers since clips are now real, draggable,
-        right-clickable rectangles. Block width = clip's
-        effective duration (trim_out − trim_in); block x =
-        clip's ``start_time_seconds``."""
+        """Legacy single-lane renderer — left for any caller
+        that asks for the whole-overlay block list. The
+        multi-lane paint path now uses
+        ``_draw_clip_blocks_for_lane`` per lane and ignores
+        this method."""
         clips = getattr(self._group, "audio_clips", None) or []
         if not clips:
             return
@@ -588,8 +803,6 @@ class GroupTimelineWidget(QWidget):
         f.setBold(True)
         painter.setFont(f)
         fm = _QFM(painter.font())
-        # Rotate through a small palette so adjacent clips read
-        # as distinct without picking custom colors per-clip.
         palette = [
             QColor("#22d3ee"), QColor("#34d399"),
             QColor("#a78bfa"), QColor("#fb923c"),
@@ -677,6 +890,79 @@ class GroupTimelineWidget(QWidget):
                     pill.left() + 4,
                     pill.top() + fm.ascent() + 1,
                     txt)
+
+    def _paint_clip_block(
+            self, painter, clip, idx, palette, fm,
+            lane_rect) -> None:
+        """Shared clip-block paint used by both the legacy
+        ``_draw_clip_boundaries`` (single-lane) and the new
+        ``_draw_clip_blocks_for_lane`` (multi-lane) paths. The
+        block's vertical extent comes from ``lane_rect`` so
+        each lane stays at ``LANE_HEIGHT`` no matter how many
+        tracks the writer has stacked."""
+        if getattr(
+                clip, "start_time_seconds", None) is None:
+            return
+        start = float(
+            getattr(clip, "start_time_seconds", 0.0) or 0.0)
+        eff = self._clip_effective_duration(clip)
+        if eff <= 0:
+            return
+        x_left = self._seconds_to_x(start)
+        x_right = self._seconds_to_x(start + eff)
+        width = max(6, x_right - x_left)
+        rect = QRect(
+            x_left, lane_rect.top() + 2,
+            width, lane_rect.height() - 4)
+        base = palette[idx % len(palette)]
+        selected = (
+            clip.id == self._selected_audio_clip_id)
+        fill = QColor(base)
+        fill.setAlpha(220 if selected else 170)
+        painter.fillRect(rect, fill)
+        self._draw_clip_block_waveform(
+            painter, clip, rect)
+        border = QPen(
+            QColor("#0f172a") if not selected
+            else QColor("#fef3c7"),
+            2 if selected else 1)
+        painter.setPen(border)
+        painter.drawRect(rect)
+        if (selected
+                and rect.width()
+                >= CLIP_EDGE_HANDLE_PX * 2):
+            handle_color = QColor("#facc15")
+            left_handle = QRect(
+                rect.left(), rect.top(),
+                CLIP_EDGE_HANDLE_PX, rect.height())
+            right_handle = QRect(
+                rect.right() - CLIP_EDGE_HANDLE_PX,
+                rect.top(),
+                CLIP_EDGE_HANDLE_PX, rect.height())
+            painter.fillRect(left_handle, handle_color)
+            painter.fillRect(right_handle, handle_color)
+        label = (clip.label or f"Take {idx + 1}")
+        meta = f"  ({eff:.2f}s)"
+        label_text = f"{label}{meta}"
+        txt = fm.elidedText(
+            label_text,
+            Qt.TextElideMode.ElideRight,
+            max(20, rect.width() - 8))
+        if rect.width() >= 40:
+            txt_w = fm.horizontalAdvance(txt) + 8
+            txt_h = fm.height() + 2
+            pill = QRect(
+                rect.left() + 2,
+                rect.top() + 2,
+                min(txt_w, rect.width() - 4),
+                txt_h)
+            bg = QColor(0, 0, 0, 170)
+            painter.fillRect(pill, bg)
+            painter.setPen(QColor("#fef3c7"))
+            painter.drawText(
+                pill.left() + 4,
+                pill.top() + fm.ascent() + 1,
+                txt)
 
     def _peaks_for_clip(self, clip):
         """Lazy-load + cache the waveform peaks for ``clip``'s
@@ -787,6 +1073,17 @@ class GroupTimelineWidget(QWidget):
                 rect.left() + px, top_y,
                 rect.left() + px, bot_y)
 
+    def _lane_at_pos(self, pos: QPoint) -> Optional[int]:
+        """Which audio lane (if any) contains the y-coordinate
+        of ``pos``? Returns ``None`` when the cursor is outside
+        every lane's vertical band."""
+        n = self._track_count()
+        for ti in range(n):
+            lane = self._lane_rect(ti)
+            if lane.top() <= pos.y() <= lane.bottom():
+                return ti
+        return None
+
     def hit_audio_clip_handle(
             self, pos: QPoint) -> Tuple[
                 Optional[str], Optional[str]]:
@@ -795,14 +1092,24 @@ class GroupTimelineWidget(QWidget):
         ``side`` is ``"in"`` (left edge) or ``"out"`` (right
         edge), or ``(None, None)`` when ``pos`` isn't on any
         handle. Use BEFORE ``hit_audio_clip`` so an edge
-        click triggers a trim drag instead of a body drag."""
-        track = self._track_rect()
-        if not track.contains(pos):
+        click triggers a trim drag instead of a body drag.
+
+        Multi-lane: only edges of clips on the lane CONTAINING
+        ``pos.y()`` are eligible, so a click on lane 0 doesn't
+        accidentally trim a clip stacked above on lane 1.
+        """
+        ti = self._lane_at_pos(pos)
+        if ti is None:
             return None, None
+        # Inside a lane — only x matters for handle hit-test.
         clips = getattr(
             self._group, "audio_clips", None) or []
         for clip in clips:
             if getattr(clip, "start_time_seconds", None) is None:
+                continue
+            if int(
+                    getattr(clip, "track_index", 0)
+                    or 0) != ti:
                 continue
             start = float(
                 getattr(clip, "start_time_seconds", 0.0) or 0.0)
@@ -811,12 +1118,7 @@ class GroupTimelineWidget(QWidget):
                 continue
             x_left = self._seconds_to_x(start)
             x_right = self._seconds_to_x(start + eff)
-            # Body must be wide enough to expose both handles
-            # AND still have a draggable middle. Below 3×HANDLE
-            # we only expose one handle (the closer one) so the
-            # block stays interactable.
             if x_right - x_left < CLIP_EDGE_HANDLE_PX * 2:
-                # Tiny block — let the body handle the click.
                 continue
             if abs(pos.x() - x_left) <= CLIP_EDGE_HANDLE_PX:
                 return clip.id, "in"
@@ -848,16 +1150,20 @@ class GroupTimelineWidget(QWidget):
     def hit_audio_clip(self, pos: QPoint) -> Optional[str]:
         """Public hit-test: returns the id of the audio clip
         block under ``pos``, or ``None`` when the pos is in
-        empty space (or on the track outside any block).
-        Used by the dialog to translate right-clicks into clip
+        empty space (or on a different lane). Used by the
+        dialog to translate clicks / right-clicks into clip
         operations."""
-        track = self._track_rect()
-        if not track.contains(pos):
+        ti = self._lane_at_pos(pos)
+        if ti is None:
             return None
         clips = getattr(
             self._group, "audio_clips", None) or []
         for clip in clips:
             if getattr(clip, "start_time_seconds", None) is None:
+                continue
+            if int(
+                    getattr(clip, "track_index", 0)
+                    or 0) != ti:
                 continue
             start = float(
                 getattr(clip, "start_time_seconds", 0.0) or 0.0)
@@ -935,12 +1241,16 @@ class GroupTimelineWidget(QWidget):
         # the end via a large fallback.
         def _key(c):
             return snapshot.get(c.id, 1e9)
-        # Walk only PLACED clips; unplaced ones aren't on
-        # the timeline so they don't participate in overlap
-        # arithmetic.
+        # Walk only PLACED clips ON THE SAME LANE as ``moved``;
+        # clips on other lanes overlap freely since they're
+        # mixed at compose time (writers stack music + voice).
+        moved_lane = int(
+            getattr(moved, "track_index", 0) or 0)
         placed_clips = [
             c for c in clips
             if getattr(c, "start_time_seconds", None) is not None
+            and int(
+                getattr(c, "track_index", 0) or 0) == moved_lane
         ]
         if moved not in placed_clips:
             return
@@ -1098,10 +1408,18 @@ class GroupTimelineWidget(QWidget):
             return 0.0
         full = float(
             getattr(moved, "duration_seconds", 0.0) or 0.0)
+        # Same-lane neighbors only — different lanes don't
+        # contend for timeline slots.
+        moved_lane = int(
+            getattr(moved, "track_index", 0) or 0)
         ordered = sorted(
-            clips,
+            (c for c in clips
+             if int(getattr(c, "track_index", 0) or 0)
+             == moved_lane),
             key=lambda c: float(
                 getattr(c, "start_time_seconds", 0.0) or 0.0))
+        if moved not in ordered:
+            return full
         idx = ordered.index(moved)
         if idx + 1 >= len(ordered):
             return full
@@ -1113,8 +1431,6 @@ class GroupTimelineWidget(QWidget):
             getattr(moved, "start_time_seconds", 0.0) or 0.0)
         my_in = float(
             getattr(moved, "trim_in_seconds", 0.0) or 0.0)
-        # Source-time-of-right-edge = trim_in + (block_eff)
-        # = trim_in + (next_start - my_start)
         max_eff = max(0.01, next_start - my_start)
         return min(full, my_in + max_eff)
 
@@ -1252,6 +1568,12 @@ class GroupTimelineWidget(QWidget):
     # Mouse interaction
     # ------------------------------------------------------------------
     _SELECT_DRAG_THRESHOLD_PX = 4
+    # Pixels of cursor motion required to commit to a slide /
+    # audio clip body drag. Larger than the selection threshold
+    # because the writer accidentally nudges the mouse more
+    # often when clicking a block to select it than they do
+    # when click-anchoring on an empty area.
+    _BLOCK_DRAG_THRESHOLD_PX = 6
 
     def mousePressEvent(self, event) -> None:
         if event.button() != Qt.MouseButton.LeftButton:
@@ -1308,6 +1630,21 @@ class GroupTimelineWidget(QWidget):
                 if abs(pos.x() - out_x) <= 6:
                     self._dragging_trim_handle = "out"
                     return
+        # Slide edge handle (resize duration) — same pattern
+        # as audio clip edges. Checked before the body so a
+        # click on the edge starts a resize instead of a body
+        # drag.
+        edge_page_id, edge_side = self.hit_slide_block_edge(
+            pos)
+        if edge_page_id is not None:
+            self._slide_edge_drag_id = edge_page_id
+            self._slide_edge_drag_side = edge_side
+            self._selected_page_id = edge_page_id
+            self.slideSelected.emit(edge_page_id)
+            self._snapshot_slide_layout()
+            self.setCursor(Qt.CursorShape.SplitHCursor)
+            self.update()
+            return
         # Slide block hit-test.
         page_id = self._hit_test_block(pos)
         if page_id is not None:
@@ -1319,9 +1656,19 @@ class GroupTimelineWidget(QWidget):
                 x_left = self._seconds_to_x(
                     page.start_time_seconds_in_group or 0.0)
                 self._drag_grab_dx_pixels = pos.x() - x_left
+                # Reset the drag-started gate so the first move
+                # past ``_BLOCK_DRAG_THRESHOLD_PX`` flips it on.
+                # Press alone counts as selection, not drag —
+                # the writer's clicks for selecting a block no
+                # longer accidentally move it.
+                self._drag_page_started = False
+                self._drag_page_press_x = pos.x()
                 # Snapshot slide layout so the same cascade
                 # logic the audio path uses works for slides.
                 self._snapshot_slide_layout()
+                # Cursor → ClosedHand so the writer sees the
+                # block is grabbed and will follow the mouse.
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
             self.update()
             return
         # Press on empty audio bar — anchor a potential
@@ -1354,14 +1701,25 @@ class GroupTimelineWidget(QWidget):
         # standard finder / DAW pattern.
         if not (event.buttons() & Qt.MouseButton.LeftButton):
             edge_id, _side = self.hit_audio_clip_handle(pos)
+            slide_edge_id, _ = self.hit_slide_block_edge(pos)
             if edge_id is not None:
                 self.setCursor(Qt.CursorShape.SplitHCursor)
+            elif slide_edge_id is not None:
+                # Slide edge resize handle.
+                self.setCursor(Qt.CursorShape.SplitHCursor)
             elif self.hit_audio_clip(pos) is not None:
+                self.setCursor(Qt.CursorShape.OpenHandCursor)
+            elif self._hit_test_block(pos) is not None:
+                # Slide block hover → same OpenHand affordance
+                # so writers see images are draggable too.
                 self.setCursor(Qt.CursorShape.OpenHandCursor)
             else:
                 self.unsetCursor()
         elif self._audio_clip_drag_id is not None:
             # In an active body drag — show a closed hand.
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        elif self._drag_page_id is not None:
+            # Same for slide drag.
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
         if self._dragging_trim_handle is not None:
             secs = self._x_to_seconds(pos.x())
@@ -1411,14 +1769,89 @@ class GroupTimelineWidget(QWidget):
                 self.timelineChanged.emit()
                 self.update()
                 return
-        if self._drag_page_id is not None:
-            # Initiate a Qt drag once the writer's moved far enough
-            # — short clicks shouldn't trigger a drag.
-            if (event.buttons() & Qt.MouseButton.LeftButton):
-                # Cheap distance check.
-                self._start_internal_reorder_drag(
-                    pos.x() - self._drag_grab_dx_pixels)
+        # Slide edge resize — drag the right (or left) edge
+        # to change the slide's ``duration_seconds`` /
+        # ``start_time_seconds_in_group``. Clamped so the
+        # block can't shrink below 0.25 s and can't expand
+        # past the next slide's start.
+        if (self._slide_edge_drag_id is not None
+                and (event.buttons()
+                     & Qt.MouseButton.LeftButton)):
+            page = self._find_page(self._slide_edge_drag_id)
+            if page is None:
+                self._slide_edge_drag_id = None
+                self._slide_edge_drag_side = None
                 return
+            secs_at_cursor = max(
+                0.0, self._x_to_seconds(pos.x()))
+            cur_start = float(
+                getattr(
+                    page,
+                    "start_time_seconds_in_group", 0.0)
+                or 0.0)
+            cur_dur = max(
+                0.25, float(
+                    getattr(page, "duration_seconds", 0.0)
+                    or 0.0))
+            cur_end = cur_start + cur_dur
+            # Next slide's start = upper bound for the right
+            # edge so blocks don't overlap.
+            placed = sorted(
+                (p for p in self._placed_pages()
+                 if p.id != page.id),
+                key=lambda p: float(
+                    getattr(
+                        p,
+                        "start_time_seconds_in_group", 0.0)
+                    or 0.0))
+            next_start = float("inf")
+            prev_end = 0.0
+            for p in placed:
+                ps = float(
+                    getattr(
+                        p,
+                        "start_time_seconds_in_group", 0.0)
+                    or 0.0)
+                if ps >= cur_start and ps < next_start:
+                    next_start = ps
+                pd = max(0.25, float(
+                    getattr(p, "duration_seconds", 0.0)
+                    or 0.0))
+                if ps + pd <= cur_start and (ps + pd) > prev_end:
+                    prev_end = ps + pd
+            if self._slide_edge_drag_side == "right":
+                new_end = max(
+                    cur_start + 0.25,
+                    min(secs_at_cursor, next_start))
+                page.duration_seconds = round(
+                    new_end - cur_start, 3)
+            else:
+                # Left edge: shift start forward / back, keep
+                # the right edge anchored.
+                new_start = max(
+                    prev_end,
+                    min(secs_at_cursor, cur_end - 0.25))
+                page.start_time_seconds_in_group = round(
+                    new_start, 3)
+                page.duration_seconds = round(
+                    cur_end - new_start, 3)
+            page.updated_at = datetime.now()
+            self.update()
+            return
+        if self._drag_page_id is not None and (
+                event.buttons() & Qt.MouseButton.LeftButton):
+            # Gate on threshold — a stray micro-jiggle on a
+            # selection click shouldn't bump the slide. Only
+            # commit to repositioning after the cursor's
+            # crossed ``_BLOCK_DRAG_THRESHOLD_PX``.
+            if (not self._drag_page_started
+                    and abs(pos.x() - self._drag_page_press_x)
+                    < self._BLOCK_DRAG_THRESHOLD_PX):
+                return
+            self._drag_page_started = True
+            self._start_internal_reorder_drag(
+                pos.x() - self._drag_grab_dx_pixels)
+            return
         # Trim-handle drag — adjust the clip's trim_in or
         # trim_out live so the block visually shrinks /
         # extends from the dragged edge. Clip start_time stays
@@ -1502,8 +1935,19 @@ class GroupTimelineWidget(QWidget):
                 return
             self._audio_clip_drag_started = True
             clip.start_time_seconds = round(new_secs, 3)
+            # Vertical drag → moves the clip to whatever lane
+            # the cursor's hovering over. Lets the writer
+            # restack clips (e.g. drop a take onto the music
+            # track) without a context-menu trip.
+            new_lane = self._lane_at_pos(pos)
+            if (new_lane is not None
+                    and new_lane
+                    != int(
+                        getattr(clip, "track_index", 0)
+                        or 0)):
+                clip.track_index = int(new_lane)
             # Enforce no-overlap + cascade-shift subsequent
-            # clips when the writer drags right.
+            # clips on the SAME lane.
             self._enforce_audio_no_overlap(clip.id)
             self.update()
             return
@@ -1521,7 +1965,11 @@ class GroupTimelineWidget(QWidget):
         # cascade-shift subsequent slides for right-drags.
         self._enforce_slide_no_overlap(page.id)
         page.updated_at = datetime.now()
-        self.timelineChanged.emit()
+        # ``timelineChanged`` fires ONCE in mouseReleaseEvent
+        # when the drag actually committed, not per-frame.
+        # Firing here was triggering the dialog's recompose /
+        # autosave on every pixel of cursor motion, which felt
+        # janky and gummed up the GUI on long drags.
         self.update()
 
     def mouseReleaseEvent(self, event) -> None:
@@ -1596,8 +2044,22 @@ class GroupTimelineWidget(QWidget):
         self._select_anchor_seconds = None
         self._in_selection_drag = False
         self._dragging_trim_handle = None
+        # Fire timelineChanged for slides only when an actual
+        # drag committed (threshold was crossed). A click that
+        # selected without moving doesn't need the cascade-shift
+        # math to re-run.
+        if (self._drag_page_id is not None
+                and self._drag_page_started):
+            self.timelineChanged.emit()
+        # Same idea for slide edge resize.
+        if self._slide_edge_drag_id is not None:
+            self.timelineChanged.emit()
         self._drag_page_id = None
         self._drag_grab_dx_pixels = 0
+        self._drag_page_started = False
+        self._drag_page_press_x = 0
+        self._slide_edge_drag_id = None
+        self._slide_edge_drag_side = None
         # Drop back to the default cursor — the next move event
         # will set OpenHand again if the cursor is still over
         # a clip body.
@@ -1613,7 +2075,15 @@ class GroupTimelineWidget(QWidget):
         self._dispatch_context_menu(local_pos)
 
     def _dispatch_context_menu(self, pos) -> None:
-        # Slide block first.
+        # Lane header first — narrow strip on the left of
+        # every lane. Right-click there → per-lane menu.
+        for ti in range(self._track_count()):
+            header = self._lane_header_rect(ti)
+            if header.contains(pos):
+                self.audioLaneContextRequested.emit(
+                    ti, self.mapToGlobal(pos))
+                return
+        # Slide block.
         page_id = self._hit_test_block(pos)
         if page_id is not None:
             self._selected_page_id = page_id
@@ -1684,6 +2154,31 @@ class GroupTimelineWidget(QWidget):
             if x_left <= pos.x() <= x_right:
                 return page.id
         return None
+
+    def hit_slide_block_edge(
+            self, pos: QPoint) -> Tuple[
+                Optional[str], Optional[str]]:
+        """Hit-test the right / left edge of a placed slide
+        block. Returns ``(page_id, side)`` where ``side`` is
+        ``"right"`` (most common — extends the slide's
+        duration) or ``"left"`` (rare — shifts start_time).
+        Use BEFORE ``_hit_test_block`` so an edge click
+        triggers a resize instead of a reposition drag."""
+        band = self._slide_band_rect()
+        if not band.contains(pos):
+            return None, None
+        for page, start, end in self._placed_blocks():
+            x_left = self._seconds_to_x(start)
+            x_right = self._seconds_to_x(end)
+            # Skip narrow blocks — the body needs to stay
+            # interactable.
+            if x_right - x_left < CLIP_EDGE_HANDLE_PX * 2:
+                continue
+            if abs(pos.x() - x_left) <= CLIP_EDGE_HANDLE_PX:
+                return page.id, "left"
+            if abs(pos.x() - x_right) <= CLIP_EDGE_HANDLE_PX:
+                return page.id, "right"
+        return None, None
 
     # ------------------------------------------------------------------
     # Drag & drop from the tray

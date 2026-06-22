@@ -364,7 +364,10 @@ class GroupEditorDialog(QDialog):
             self._player.setSource(QUrl())
         except Exception:
             pass
-        result = compose_clips(clips, dest)
+        result = compose_clips(
+            clips, dest,
+            track_gain_db=getattr(
+                self._group, "track_gain_db", None))
         if not result.success:
             QMessageBox.warning(
                 self, "Compose failed",
@@ -553,6 +556,19 @@ class GroupEditorDialog(QDialog):
         self._reset_btn.clicked.connect(
             self._on_reset_playhead)
         ab.addWidget(self._reset_btn)
+        # ➕ Track adds a fresh empty audio lane. Writers use it
+        # to stack music / SFX above the narration without
+        # individual clips colliding. Tracks are persisted via
+        # ``track_gain_db`` / ``track_names`` on the group so
+        # they survive save / load even before any clips land.
+        self._add_track_btn = QPushButton("➕ Track")
+        self._add_track_btn.setToolTip(
+            "Add a new audio lane below the current ones. "
+            "Stack music, SFX, or alternate takes — clips on "
+            "different lanes mix together at export time "
+            "without competing for timeline slots.")
+        self._add_track_btn.clicked.connect(self._on_add_track)
+        ab.addWidget(self._add_track_btn)
         self._delete_btn = QPushButton("🗑 Delete")
         self._delete_btn.setToolTip(
             "Detach the audio from the group. Optionally "
@@ -683,12 +699,40 @@ class GroupEditorDialog(QDialog):
             self._on_audio_clip_context_from_timeline)
         self._timeline.audioClipMoved.connect(
             self._on_audio_clip_moved_from_timeline)
+        # Lane header right-click → rename, set volume,
+        # delete the lane.
+        self._timeline.audioLaneContextRequested.connect(
+            self._on_audio_lane_context_from_timeline)
         # Slide block right-click → per-slide menu with
         # remove-from-timeline + remove-from-group + open-
         # preview.
         self._timeline.slideContextRequested.connect(
             self._on_slide_context_from_timeline)
-        cv.addWidget(self._timeline)
+        # Horizontal scroll wrapper. The timeline claims a
+        # minimum width proportional to its audio duration
+        # (see ``MIN_PIXELS_PER_SECOND``); when the window
+        # narrower than that minimum, this scroll area shows a
+        # horizontal scrollbar. When wider, the timeline
+        # stretches because ``setWidgetResizable(True)`` lets
+        # the widget grow past its sizeHint. Vertical scroll
+        # is off — the outer dialog body scroll handles tall
+        # content.
+        self._timeline_scroll = QScrollArea()
+        self._timeline_scroll.setWidget(self._timeline)
+        self._timeline_scroll.setWidgetResizable(True)
+        self._timeline_scroll.setFrameShape(
+            QScrollArea.Shape.NoFrame)
+        self._timeline_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._timeline_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Match the timeline's own minimum height so the
+        # scroll area doesn't crush it vertically. The +20
+        # leaves room for the horizontal scrollbar without
+        # cutting into the slide drop band.
+        self._timeline_scroll.setMinimumHeight(
+            self._timeline.minimumHeight() + 20)
+        cv.addWidget(self._timeline_scroll)
 
         # Tray row.
         tray_header = QHBoxLayout()
@@ -2258,6 +2302,51 @@ class GroupEditorDialog(QDialog):
         # our visual playhead is independent and the writer
         # expects it to mark "where I stopped."
 
+    def _on_add_track(self) -> None:
+        """Append a new audio lane. We don't insert a clip on
+        it yet — the writer adds clips by recording / importing
+        and assigning to the new lane (or dragging a clip onto
+        the new lane vertically). The presence of the lane is
+        signaled via ``track_gain_db`` getting a zero-dB key,
+        which is what ``_track_count`` reads from."""
+        gains = dict(
+            getattr(self._group, "track_gain_db", None) or {})
+        # Normalize keys to ints; JSON round-trips can turn
+        # them into strings.
+        clean_gains: dict = {}
+        for k, v in gains.items():
+            try:
+                clean_gains[int(k)] = float(v)
+            except (TypeError, ValueError):
+                continue
+        # New track index = one past the current highest lane.
+        existing = max(
+            list(clean_gains.keys()) + [
+                int(getattr(c, "track_index", 0) or 0)
+                for c in (
+                    getattr(self._group, "audio_clips", [])
+                    or [])
+            ],
+            default=-1)
+        new_idx = existing + 1
+        clean_gains[new_idx] = 0.0
+        self._group.track_gain_db = clean_gains
+        # Friendly default name; writer can rename via the
+        # lane header's right-click menu.
+        names = dict(
+            getattr(self._group, "track_names", None) or {})
+        clean_names: dict = {}
+        for k, v in names.items():
+            try:
+                clean_names[int(k)] = str(v)
+            except (TypeError, ValueError):
+                continue
+        clean_names[new_idx] = f"Track {new_idx + 1}"
+        self._group.track_names = clean_names
+        self._timeline._refresh_min_width()
+        self._timeline.update()
+        self.deck_modified.emit()
+
     def _on_reset_playhead(self) -> None:
         """Send the red line back to t=0 and stop any playback
         in progress so the next ▶ Play starts at the very
@@ -2472,6 +2561,100 @@ class GroupEditorDialog(QDialog):
         self._refresh_play_status()
         self.deck_modified.emit()
 
+    def _on_audio_lane_context_from_timeline(
+            self, track_index: int, global_pos) -> None:
+        """Right-click on a lane HEADER. Lets the writer
+        rename the lane, set its volume in dB, or remove it
+        (clips on the removed lane fall back to lane 0)."""
+        names = (
+            getattr(self._group, "track_names", None) or {})
+        gains = (
+            getattr(self._group, "track_gain_db", None) or {})
+        cur_name = (
+            names.get(track_index)
+            or names.get(str(track_index))
+            or f"Track {track_index + 1}")
+        cur_gain = float(
+            gains.get(
+                track_index,
+                gains.get(str(track_index), 0.0)) or 0.0)
+        menu = QMenu(self)
+        menu.setToolTipsVisible(True)
+        header = menu.addAction(
+            f"🎚  {cur_name}  ·  {cur_gain:+.1f} dB")
+        header.setEnabled(False)
+        menu.addSeparator()
+        rename_act = menu.addAction("✏️  Rename track…")
+        volume_act = menu.addAction(
+            f"🔊  Set volume…  (current {cur_gain:+.1f} dB)")
+        menu.addSeparator()
+        remove_act = menu.addAction(
+            "🗑  Remove track (clips fall to Track 1)")
+        # Lane 0 is the canonical primary; refusing its removal
+        # keeps the model sane (every clip needs a lane).
+        remove_act.setEnabled(track_index != 0)
+        action = menu.exec(global_pos)
+        if action is None:
+            return
+        if action is rename_act:
+            from PyQt6.QtWidgets import (
+                QInputDialog as _QID)
+            new_name, ok = _QID.getText(
+                self, "Rename track",
+                "Track name:", text=cur_name)
+            if ok and new_name.strip():
+                clean_names = {
+                    int(k): str(v)
+                    for k, v in (names or {}).items()
+                    if str(k).lstrip("-").isdigit()}
+                clean_names[track_index] = new_name.strip()
+                self._group.track_names = clean_names
+                self._timeline.update()
+                self.deck_modified.emit()
+        elif action is volume_act:
+            val = self._param_popup(
+                "Track volume",
+                f"Volume for '{cur_name}' in dB. Positive "
+                "boosts, negative attenuates. Applied on top "
+                "of each clip's own gain when the overlay "
+                "renders.",
+                value=cur_gain, min_v=-30.0, max_v=20.0,
+                decimals=1, step=0.5, suffix=" dB")
+            if val is not None:
+                clean_gains = {
+                    int(k): float(v)
+                    for k, v in (gains or {}).items()
+                    if str(k).lstrip("-").isdigit()}
+                clean_gains[track_index] = float(val)
+                self._group.track_gain_db = clean_gains
+                self._timeline.update()
+                self._recompose_overlay()
+        elif action is remove_act:
+            # Move clips to lane 0 and drop the gain/name
+            # entries.
+            for c in (
+                    getattr(
+                        self._group, "audio_clips", [])
+                    or []):
+                if int(getattr(c, "track_index", 0)
+                       or 0) == track_index:
+                    c.track_index = 0
+            clean_gains = {
+                int(k): float(v)
+                for k, v in (gains or {}).items()
+                if str(k).lstrip("-").isdigit()
+                and int(k) != track_index}
+            clean_names = {
+                int(k): str(v)
+                for k, v in (names or {}).items()
+                if str(k).lstrip("-").isdigit()
+                and int(k) != track_index}
+            self._group.track_gain_db = clean_gains
+            self._group.track_names = clean_names
+            self._timeline._refresh_min_width()
+            self._timeline.update()
+            self._recompose_overlay()
+
     def _on_slide_context_from_timeline(
             self, page_id: str, global_pos) -> None:
         """Right-click on a slide block. Pops a slim menu at
@@ -2500,6 +2683,25 @@ class GroupEditorDialog(QDialog):
         header.setEnabled(False)
         menu.addSeparator()
         view_act = menu.addAction("🔍  Preview slide image…")
+        # Transition INTO this slide — the exporter applies it
+        # at the join with the previous slide. Submenu lists
+        # every supported transition; the duration field has a
+        # follow-up popup if the writer picks a non-cut.
+        cur_trans = (
+            getattr(page, "transition_in", "cut") or "cut")
+        cur_trans_secs = float(
+            getattr(page, "transition_seconds", 0.7) or 0.7)
+        transition_menu = menu.addMenu(
+            f"🎞  Transition in… (current: "
+            f"{cur_trans} {cur_trans_secs:.1f}s)")
+        from src.video_studio.models import (
+            CHAPTER_TRANSITIONS as _CT)
+        trans_actions = {}
+        for key, label in _CT:
+            act = transition_menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(key == cur_trans)
+            trans_actions[act] = key
         unplace_act = menu.addAction(
             "⤴  Remove from timeline (keep in group)")
         unplace_act.setToolTip(
@@ -2517,11 +2719,26 @@ class GroupEditorDialog(QDialog):
             return
         if action is view_act:
             self._view_slide(page_id)
+        elif action in trans_actions:
+            new_key = trans_actions[action]
+            page.transition_in = new_key
+            page.updated_at = datetime.now()
+            # Non-cut transitions need a duration. Pop a follow-
+            # up popup pre-seeded with the current value so the
+            # writer can keep tweaking without losing context.
+            if new_key != "cut":
+                val = self._param_popup(
+                    "Transition length",
+                    f"How long the {new_key} transition "
+                    "into this slide should run, in seconds.",
+                    value=cur_trans_secs,
+                    min_v=0.05, max_v=5.0,
+                    decimals=2, step=0.1, suffix=" s")
+                if val is not None:
+                    page.transition_seconds = float(val)
+            self._timeline.update()
+            self.deck_modified.emit()
         elif action is unplace_act:
-            # ``_on_unplace_selected`` reads the selected page
-            # from the timeline; the right-click already set
-            # the selection above, so this unplaces the right
-            # slide.
             self._on_unplace_selected()
         elif action is remove_act:
             self._on_remove_from_group()

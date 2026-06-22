@@ -419,6 +419,14 @@ class GroupAudioClip(BaseModel):
     # overlap between adjacent clips' start times, then the
     # field stops mattering.
     crossfade_seconds: float = 0.15
+    # Lane / track this clip lives on. Default ``0`` keeps every
+    # existing saved deck on a single primary track; setting a
+    # higher index stacks the clip in a parallel lane so the
+    # writer can layer music + SFX + narration without them
+    # contending for the same timeline slot. ``compose_clips``
+    # mixes all tracks together via ``amix``; the timeline
+    # widget renders one visual lane per distinct ``track_index``.
+    track_index: int = 0
     created_at: datetime = Field(default_factory=datetime.now)
 
 
@@ -471,6 +479,19 @@ class SlideGroup(BaseModel):
     # the source WAV in place. Persisted on the group so the
     # writer doesn't have to re-pick the mode on every reopen.
     save_audio_edits_as_new: bool = False
+    # Per-track gain in dB, keyed by the integer ``track_index``
+    # used on GroupAudioClip. Missing keys default to 0 dB
+    # (unity). Lets writers raise / drop a whole lane (e.g.
+    # ducking a music bed under the narration) without touching
+    # individual clips. ``compose_clips`` applies these on the
+    # per-clip ``volume=`` filter chain.
+    track_gain_db: Dict[int, float] = Field(
+        default_factory=dict)
+    # Friendly names for tracks, keyed by ``track_index``. Used
+    # in the timeline's left-side track strip + the right-click
+    # "Move to track" submenu. Missing keys fall back to
+    # "Track N" so writers don't see blanks.
+    track_names: Dict[int, str] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=datetime.now)
 
 

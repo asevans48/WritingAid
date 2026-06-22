@@ -154,6 +154,7 @@ def compose_clips(
     dest: Path,
     *,
     default_crossfade_seconds: float = 0.15,
+    track_gain_db: Optional[dict] = None,
 ) -> AudioEditResult:
     """Position-aware audio composer.
 
@@ -231,14 +232,33 @@ def compose_clips(
             # overlay; the source file stays on disk.
             continue
         start = max(0.0, float(explicit))
+        # Apply per-track lane gain ON TOP OF per-clip gain.
+        # ``track_index`` defaults to 0 (the primary lane), so
+        # legacy clips that pre-date the multi-track refactor
+        # stay on lane 0 and pick up the lane-0 gain if any.
+        track_idx = int(
+            getattr(c, "track_index", 0) or 0)
+        clip_gain = float(
+            getattr(c, "gain_db", 0.0) or 0.0)
+        lane_gain = 0.0
+        if track_gain_db is not None:
+            # Allow either int or str keys — JSON round-trip
+            # would otherwise turn ``{0: -3.0}`` into
+            # ``{"0": -3.0}`` and the lookup would silently
+            # miss.
+            lane_gain = float(
+                track_gain_db.get(track_idx,
+                                  track_gain_db.get(
+                                      str(track_idx), 0.0))
+                or 0.0)
+        effective_gain = clip_gain + lane_gain
         renders.append(_ClipRender(
             path=path,
             start=start,
             eff_dur=eff_dur,
             trim_in=tin,
             trim_out=tout,
-            gain_db=float(
-                getattr(c, "gain_db", 0.0) or 0.0),
+            gain_db=effective_gain,
             fade_in=max(0.0, float(
                 getattr(c, "fade_in_seconds", 0.0) or 0.0)),
             fade_out=max(0.0, float(
