@@ -524,6 +524,95 @@ def _set_slide_transition_effect(
         effect.set(k, v)
 
 
+def render_group_to_mp4(
+    deck: SlideDeckProject,
+    group: SlideGroup,
+    output_path: Path,
+    width: int = 1280,
+    height: int = 720,
+    fps: int = 30,
+) -> Tuple[bool, str]:
+    """Render ONE group into an MP4 the same way the group
+    editor's "Preview" button does.
+
+    Pipeline:
+      * Pull the group's placed slides (those with
+        ``start_time_seconds_in_group`` set), sort by start
+        time.
+      * Each slide's render hold = gap to next placed slide;
+        the LAST slide stretches to the overlay end if that's
+        longer than its own duration.
+      * Strip per-slide audio_path (the overlay owns audio
+        for the group's span).
+      * Attach the group's composed overlay to the first
+        slide so the stitcher's ``adelay`` lands it at deck-
+        time 0 for this group.
+      * Hand the synthetic deck to
+        ``stitch_slide_deck_to_mp4``.
+
+    This helper is the single source of truth for "what a
+    group sounds + looks like" — both the group editor's
+    preview and the slide deck editor's concat-based deck
+    preview call it so they stay byte-for-byte consistent.
+    """
+    placed = sorted(
+        (p for p in deck.pages
+         if p.group_id == group.id
+         and getattr(
+             p, "start_time_seconds_in_group", None)
+         is not None),
+        key=lambda p: float(
+            getattr(
+                p, "start_time_seconds_in_group", 0.0)
+            or 0.0))
+    if not placed:
+        return (False,
+                f"Group '{group.name or group.id}' has no "
+                "placed slides.")
+    overlay_dur = float(
+        getattr(
+            group,
+            "overlay_audio_duration_seconds", 0.0) or 0.0)
+    render_pages: list = []
+    for i, src in enumerate(placed):
+        cur_start = float(
+            getattr(
+                src, "start_time_seconds_in_group", 0.0)
+            or 0.0)
+        if i + 1 < len(placed):
+            next_start = float(
+                getattr(
+                    placed[i + 1],
+                    "start_time_seconds_in_group", 0.0)
+                or 0.0)
+            hold = max(0.25, next_start - cur_start)
+        else:
+            own = max(
+                0.25, float(
+                    getattr(
+                        src, "duration_seconds", 0.0)
+                    or 0.0))
+            tail = max(0.0, overlay_dur - cur_start)
+            hold = max(own, tail) if tail > 0 else own
+        copy = src.model_copy(deep=False)
+        copy.duration_seconds = round(hold, 3)
+        copy.audio_path = ""
+        render_pages.append(copy)
+    overlay_path = (
+        getattr(group, "overlay_audio_path", "") or "")
+    if overlay_path and Path(overlay_path).exists():
+        render_pages[0].audio_path = overlay_path
+    synthetic = SlideDeckProject(
+        id=f"render_{group.id}",
+        name=f"Group {group.name or group.id}",
+        working_dir=deck.working_dir,
+        pages=render_pages,
+    )
+    return stitch_slide_deck_to_mp4(
+        synthetic, output_path,
+        width=width, height=height, fps=fps)
+
+
 def stitch_slide_deck_to_mp4(
     deck: SlideDeckProject,
     output_path: Path,

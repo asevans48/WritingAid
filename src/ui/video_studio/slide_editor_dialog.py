@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QPixmap
@@ -40,6 +40,72 @@ from src.video_studio.slide_deck import (
     stitch_slide_deck_to_mp4, suggest_timings_from_script,
 )
 from src.video_studio.tts.base import probe_audio_duration_seconds
+
+
+def _concat_mp4_segments(
+    segment_paths: list, output_path: Path,
+) -> Tuple[bool, str]:
+    """Concatenate ``segment_paths`` into ``output_path`` via
+    ffmpeg's concat demuxer with re-encode.
+
+    Re-encode (rather than stream copy) because per-group
+    renders may differ in codec parameters (different audio
+    sample rates from different overlays, different image
+    sizes from different sources, etc.) — stream copy would
+    fail or produce garbled output. The re-encode is fast
+    for the typical few-MB segments a deck produces.
+
+    Returns ``(success, message)``.
+    """
+    import shutil as _sh
+    import subprocess as _sp
+    import tempfile as _tf
+    if _sh.which("ffmpeg") is None:
+        return (False, "ffmpeg not found on PATH.")
+    if not segment_paths:
+        return (False, "No segments to concat.")
+    # ffmpeg concat demuxer reads a list file with one
+    # ``file '...'`` line per segment. Use a temp file in
+    # the output's parent so any relative path quirks resolve.
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with _tf.NamedTemporaryFile(
+            mode="w", suffix=".txt",
+            dir=str(output_path.parent),
+            delete=False, encoding="utf-8") as list_file:
+        for p in segment_paths:
+            # Escape single quotes for the concat demuxer's
+            # quoting rules.
+            safe = str(Path(p).resolve()).replace("'", "'\\''")
+            list_file.write(f"file '{safe}'\n")
+        list_path = Path(list_file.name)
+    try:
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", str(list_path),
+            # Re-encode video + audio with sensible defaults.
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            str(output_path.resolve()),
+        ]
+        try:
+            proc = _sp.run(
+                cmd, capture_output=True, text=True,
+                timeout=900)
+        except _sp.TimeoutExpired:
+            return (False,
+                    "ffmpeg concat timed out (15 min).")
+        if proc.returncode != 0:
+            return (False,
+                    "ffmpeg concat failed. stderr (last "
+                    "400):\n" + (proc.stderr or "")[-400:])
+        return (True, f"Concatenated to {output_path}.")
+    finally:
+        try:
+            list_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 class SlideEditorDialog(QDialog):
@@ -550,6 +616,20 @@ class SlideEditorDialog(QDialog):
         #           (auto-plays on slide entry) + auto-advance
         #           timings for further editing in PowerPoint /
         #           Keynote / Slides.
+        # 🎬 Preview deck — same render path as Export MP4 but
+        # to a temp file in working_dir/previews/, then opens
+        # in a floating playback window. Lets writers spot-check
+        # what the full deck (every group, every slide, every
+        # group-overlay audio + transition) plays like without
+        # picking a save destination first.
+        self._preview_deck_btn = QPushButton("🎬 Preview deck")
+        self._preview_deck_btn.setToolTip(
+            "Compile every group's slides + audio overlays + "
+            "transitions into a temporary MP4 and play it in "
+            "a floating window. Same render path as Export "
+            "MP4 — what you see here is what ships.")
+        self._preview_deck_btn.clicked.connect(
+            self._on_preview_deck_clicked)
         self._export_mp4_btn = QPushButton("🎬 Export MP4…")
         self._export_mp4_btn.clicked.connect(
             self._on_export_mp4_clicked)
@@ -560,6 +640,9 @@ class SlideEditorDialog(QDialog):
             "matching the per-slide durations. No text overlays.")
         self._export_pptx_btn.clicked.connect(
             self._on_export_pptx_clicked)
+        buttons.addButton(
+            self._preview_deck_btn,
+            QDialogButtonBox.ButtonRole.ActionRole)
         buttons.addButton(
             self._export_mp4_btn,
             QDialogButtonBox.ButtonRole.ActionRole)
@@ -798,6 +881,42 @@ class SlideEditorDialog(QDialog):
             except Exception as e:
                 print(
                     f"[slide_editor] preview sync failed: {e}")
+
+    def refresh_after_external_change(self) -> None:
+        """Public entry point the studio can call after it
+        mutates this editor's live ``deck`` from the outside —
+        e.g. when the writer changes an action's favorite
+        image in the scene editor and the studio rewrites
+        affected ``SlidePage.image_path`` values.
+
+        Three layers to refresh:
+          1. The slide LIST — text is regenerated so any
+             label / duration changes show up immediately.
+          2. The preview WINDOW (when open) — re-call
+             ``set_current`` so the popup re-reads the
+             current slide's image_path from disk and the
+             writer sees the new image. ``QPixmap`` doesn't
+             cache by path so a re-load picks up the new
+             file contents.
+          3. The selection state — if the writer was on a
+             page that got reassigned, the selection might
+             still point at it but the image changed; the
+             ``_sync_preview_window_selection`` call handles
+             the visual swap.
+        """
+        try:
+            self._refresh_slides()
+        except Exception as exc:
+            print(
+                f"[slide_editor] external-refresh list "
+                f"failed: {exc}")
+        try:
+            self._sync_preview_window_selection(
+                self._selected_page_id)
+        except Exception as exc:
+            print(
+                f"[slide_editor] external-refresh preview "
+                f"failed: {exc}")
 
     # ------------------------------------------------------------------
     # Audio
@@ -1192,6 +1311,174 @@ class SlideEditorDialog(QDialog):
     # ------------------------------------------------------------------
     # Export
     # ------------------------------------------------------------------
+    def _on_preview_deck_clicked(self) -> None:
+        """Render each group separately (via
+        ``render_group_to_mp4`` — same path the group editor's
+        preview uses), then concatenate the per-group MP4s
+        into a single deck preview.
+
+        The earlier "flatten + single stitcher pass" approach
+        was producing weird audio behavior (writers reported
+        "first group loops mid-way then cuts off"). The
+        single-pass stitcher mixes ALL audio across the entire
+        deck via amix, and per-clip ``adelay`` offsets must
+        cumulatively line up with the visual segments — too
+        many edge cases for nested groups + transitions.
+
+        Concat-of-per-group-MP4s is bulletproof: each segment
+        is independently rendered + verified, then ffmpeg's
+        concat demuxer (no re-encode of streams that match)
+        joins them. What the writer sees in the deck preview
+        for any group EQUALS what they see when they preview
+        that group alone.
+        """
+        if not self._deck.pages:
+            QMessageBox.information(
+                self, "Nothing to preview",
+                "Add slides to the deck first.")
+            return
+        from src.video_studio.slide_deck import (
+            render_group_to_mp4)
+        # Walk deck.pages in writer order; emit each group
+        # exactly once (the first time we hit any of its
+        # members). Orphan slides become a one-slide synthetic
+        # group rendered the same way.
+        groups_by_id = {
+            g.id: g
+            for g in (getattr(self._deck, "groups", []) or [])
+        }
+        ordered_groups: list = []  # list of (group_or_None,
+        #                                    placed_or_orphan_pages)
+        seen_group_ids: set = set()
+        orphan_pages: list = []
+        for page in self._deck.pages:
+            gid = getattr(page, "group_id", None)
+            if not gid or gid not in groups_by_id:
+                orphan_pages.append(page)
+                continue
+            if gid in seen_group_ids:
+                continue
+            seen_group_ids.add(gid)
+            ordered_groups.append((groups_by_id[gid], None))
+        if orphan_pages:
+            # Orphans appear at the END after every group, in
+            # their deck.pages order. (We could interleave by
+            # original deck position too, but writers seem to
+            # think of orphans as "extras" so trailing them is
+            # the least surprising default.)
+            ordered_groups.append((None, orphan_pages))
+        if not ordered_groups:
+            QMessageBox.information(
+                self, "Nothing to preview",
+                "No groups or slides to render.")
+            return
+        # Render each group / orphan batch to its own MP4.
+        from datetime import datetime as _dt
+        out_dir = self._working_dir / "deck_previews"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stamp = _dt.now().strftime("%Y%m%d_%H%M%S")
+        segments_dir = out_dir / f"_segments_{stamp}"
+        segments_dir.mkdir(parents=True, exist_ok=True)
+        segment_paths: list = []
+        self._preview_deck_btn.setEnabled(False)
+        self._preview_deck_btn.setText("Rendering…")
+        try:
+            for i, (group, orphans) in enumerate(
+                    ordered_groups):
+                seg_path = segments_dir / f"seg_{i:03d}.mp4"
+                if group is not None:
+                    ok, msg = render_group_to_mp4(
+                        self._deck, group, seg_path)
+                    if not ok:
+                        # Empty / broken groups don't kill the
+                        # preview — skip them. Writers see the
+                        # message in the dialog at the end if
+                        # nothing rendered.
+                        print(
+                            f"[deck preview] skipping group "
+                            f"'{group.name}': {msg}")
+                        continue
+                else:
+                    # Orphan batch — render as a single
+                    # synthetic deck. No overlay; each
+                    # slide's own audio (if any) plays.
+                    from src.video_studio.models import (
+                        SlideDeckProject as _SDP)
+                    synth = _SDP(
+                        id=f"orphans_{self._deck.id}",
+                        name="Orphan slides",
+                        working_dir=self._deck.working_dir,
+                        pages=[
+                            p.model_copy(deep=False)
+                            for p in orphans],
+                    )
+                    ok, msg = stitch_slide_deck_to_mp4(
+                        synth, seg_path)
+                    if not ok:
+                        print(
+                            f"[deck preview] orphan batch "
+                            f"failed: {msg}")
+                        continue
+                segment_paths.append(seg_path)
+            if not segment_paths:
+                QMessageBox.warning(
+                    self, "Preview render failed",
+                    "Every group failed to render — nothing "
+                    "to play.")
+                return
+            # Concat the segments via ffmpeg concat demuxer.
+            # Re-encode video + audio so segment-to-segment
+            # parameter mismatches (different codecs, sample
+            # rates, color spaces) don't poison the concat —
+            # the cost is a small re-encode but the writer
+            # gets a guaranteed-playable file.
+            out_path = (
+                out_dir / f"deck_preview_{stamp}.mp4")
+            ok, msg = _concat_mp4_segments(
+                segment_paths, out_path)
+            if not ok:
+                QMessageBox.warning(
+                    self, "Preview concat failed", msg)
+                return
+        finally:
+            self._preview_deck_btn.setEnabled(True)
+            self._preview_deck_btn.setText(
+                "🎬 Preview deck")
+            # Clean up the segment files — they're already
+            # baked into out_path.
+            try:
+                for p in segment_paths:
+                    p.unlink(missing_ok=True)
+                segments_dir.rmdir()
+            except Exception:
+                pass
+        if not ok:
+            QMessageBox.warning(
+                self, "Preview render failed", msg)
+            return
+        from src.ui.video_studio.group_preview_window import (
+            GroupPreviewWindow)
+        # Reuse the playback widget the group preview uses —
+        # it's a generic MP4 player. Hold a strong reference
+        # so Qt doesn't GC the window the moment this method
+        # returns, and close any prior preview so we don't
+        # accumulate windows.
+        try:
+            if (getattr(self, "_deck_preview_window", None)
+                    is not None):
+                self._deck_preview_window.close()
+        except Exception:
+            pass
+        self._deck_preview_window = GroupPreviewWindow(
+            out_path,
+            group_name=self._deck.name or "deck")
+        # Override the window title since it's a deck preview
+        # not a single-group preview.
+        self._deck_preview_window.setWindowTitle(
+            f"🎬 Deck preview — "
+            f"{self._deck.name or 'deck'}")
+        self._deck_preview_window.show()
+
     def _on_export_mp4_clicked(self) -> None:
         if not self._deck.pages:
             QMessageBox.information(

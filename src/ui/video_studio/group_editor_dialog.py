@@ -704,6 +704,11 @@ class GroupEditorDialog(QDialog):
         # delete the lane.
         self._timeline.audioLaneContextRequested.connect(
             self._on_audio_lane_context_from_timeline)
+        # Zoom changed → adjust the horizontal scrollbar so
+        # the time under the cursor stays under the cursor
+        # across the zoom step. Also refresh the px/s label.
+        self._timeline.zoomChanged.connect(
+            self._on_timeline_zoom_changed)
         # Slide block right-click → per-slide menu with
         # remove-from-timeline + remove-from-group + open-
         # preview.
@@ -759,6 +764,38 @@ class GroupEditorDialog(QDialog):
             "color: #94a3b8; font-size: 11px;")
         tracks_bar.addWidget(self._tracks_count_label)
         tracks_bar.addStretch()
+        # Zoom controls — ➖ zooms out (more time per pixel,
+        # see more arrangement at once), ➕ zooms in (more
+        # pixels per second, easier to nudge clips precisely).
+        # Both are anchored at the center of the visible
+        # viewport via the scrollbar's value mid-range. The
+        # writer can also Ctrl-wheel directly on the timeline
+        # for cursor-anchored zoom.
+        self._zoom_out_btn = QPushButton("➖")
+        self._zoom_out_btn.setToolTip(
+            "Zoom out — show more of the timeline at once. "
+            "Ctrl-scroll on the timeline does the same "
+            "anchored at the cursor.")
+        self._zoom_out_btn.setFixedWidth(36)
+        self._zoom_out_btn.clicked.connect(
+            lambda: self._on_zoom_button(out=True))
+        tracks_bar.addWidget(self._zoom_out_btn)
+        self._zoom_label = QLabel("100 px/s")
+        self._zoom_label.setStyleSheet(
+            "color: #6b7280; font-size: 11px;")
+        self._zoom_label.setFixedWidth(72)
+        self._zoom_label.setAlignment(
+            Qt.AlignmentFlag.AlignCenter)
+        tracks_bar.addWidget(self._zoom_label)
+        self._zoom_in_btn = QPushButton("➕")
+        self._zoom_in_btn.setToolTip(
+            "Zoom in — easier to nudge clip edges. "
+            "Ctrl-scroll on the timeline does the same "
+            "anchored at the cursor.")
+        self._zoom_in_btn.setFixedWidth(36)
+        self._zoom_in_btn.clicked.connect(
+            lambda: self._on_zoom_button(out=False))
+        tracks_bar.addWidget(self._zoom_in_btn)
         # 🎬 Preview compiles THIS group (slides + overlay
         # audio + transitions) into a temp MP4 and plays it in
         # a floating window. Lets writers spot-check what the
@@ -1231,20 +1268,28 @@ class GroupEditorDialog(QDialog):
         self.deck_modified.emit()
 
     def _maybe_recompute_durations(self) -> None:
-        """Sync each placed slide's ``duration_seconds`` to the
-        gap between its start and the next slide's start (or the
-        audio end for the last one). The timeline view derives
-        durations from start times directly, but the export
-        pipeline still reads ``duration_seconds`` — so we keep
-        them in lockstep."""
+        """Enforce the no-overlap upper bound on every placed
+        slide's ``duration_seconds`` — DON'T stretch durations
+        to fill gaps.
+
+        The earlier version of this method rewrote each
+        slide's duration to the gap-to-next-slide, which
+        clobbered any manual edge-drag resize the moment the
+        writer clicked elsewhere (the resize fired
+        ``timelineChanged`` → this method → duration snapped
+        back to the gap). The fix: only ever SHRINK to prevent
+        overlap with the next slide, plus optionally STRETCH
+        the LAST slide to the audio end when the writer asked
+        for ``fill_last_slide_to_audio``. Every other slide's
+        duration stays as the writer set it.
+        """
         placed = sorted(
             (p for p in self._group_pages()
              if p.start_time_seconds_in_group is not None),
             key=lambda p: p.start_time_seconds_in_group or 0.0)
         if not placed:
             return
-        # The audio's effective end is its trim_out (or its
-        # natural length when no trim is set).
+        # Audio end for the fill-last toggle.
         natural = float(
             getattr(
                 self._group,
@@ -1254,28 +1299,31 @@ class GroupEditorDialog(QDialog):
                 self._group,
                 "overlay_trim_out_seconds", 0.0) or 0.0)
         audio_end = trim_out if trim_out > 0 else natural
-        if audio_end <= 0:
-            audio_end = (
-                (placed[-1].start_time_seconds_in_group or 0.0)
-                + max(1.0, placed[-1].duration_seconds))
         for i, p in enumerate(placed):
             start = float(
                 p.start_time_seconds_in_group or 0.0)
+            cur_dur = max(0.25, float(
+                getattr(p, "duration_seconds", 0.0) or 0.0))
             if i + 1 < len(placed):
-                end = float(
+                next_start = float(
                     placed[i + 1].start_time_seconds_in_group
                     or start)
+                # Cap so the block doesn't overlap the next.
+                max_dur = max(0.25, next_start - start)
+                if cur_dur > max_dur + 0.005:
+                    p.duration_seconds = round(max_dur, 3)
+                    p.updated_at = datetime.now()
+                # Don't extend — the writer's gap is intentional.
             else:
-                end = (
-                    audio_end
-                    if self._group.fill_last_slide_to_audio
-                    else max(
-                        start + p.duration_seconds,
-                        start + 1.0))
-            new_dur = max(0.25, end - start)
-            if abs(new_dur - p.duration_seconds) > 0.01:
-                p.duration_seconds = round(new_dur, 3)
-                p.updated_at = datetime.now()
+                # Last slide: stretch to audio end ONLY when
+                # the writer asked for fill-to-audio. Otherwise
+                # leave whatever the writer set.
+                if (self._group.fill_last_slide_to_audio
+                        and audio_end > start):
+                    target = max(0.25, audio_end - start)
+                    if abs(cur_dur - target) > 0.01:
+                        p.duration_seconds = round(target, 3)
+                        p.updated_at = datetime.now()
 
     # ------------------------------------------------------------------
     # Add slides from deck
@@ -2407,6 +2455,39 @@ class GroupEditorDialog(QDialog):
             pass
         self.deck_modified.emit()
 
+    def _on_zoom_button(self, *, out: bool) -> None:
+        """➕ / ➖ buttons step the zoom by 1.5x. Anchored at
+        the center of the visible viewport so the scrollbar
+        stays roughly where it was (writer's center of
+        attention doesn't jump)."""
+        factor = (1.0 / 1.5) if out else 1.5
+        cur = self._timeline.zoom_px_per_sec()
+        # Compute an anchor at the midpoint of the visible
+        # viewport, expressed in timeline-widget coordinates.
+        viewport = self._timeline_scroll.viewport()
+        midpoint_x = (
+            self._timeline_scroll.horizontalScrollBar().value()
+            + viewport.width() // 2)
+        from PyQt6.QtCore import QPoint
+        anchor = QPoint(int(midpoint_x), 0)
+        self._timeline.set_zoom_px_per_sec(
+            cur * factor, anchor_pos=anchor)
+
+    def _on_timeline_zoom_changed(
+            self, before_x: int, after_x: int) -> None:
+        """Keep the time under the anchor (cursor / viewport
+        center) under the same screen pixel by nudging the
+        scrollbar by the post-zoom delta."""
+        if hasattr(self, "_zoom_label"):
+            self._zoom_label.setText(
+                f"{int(round(self._timeline.zoom_px_per_sec()))} "
+                "px/s")
+        if before_x != after_x:
+            hbar = (
+                self._timeline_scroll.horizontalScrollBar())
+            delta = after_x - before_x
+            hbar.setValue(hbar.value() + delta)
+
     def _on_preview_group(self) -> None:
         """Compile this group into a temp MP4 + play it in a
         floating window. The render path is the same one the
@@ -2431,21 +2512,17 @@ class GroupEditorDialog(QDialog):
           * Render to ``working_dir/group_previews/<group>_<ts>.mp4``
             and open in ``GroupPreviewWindow``.
         """
-        from src.video_studio.models import (
-            SlideDeckProject, SlidePage)
         from src.video_studio.slide_deck import (
-            stitch_slide_deck_to_mp4)
+            render_group_to_mp4)
         from src.ui.video_studio.group_preview_window import (
             GroupPreviewWindow)
-        # Gather placed slides in time order.
-        placed = sorted(
-            (p for p in self._deck.pages
-             if p.group_id == self._group.id
-             and p.start_time_seconds_in_group is not None),
-            key=lambda p: float(
-                getattr(
-                    p, "start_time_seconds_in_group", 0.0)
-                or 0.0))
+        # Quick sanity check: refuse to render an empty group
+        # so the writer gets a friendlier message than
+        # ``render_group_to_mp4``'s generic "no placed slides".
+        placed = [
+            p for p in self._deck.pages
+            if p.group_id == self._group.id
+            and p.start_time_seconds_in_group is not None]
         if not placed:
             QMessageBox.information(
                 self, "Nothing to preview",
@@ -2454,57 +2531,6 @@ class GroupEditorDialog(QDialog):
                 "tray's right-click → Place at end of "
                 "timeline).")
             return
-        # Translate group-timeline positions into back-to-back
-        # render durations. Each slide holds for the gap to
-        # the next slide; the last slide holds for max(its
-        # own duration, the remaining overlay audio).
-        overlay_dur = float(
-            getattr(
-                self._group,
-                "overlay_audio_duration_seconds", 0.0) or 0.0)
-        render_pages = []
-        for i, src in enumerate(placed):
-            cur_start = float(
-                getattr(
-                    src,
-                    "start_time_seconds_in_group", 0.0)
-                or 0.0)
-            if i + 1 < len(placed):
-                next_start = float(
-                    getattr(
-                        placed[i + 1],
-                        "start_time_seconds_in_group", 0.0)
-                    or 0.0)
-                hold = max(0.25, next_start - cur_start)
-            else:
-                own = max(
-                    0.25, float(
-                        getattr(src, "duration_seconds", 0.0)
-                        or 0.0))
-                tail = max(
-                    0.0, overlay_dur - cur_start)
-                hold = max(own, tail) if tail > 0 else own
-            # Copy the slide via Pydantic ``model_copy`` so
-            # mutating ``duration_seconds`` here doesn't
-            # affect the live deck.
-            copy = src.model_copy(deep=False)
-            copy.duration_seconds = round(hold, 3)
-            # Strip per-slide audio — the overlay (attached
-            # below) drives the sound. Per-slide audio in a
-            # group with overlay would double-up.
-            copy.audio_path = ""
-            render_pages.append(copy)
-        # Attach the overlay to slide 0 if we have one.
-        overlay_path = getattr(
-            self._group, "overlay_audio_path", "") or ""
-        if overlay_path and Path(overlay_path).exists():
-            render_pages[0].audio_path = overlay_path
-        synthetic = SlideDeckProject(
-            id=f"preview_{self._group.id}",
-            name=f"Preview of {self._group.name or 'group'}",
-            working_dir=self._deck.working_dir,
-            pages=render_pages,
-        )
         # Render to a temp file. Stamp with the group id so
         # concurrent group editors don't clobber each other.
         out_dir = Path(
@@ -2516,15 +2542,16 @@ class GroupEditorDialog(QDialog):
         stamp = _dt.now().strftime("%Y%m%d_%H%M%S")
         out_path = out_dir / (
             f"{self._group.id}_{stamp}.mp4")
-        # Render synchronously — typical previews are <1 min
-        # so they finish in a few seconds. The button stays
-        # disabled with a label tweak so the writer sees it's
-        # working.
         self._preview_group_btn.setEnabled(False)
         self._preview_group_btn.setText("Rendering…")
         try:
-            ok, msg = stitch_slide_deck_to_mp4(
-                synthetic, out_path)
+            # Single source of truth — the deck editor's
+            # "Preview deck" button also concatenates outputs
+            # of THIS helper, so what the writer sees here is
+            # exactly what they'll see in the deck preview's
+            # segment for this group.
+            ok, msg = render_group_to_mp4(
+                self._deck, self._group, out_path)
         finally:
             self._preview_group_btn.setEnabled(True)
             self._preview_group_btn.setText("🎬 Preview")
@@ -2895,16 +2922,31 @@ class GroupEditorDialog(QDialog):
         menu.addSeparator()
         view_act = menu.addAction("🔍  Preview slide image…")
         # Transition INTO this slide — the exporter applies it
-        # at the join with the previous slide. Submenu lists
-        # every supported transition; the duration field has a
-        # follow-up popup if the writer picks a non-cut.
+        # at the join with the previous slide. Two entries
+        # for discoverability:
+        #   * Top-level "🎞  Set transition…" opens a combined
+        #     type+duration dialog. This is the obvious path
+        #     writers find first; submenus are easy to miss.
+        #   * "Quick pick" submenu lists every transition type
+        #     for one-click changes; doesn't ask for duration
+        #     (uses current).
         cur_trans = (
             getattr(page, "transition_in", "cut") or "cut")
         cur_trans_secs = float(
             getattr(page, "transition_seconds", 0.7) or 0.7)
+        set_transition_act = menu.addAction(
+            f"🎞  Set transition…  "
+            f"(currently {cur_trans}"
+            + (f" {cur_trans_secs:.2f}s"
+               if cur_trans != "cut" else "")
+            + ")")
+        set_transition_act.setToolTip(
+            "Opens a dialog to pick the transition INTO this "
+            "slide + how long it should last. The exporter "
+            "honors both — picked transition + duration land "
+            "in the final MP4 / preview.")
         transition_menu = menu.addMenu(
-            f"🎞  Transition in… (current: "
-            f"{cur_trans} {cur_trans_secs:.1f}s)")
+            "🎞  Quick pick transition")
         from src.video_studio.models import (
             CHAPTER_TRANSITIONS as _CT)
         trans_actions = {}
@@ -2930,6 +2972,8 @@ class GroupEditorDialog(QDialog):
             return
         if action is view_act:
             self._view_slide(page_id)
+        elif action is set_transition_act:
+            self._open_slide_transition_dialog(page)
         elif action in trans_actions:
             new_key = trans_actions[action]
             page.transition_in = new_key
@@ -2953,6 +2997,85 @@ class GroupEditorDialog(QDialog):
             self._on_unplace_selected()
         elif action is remove_act:
             self._on_remove_from_group()
+
+    def _open_slide_transition_dialog(self, page) -> None:
+        """Modal dialog to pick the transition INTO ``page`` +
+        its duration. Both values land on the page model and
+        the timeline repaints. The exporter
+        (``stitch_slide_deck_to_mp4``) reads ``transition_in``
+        + ``transition_seconds`` per page when stitching, so
+        whatever the writer picks shows up in the final deck.
+        """
+        from PyQt6.QtWidgets import (
+            QDialog as _QD, QComboBox as _QC,
+            QDoubleSpinBox as _DS, QFormLayout as _FL,
+            QDialogButtonBox as _DBB, QLabel as _QL,
+            QVBoxLayout as _VL,
+        )
+        from src.video_studio.models import (
+            CHAPTER_TRANSITIONS as _CT)
+        dlg = _QD(self)
+        dlg.setWindowTitle(
+            f"Transition — {page.label or 'slide'}")
+        dlg.setModal(True)
+        outer = _VL(dlg)
+        info = _QL(
+            "Pick the transition that plays INTO this slide "
+            "(at the join with the previous slide). The "
+            "duration controls how long the blend lasts; "
+            "0.7s is a typical crossfade.")
+        info.setWordWrap(True)
+        outer.addWidget(info)
+        form = _FL()
+        type_combo = _QC()
+        cur_key = (
+            getattr(page, "transition_in", "cut") or "cut")
+        cur_idx = 0
+        for i, (key, label) in enumerate(_CT):
+            type_combo.addItem(label, key)
+            if key == cur_key:
+                cur_idx = i
+        type_combo.setCurrentIndex(cur_idx)
+        form.addRow("Type", type_combo)
+        dur_spin = _DS()
+        dur_spin.setRange(0.05, 5.0)
+        dur_spin.setDecimals(2)
+        dur_spin.setSingleStep(0.1)
+        dur_spin.setSuffix(" s")
+        dur_spin.setValue(float(
+            getattr(page, "transition_seconds", 0.7) or 0.7))
+        form.addRow("Length", dur_spin)
+        outer.addLayout(form)
+        # Disable duration when "cut" is selected (no blend
+        # length matters for an instant cut).
+        def _toggle_dur_enabled(_i: int) -> None:
+            key = type_combo.currentData()
+            dur_spin.setEnabled(key != "cut")
+        type_combo.currentIndexChanged.connect(
+            _toggle_dur_enabled)
+        _toggle_dur_enabled(0)
+        buttons = _DBB(
+            _DBB.StandardButton.Ok
+            | _DBB.StandardButton.Cancel)
+        outer.addWidget(buttons)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        if dlg.exec() != _QD.DialogCode.Accepted:
+            return
+        new_key = type_combo.currentData() or "cut"
+        new_dur = float(dur_spin.value())
+        page.transition_in = new_key
+        if new_key == "cut":
+            # Preserve the previous duration on the model in
+            # case the writer flips back to a non-cut, but the
+            # exporter reads transition_in first and skips
+            # blending entirely when it's "cut".
+            pass
+        else:
+            page.transition_seconds = new_dur
+        page.updated_at = datetime.now()
+        self._timeline.update()
+        self.deck_modified.emit()
 
     def _on_audio_clip_selected_from_timeline(
             self, clip_id: str) -> None:

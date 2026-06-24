@@ -1138,6 +1138,13 @@ class VideoStudioWidget(QWidget):
         # state and the action edits would silently disappear.
         if accepted or dlg.actions_dirty():
             self._canvas.refresh_scene_card(scene_id)
+            # Push any per-action favorite-image changes the
+            # writer made inside the scene editor (or its
+            # nested action dialog) into the live slide decks.
+            # Without this, a deck that was seeded from this
+            # scene's actions keeps showing the OLD favorite
+            # until the writer manually re-syncs.
+            self._propagate_action_favorites_to_slide_decks()
             self.contentChanged.emit()
 
     def _make_rewrite_callback(self) -> Optional[
@@ -1802,6 +1809,92 @@ class VideoStudioWidget(QWidget):
                + ("s" if skipped != 1 else "")
                + " kept" if skipped else "")
             + ".")
+
+    def _propagate_action_favorites_to_slide_decks(
+            self) -> int:
+        """Push every action's current favorite-image path into
+        the matching slide pages.
+
+        Slide pages carry ``source_action_id`` as provenance —
+        we use it to look the action back up, pull the live
+        favorite, and write its file_path onto ``page.image_path``.
+        Runs after the scene editor closes; without this, a
+        favorite change in the card editor would leave the
+        slide deck stuck on whatever image was favorited when
+        the deck was first stitched.
+
+        Returns the count of pages whose ``image_path`` actually
+        changed (zero is the common case — most closes don't
+        touch favorites).
+        """
+        studio = self._studio()
+        if studio is None:
+            return 0
+        # Build action_id → favorite file_path lookup once;
+        # cheaper than calling ``action.favorite_image()`` per
+        # page when the deck is big.
+        action_favorites: dict = {}
+        for scene in (getattr(studio, "scenes", []) or []):
+            for action in (
+                    getattr(scene, "actions", []) or []):
+                try:
+                    fav = action.favorite_image()
+                except Exception:
+                    fav = None
+                if fav is None:
+                    continue
+                path = getattr(fav, "file_path", "") or ""
+                if path:
+                    action_favorites[action.id] = path
+        if not action_favorites:
+            return 0
+        updated = 0
+        from datetime import datetime as _dt
+        for deck in (
+                getattr(studio, "slide_decks", []) or []):
+            for page in (getattr(deck, "pages", []) or []):
+                aid = getattr(page, "source_action_id", None)
+                if not aid:
+                    continue
+                new_path = action_favorites.get(aid)
+                if not new_path:
+                    continue
+                if (getattr(page, "image_path", "")
+                        != new_path):
+                    page.image_path = new_path
+                    try:
+                        page.updated_at = _dt.now()
+                    except Exception:
+                        pass
+                    updated += 1
+        # If the slide editor is open, ask it to refresh so the
+        # writer sees the swap immediately. We call the
+        # dedicated ``refresh_after_external_change`` which
+        # updates BOTH the slide list AND the popup preview
+        # window — ``_refresh_slides`` alone leaves the popup
+        # showing the old image because it only repaints list
+        # text. ``QPixmap`` doesn't cache by path, so re-calling
+        # ``set_current`` on the preview re-reads from disk.
+        active = getattr(
+            self, "_active_slide_editor", None)
+        if active is not None and updated > 0:
+            try:
+                from PyQt6 import sip as _sip
+                if not _sip.isdeleted(active):
+                    if hasattr(
+                            active,
+                            "refresh_after_external_change"):
+                        active.refresh_after_external_change()
+                    elif hasattr(active, "_refresh_slides"):
+                        # Older slide-editor builds without
+                        # the dedicated entry point — at
+                        # least update the list text.
+                        active._refresh_slides()
+            except Exception as exc:
+                print(
+                    f"[studio] could not refresh open "
+                    f"slide editor: {exc}")
+        return updated
 
     def _stitch_slide_deck_for_scene(self, scene_id: str) -> None:
         """Stitch this scene's per-action images into a single
@@ -2677,6 +2770,19 @@ class VideoStudioWidget(QWidget):
                 "None of this chapter's scenes have a favorite "
                 "image on disk. Generate or mark favorites first.")
             return
+        # Run the favorite propagation BEFORE we open the
+        # editor so any stale ``page.image_path`` values get
+        # rewritten to the current favorites. Self-heals decks
+        # that drifted from the source actions while the editor
+        # was closed (e.g. writer changed a favorite from the
+        # scene canvas right-click menu, then opened the deck
+        # for the first time).
+        try:
+            self._propagate_action_favorites_to_slide_decks()
+        except Exception as exc:
+            print(
+                f"[studio] pre-open favorite sweep failed: "
+                f"{exc}")
         from src.ui.video_studio.slide_editor_dialog import (
             SlideEditorDialog)
         dlg = SlideEditorDialog(

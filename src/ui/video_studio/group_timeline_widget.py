@@ -82,14 +82,15 @@ LEFT_PAD = 14
 RIGHT_PAD = 14
 
 PLACEHOLDER_PIXELS_PER_SECOND = 40  # used when no audio yet
-# Lower bound on the timeline's pixel scale. When the host
-# wraps the timeline in a horizontal QScrollArea, the timeline
-# claims AT LEAST ``audio_duration * MIN_PIXELS_PER_SECOND``
-# pixels — narrower windows get a scrollbar, wider windows
-# stretch the bar so the writer never sees crushed clip
-# blocks. 100 px / second keeps a 1 s clip ~100 px wide
-# (room for a label + thumbnail and a useful waveform).
-MIN_PIXELS_PER_SECOND = 100
+# Default pixel scale: at 100 px/s a 1 s clip is ~100 px wide
+# (room for label + thumbnail + a useful waveform). The writer
+# can override with the ➕ / ➖ zoom buttons or Ctrl-wheel; the
+# floor + ceiling bracket the practical range so very long
+# arrangements don't grow into 30,000-pixel-wide canvases and
+# very short ones don't shrink past one pixel per clip.
+DEFAULT_PIXELS_PER_SECOND = 100
+MIN_PIXELS_PER_SECOND = 20
+MAX_PIXELS_PER_SECOND = 800
 
 # Width in pixels of the trim-handle hot zone at each end of
 # an audio clip block. Wide enough to grab on a trackpad but
@@ -120,6 +121,13 @@ class GroupTimelineWidget(QWidget):
     # global position so the host can pop a per-lane menu
     # (rename, set volume, remove track).
     audioLaneContextRequested = pyqtSignal(int, object)
+    # Zoom changed. The host (which owns the QScrollArea)
+    # uses ``anchor_pixel_before / anchor_pixel_after`` to
+    # adjust the horizontal scrollbar so the time under the
+    # writer's cursor stays put across the zoom. When zoom
+    # was triggered by a button (no cursor anchor), both
+    # values match and the scrollbar stays put.
+    zoomChanged = pyqtSignal(int, int)
     # An audio clip block was selected (or cleared with "").
     audioClipSelected = pyqtSignal(str)          # clip_id ("" = none)
     # Right-click on a specific clip block — the host pops the
@@ -162,6 +170,14 @@ class GroupTimelineWidget(QWidget):
         # "right" depending on which handle the writer grabbed.
         self._slide_edge_drag_id: Optional[str] = None
         self._slide_edge_drag_side: Optional[str] = None
+        # Current pixel scale (px / second). Drives both the
+        # widget's minimum width AND ``_seconds_to_x`` /
+        # ``_x_to_seconds`` mappings, so changing it zooms the
+        # entire timeline in one place. Writers tweak via
+        # Ctrl-wheel or the ➕/➖ zoom buttons in the dialog;
+        # default starts at the comfortable ~100 px/s.
+        self._zoom_px_per_sec: float = float(
+            DEFAULT_PIXELS_PER_SECOND)
         self._dragging_trim_handle: Optional[str] = None  # "in"/"out"/None
         # Selection-drag state. Left-clicking on the audio bar
         # (away from a trim handle) anchors here; mouse motion
@@ -265,10 +281,10 @@ class GroupTimelineWidget(QWidget):
         still has room to drop clips on.
 
         Called from anywhere the composed duration can
-        change: ``set_group``, ``refresh_waveform``, and
-        explicitly by the host after recompose. The audio bar
-        widens with the timeline because ``_track_rect``
-        reads from ``self.width()``.
+        change: ``set_group``, ``refresh_waveform``, the zoom
+        path, and explicitly by the host after recompose.
+        The audio bar widens with the timeline because
+        ``_track_rect`` reads from ``self.width()``.
         """
         # Height also bumps with the lane count so the slide
         # band has room below all the audio lanes.
@@ -281,10 +297,73 @@ class GroupTimelineWidget(QWidget):
                 600 + LANE_HEADER_WIDTH)
             return
         natural_px = int(
-            dur * MIN_PIXELS_PER_SECOND
+            dur * self._zoom_px_per_sec
             + LEFT_PAD + LANE_HEADER_WIDTH + RIGHT_PAD)
         self.setMinimumWidth(
             max(600 + LANE_HEADER_WIDTH, natural_px))
+
+    def zoom_px_per_sec(self) -> float:
+        """Current pixel scale — the host's zoom buttons
+        read this for the readout label."""
+        return float(self._zoom_px_per_sec)
+
+    def set_zoom_px_per_sec(
+            self, value: float,
+            anchor_pos=None) -> None:
+        """Change the pixel scale + recompute the layout. When
+        ``anchor_pos`` is a ``QPoint`` (the writer's cursor
+        position in widget coords during a wheel zoom), we
+        emit ``zoomChanged(before_x, after_x)`` so the host
+        can adjust its scrollbar to keep the same time under
+        the same pixel. Without an anchor (button click),
+        both values match and the host stays put."""
+        new_zoom = max(
+            float(MIN_PIXELS_PER_SECOND),
+            min(float(MAX_PIXELS_PER_SECOND), float(value)))
+        old_zoom = self._zoom_px_per_sec
+        if abs(new_zoom - old_zoom) < 0.01:
+            return
+        # Anchor: figure out what time was at ``anchor_pos.x``
+        # BEFORE the zoom, then post-zoom find where that
+        # time lands and emit the delta.
+        if anchor_pos is not None:
+            secs = self._x_to_seconds(int(anchor_pos.x()))
+            before_x = int(anchor_pos.x())
+        else:
+            secs = None
+            before_x = 0
+        self._zoom_px_per_sec = new_zoom
+        self._refresh_min_width()
+        self.update()
+        if secs is not None:
+            after_x = self._seconds_to_x(secs)
+            self.zoomChanged.emit(before_x, after_x)
+        else:
+            self.zoomChanged.emit(0, 0)
+
+    def wheelEvent(self, event) -> None:
+        """Ctrl-wheel (Cmd-wheel on macOS) zooms the timeline.
+        Plain wheel scrolls — Qt's default behavior propagates
+        to the parent scroll area which handles it.
+        Anchored at the cursor so the time under the cursor
+        stays put across the zoom step."""
+        mods = event.modifiers()
+        if not (mods & Qt.KeyboardModifier.ControlModifier
+                or mods & Qt.KeyboardModifier.MetaModifier):
+            super().wheelEvent(event)
+            return
+        # Y delta in 1/120 units (one notch = 120).
+        steps = event.angleDelta().y() / 120.0
+        if steps == 0:
+            event.accept()
+            return
+        # 1.25x per notch — feels right on a trackpad without
+        # zooming so fast that the writer overshoots.
+        factor = 1.25 ** steps
+        self.set_zoom_px_per_sec(
+            self._zoom_px_per_sec * factor,
+            anchor_pos=event.position().toPoint())
+        event.accept()
 
     def refresh_waveform(self) -> None:
         """Drop the cached peaks so the next paint reloads them.
@@ -512,24 +591,32 @@ class GroupTimelineWidget(QWidget):
     def _placed_blocks(
             self) -> List[Tuple[SlidePage, float, float]]:
         """Return ``(page, start, end)`` triples in time order.
-        End is the next slide's start, or the audio end for the
-        last placed slide."""
+
+        End is ``start + duration_seconds`` so a writer
+        dragging the right edge SEES the block shrink / grow.
+        We cap at the next slide's start so blocks never
+        visually overlap — if the writer drags the right edge
+        past the next slide's start, the no-overlap math in
+        the edge-drag handler clamps the duration first, so
+        this cap is just a safety net for the renderer.
+        """
         placed = self._placed_pages()
         if not placed:
             return []
-        dur = self._audio_duration() or (
-            (placed[-1].start_time_seconds_in_group or 0.0)
-            + max(1.0, placed[-1].duration_seconds))
         blocks: List[Tuple[SlidePage, float, float]] = []
         for i, page in enumerate(placed):
             start = float(
                 page.start_time_seconds_in_group or 0.0)
+            own_dur = max(
+                0.25, float(
+                    getattr(page, "duration_seconds", 0.0)
+                    or 0.0))
+            end = start + own_dur
             if i + 1 < len(placed):
-                end = float(
+                next_start = float(
                     placed[i + 1].start_time_seconds_in_group
-                    or start)
-            else:
-                end = dur
+                    or end)
+                end = min(end, next_start)
             if end < start:
                 end = start
             blocks.append((page, start, end))
