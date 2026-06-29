@@ -1605,32 +1605,32 @@ class SlideEditorDialog(QDialog):
     # ------------------------------------------------------------------
     # Export
     # ------------------------------------------------------------------
-    def _on_preview_deck_clicked(self) -> None:
-        """Render each group separately (via
+    def _render_deck_via_groups(
+        self, out_path: Path,
+    ) -> Tuple[bool, str]:
+        """Render the full deck into a single MP4 at ``out_path``
+        by rendering EACH group separately (via
         ``render_group_to_mp4`` — same path the group editor's
-        preview uses), then concatenate the per-group MP4s
-        into a single deck preview.
+        preview uses) and concatenating with inter-group
+        transitions.
 
-        The earlier "flatten + single stitcher pass" approach
-        was producing weird audio behavior (writers reported
-        "first group loops mid-way then cuts off"). The
-        single-pass stitcher mixes ALL audio across the entire
-        deck via amix, and per-clip ``adelay`` offsets must
-        cumulatively line up with the visual segments — too
-        many edge cases for nested groups + transitions.
+        Shared by the deck preview button AND the MP4 export
+        button so writers see byte-for-byte the same audio +
+        visuals in their exported file as they hear in
+        preview. The earlier export path called
+        ``stitch_slide_deck_to_mp4`` directly on ``self._deck``,
+        which iterates ``deck.pages`` and only honors per-page
+        ``audio_path``. In the group-editor world per-page
+        audio is empty (the audio lives on the group's
+        composed overlay), so exports silently lost every
+        narration take. Routing both code paths through this
+        helper fixes that without rewriting the stitcher.
 
-        Concat-of-per-group-MP4s is bulletproof: each segment
-        is independently rendered + verified, then ffmpeg's
-        concat demuxer (no re-encode of streams that match)
-        joins them. What the writer sees in the deck preview
-        for any group EQUALS what they see when they preview
-        that group alone.
+        Returns ``(ok, message)``. The caller owns the chosen
+        output location — preview uses a temp file under
+        ``deck_previews/``; export uses the user-picked path
+        from QFileDialog.
         """
-        if not self._deck.pages:
-            QMessageBox.information(
-                self, "Nothing to preview",
-                "Add slides to the deck first.")
-            return
         from src.video_studio.slide_deck import (
             render_group_to_mp4)
         # Walk ``deck.groups`` in its current order — that's
@@ -1643,8 +1643,8 @@ class SlideEditorDialog(QDialog):
             g.id: g
             for g in (getattr(self._deck, "groups", []) or [])
         }
-        ordered_groups: list = []  # list of (group_or_None,
-        #                                    placed_or_orphan_pages)
+        ordered_groups: list = []  # (group_or_None,
+        #                            placed_or_orphan_pages)
         for g in getattr(self._deck, "groups", []) or []:
             ordered_groups.append((g, None))
         orphan_pages: list = []
@@ -1653,34 +1653,26 @@ class SlideEditorDialog(QDialog):
             if not gid or gid not in groups_by_id:
                 orphan_pages.append(page)
         if orphan_pages:
-            # Orphans appear at the END after every group, in
-            # their deck.pages order. (We could interleave by
-            # original deck position too, but writers seem to
-            # think of orphans as "extras" so trailing them is
-            # the least surprising default.)
             ordered_groups.append((None, orphan_pages))
         if not ordered_groups:
-            QMessageBox.information(
-                self, "Nothing to preview",
-                "No groups or slides to render.")
-            return
-        # Render each group / orphan batch to its own MP4.
+            return (
+                False, "No groups or slides to render.")
         from datetime import datetime as _dt
-        out_dir = self._working_dir / "deck_previews"
-        out_dir.mkdir(parents=True, exist_ok=True)
         stamp = _dt.now().strftime("%Y%m%d_%H%M%S")
-        segments_dir = out_dir / f"_segments_{stamp}"
+        # Drop segments next to the output file so cleanup is
+        # local; if out_path's parent doesn't exist yet
+        # (happens when the user types a brand-new folder in
+        # the Save As dialog), make it.
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        segments_dir = out_path.parent / (
+            f"_deck_segments_{stamp}")
         segments_dir.mkdir(parents=True, exist_ok=True)
         segment_paths: list = []
         # Per-boundary transition list — same shape the
         # concat helper expects: ``[(kind, secs), ...]``,
         # one entry per join between consecutive segments
-        # that actually rendered. Built alongside
-        # ``segment_paths`` so the indices stay aligned even
-        # when a group skips because of a render failure.
+        # that actually rendered.
         seg_transitions: list = []
-        self._preview_deck_btn.setEnabled(False)
-        self._preview_deck_btn.setText("Rendering…")
         try:
             for i, (group, orphans) in enumerate(
                     ordered_groups):
@@ -1689,18 +1681,11 @@ class SlideEditorDialog(QDialog):
                     ok, msg = render_group_to_mp4(
                         self._deck, group, seg_path)
                     if not ok:
-                        # Empty / broken groups don't kill the
-                        # preview — skip them. Writers see the
-                        # message in the dialog at the end if
-                        # nothing rendered.
                         print(
-                            f"[deck preview] skipping group "
+                            f"[deck render] skipping group "
                             f"'{group.name}': {msg}")
                         continue
                 else:
-                    # Orphan batch — render as a single
-                    # synthetic deck. No overlay; each
-                    # slide's own audio (if any) plays.
                     from src.video_studio.models import (
                         SlideDeckProject as _SDP)
                     synth = _SDP(
@@ -1715,13 +1700,9 @@ class SlideEditorDialog(QDialog):
                         synth, seg_path)
                     if not ok:
                         print(
-                            f"[deck preview] orphan batch "
+                            f"[deck render] orphan batch "
                             f"failed: {msg}")
                         continue
-                # Record the transition INTO this segment
-                # iff there's already a prior segment in the
-                # list — the very first segment doesn't have
-                # an incoming join.
                 if segment_paths:
                     kind = (
                         getattr(
@@ -1738,32 +1719,154 @@ class SlideEditorDialog(QDialog):
                     seg_transitions.append((kind, secs))
                 segment_paths.append(seg_path)
             if not segment_paths:
-                QMessageBox.warning(
-                    self, "Preview render failed",
+                return (
+                    False,
                     "Every group failed to render — nothing "
-                    "to play.")
-                return
-            out_path = (
-                out_dir / f"deck_preview_{stamp}.mp4")
+                    "to concat.")
             ok, msg = _concat_mp4_segments(
                 segment_paths, out_path,
                 transitions=seg_transitions)
             if not ok:
-                QMessageBox.warning(
-                    self, "Preview concat failed", msg)
-                return
+                return (False, msg)
+            return (
+                True,
+                msg or f"Deck rendered to {out_path}.")
+        finally:
+            # Segments are baked into out_path already — drop
+            # the temp directory so we don't leak files next
+            # to the writer's chosen export location.
+            for p in segment_paths:
+                try:
+                    p.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            try:
+                segments_dir.rmdir()
+            except Exception:
+                pass
+
+    def _build_flattened_export_deck(self):
+        """Build a synthetic ``SlideDeckProject`` where each
+        group's placed slides are expanded in order with
+        per-slide holds matching the group editor's timeline,
+        and each group's first placed slide carries the
+        group's composed overlay audio.
+
+        Used by exports that walk ``deck.pages`` directly and
+        only honor per-page ``audio_path`` (notably the PPTX
+        exporter). Without this flattening, group overlays are
+        invisible to those exporters and writers see silent
+        decks. Orphan pages (no group_id) are appended at the
+        end and keep whatever audio_path they already had.
+
+        Mirrors the per-slide hold math in
+        ``render_group_to_mp4`` so the slide timings the
+        writer sees in PowerPoint match the MP4 preview.
+        Returns the synthetic deck (does NOT mutate the
+        real one).
+        """
+        from src.video_studio.models import (
+            SlideDeckProject as _SDP)
+        groups_by_id = {
+            g.id: g
+            for g in (getattr(self._deck, "groups", []) or [])
+        }
+        out_pages: list = []
+        # Walk groups in deck order so the PPTX matches the
+        # Stitch Order panel.
+        for g in getattr(self._deck, "groups", []) or []:
+            placed = sorted(
+                (p for p in self._deck.pages
+                 if p.group_id == g.id
+                 and getattr(
+                     p, "start_time_seconds_in_group", None)
+                 is not None),
+                key=lambda p: float(
+                    getattr(
+                        p,
+                        "start_time_seconds_in_group", 0.0)
+                    or 0.0))
+            if not placed:
+                continue
+            overlay_dur = float(
+                getattr(
+                    g,
+                    "overlay_audio_duration_seconds",
+                    0.0) or 0.0)
+            overlay_path = (
+                getattr(g, "overlay_audio_path", "") or "")
+            for i, src in enumerate(placed):
+                cur_start = float(
+                    getattr(
+                        src,
+                        "start_time_seconds_in_group",
+                        0.0) or 0.0)
+                if i + 1 < len(placed):
+                    next_start = float(
+                        getattr(
+                            placed[i + 1],
+                            "start_time_seconds_in_group",
+                            0.0) or 0.0)
+                    hold = max(0.25, next_start - cur_start)
+                else:
+                    own = max(
+                        0.25, float(
+                            getattr(
+                                src,
+                                "duration_seconds", 0.0)
+                            or 0.0))
+                    tail = max(0.0, overlay_dur - cur_start)
+                    hold = (
+                        max(own, tail) if tail > 0 else own)
+                copy = src.model_copy(deep=False)
+                copy.duration_seconds = round(hold, 3)
+                # First placed slide in the group carries the
+                # composed overlay audio. Other placed slides
+                # play silently (the per-page audio_path is
+                # always empty in group-editor land — group
+                # owns the audio).
+                if (i == 0 and overlay_path
+                        and Path(overlay_path).exists()):
+                    copy.audio_path = overlay_path
+                else:
+                    copy.audio_path = ""
+                out_pages.append(copy)
+        # Orphan pages (no group_id) — keep their own audio
+        # paths; they were never under a group's umbrella.
+        for page in self._deck.pages:
+            gid = getattr(page, "group_id", None)
+            if not gid or gid not in groups_by_id:
+                out_pages.append(page.model_copy(deep=False))
+        return _SDP(
+            id=f"flatten_{self._deck.id}",
+            name=self._deck.name or "Slide deck",
+            working_dir=self._deck.working_dir,
+            pages=out_pages,
+        )
+
+    def _on_preview_deck_clicked(self) -> None:
+        """Render the deck via the shared per-group pipeline
+        and play it in a floating preview window. See
+        ``_render_deck_via_groups`` for the rendering
+        contract."""
+        if not self._deck.pages:
+            QMessageBox.information(
+                self, "Nothing to preview",
+                "Add slides to the deck first.")
+            return
+        from datetime import datetime as _dt
+        out_dir = self._working_dir / "deck_previews"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stamp = _dt.now().strftime("%Y%m%d_%H%M%S")
+        out_path = out_dir / f"deck_preview_{stamp}.mp4"
+        self._preview_deck_btn.setEnabled(False)
+        self._preview_deck_btn.setText("Rendering…")
+        try:
+            ok, msg = self._render_deck_via_groups(out_path)
         finally:
             self._preview_deck_btn.setEnabled(True)
             self._preview_deck_btn.setText(
                 "🎬 Preview deck")
-            # Clean up the segment files — they're already
-            # baked into out_path.
-            try:
-                for p in segment_paths:
-                    p.unlink(missing_ok=True)
-                segments_dir.rmdir()
-            except Exception:
-                pass
         if not ok:
             QMessageBox.warning(
                 self, "Preview render failed", msg)
@@ -1792,6 +1895,20 @@ class SlideEditorDialog(QDialog):
         self._deck_preview_window.show()
 
     def _on_export_mp4_clicked(self) -> None:
+        """Export the deck to a single MP4 using the same
+        per-group render + concat pipeline as the deck
+        preview.
+
+        The previous implementation called
+        ``stitch_slide_deck_to_mp4`` directly on ``self._deck``,
+        which only honors per-slide ``audio_path`` — and in the
+        group-editor model every slide's audio_path is empty
+        (the audio is on the group's composed overlay). The
+        result was visually-correct MP4s with no narration at
+        all. Routing through ``_render_deck_via_groups`` makes
+        the export carry every group's composed audio just
+        like preview does.
+        """
         if not self._deck.pages:
             QMessageBox.information(
                 self, "Nothing to export",
@@ -1806,15 +1923,23 @@ class SlideEditorDialog(QDialog):
             "MP4 video (*.mp4)")
         if not out_str:
             return
+        out_path = Path(out_str)
         self._status_label.setText("Rendering MP4…")
-        ok, msg = stitch_slide_deck_to_mp4(
-            self._deck, Path(out_str))
+        self._export_mp4_btn.setEnabled(False)
+        prior_label = self._export_mp4_btn.text()
+        self._export_mp4_btn.setText("Rendering…")
+        try:
+            ok, msg = self._render_deck_via_groups(out_path)
+        finally:
+            self._export_mp4_btn.setEnabled(True)
+            self._export_mp4_btn.setText(prior_label)
         if not ok:
+            self._status_label.setText("")
             QMessageBox.warning(
                 self, "Export failed", msg)
             return
         self._status_label.setText(
-            f"Saved {Path(out_str).name}.")
+            f"Saved {out_path.name}.")
         QMessageBox.information(
             self, "Slide deck rendered", msg)
 
@@ -1844,8 +1969,17 @@ class SlideEditorDialog(QDialog):
             return
         self._status_label.setText(
             "Composing PowerPoint…")
+        # Flatten groups → per-slide pages with on-timeline
+        # holds + group overlay audio on the first placed
+        # slide of each group. Without this, the PPTX
+        # exporter walks ``self._deck.pages`` directly and
+        # silently drops every group's narration (per-page
+        # audio_path is empty in group-editor land).
+        export_deck = self._build_flattened_export_deck()
+        if not export_deck.pages:
+            export_deck = self._deck
         ok, msg, skipped = export_slide_deck_to_pptx(
-            self._deck, Path(out_str))
+            export_deck, Path(out_str))
         if not ok:
             QMessageBox.warning(
                 self, "Export failed", msg)
