@@ -282,11 +282,27 @@ class VideoEditorDialog(QDialog):
             "source file.")
         self._edit_audio_btn.clicked.connect(
             self._on_edit_audio)
+        self._backup_btn = QPushButton("📌 Backup")
+        self._backup_btn.setToolTip(
+            "Snapshot this take's current settings (label, "
+            "start, gain, fades, de-esser, etc.) into a "
+            "single backup slot. Saving again overwrites the "
+            "prior backup; the snapshot persists with the "
+            "project so it's there after a close + reopen.")
+        self._backup_btn.clicked.connect(self._on_save_backup)
+        self._restore_btn = QPushButton("↺ Restore")
+        self._restore_btn.setToolTip(
+            "Roll this take's settings back to the saved "
+            "backup. Disabled until a backup exists.")
+        self._restore_btn.clicked.connect(
+            self._on_restore_backup)
         self._remove_btn = QPushButton("Remove")
         self._remove_btn.clicked.connect(self._on_remove)
         take_btns.addWidget(self._record_btn)
         take_btns.addWidget(self._import_btn)
         take_btns.addWidget(self._edit_audio_btn)
+        take_btns.addWidget(self._backup_btn)
+        take_btns.addWidget(self._restore_btn)
         take_btns.addWidget(self._remove_btn)
         take_btns.addStretch()
         right_v.addLayout(take_btns)
@@ -332,6 +348,24 @@ class VideoEditorDialog(QDialog):
         fade_row.addWidget(self._fade_out_spin)
         wrap = QWidget(); wrap.setLayout(fade_row)
         form.addRow("Fades", wrap)
+        # De-esser intensity (0..1). 0 = filter off. Per-take
+        # because each writer's mic + voice combination has a
+        # different sibilance signature; a global setting
+        # wouldn't fit. Applied by the stitcher BEFORE the
+        # gain stage so the writer can compensate for the
+        # slight perceived loudness drop.
+        self._deesser_spin = QDoubleSpinBox()
+        self._deesser_spin.setRange(0.0, 1.0)
+        self._deesser_spin.setDecimals(2)
+        self._deesser_spin.setSingleStep(0.05)
+        self._deesser_spin.setToolTip(
+            "Tame sibilance ('s', 'sh', 'ch' sounds) on this "
+            "take. 0 = off, 0.4–0.6 is the usual range for "
+            "close-mic'd dialog. Higher values muffle "
+            "consonants. Applied at export / preview time.")
+        self._deesser_spin.editingFinished.connect(
+            self._commit_take)
+        form.addRow("De-esser", self._deesser_spin)
         self._snap_to_position_btn = QPushButton(
             "Set start to current video position")
         self._snap_to_position_btn.clicked.connect(
@@ -365,12 +399,17 @@ class VideoEditorDialog(QDialog):
         self._player.setSource(
             QUrl.fromLocalFile(str(self._source_path.resolve())))
         self._set_take_panel_enabled(False)
+        # Backup buttons depend on selection + per-take
+        # backup state; seed both to disabled until a take is
+        # selected.
+        self._backup_btn.setEnabled(False)
+        self._restore_btn.setEnabled(False)
 
     def _set_take_panel_enabled(self, enabled: bool) -> None:
         for w in (
             self._label_edit, self._start_spin, self._gain_spin,
             self._fade_in_spin, self._fade_out_spin,
-            self._snap_to_position_btn,
+            self._deesser_spin, self._snap_to_position_btn,
         ):
             w.setEnabled(enabled)
 
@@ -517,17 +556,113 @@ class VideoEditorDialog(QDialog):
         self._set_take_panel_enabled(True)
         for w in (self._label_edit, self._start_spin,
                   self._gain_spin, self._fade_in_spin,
-                  self._fade_out_spin):
+                  self._fade_out_spin, self._deesser_spin):
             w.blockSignals(True)
         self._label_edit.setText(seg.label)
         self._start_spin.setValue(float(seg.start_at))
         self._gain_spin.setValue(float(seg.gain_db))
         self._fade_in_spin.setValue(float(seg.fade_in_seconds))
         self._fade_out_spin.setValue(float(seg.fade_out_seconds))
+        self._deesser_spin.setValue(float(
+            getattr(seg, "deesser_intensity", 0.0) or 0.0))
         for w in (self._label_edit, self._start_spin,
                   self._gain_spin, self._fade_in_spin,
-                  self._fade_out_spin):
+                  self._fade_out_spin, self._deesser_spin):
             w.blockSignals(False)
+        # Restore is only meaningful when there's actually a
+        # backup on the selected take. Toggling per-selection
+        # so the writer doesn't click a button that quietly
+        # does nothing.
+        self._refresh_backup_buttons()
+
+    def _refresh_backup_buttons(self) -> None:
+        """Enable / disable the Backup + Restore buttons based
+        on whether a take is selected and whether it has a
+        backup_snapshot. Updates the Restore button's tooltip
+        with the backup timestamp so the writer sees which
+        version they'd roll back to."""
+        seg = self._selected_take()
+        self._backup_btn.setEnabled(seg is not None)
+        backup = (
+            getattr(seg, "backup_snapshot", None)
+            if seg is not None else None)
+        self._restore_btn.setEnabled(bool(backup))
+        if backup:
+            try:
+                from datetime import datetime as _dt
+                when = _dt.fromisoformat(
+                    str(backup.get("saved_at", "")))
+                when_str = when.strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                when_str = "earlier"
+            self._restore_btn.setToolTip(
+                f"Roll this take's settings back to the "
+                f"backup saved {when_str}.")
+        else:
+            self._restore_btn.setToolTip(
+                "No backup saved for this take yet. Click "
+                "📌 Backup first to create one.")
+
+    def _on_save_backup(self) -> None:
+        """Snapshot the selected take's editable settings into
+        ``seg.backup_snapshot``. Persists with the project via
+        the next session save."""
+        seg = self._selected_take()
+        if seg is None:
+            return
+        from datetime import datetime as _dt
+        fields = {
+            "label": seg.label,
+            "start_at": float(seg.start_at),
+            "in_point": float(seg.in_point),
+            "out_point": float(seg.out_point),
+            "gain_db": float(seg.gain_db),
+            "fade_in_seconds": float(seg.fade_in_seconds),
+            "fade_out_seconds": float(seg.fade_out_seconds),
+            "deesser_intensity": float(
+                getattr(seg, "deesser_intensity", 0.0)
+                or 0.0),
+            "muted": bool(seg.muted),
+            "anchored_to_action_id":
+                seg.anchored_to_action_id,
+        }
+        seg.backup_snapshot = {
+            "saved_at": _dt.now().isoformat(),
+            "fields": fields,
+        }
+        seg.updated_at = _dt.now()
+        self._refresh_backup_buttons()
+        self._persist_session()
+        QMessageBox.information(
+            self, "Backup saved",
+            f"Saved a backup of '{seg.label}'. Click "
+            "↺ Restore to roll back here later.")
+
+    def _on_restore_backup(self) -> None:
+        """Apply the selected take's ``backup_snapshot`` back
+        to its live fields. Reloads the detail panel so the
+        writer sees the rollback in the spinners + label."""
+        seg = self._selected_take()
+        if seg is None:
+            return
+        backup = getattr(seg, "backup_snapshot", None)
+        if not backup:
+            return
+        fields = backup.get("fields") or {}
+        for f, v in fields.items():
+            try:
+                setattr(seg, f, v)
+            except Exception as exc:
+                print(
+                    f"[video_editor] restore could not "
+                    f"set {f!r}: {exc}")
+        from datetime import datetime as _dt
+        seg.updated_at = _dt.now()
+        # Re-load the detail panel from the (now-restored)
+        # segment so the spinners show the rolled-back values.
+        self._on_take_selected()
+        self._refresh_list()
+        self._persist_session()
 
     def _commit_take(self) -> None:
         seg = self._selected_take()
@@ -538,6 +673,8 @@ class VideoEditorDialog(QDialog):
         seg.gain_db = float(self._gain_spin.value())
         seg.fade_in_seconds = float(self._fade_in_spin.value())
         seg.fade_out_seconds = float(self._fade_out_spin.value())
+        seg.deesser_intensity = max(0.0, min(1.0, float(
+            self._deesser_spin.value())))
         seg.updated_at = datetime.now()
         self._refresh_list()
         self._persist_session()

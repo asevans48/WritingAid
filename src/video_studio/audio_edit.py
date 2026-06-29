@@ -155,6 +155,7 @@ def compose_clips(
     *,
     default_crossfade_seconds: float = 0.15,
     track_gain_db: Optional[dict] = None,
+    track_deesser_intensity: Optional[dict] = None,
 ) -> AudioEditResult:
     """Position-aware audio composer.
 
@@ -202,6 +203,16 @@ def compose_clips(
         gain_db: float
         fade_in: float
         fade_out: float
+        # Per-clip de-esser intensity (0..1). ``0`` skips
+        # the filter so a deck with no de-essing pays no
+        # ffmpeg cost. Sourced from the clip itself (wins)
+        # falling back to the clip's track entry.
+        deesser_intensity: float
+        # Per-clip noise floor (negative dB). ``0`` skips
+        # afftdn. Per-clip only — no track-level fallback;
+        # noise reduction is too source-specific to apply
+        # at the lane level.
+        denoise_floor_db: float
 
     renders: list[_ClipRender] = []
     for c in clips:
@@ -252,6 +263,30 @@ def compose_clips(
                                       str(track_idx), 0.0))
                 or 0.0)
         effective_gain = clip_gain + lane_gain
+        # De-esser: per-clip value wins over track-level
+        # fallback so a writer can fix one harsh take
+        # without dialing the whole lane.
+        clip_deesser = max(0.0, min(1.0, float(
+            getattr(c, "deesser_intensity", 0.0) or 0.0)))
+        if clip_deesser > 0:
+            deesser = clip_deesser
+        else:
+            deesser = 0.0
+            if track_deesser_intensity is not None:
+                raw = track_deesser_intensity.get(
+                    track_idx,
+                    track_deesser_intensity.get(
+                        str(track_idx), 0.0))
+                try:
+                    deesser = max(
+                        0.0, min(1.0, float(raw or 0.0)))
+                except (TypeError, ValueError):
+                    deesser = 0.0
+        # Denoise floor — per-clip only (no track fallback;
+        # noise profiles are too source-specific to apply
+        # at the lane level). Negative value enables afftdn.
+        denoise_floor = float(
+            getattr(c, "denoise_floor_db", 0.0) or 0.0)
         renders.append(_ClipRender(
             path=path,
             start=start,
@@ -263,6 +298,8 @@ def compose_clips(
                 getattr(c, "fade_in_seconds", 0.0) or 0.0)),
             fade_out=max(0.0, float(
                 getattr(c, "fade_out_seconds", 0.0) or 0.0)),
+            deesser_intensity=deesser,
+            denoise_floor_db=denoise_floor,
         ))
     if not renders:
         return AudioEditResult(
@@ -279,6 +316,29 @@ def compose_clips(
             f"[{i}:a]atrim=start={r.trim_in:.3f}:"
             f"end={r.trim_out:.3f}",
             "asetpts=N/SR/TB"]
+        # Noise reduction first — clean the noise floor
+        # BEFORE other processing so subsequent stages
+        # (deesser, gain) don't amplify hiss. ``afftdn``
+        # ``nf=`` is the noise floor in dB; anything below
+        # gets attenuated. Per-clip only since noise
+        # profiles vary by source.
+        if r.denoise_floor_db < 0:
+            chain.append(
+                f"afftdn=nf={r.denoise_floor_db:.1f}")
+        # De-esser runs BEFORE volume so the writer's gain
+        # adjustment compensates for the slight perceived
+        # loudness drop a heavy de-ess introduces. ffmpeg's
+        # ``deesser`` filter takes ``i`` (intensity 0..1),
+        # ``m`` (max reduction 0..1 — 0.5 is the default and
+        # plenty for voiceover), ``f`` (frequency 0..1 mapped
+        # to 5–15 kHz; 0.5 ≈ 6 kHz which catches the
+        # ess / sh / ch band), and ``s`` (mode 'i'=input
+        # passthrough, 'o'=de-essed output, 'e'=ess-only —
+        # we want 'o').
+        if r.deesser_intensity > 0:
+            chain.append(
+                f"deesser=i={r.deesser_intensity:.3f}:"
+                f"m=0.5:f=0.5:s=o")
         if r.gain_db != 0:
             chain.append(f"volume={r.gain_db:.2f}dB")
         # Fades are clamped to the effective duration so

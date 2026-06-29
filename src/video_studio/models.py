@@ -427,6 +427,27 @@ class GroupAudioClip(BaseModel):
     # mixes all tracks together via ``amix``; the timeline
     # widget renders one visual lane per distinct ``track_index``.
     track_index: int = 0
+    # Per-clip de-esser intensity (0..1). 0 = off (default),
+    # 0.4–0.6 is the usual range for taming sibilance. When
+    # set, OVERRIDES the lane-level
+    # ``SlideGroup.track_deesser_intensity`` for this clip —
+    # writers can dial in one harsh take without affecting
+    # the rest of the lane.
+    deesser_intensity: float = 0.0
+    # Per-clip noise reduction floor in dB (afftdn ``nf=``).
+    # 0 = off (default); a negative value (-25 typical) tells
+    # afftdn to treat anything below that dB as noise and
+    # attenuate it. More negative = more aggressive.
+    denoise_floor_db: float = 0.0
+    # Writer-managed backup of the clip's editable settings.
+    # Saved on demand via the right-click menu's "📌 Save
+    # backup"; restored via "↺ Restore from backup". Single
+    # slot per clip (overwrites prior backup) so the model
+    # stays small even on big decks. Shape:
+    #   {"saved_at": "<isoformat>",
+    #    "fields": {field_name: value, ...}}
+    # ``None`` = no backup has been saved yet.
+    backup_snapshot: Optional[dict] = None
     created_at: datetime = Field(default_factory=datetime.now)
 
 
@@ -492,6 +513,25 @@ class SlideGroup(BaseModel):
     # "Move to track" submenu. Missing keys fall back to
     # "Track N" so writers don't see blanks.
     track_names: Dict[int, str] = Field(default_factory=dict)
+    # Per-track de-esser intensity, keyed by ``track_index``.
+    # 0.0 = filter off (default); positive values tame
+    # sibilance in the 5–8 kHz band via ffmpeg's ``deesser``
+    # filter. Most writers want 0.4–0.6 for harsh "ess" /
+    # "sh" reductions; >0.8 starts to muffle dialog. Missing
+    # keys mean "no de-essing on that lane."
+    track_deesser_intensity: Dict[int, float] = Field(
+        default_factory=dict)
+    # Inter-group transition INTO this group from the
+    # previous group in deck order. ``"cut"`` (default) =
+    # hard concat (no crossfade); other values match
+    # ffmpeg's xfade transition names ("fade", "dissolve",
+    # "wipeleft", etc.). ``inter_group_transition_seconds``
+    # = 0 also means "hard cut" regardless of name. The
+    # deck preview / export concat applies xfade to video +
+    # acrossfade to audio at this boundary. Ignored for the
+    # very first group in the deck.
+    inter_group_transition_in: str = "cut"
+    inter_group_transition_seconds: float = 0.0
     created_at: datetime = Field(default_factory=datetime.now)
 
 
@@ -592,7 +632,22 @@ class VoiceoverSegment(BaseModel):
     gain_db: float = 0.0
     fade_in_seconds: float = 0.0
     fade_out_seconds: float = 0.0
+    # De-esser intensity. 0.0 = off (default); 0.4–0.6 is the
+    # usual range for taming sibilance on close-mic'd dialog.
+    # Stitcher applies ffmpeg's ``deesser`` filter per
+    # segment so the writer can dial it in on top of an
+    # otherwise good take.
+    deesser_intensity: float = 0.0
     muted: bool = False
+    # Writer-managed backup of the take's editable settings.
+    # Saved via the video editor's 📌 Backup button; restored
+    # via ↺ Restore. Single slot per segment — the writer
+    # snapshots a state they like before experimenting and
+    # rolls back if the experiment turned out worse. Shape
+    # mirrors GroupAudioClip's ``backup_snapshot``:
+    #   {"saved_at": "<isoformat>",
+    #    "fields": {field_name: value, ...}}
+    backup_snapshot: Optional[dict] = None
     # Slide anchoring — when the scene is in slideshow mode the
     # writer can pin a segment to start exactly at the chosen
     # slide's transition. Stitcher resolves the slide's start

@@ -435,6 +435,21 @@ def mix_voiceover_segments(
         # asetpts so trims re-base to 0 — without this adelay
         # would skip over the trimmed lead-in.
         chain.append("asetpts=PTS-STARTPTS")
+        # De-esser BEFORE gain so the writer can compensate
+        # for the slight loudness drop a heavy de-ess
+        # introduces. Per-segment intensity (0..1) — 0 skips
+        # the filter so untouched takes pay no extra cost.
+        deesser_intensity = max(0.0, min(1.0, float(
+            getattr(seg, "deesser_intensity", 0.0) or 0.0)))
+        if deesser_intensity > 0:
+            # ``m=0.5`` max reduction, ``f=0.5`` ≈ 6 kHz
+            # (covers the ess / sh / ch sibilance band),
+            # ``s=o`` outputs the de-essed signal (not the
+            # ess-only diagnostic). Same defaults the group
+            # composer uses so the two paths sound identical.
+            chain.append(
+                f"deesser=i={deesser_intensity:.3f}:"
+                f"m=0.5:f=0.5:s=o")
         if gain_db != 0.0:
             # Convert dB to linear ratio. ffmpeg's volume filter
             # also accepts dB directly via ``volume=NdB`` but

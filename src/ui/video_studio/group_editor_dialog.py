@@ -178,6 +178,7 @@ class GroupEditorDialog(QDialog):
         chapters_provider: Optional[Callable[[], Any]] = None,
         save_chapter_text: Optional[Callable[[str, str], None]] = None,
         open_in_writer: Optional[Callable[[str], None]] = None,
+        scenes_provider: Optional[Callable[[], Any]] = None,
         parent: Optional[QWidget] = None,
     ):
         super().__init__(None)
@@ -215,6 +216,11 @@ class GroupEditorDialog(QDialog):
         # prose button is hidden when no ``chapters_provider``
         # was wired (e.g. dialog opened standalone in a test).
         self._chapters_provider = chapters_provider
+        # Read-only access to every scene in the studio. Powers
+        # the tray's "🔄 Sync favorites from actions" button —
+        # walks each action's ``favorite_image()`` and either
+        # creates or updates the matching slide page.
+        self._scenes_provider = scenes_provider
         self._save_chapter_text_cb = save_chapter_text
         self._open_in_writer_cb = open_in_writer
         # Single shared prose window — re-used so the writer
@@ -229,6 +235,12 @@ class GroupEditorDialog(QDialog):
         # back into ``overlay_audio_path`` (the rendered file
         # that playback + export still read).
         self._maybe_migrate_overlay_to_clips()
+        # Reconcile ``page_ids`` with each page's
+        # authoritative ``group_id`` so a deck loaded with
+        # drifted indexes self-heals on open. Without this,
+        # an unplace could leave a slide invisible in the
+        # tray (the tray walked ``page_ids``).
+        self._reconcile_group_page_ids()
         # Player for overlay-audio preview.
         self._player = QMediaPlayer(self)
         self._player_audio = QAudioOutput(self)
@@ -258,6 +270,17 @@ class GroupEditorDialog(QDialog):
         # viewer windows. ``None`` means no instance yet; the
         # first ``_view_slide`` call creates it.
         self._preview_window = None
+        # Per-clip undo history. Keyed by clip id, value is a
+        # ``collections.deque`` of model_dump() snapshots of
+        # the clip BEFORE recent edits. Capped at 2 entries
+        # per the writer's "save two previous copies" ask;
+        # each ↶ Undo pops the most recent snapshot and
+        # restores the clip's fields. Cleared on group switch.
+        from collections import deque as _deque
+        self._clip_edit_history: dict = {}
+        # Hold a reference to deque so closure captures the
+        # right class without re-importing later.
+        self._deque_cls = _deque
         self._build_ui()
         self._refresh_tray()
         self._refresh_overlay_status()
@@ -267,6 +290,49 @@ class GroupEditorDialog(QDialog):
     # ------------------------------------------------------------------
     # Multi-clip overlay
     # ------------------------------------------------------------------
+    def _reconcile_group_page_ids(self) -> None:
+        """Self-heal ``page_ids`` from each page's authoritative
+        ``group_id``.
+
+        Two repairs:
+          1. ADD any page that names this group via
+             ``page.group_id`` but is missing from
+             ``page_ids``. Without this, an unplace silently
+             drops the slide because the tray walks
+             ``page_ids``.
+          2. REMOVE any pid from ``page_ids`` that no longer
+             matches a page (deleted from deck) or that
+             names a different group now. Keeps the index
+             from growing stale ghost references.
+
+        Preserves the existing ``page_ids`` order for known
+        ids and appends fresh ids in deck.pages order.
+        """
+        if (self._group is None
+                or self._deck is None):
+            return
+        gid = self._group.id
+        # Map every deck page's group_id for quick lookup.
+        pages_by_id = {
+            p.id: p for p in self._deck.pages}
+        # Step 2: prune ids that no longer belong.
+        kept = [
+            pid for pid in (
+                getattr(self._group, "page_ids", []) or [])
+            if pid in pages_by_id
+            and getattr(
+                pages_by_id[pid], "group_id", None) == gid
+        ]
+        # Step 1: append any page that names us but wasn't in
+        # page_ids yet, in deck.pages order.
+        known = set(kept)
+        for p in self._deck.pages:
+            if (getattr(p, "group_id", None) == gid
+                    and p.id not in known):
+                kept.append(p.id)
+                known.add(p.id)
+        self._group.page_ids = kept
+
     def _maybe_migrate_overlay_to_clips(self) -> None:
         """Older decks have a single ``overlay_audio_path`` and
         no ``audio_clips`` — promote it to a one-entry clips
@@ -368,7 +434,10 @@ class GroupEditorDialog(QDialog):
         result = compose_clips(
             clips, dest,
             track_gain_db=getattr(
-                self._group, "track_gain_db", None))
+                self._group, "track_gain_db", None),
+            track_deesser_intensity=getattr(
+                self._group,
+                "track_deesser_intensity", None))
         if not result.success:
             QMessageBox.warning(
                 self, "Compose failed",
@@ -830,6 +899,27 @@ class GroupEditorDialog(QDialog):
         tray_header.addWidget(QLabel(
             "Available slides — drag onto the timeline"))
         tray_header.addStretch()
+        # 🔄 Sync favorites from actions — bulk-import every
+        # action's current favorite image as a slide page in
+        # THIS group. New favorites become new slides in the
+        # tray; existing slides (matched by source_action_id)
+        # get their image_path + label refreshed so a re-
+        # favorited action shows up here without manual work.
+        self._sync_favorites_btn = QPushButton(
+            "🔄 Sync favorites from actions")
+        self._sync_favorites_btn.setToolTip(
+            "Pull every action's current favorite image "
+            "into this group's tray. Slides keep their "
+            "action's name as label so provenance survives "
+            "the import.")
+        self._sync_favorites_btn.clicked.connect(
+            self._on_sync_favorites_from_actions)
+        # Hide when no scenes_provider was wired (dialog
+        # opened standalone in a test, or before this feature
+        # was plumbed) — the button would be dead weight.
+        if self._scenes_provider is None:
+            self._sync_favorites_btn.setVisible(False)
+        tray_header.addWidget(self._sync_favorites_btn)
         self._add_to_group_btn = QPushButton(
             "➕ Add slide from deck…")
         self._add_to_group_btn.clicked.connect(
@@ -956,12 +1046,39 @@ class GroupEditorDialog(QDialog):
         from PyQt6.QtGui import QIcon
         self._tray.blockSignals(True)
         self._tray.clear()
-        for pid in self._group.page_ids:
-            page = self._find_page(pid)
-            if page is None:
-                continue
+        # Walk ``deck.pages`` filtered by ``page.group_id`` —
+        # that's the authoritative source for membership. The
+        # earlier version iterated ``self._group.page_ids``,
+        # but that index can drift out of sync with the
+        # canonical ``page.group_id`` (the drop handler only
+        # rebuilds it when the page moves BETWEEN groups, and
+        # legacy data can land with mismatches). Reading from
+        # ``page.group_id`` guarantees an unplaced slide
+        # always reappears in the tray.
+        # Stable ordering: use ``page_ids`` order when the
+        # page id is listed there, otherwise append at the end
+        # in deck.pages order. Keeps the tray's row order
+        # consistent with what the writer set up.
+        order_lookup = {
+            pid: idx
+            for idx, pid in enumerate(
+                getattr(self._group, "page_ids", []) or [])}
+        def _sort_key(p):
+            return order_lookup.get(p.id, 10_000_000)
+        candidates = sorted(
+            (p for p in self._deck.pages
+             if getattr(p, "group_id", None)
+             == self._group.id),
+            key=_sort_key)
+        for page in candidates:
             if page.start_time_seconds_in_group is not None:
                 continue
+            # Self-heal ``page_ids`` so the index doesn't
+            # stay stale — future code paths that read it
+            # (export, recompose helpers) get a consistent
+            # view without a separate migration pass.
+            if page.id not in self._group.page_ids:
+                self._group.page_ids.append(page.id)
             text = page.label or "Slide"
             item = QListWidgetItem(text)
             item.setData(Qt.ItemDataRole.UserRole, page.id)
@@ -1328,6 +1445,143 @@ class GroupEditorDialog(QDialog):
     # ------------------------------------------------------------------
     # Add slides from deck
     # ------------------------------------------------------------------
+    def _on_sync_favorites_from_actions(self) -> None:
+        """Refresh THIS group's slides with the current
+        favorite image of the action each one was seeded from.
+
+        Scoped to the group: we only walk slides in
+        ``self._group.page_ids`` that carry a
+        ``source_action_id``. Each one gets its
+        ``image_path`` + ``label`` updated from the
+        matching action's current favorite. No new slides
+        are imported — the earlier version pulled in EVERY
+        action's favorite across every scene, which dumped a
+        pile of unrelated images into the tray. Writers
+        wanted "refresh what's here", not "import the
+        world."
+
+        Pages whose ``source_action_id`` resolves but the
+        action no longer has a usable favorite (missing
+        file, no favorite set, action deleted) are left
+        alone — better to keep a stale image than blank
+        the slide out. The skipped count surfaces these so
+        the writer knows.
+        """
+        if self._scenes_provider is None:
+            QMessageBox.warning(
+                self, "Sync unavailable",
+                "Scene access wasn't wired into this editor.")
+            return
+        try:
+            scenes = list(self._scenes_provider() or [])
+        except Exception as exc:
+            QMessageBox.warning(
+                self, "Could not load scenes", str(exc))
+            return
+        # Build a quick action_id → (scene_label, action) map
+        # once instead of looping the scene graph per slide.
+        action_by_id: dict = {}
+        for scene in scenes:
+            scene_label = (
+                getattr(scene, "name", "") or "Scene")
+            for action in (
+                    getattr(scene, "actions", []) or []):
+                aid = getattr(action, "id", None)
+                if aid:
+                    action_by_id[aid] = (
+                        scene, scene_label, action)
+        from datetime import datetime as _dt
+        refreshed = 0
+        unchanged = 0
+        no_favorite = 0
+        no_provenance = 0
+        action_not_found = 0
+        # Walk THIS group's pages only — sync is scoped to
+        # the actions already represented in the group.
+        for pid in list(self._group.page_ids):
+            page = self._find_page(pid)
+            if page is None:
+                continue
+            aid = getattr(page, "source_action_id", None)
+            if not aid:
+                # Page wasn't seeded from an action (e.g.
+                # manually imported image); nothing to sync.
+                no_provenance += 1
+                continue
+            tup = action_by_id.get(aid)
+            if tup is None:
+                # The action this page was seeded from is no
+                # longer in the studio (scene / action
+                # deleted). Leave the page alone.
+                action_not_found += 1
+                continue
+            scene, scene_label, action = tup
+            try:
+                fav = (
+                    action.favorite_image()
+                    if hasattr(action, "favorite_image")
+                    else None)
+            except Exception:
+                fav = None
+            if fav is None:
+                no_favorite += 1
+                continue
+            path_str = (
+                getattr(fav, "file_path", "") or "").strip()
+            if (not path_str
+                    or not Path(path_str).exists()):
+                no_favorite += 1
+                continue
+            action_name = (
+                getattr(action, "name", "") or "action")
+            label = f"{scene_label} → {action_name}"
+            changed = False
+            if page.image_path != path_str:
+                page.image_path = path_str
+                changed = True
+            if page.label != label:
+                page.label = label
+                changed = True
+            # Keep source_scene_id in lockstep when the action
+            # moved between scenes (rare but possible after
+            # restructure).
+            new_sid = getattr(scene, "id", "") or ""
+            if (new_sid
+                    and getattr(page, "source_scene_id", "")
+                    != new_sid):
+                page.source_scene_id = new_sid
+                changed = True
+            if changed:
+                page.updated_at = _dt.now()
+                refreshed += 1
+            else:
+                unchanged += 1
+        if refreshed:
+            self._refresh_tray()
+            self._timeline.update()
+            self.deck_modified.emit()
+        # Summary — terse but honest about the buckets.
+        parts = [
+            f"• {refreshed} slide(s) refreshed",
+            f"• {unchanged} slide(s) already current",
+        ]
+        if no_favorite:
+            parts.append(
+                f"• {no_favorite} action(s) had no usable "
+                "favorite (file missing or no favorite set)")
+        if action_not_found:
+            parts.append(
+                f"• {action_not_found} slide(s) point at an "
+                "action that's no longer in the studio")
+        if no_provenance:
+            parts.append(
+                f"• {no_provenance} slide(s) have no action "
+                "provenance (added by hand)")
+        QMessageBox.information(
+            self, "Sync complete",
+            "Synced this group's slides to current action "
+            "favorites:\n\n" + "\n".join(parts))
+
     def _on_add_from_deck(self) -> None:
         candidates = [
             p for p in self._deck.pages
@@ -2807,6 +3061,10 @@ class GroupEditorDialog(QDialog):
             getattr(self._group, "track_names", None) or {})
         gains = (
             getattr(self._group, "track_gain_db", None) or {})
+        deessers = (
+            getattr(
+                self._group,
+                "track_deesser_intensity", None) or {})
         cur_name = (
             names.get(track_index)
             or names.get(str(track_index))
@@ -2815,15 +3073,30 @@ class GroupEditorDialog(QDialog):
             gains.get(
                 track_index,
                 gains.get(str(track_index), 0.0)) or 0.0)
+        cur_deesser = float(
+            deessers.get(
+                track_index,
+                deessers.get(str(track_index), 0.0)) or 0.0)
+        deesser_summary = (
+            f"{cur_deesser:.2f}" if cur_deesser > 0 else "off")
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
         header = menu.addAction(
-            f"🎚  {cur_name}  ·  {cur_gain:+.1f} dB")
+            f"🎚  {cur_name}  ·  {cur_gain:+.1f} dB  ·  "
+            f"de-esser {deesser_summary}")
         header.setEnabled(False)
         menu.addSeparator()
         rename_act = menu.addAction("✏️  Rename track…")
         volume_act = menu.addAction(
             f"🔊  Set volume…  (current {cur_gain:+.1f} dB)")
+        deesser_act = menu.addAction(
+            f"🎤  De-esser…  (current {deesser_summary})")
+        deesser_act.setToolTip(
+            "Tame sibilance ('s', 'sh', 'ch' sounds) in "
+            "this track. 0 = off, 0.4–0.6 is the usual "
+            "range for close-mic'd dialog. Higher values "
+            "start to muffle consonants. Applied to every "
+            "clip on this lane when the overlay renders.")
         menu.addSeparator()
         remove_act = menu.addAction(
             "🗑  Remove track (clips fall to Track 1)")
@@ -2866,6 +3139,30 @@ class GroupEditorDialog(QDialog):
                 self._group.track_gain_db = clean_gains
                 self._timeline.update()
                 self._recompose_overlay()
+        elif action is deesser_act:
+            val = self._param_popup(
+                "Track de-esser",
+                f"De-esser intensity for '{cur_name}'. "
+                "0 turns the filter off. 0.4–0.6 is the "
+                "usual range for taming sibilance on "
+                "close-mic'd dialog; >0.8 starts to muffle "
+                "consonants. The filter targets 5–8 kHz "
+                "where harsh 'ess' and 'sh' sounds live.",
+                value=cur_deesser, min_v=0.0, max_v=1.0,
+                decimals=2, step=0.05, suffix="")
+            if val is not None:
+                clean_de = {
+                    int(k): float(v)
+                    for k, v in (deessers or {}).items()
+                    if str(k).lstrip("-").isdigit()}
+                if float(val) <= 0:
+                    clean_de.pop(track_index, None)
+                else:
+                    clean_de[track_index] = float(val)
+                self._group.track_deesser_intensity = (
+                    clean_de)
+                self._timeline.update()
+                self._recompose_overlay()
         elif action is remove_act:
             # Move clips to lane 0 and drop the gain/name
             # entries.
@@ -2888,6 +3185,14 @@ class GroupEditorDialog(QDialog):
                 and int(k) != track_index}
             self._group.track_gain_db = clean_gains
             self._group.track_names = clean_names
+            # Drop the de-esser entry too so re-adding a lane
+            # at the same index doesn't inherit stale config.
+            clean_de = {
+                int(k): float(v)
+                for k, v in (deessers or {}).items()
+                if str(k).lstrip("-").isdigit()
+                and int(k) != track_index}
+            self._group.track_deesser_intensity = clean_de
             self._timeline._refresh_min_width()
             self._timeline.update()
             self._refresh_tracks_count_label()
@@ -3187,8 +3492,94 @@ class GroupEditorDialog(QDialog):
             f"{clip.fade_out_seconds:.2f} s)")
         gain_act = menu.addAction(
             f"🔊  Gain… (current: {clip.gain_db:+.1f} dB)")
+        # Per-clip noise reduction. Negative dB enables
+        # afftdn at that noise floor; 0 turns it off. Per
+        # clip (not per lane) because noise profiles vary
+        # between takes — even on the same mic, a take with
+        # the AC on differs from one without.
+        cur_denoise = float(
+            getattr(clip, "denoise_floor_db", 0.0) or 0.0)
+        denoise_summary = (
+            f"{cur_denoise:.1f} dB floor"
+            if cur_denoise < 0 else "off")
+        denoise_act = menu.addAction(
+            f"🔇  Reduce noise… (current: {denoise_summary})")
+        denoise_act.setToolTip(
+            "FFT-based noise reduction (afftdn). Set the "
+            "noise floor in dB — anything quieter than this "
+            "level gets attenuated. Typical values: −25 dB "
+            "for clean studio mics, −15 dB for noisy "
+            "laptops. 0 turns the filter off.")
+        # Per-clip de-esser. Overrides the lane-level
+        # setting for THIS clip (useful for a single harsh
+        # take on an otherwise-clean lane).
+        cur_deesser = float(
+            getattr(clip, "deesser_intensity", 0.0) or 0.0)
+        deesser_summary = (
+            f"{cur_deesser:.2f}"
+            if cur_deesser > 0 else "off (uses lane)")
+        deesser_act = menu.addAction(
+            f"🎤  De-esser… (current: {deesser_summary})")
+        deesser_act.setToolTip(
+            "Tame sibilance on THIS clip. 0 = off (the "
+            "lane's de-esser setting still applies). "
+            "Setting >0 here OVERRIDES the lane value for "
+            "this clip only.")
         start_act = menu.addAction(
             f"⏱️  Start time… (current: {start:.2f} s)")
+        menu.addSeparator()
+        # Undo — restores the clip's prior state (label,
+        # trim, fades, gain, denoise, deesser, position).
+        # Up to 2 snapshots kept per clip. Disabled when
+        # there's nothing to undo.
+        undo_stack = self._clip_edit_history.get(clip.id)
+        has_undo = bool(undo_stack)
+        undo_act = menu.addAction(
+            "↶  Undo last edit"
+            + (f"  ({len(undo_stack)} step(s) available)"
+               if has_undo else "  (no edits to undo)"))
+        undo_act.setEnabled(has_undo)
+        undo_act.setToolTip(
+            "Restore this clip's settings to the state "
+            "before your most recent edit. Up to 2 prior "
+            "states are remembered per clip.")
+        # Writer-managed backup. One named slot per clip —
+        # saved on demand, restored on demand. Survives close /
+        # reload because it persists on the model. Separate
+        # from undo because undo is automatic + short-lived,
+        # whereas a backup is a deliberate "checkpoint before I
+        # try something risky."
+        backup = getattr(clip, "backup_snapshot", None)
+        backup_when = ""
+        if backup:
+            try:
+                from datetime import datetime as _dt
+                backup_when = _dt.fromisoformat(
+                    str(backup.get("saved_at", "")))
+                backup_when = backup_when.strftime(
+                    "%Y-%m-%d %H:%M")
+            except Exception:
+                backup_when = "earlier"
+        save_backup_act = menu.addAction(
+            "📌  Save backup of this clip"
+            + (f"  (overwrites backup from {backup_when})"
+               if backup_when else ""))
+        save_backup_act.setToolTip(
+            "Snapshot this clip's current settings into the "
+            "backup slot. Single slot per clip — saving a "
+            "new backup overwrites the previous one. The "
+            "snapshot persists with the project so you can "
+            "revert to it after a close + reopen.")
+        restore_backup_act = menu.addAction(
+            "↺  Restore from backup"
+            + (f"  (saved {backup_when})"
+               if backup_when else "  (no backup saved)"))
+        restore_backup_act.setEnabled(bool(backup))
+        restore_backup_act.setToolTip(
+            "Roll this clip's settings back to whatever was "
+            "in the backup slot. The current state is pushed "
+            "onto the undo stack first so ↶ Undo still gets "
+            "you back if the restore wasn't what you wanted.")
         menu.addSeparator()
         # Non-destructive remove: drops the block off the
         # timeline but keeps the clip in the list (and the
@@ -3215,14 +3606,17 @@ class GroupEditorDialog(QDialog):
                 if item is not None:
                     self._clip_list.editItem(item)
         elif action is trim_act:
+            self._snapshot_clip(clip)
             self._open_clip_trim_dialog(clip)
         elif action is trim_before_act:
+            self._snapshot_clip(clip)
             # Bake the playhead into this clip's trim_in. The
             # generic ``_trim_clip_to_playhead`` math handles
             # the source-coordinate translation + recompose.
             self._trim_clip_to_playhead(
                 clip, playhead, side="in")
         elif action is trim_after_act:
+            self._snapshot_clip(clip)
             self._trim_clip_to_playhead(
                 clip, playhead, side="out")
         elif action is fade_in_act:
@@ -3234,6 +3628,7 @@ class GroupEditorDialog(QDialog):
                 min_v=0.0, max_v=max(0.05, eff),
                 decimals=2, step=0.05, suffix=" s")
             if val is not None:
+                self._snapshot_clip(clip)
                 clip.fade_in_seconds = float(val)
                 self._refresh_clip_list()
                 self._recompose_overlay()
@@ -3246,6 +3641,7 @@ class GroupEditorDialog(QDialog):
                 min_v=0.0, max_v=max(0.05, eff),
                 decimals=2, step=0.05, suffix=" s")
             if val is not None:
+                self._snapshot_clip(clip)
                 clip.fade_out_seconds = float(val)
                 self._refresh_clip_list()
                 self._recompose_overlay()
@@ -3256,9 +3652,49 @@ class GroupEditorDialog(QDialog):
                 value=clip.gain_db, min_v=-30.0, max_v=30.0,
                 decimals=1, step=0.5, suffix=" dB")
             if val is not None:
+                self._snapshot_clip(clip)
                 clip.gain_db = float(val)
                 self._refresh_clip_list()
                 self._recompose_overlay()
+        elif action is denoise_act:
+            val = self._param_popup(
+                "Reduce noise",
+                f"Noise floor for '{clip.label}'. More "
+                "negative = more aggressive. Typical: −25 "
+                "(clean studio) to −15 (noisy laptop). "
+                "0 disables the filter.",
+                value=cur_denoise if cur_denoise else -25.0,
+                min_v=-50.0, max_v=0.0,
+                decimals=1, step=1.0, suffix=" dB")
+            if val is not None:
+                self._snapshot_clip(clip)
+                # Negative or zero only — anything >=0 turns
+                # the filter off in compose_clips.
+                clip.denoise_floor_db = (
+                    0.0 if float(val) >= 0
+                    else round(float(val), 1))
+                self._refresh_clip_list()
+                self._recompose_overlay()
+        elif action is deesser_act:
+            val = self._param_popup(
+                "Clip de-esser",
+                f"De-esser intensity for '{clip.label}'. "
+                "0 = off (lane setting applies). 0.4–0.6 "
+                "is the usual range for sibilance.",
+                value=cur_deesser, min_v=0.0, max_v=1.0,
+                decimals=2, step=0.05, suffix="")
+            if val is not None:
+                self._snapshot_clip(clip)
+                clip.deesser_intensity = max(
+                    0.0, min(1.0, float(val)))
+                self._refresh_clip_list()
+                self._recompose_overlay()
+        elif action is undo_act:
+            self._undo_clip_edit(clip)
+        elif action is save_backup_act:
+            self._save_clip_backup(clip)
+        elif action is restore_backup_act:
+            self._restore_clip_backup(clip)
         elif action is start_act:
             val = self._param_popup(
                 "Clip start time",
@@ -3266,6 +3702,7 @@ class GroupEditorDialog(QDialog):
                 value=start, min_v=0.0, max_v=3600.0,
                 decimals=3, step=0.1, suffix=" s")
             if val is not None:
+                self._snapshot_clip(clip)
                 clip.start_time_seconds = float(val)
                 self._refresh_clip_list()
                 self._recompose_overlay()
@@ -3454,6 +3891,117 @@ class GroupEditorDialog(QDialog):
             # subsequent-clips behavior matches the timeline
             # right-click + Delete shortcut paths.
             self._delete_audio_clip(clip)
+
+    # Fields we snapshot for undo. Anything else on the clip
+    # (id, audio_path, created_at, track_index) we want to
+    # KEEP across an undo since they're identity / placement
+    # metadata, not editable settings.
+    _CLIP_UNDO_FIELDS = (
+        "label",
+        "trim_in_seconds",
+        "trim_out_seconds",
+        "gain_db",
+        "fade_in_seconds",
+        "fade_out_seconds",
+        "crossfade_seconds",
+        "deesser_intensity",
+        "denoise_floor_db",
+        "start_time_seconds",
+    )
+
+    def _snapshot_clip(self, clip) -> None:
+        """Capture the editable fields of ``clip`` so a later
+        ↶ Undo can restore them. The deque caps at 2 entries
+        per clip — the third snapshot evicts the oldest.
+
+        Called BEFORE every mutating clip edit (gain,
+        denoise, deesser, trim, fade, start time, rename).
+        Cheap (just a dict of primitives) so no perf concern
+        even when the writer is rapid-firing edits.
+        """
+        snap = {
+            f: getattr(clip, f, None)
+            for f in self._CLIP_UNDO_FIELDS}
+        stack = self._clip_edit_history.get(clip.id)
+        if stack is None:
+            stack = self._deque_cls(maxlen=2)
+            self._clip_edit_history[clip.id] = stack
+        stack.append(snap)
+
+    def _undo_clip_edit(self, clip) -> None:
+        """Pop the most recent snapshot for ``clip`` and write
+        its values back onto the clip. Refreshes the list +
+        recomposes so the writer sees the rollback in both
+        the clip list AND the rendered overlay immediately."""
+        stack = self._clip_edit_history.get(clip.id)
+        if not stack:
+            return
+        snap = stack.pop()
+        for f, v in snap.items():
+            try:
+                setattr(clip, f, v)
+            except Exception as exc:
+                print(
+                    f"[group_editor] undo could not "
+                    f"restore {f!r}: {exc}")
+        # Don't push a counter-snapshot — undo is one-way
+        # here (no redo) since the writer's "save 2 previous
+        # copies" implies a simple back-button history.
+        self._refresh_clip_list()
+        self._timeline.update()
+        self._recompose_overlay()
+
+    def _save_clip_backup(self, clip) -> None:
+        """Snapshot the clip's current editable settings into
+        ``clip.backup_snapshot``. Persists on the model so it
+        survives close + reopen. Single slot — saving again
+        overwrites whatever was there.
+        """
+        from datetime import datetime as _dt
+        fields = {
+            f: getattr(clip, f, None)
+            for f in self._CLIP_UNDO_FIELDS}
+        clip.backup_snapshot = {
+            "saved_at": _dt.now().isoformat(),
+            "fields": fields,
+        }
+        # Fire deck_modified so autosave persists the backup
+        # immediately — writers expect a backup to survive
+        # even an unexpected quit right after.
+        self._refresh_clip_list()
+        self.deck_modified.emit()
+        QMessageBox.information(
+            self, "Backup saved",
+            f"Saved a backup of '{clip.label}'. Use "
+            "↺ Restore from backup on the same right-click "
+            "menu to roll back here later.")
+
+    def _restore_clip_backup(self, clip) -> None:
+        """Apply ``clip.backup_snapshot`` to the live clip.
+        Pushes the current state onto the undo stack first so
+        the writer can still ↶ Undo back out of the restore
+        if it wasn't what they expected.
+        """
+        backup = getattr(clip, "backup_snapshot", None)
+        if not backup:
+            return
+        fields = backup.get("fields") or {}
+        if not fields:
+            return
+        # Snapshot CURRENT state into the undo stack before
+        # overwriting — gives the writer a one-step out.
+        self._snapshot_clip(clip)
+        for f, v in fields.items():
+            if f in self._CLIP_UNDO_FIELDS:
+                try:
+                    setattr(clip, f, v)
+                except Exception as exc:
+                    print(
+                        f"[group_editor] restore could not "
+                        f"set {f!r}: {exc}")
+        self._refresh_clip_list()
+        self._timeline.update()
+        self._recompose_overlay()
 
     @staticmethod
     def _clip_kept_seconds(clip) -> float:

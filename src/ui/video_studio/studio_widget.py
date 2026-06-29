@@ -2790,6 +2790,7 @@ class VideoStudioWidget(QWidget):
             chapters_provider=self._chapters_snapshot_for_reading,
             save_chapter_text=self._save_chapter_text,
             open_in_writer=self._jump_to_writer,
+            scenes_provider=self._scenes_snapshot_for_reading,
             parent=self)
         # Non-modal show so the floating chapter prose window
         # remains interactive — a modal slide editor would block
@@ -3463,6 +3464,20 @@ class VideoStudioWidget(QWidget):
         button. Lets the main window route the writer to the
         correct chapter."""
         self.jumpToWriterRequested.emit(chapter_id or "")
+
+    def _scenes_snapshot_for_reading(self):
+        """Return the live list of scenes for read-only walks
+        (e.g. the group editor's "Sync favorites from actions"
+        button needs to enumerate every action's favorite image
+        across every scene). Returns ``[]`` when no studio is
+        attached. The list is the LIVE one — callers should
+        only read, never mutate, because mutations bypass the
+        studio's own dirty / autosave plumbing."""
+        studio = self._studio()
+        if studio is None:
+            return []
+        return list(
+            getattr(studio, "scenes", []) or [])
 
     def _chapters_snapshot_for_reading(self):
         """Flatten the project's chapters into a list of

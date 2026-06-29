@@ -43,69 +43,181 @@ from src.video_studio.tts.base import probe_audio_duration_seconds
 
 
 def _concat_mp4_segments(
-    segment_paths: list, output_path: Path,
+    segment_paths: list,
+    output_path: Path,
+    *,
+    transitions: Optional[list] = None,
+    width: int = 1280,
+    height: int = 720,
+    fps: int = 30,
+    sample_rate: int = 48000,
 ) -> Tuple[bool, str]:
-    """Concatenate ``segment_paths`` into ``output_path`` via
-    ffmpeg's concat demuxer with re-encode.
+    """Stitch ``segment_paths`` into ``output_path`` using
+    ffmpeg's ``filter_complex`` ``concat`` filter — NOT the
+    concat demuxer.
 
-    Re-encode (rather than stream copy) because per-group
-    renders may differ in codec parameters (different audio
-    sample rates from different overlays, different image
-    sizes from different sources, etc.) — stream copy would
-    fail or produce garbled output. The re-encode is fast
-    for the typical few-MB segments a deck produces.
+    Why filter_complex: the concat demuxer requires every
+    input to share IDENTICAL stream params (codec, sample
+    rate, channel layout, pixel format, timebase). When even
+    one segment differs — and per-group renders often DO
+    differ because different overlays were composed at
+    different rates and channel counts — the demuxer either
+    refuses or produces garbled output (audio looping,
+    visual cutoffs, the "preview is a mess" the writer
+    flagged).
+
+    The filter_complex path normalizes every input through
+    ``scale``/``setsar``/``fps``/``aformat`` first so the
+    concat filter sees a uniform stream, then re-encodes once
+    on the way out. Slightly more expensive but bulletproof.
+
+    ``transitions`` (optional) is a list of ``(kind, seconds)``
+    tuples — one per BOUNDARY between consecutive segments
+    (so ``len(transitions) == len(segments) - 1`` when set).
+    Each tuple describes the cross-segment join:
+      * ``("cut", 0.0)`` → hard concat (default).
+      * ``("fade", N)`` → xfade for video + acrossfade for
+        audio, both at the boundary, for ``N`` seconds.
+    Other xfade transition names ("dissolve", "wipeleft",
+    "slideleft", etc.) also work — they pass straight to
+    ffmpeg.
 
     Returns ``(success, message)``.
     """
     import shutil as _sh
     import subprocess as _sp
-    import tempfile as _tf
     if _sh.which("ffmpeg") is None:
         return (False, "ffmpeg not found on PATH.")
     if not segment_paths:
         return (False, "No segments to concat.")
-    # ffmpeg concat demuxer reads a list file with one
-    # ``file '...'`` line per segment. Use a temp file in
-    # the output's parent so any relative path quirks resolve.
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with _tf.NamedTemporaryFile(
-            mode="w", suffix=".txt",
-            dir=str(output_path.parent),
-            delete=False, encoding="utf-8") as list_file:
-        for p in segment_paths:
-            # Escape single quotes for the concat demuxer's
-            # quoting rules.
-            safe = str(Path(p).resolve()).replace("'", "'\\''")
-            list_file.write(f"file '{safe}'\n")
-        list_path = Path(list_file.name)
+    n = len(segment_paths)
+    # Normalize transitions so we can index transitions[i-1]
+    # for the i-th boundary safely.
+    trans = list(transitions or [])
+    while len(trans) < max(0, n - 1):
+        trans.append(("cut", 0.0))
+    # Probe each segment's duration once — we need it for the
+    # xfade offset math AND so the chain knows when each
+    # segment ends.
+    durations: list = []
+    for p in segment_paths:
+        d = _ffprobe_duration(p)
+        if d <= 0:
+            return (False,
+                    f"Could not probe duration: {p}")
+        durations.append(d)
+    inputs: list = []
+    for p in segment_paths:
+        inputs.extend(["-i", str(Path(p).resolve())])
+    # Per-input normalize chains. Every input gets scale +
+    # pad + setsar + fps for video, aformat + asetnsamples
+    # for audio, so the concat / xfade filters see a uniform
+    # stream and don't choke on per-segment differences.
+    filter_parts: list = []
+    scale_pad = (
+        f"scale={width}:{height}:"
+        f"force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,"
+        f"setsar=1,format=yuv420p,fps={fps}")
+    aformat = (
+        f"aformat=sample_fmts=fltp:"
+        f"sample_rates={sample_rate}:channel_layouts=stereo,"
+        "asetpts=N/SR/TB")
+    for i in range(n):
+        filter_parts.append(f"[{i}:v]{scale_pad}[v{i}]")
+        filter_parts.append(f"[{i}:a]{aformat}[a{i}]")
+    # Decide concat-vs-xfade per boundary. ``cumulative`` is
+    # the running output time so each xfade offset lands at
+    # the right moment in the composed timeline.
+    cumulative = durations[0]
+    last_v = "v0"
+    last_a = "a0"
+    for i in range(1, n):
+        kind, secs = trans[i - 1]
+        kind = (kind or "cut").lower()
+        secs = max(0.0, float(secs or 0.0))
+        # Cap the transition at the shorter of the two
+        # neighbor durations so ffmpeg doesn't complain about
+        # an offset past the end of either input.
+        max_secs = max(0.0, min(
+            durations[i - 1], durations[i]) - 0.05)
+        secs = min(secs, max_secs)
+        if kind == "cut" or secs <= 0:
+            # Hard concat between the current chain and the
+            # next segment.
+            new_v = f"vx{i}"
+            new_a = f"ax{i}"
+            filter_parts.append(
+                f"[{last_v}][{last_a}][v{i}][a{i}]"
+                f"concat=n=2:v=1:a=1[{new_v}][{new_a}]")
+            last_v, last_a = new_v, new_a
+            cumulative += durations[i]
+        else:
+            # xfade for video + acrossfade for audio. The
+            # xfade ``offset`` is the timestamp in the LEFT
+            # input where the crossfade STARTS — i.e. the
+            # cumulative duration minus the transition
+            # length. acrossfade doesn't need an offset; it
+            # just blends the last ``secs`` of left with the
+            # first ``secs`` of right.
+            offset = max(0.0, cumulative - secs)
+            new_v = f"vx{i}"
+            new_a = f"ax{i}"
+            filter_parts.append(
+                f"[{last_v}][v{i}]xfade=transition={kind}:"
+                f"duration={secs:.3f}:offset={offset:.3f}"
+                f"[{new_v}]")
+            filter_parts.append(
+                f"[{last_a}][a{i}]acrossfade=d={secs:.3f}:"
+                f"c1=tri:c2=tri[{new_a}]")
+            last_v, last_a = new_v, new_a
+            cumulative = cumulative + durations[i] - secs
+    filter_str = ";".join(filter_parts)
+    cmd = [
+        "ffmpeg", "-y",
+        *inputs,
+        "-filter_complex", filter_str,
+        "-map", f"[{last_v}]",
+        "-map", f"[{last_a}]",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-r", str(fps),
+        "-c:a", "aac", "-ar", str(sample_rate),
+        "-ac", "2",
+        str(output_path.resolve()),
+    ]
     try:
-        cmd = [
-            "ffmpeg", "-y",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", str(list_path),
-            # Re-encode video + audio with sensible defaults.
-            "-c:v", "libx264", "-pix_fmt", "yuv420p",
-            "-c:a", "aac",
-            str(output_path.resolve()),
-        ]
-        try:
-            proc = _sp.run(
-                cmd, capture_output=True, text=True,
-                timeout=900)
-        except _sp.TimeoutExpired:
-            return (False,
-                    "ffmpeg concat timed out (15 min).")
+        proc = _sp.run(
+            cmd, capture_output=True, text=True, timeout=900)
+    except _sp.TimeoutExpired:
+        return (False, "ffmpeg concat timed out (15 min).")
+    if proc.returncode != 0:
+        return (False,
+                "ffmpeg filter_complex concat failed. "
+                "stderr (last 600):\n"
+                + (proc.stderr or "")[-600:])
+    return (True, f"Concatenated to {output_path}.")
+
+
+def _ffprobe_duration(path: Path) -> float:
+    """Read a file's duration in seconds via ffprobe.
+    Returns 0.0 on any failure."""
+    import shutil as _sh
+    import subprocess as _sp
+    if _sh.which("ffprobe") is None:
+        return 0.0
+    try:
+        proc = _sp.run(
+            ["ffprobe", "-v", "error",
+             "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1",
+             str(Path(path).resolve())],
+            capture_output=True, text=True, timeout=15)
         if proc.returncode != 0:
-            return (False,
-                    "ffmpeg concat failed. stderr (last "
-                    "400):\n" + (proc.stderr or "")[-400:])
-        return (True, f"Concatenated to {output_path}.")
-    finally:
-        try:
-            list_path.unlink(missing_ok=True)
-        except Exception:
-            pass
+            return 0.0
+        return float((proc.stdout or "0").strip() or 0.0)
+    except Exception:
+        return 0.0
 
 
 class SlideEditorDialog(QDialog):
@@ -125,6 +237,7 @@ class SlideEditorDialog(QDialog):
         chapters_provider=None,
         save_chapter_text=None,
         open_in_writer=None,
+        scenes_provider=None,
         parent: Optional[QWidget] = None,
     ):
         # Independent top-level so the floating chapter prose
@@ -152,6 +265,11 @@ class SlideEditorDialog(QDialog):
         # button. When None, the button is hidden. The slide
         # editor pre-selects the deck's chapter_id when it can.
         self._chapters_provider = chapters_provider
+        # Pull-on-demand callback that returns the live list
+        # of scenes. The group editor's "🔄 Sync favorites
+        # from actions" button uses it to find every action's
+        # favorite image across the whole project.
+        self._scenes_provider = scenes_provider
         # Optional save-back / jump-to-writer callbacks. The slim
         # editor inside the prose window uses these to write
         # chapter edits home + bounce to the main writer for
@@ -338,6 +456,60 @@ class SlideEditorDialog(QDialog):
             self._on_distribute_group)
         target_row.addWidget(self._distribute_btn)
         group_v.addLayout(target_row)
+
+        # ── Stitch Order panel ───────────────────────────────
+        # Visible record of how the deck preview / export will
+        # assemble the groups: each group renders via the
+        # SAME path the group editor's preview uses (so the
+        # writer's "this group looks right" carries forward),
+        # then this list controls the order and the
+        # transition INTO each group from the previous one.
+        # Default transition is "cut" so existing decks behave
+        # exactly like before — new field, safe default.
+        stitch_box = QGroupBox(
+            "Deck stitch order (groups → preview / export)")
+        stitch_v = QVBoxLayout(stitch_box)
+        stitch_v.addWidget(QLabel(
+            "Reorder groups with ↑ / ↓. The transition picker "
+            "controls what plays at the join from the previous "
+            "group's last frame into this group's first."))
+        self._stitch_list = QListWidget()
+        self._stitch_list.setMaximumHeight(140)
+        self._stitch_list.itemSelectionChanged.connect(
+            self._on_stitch_selection_changed)
+        stitch_v.addWidget(self._stitch_list)
+        stitch_row = QHBoxLayout()
+        self._stitch_up_btn = QPushButton("↑ Move up")
+        self._stitch_up_btn.clicked.connect(
+            lambda: self._on_stitch_move(-1))
+        self._stitch_down_btn = QPushButton("↓ Move down")
+        self._stitch_down_btn.clicked.connect(
+            lambda: self._on_stitch_move(+1))
+        stitch_row.addWidget(self._stitch_up_btn)
+        stitch_row.addWidget(self._stitch_down_btn)
+        stitch_row.addWidget(QLabel("  Transition in:"))
+        self._stitch_trans_combo = QComboBox()
+        # Reuse the chapter transitions list so writers get the
+        # same vocabulary across the per-slide and per-group
+        # transition pickers.
+        from src.video_studio.models import (
+            CHAPTER_TRANSITIONS as _CT)
+        for key, label in _CT:
+            self._stitch_trans_combo.addItem(label, key)
+        self._stitch_trans_combo.currentIndexChanged.connect(
+            self._on_stitch_transition_kind_changed)
+        stitch_row.addWidget(self._stitch_trans_combo)
+        self._stitch_trans_secs = QDoubleSpinBox()
+        self._stitch_trans_secs.setRange(0.0, 5.0)
+        self._stitch_trans_secs.setDecimals(2)
+        self._stitch_trans_secs.setSingleStep(0.1)
+        self._stitch_trans_secs.setSuffix(" s")
+        self._stitch_trans_secs.editingFinished.connect(
+            self._on_stitch_transition_secs_changed)
+        stitch_row.addWidget(self._stitch_trans_secs)
+        stitch_row.addStretch()
+        stitch_v.addLayout(stitch_row)
+        group_v.addWidget(stitch_box)
 
         # ── Slide tab body: form + script + audio ────────────
         slide_box = QGroupBox("Selected slide")
@@ -581,6 +753,39 @@ class SlideEditorDialog(QDialog):
         groups_tab_v = QVBoxLayout(groups_tab)
         groups_tab_v.setContentsMargins(6, 6, 6, 6)
         groups_tab_v.addWidget(group_box)
+        # Deck actions row — Preview deck + Export MP4 +
+        # Export PowerPoint. These used to live in the dialog
+        # footer next to Close; moving them here puts them
+        # right under the Stitch Order panel so the writer
+        # configures stitching and renders in one workspace.
+        # Same button instances + handlers — only the parent
+        # layout changed.
+        deck_actions_row = QHBoxLayout()
+        deck_actions_row.addStretch()
+        self._preview_deck_btn = QPushButton("🎬 Preview deck")
+        self._preview_deck_btn.setToolTip(
+            "Compile every group's slides + audio overlays + "
+            "transitions into a temporary MP4 and play it in "
+            "a floating window. Same render path as Export "
+            "MP4 — what you see here is what ships.")
+        self._preview_deck_btn.clicked.connect(
+            self._on_preview_deck_clicked)
+        deck_actions_row.addWidget(self._preview_deck_btn)
+        self._export_mp4_btn = QPushButton("🎬 Export MP4…")
+        self._export_mp4_btn.clicked.connect(
+            self._on_export_mp4_clicked)
+        deck_actions_row.addWidget(self._export_mp4_btn)
+        self._export_pptx_btn = QPushButton(
+            "📊 Export PowerPoint…")
+        self._export_pptx_btn.setToolTip(
+            "Save as .pptx: one slide per image with the "
+            "per-slide audio embedded to auto-play, and "
+            "slide advance times matching the per-slide "
+            "durations. No text overlays.")
+        self._export_pptx_btn.clicked.connect(
+            self._on_export_pptx_clicked)
+        deck_actions_row.addWidget(self._export_pptx_btn)
+        groups_tab_v.addLayout(deck_actions_row)
         groups_tab_v.addStretch()
 
         script_tab = QWidget()
@@ -588,7 +793,23 @@ class SlideEditorDialog(QDialog):
         script_tab_v.setContentsMargins(6, 6, 6, 6)
         script_tab_v.addWidget(master_box)
 
-        self._tabs.addTab(slide_tab, "🎞 Slide")
+        # ── Slide tab REMOVED from the tab widget ─────────────
+        # The Group editor (🧩 Edit group…) covers every per-
+        # slide field the old Slide tab had — duration, lock,
+        # transition, script, audio. Hiding the tab keeps the
+        # writer focused on group work without losing any
+        # capability. The slide_tab widget + its children stay
+        # ALIVE because the slide-list selection handlers
+        # (``_on_slide_selected``, ``_set_slide_panel_enabled``,
+        # ``_commit_slide_fields``) still call into them.
+        # Reparenting to ``self`` + hiding keeps Qt from
+        # garbage-collecting the C++ widgets when the tab
+        # widget no longer owns them — without this parent
+        # bump the writer's first slide click crashes with
+        # ``wrapped C/C++ object has been deleted``.
+        slide_tab.setParent(self)
+        slide_tab.hide()
+        self._hidden_slide_tab = slide_tab
         self._tabs.addTab(groups_tab, "🧩 Groups")
         self._tabs.addTab(script_tab, "📝 Master script")
         splitter.addWidget(self._tabs)
@@ -607,48 +828,12 @@ class SlideEditorDialog(QDialog):
             "color: #6b7280; font-size: 11px; padding: 2px 4px;")
         outer.addWidget(self._status_label)
 
+        # Footer — Close only. Preview deck + Export MP4 +
+        # Export PowerPoint moved into the Groups tab so the
+        # writer configures stitch order + transitions and
+        # renders in one place.
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Close)
-        # Two-format export — writers asked for both:
-        #  * MP4 = stitched silent video with audio mux for
-        #          handing to colleagues who just want to watch.
-        #  * PPTX = editable deck with per-slide images + audio
-        #           (auto-plays on slide entry) + auto-advance
-        #           timings for further editing in PowerPoint /
-        #           Keynote / Slides.
-        # 🎬 Preview deck — same render path as Export MP4 but
-        # to a temp file in working_dir/previews/, then opens
-        # in a floating playback window. Lets writers spot-check
-        # what the full deck (every group, every slide, every
-        # group-overlay audio + transition) plays like without
-        # picking a save destination first.
-        self._preview_deck_btn = QPushButton("🎬 Preview deck")
-        self._preview_deck_btn.setToolTip(
-            "Compile every group's slides + audio overlays + "
-            "transitions into a temporary MP4 and play it in "
-            "a floating window. Same render path as Export "
-            "MP4 — what you see here is what ships.")
-        self._preview_deck_btn.clicked.connect(
-            self._on_preview_deck_clicked)
-        self._export_mp4_btn = QPushButton("🎬 Export MP4…")
-        self._export_mp4_btn.clicked.connect(
-            self._on_export_mp4_clicked)
-        self._export_pptx_btn = QPushButton("📊 Export PowerPoint…")
-        self._export_pptx_btn.setToolTip(
-            "Save as .pptx: one slide per image with the per-slide "
-            "audio embedded to auto-play, and slide advance times "
-            "matching the per-slide durations. No text overlays.")
-        self._export_pptx_btn.clicked.connect(
-            self._on_export_pptx_clicked)
-        buttons.addButton(
-            self._preview_deck_btn,
-            QDialogButtonBox.ButtonRole.ActionRole)
-        buttons.addButton(
-            self._export_mp4_btn,
-            QDialogButtonBox.ButtonRole.ActionRole)
-        buttons.addButton(
-            self._export_pptx_btn,
-            QDialogButtonBox.ButtonRole.AcceptRole)
         buttons.rejected.connect(self.accept)
         outer.addWidget(buttons)
 
@@ -1141,6 +1326,114 @@ class SlideEditorDialog(QDialog):
             idx if idx >= 0 else 0)
         self._group_combo.blockSignals(False)
         self._refresh_group_target_spin()
+        self._refresh_stitch_list()
+
+    def _refresh_stitch_list(self) -> None:
+        """Rebuild the stitch-order list from ``deck.groups``.
+        Display order follows ``deck.groups`` so the writer
+        knows that's the authoritative source of truth for
+        the preview / export concat. Each row's label shows
+        the group name + the transition INTO it from the
+        previous group (cut, fade Ns, etc.)."""
+        if not hasattr(self, "_stitch_list"):
+            return
+        self._stitch_list.blockSignals(True)
+        self._stitch_list.clear()
+        for i, g in enumerate(self._deck.groups):
+            kind = (
+                getattr(
+                    g, "inter_group_transition_in", "cut")
+                or "cut")
+            secs = float(
+                getattr(
+                    g, "inter_group_transition_seconds", 0.0)
+                or 0.0)
+            if i == 0:
+                trans = "(first group — no incoming)"
+            elif kind == "cut" or secs <= 0:
+                trans = "cut"
+            else:
+                trans = f"{kind} {secs:.2f}s"
+            self._stitch_list.addItem(
+                f"{i + 1}. {g.name or g.id}  ·  {trans}")
+        self._stitch_list.blockSignals(False)
+        self._refresh_stitch_detail()
+
+    def _refresh_stitch_detail(self) -> None:
+        """Push the selected group's transition values into
+        the picker controls (combo + secs spinner). The
+        controls are disabled when the selection is the very
+        first group (it has no incoming join) or there's no
+        selection."""
+        if not hasattr(self, "_stitch_trans_combo"):
+            return
+        row = self._stitch_list.currentRow()
+        editable = (row > 0)
+        self._stitch_trans_combo.setEnabled(editable)
+        self._stitch_trans_secs.setEnabled(editable)
+        if (row < 0 or row >= len(self._deck.groups)
+                or not editable):
+            self._stitch_trans_combo.blockSignals(True)
+            self._stitch_trans_combo.setCurrentIndex(0)
+            self._stitch_trans_combo.blockSignals(False)
+            self._stitch_trans_secs.blockSignals(True)
+            self._stitch_trans_secs.setValue(0.0)
+            self._stitch_trans_secs.blockSignals(False)
+            return
+        g = self._deck.groups[row]
+        cur_kind = (
+            getattr(g, "inter_group_transition_in", "cut")
+            or "cut")
+        idx = self._stitch_trans_combo.findData(cur_kind)
+        self._stitch_trans_combo.blockSignals(True)
+        self._stitch_trans_combo.setCurrentIndex(
+            idx if idx >= 0 else 0)
+        self._stitch_trans_combo.blockSignals(False)
+        self._stitch_trans_secs.blockSignals(True)
+        self._stitch_trans_secs.setValue(float(
+            getattr(g, "inter_group_transition_seconds", 0.0)
+            or 0.0))
+        self._stitch_trans_secs.blockSignals(False)
+
+    def _on_stitch_selection_changed(self) -> None:
+        self._refresh_stitch_detail()
+
+    def _on_stitch_move(self, delta: int) -> None:
+        """Swap the selected group with its neighbor. Updates
+        ``deck.groups`` order, which is what the deck preview /
+        export concat walks."""
+        row = self._stitch_list.currentRow()
+        new_row = row + delta
+        if (row < 0 or new_row < 0
+                or new_row >= len(self._deck.groups)):
+            return
+        groups = list(self._deck.groups)
+        groups[row], groups[new_row] = (
+            groups[new_row], groups[row])
+        self._deck.groups = groups
+        self._refresh_groups()
+        self._stitch_list.setCurrentRow(new_row)
+
+    def _on_stitch_transition_kind_changed(
+            self, _idx: int) -> None:
+        row = self._stitch_list.currentRow()
+        if row <= 0 or row >= len(self._deck.groups):
+            return
+        kind = (
+            self._stitch_trans_combo.currentData() or "cut")
+        self._deck.groups[row].inter_group_transition_in = (
+            kind)
+        self._refresh_stitch_list()
+        self._stitch_list.setCurrentRow(row)
+
+    def _on_stitch_transition_secs_changed(self) -> None:
+        row = self._stitch_list.currentRow()
+        if row <= 0 or row >= len(self._deck.groups):
+            return
+        self._deck.groups[row].inter_group_transition_seconds = (
+            float(self._stitch_trans_secs.value()))
+        self._refresh_stitch_list()
+        self._stitch_list.setCurrentRow(row)
 
     def _refresh_group_target_spin(self) -> None:
         gid = self._group_combo.currentData()
@@ -1261,7 +1554,8 @@ class SlideEditorDialog(QDialog):
             self._deck, g,
             chapters_provider=self._chapters_provider,
             save_chapter_text=self._save_chapter_text_cb,
-            open_in_writer=self._open_in_writer_cb)
+            open_in_writer=self._open_in_writer_cb,
+            scenes_provider=self._scenes_provider)
         dlg.finished.connect(
             lambda *_a: self._after_group_edit())
         # Forward every group-editor mutation up to the studio
@@ -1339,27 +1633,25 @@ class SlideEditorDialog(QDialog):
             return
         from src.video_studio.slide_deck import (
             render_group_to_mp4)
-        # Walk deck.pages in writer order; emit each group
-        # exactly once (the first time we hit any of its
-        # members). Orphan slides become a one-slide synthetic
-        # group rendered the same way.
+        # Walk ``deck.groups`` in its current order — that's
+        # what the Stitch Order panel controls and what the
+        # writer expects. Groups in deck.groups but with NO
+        # placed pages get skipped by ``render_group_to_mp4``
+        # downstream; orphan slides (no group_id) get
+        # collected separately and rendered after the groups.
         groups_by_id = {
             g.id: g
             for g in (getattr(self._deck, "groups", []) or [])
         }
         ordered_groups: list = []  # list of (group_or_None,
         #                                    placed_or_orphan_pages)
-        seen_group_ids: set = set()
+        for g in getattr(self._deck, "groups", []) or []:
+            ordered_groups.append((g, None))
         orphan_pages: list = []
         for page in self._deck.pages:
             gid = getattr(page, "group_id", None)
             if not gid or gid not in groups_by_id:
                 orphan_pages.append(page)
-                continue
-            if gid in seen_group_ids:
-                continue
-            seen_group_ids.add(gid)
-            ordered_groups.append((groups_by_id[gid], None))
         if orphan_pages:
             # Orphans appear at the END after every group, in
             # their deck.pages order. (We could interleave by
@@ -1380,6 +1672,13 @@ class SlideEditorDialog(QDialog):
         segments_dir = out_dir / f"_segments_{stamp}"
         segments_dir.mkdir(parents=True, exist_ok=True)
         segment_paths: list = []
+        # Per-boundary transition list — same shape the
+        # concat helper expects: ``[(kind, secs), ...]``,
+        # one entry per join between consecutive segments
+        # that actually rendered. Built alongside
+        # ``segment_paths`` so the indices stay aligned even
+        # when a group skips because of a render failure.
+        seg_transitions: list = []
         self._preview_deck_btn.setEnabled(False)
         self._preview_deck_btn.setText("Rendering…")
         try:
@@ -1419,6 +1718,24 @@ class SlideEditorDialog(QDialog):
                             f"[deck preview] orphan batch "
                             f"failed: {msg}")
                         continue
+                # Record the transition INTO this segment
+                # iff there's already a prior segment in the
+                # list — the very first segment doesn't have
+                # an incoming join.
+                if segment_paths:
+                    kind = (
+                        getattr(
+                            group,
+                            "inter_group_transition_in",
+                            "cut")
+                        if group is not None else "cut") or "cut"
+                    secs = float(
+                        (getattr(
+                            group,
+                            "inter_group_transition_seconds",
+                            0.0)
+                         if group is not None else 0.0) or 0.0)
+                    seg_transitions.append((kind, secs))
                 segment_paths.append(seg_path)
             if not segment_paths:
                 QMessageBox.warning(
@@ -1426,16 +1743,11 @@ class SlideEditorDialog(QDialog):
                     "Every group failed to render — nothing "
                     "to play.")
                 return
-            # Concat the segments via ffmpeg concat demuxer.
-            # Re-encode video + audio so segment-to-segment
-            # parameter mismatches (different codecs, sample
-            # rates, color spaces) don't poison the concat —
-            # the cost is a small re-encode but the writer
-            # gets a guaranteed-playable file.
             out_path = (
                 out_dir / f"deck_preview_{stamp}.mp4")
             ok, msg = _concat_mp4_segments(
-                segment_paths, out_path)
+                segment_paths, out_path,
+                transitions=seg_transitions)
             if not ok:
                 QMessageBox.warning(
                     self, "Preview concat failed", msg)

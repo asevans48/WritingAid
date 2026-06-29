@@ -2349,8 +2349,13 @@ class GroupTimelineWidget(QWidget):
                     pid for pid in old.page_ids
                     if pid != page.id]
             page.group_id = self._group.id
-            if page.id not in self._group.page_ids:
-                self._group.page_ids.append(page.id)
+        # ALWAYS ensure the page is in this group's index —
+        # not just when the group changed. A previously
+        # inconsistent state (page.group_id pointing here but
+        # page_ids missing the id) would have made the tray
+        # silently lose the slide on unplace.
+        if page.id not in self._group.page_ids:
+            self._group.page_ids.append(page.id)
         # Snapshot BEFORE mutating so the enforcer can compute
         # delta correctly. Pages that weren't placed yet seed
         # the snapshot with their about-to-set value, so
