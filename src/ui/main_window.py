@@ -3232,6 +3232,17 @@ class MainWindow(QMainWindow):
             self._auto_save_project)
         self.video_studio_widget.contentChanged.connect(
             self._video_studio_autosave_timer.start)
+        # Synchronous-save channel for editor-close paths. The
+        # debounced timer above is right for mid-session
+        # mutations (don't write on every keystroke), but it's
+        # wrong for "writer closed the slide / video editor
+        # and might quit the app within 2.5 s." On the close
+        # signal we want the deck, every group, every audio
+        # take, every image swap on disk RIGHT NOW — no
+        # debounce window where the next event could be
+        # ``app.quit()`` and the save sits queued forever.
+        self.video_studio_widget.flushSaveRequested.connect(
+            self._flush_video_studio_autosave)
         # Slim chapter editor inside the slide / video editors
         # routes "📝 Open in writer" back to the main window via
         # this signal. Switches to the Write tab and (best
@@ -4000,6 +4011,29 @@ class MainWindow(QMainWindow):
                 "Error Saving Project",
                 f"Failed to save project:\n{str(e)}"
             )
+
+    def _flush_video_studio_autosave(self):
+        """Force an immediate save, cancelling any pending
+        debounce. Wired to ``VideoStudioWidget.flushSaveRequested``
+        (fired when editor dialogs close) and called from
+        ``closeEvent`` before the unsaved-changes prompt.
+
+        The 2.5 s debounce on ``_video_studio_autosave_timer``
+        is right for mid-session edits but wrong on close —
+        the writer might quit the app within that window and
+        lose their last mutation. This helper cancels the
+        pending timer and runs the save synchronously so the
+        deck, every group, every audio take, every image is
+        on disk before the dialog (or window) closes.
+        """
+        try:
+            if (self._video_studio_autosave_timer is not None
+                    and self._video_studio_autosave_timer
+                    .isActive()):
+                self._video_studio_autosave_timer.stop()
+        except Exception:
+            pass
+        self._auto_save_project()
 
     def _auto_save_project(self):
         """Auto-save the project. Runs synchronously on the
@@ -14336,6 +14370,19 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Handle window close event."""
+        # Flush any pending video-studio autosave BEFORE the
+        # confirm prompt. If a writer closed their slide /
+        # video editor moments before quitting, the 2.5 s
+        # debounce could still be queued — letting it expire
+        # after the window closes means the project file is
+        # written without that final edit. Flushing here
+        # guarantees the deck, groups, audio takes, and image
+        # selections are on disk regardless of which button
+        # the writer picks in the prompt that follows.
+        try:
+            self._flush_video_studio_autosave()
+        except Exception as e:
+            print(f"[shutdown] flush failed: {e}")
         if self.current_project and not self._confirm_unsaved_changes():
             event.ignore()
         else:

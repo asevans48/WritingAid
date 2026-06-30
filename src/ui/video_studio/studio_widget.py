@@ -2799,17 +2799,24 @@ class VideoStudioWidget(QWidget):
         # this method returns.
         self._active_slide_editor = dlg
         # Two save triggers:
-        #   * ``finished`` (close) — historical, catches the
-        #     last possible moment to persist any state that
-        #     skipped the per-mutation signal.
-        #   * ``deck_modified`` (per-mutation) — added so edits
-        #     inside the slide editor (including the nested
-        #     group editor) trigger the 1.2 s debounced autosave
-        #     mid-session. Without this, a writer iterating in
-        #     the group editor for an hour without closing the
-        #     slide editor would lose everything on crash / quit.
+        #   * ``finished`` (close) — fires ``flushSaveRequested``
+        #     so the host runs ``_auto_save_project``
+        #     synchronously RIGHT NOW. The previous
+        #     ``contentChanged``-only path went through the
+        #     2.5 s debounce timer; if the writer closed the
+        #     slide editor and quit the app within that window
+        #     the final mutation was lost (autosave queued for
+        #     2.5 s but never fired). Flushing on close
+        #     guarantees the deck — and every group, audio
+        #     clip, image swap inside it — lands on disk before
+        #     the dialog goes away.
+        #   * ``deck_modified`` (per-mutation) — keeps the
+        #     debounce path for mid-session edits so a writer
+        #     iterating in the group editor for an hour
+        #     persists their work continuously, not just on
+        #     close.
         dlg.finished.connect(
-            lambda *_: self.contentChanged.emit())
+            lambda *_: self.flushSaveRequested.emit())
         dlg.deck_modified.connect(self.contentChanged)
         # ``show()`` alone — no raise_() / activateWindow(). On
         # macOS those force-grab focus and trigger the focus-
@@ -3294,6 +3301,20 @@ class VideoStudioWidget(QWidget):
         # Hold a reference so Python doesn't garbage-collect the
         # non-modal window the instant this method returns.
         self._active_video_editor = editor
+        # Flush save the moment the dialog closes — see the
+        # slide-editor opener for the rationale. Without this,
+        # any take recorded right before the writer closes the
+        # editor and quits the app could sit in the 2.5 s
+        # autosave debounce window and never reach disk.
+        try:
+            editor.finished.connect(
+                lambda *_: self.flushSaveRequested.emit())
+        except Exception:
+            # Some VideoEditorDialog incarnations may lack a
+            # standard ``finished`` signal — don't crash the
+            # opener if so; the debounce path still catches
+            # mid-session edits via ``_save_video_editor_session``.
+            pass
         # Non-modal show — the writer can keep the studio in
         # focus, the dialog still surfaces on its own. show +
         # raise + activate force focus across platforms.
@@ -3458,6 +3479,17 @@ class VideoStudioWidget(QWidget):
     # signal, the Write tab kept showing stale prose after a
     # save from the slide deck editor.
     chapterContentChanged = pyqtSignal(str)  # chapter_id
+
+    # Like ``contentChanged`` but asks the host to SAVE NOW —
+    # synchronously, bypassing any debounce. Emitted from
+    # close/finish paths of editor dialogs (slide editor,
+    # video editor) so the writer's last in-place mutations
+    # (audio takes, slide trims, group reorders, transitions)
+    # are flushed to disk the moment the dialog closes.
+    # Without this, the 2.5 s autosave debounce could swallow
+    # the final edit if the writer quits the app within that
+    # window — they'd reopen and see stale state.
+    flushSaveRequested = pyqtSignal()
 
     def _jump_to_writer(self, chapter_id: str) -> None:
         """Emitted from the slim editor's 📝 Open in writer

@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class VideoClip(BaseModel):
@@ -534,6 +534,82 @@ class SlideGroup(BaseModel):
     inter_group_transition_seconds: float = 0.0
     created_at: datetime = Field(default_factory=datetime.now)
 
+    @model_validator(mode="after")
+    def _migrate_legacy_audio(self) -> "SlideGroup":
+        """Bring legacy-shape groups forward to the multi-clip
+        timeline model.
+
+        Two repairs, both idempotent so re-validating a fresh
+        group is a no-op:
+
+        1. **Promote ``overlay_audio_path`` → ``audio_clips``.**
+           Older decks (pre-DAW timeline) stored a single rendered
+           overlay WAV directly on the group with no clips list.
+           The group editor + export pipeline now read
+           ``audio_clips`` as the source of truth and re-render
+           ``overlay_audio_path`` as a cache. Without this
+           promotion, an old project loaded by code that's never
+           opened the group editor (export, preview, deck stitch)
+           sees an empty timeline AND a stale overlay — and only
+           the overlay reaches the rendered MP4. Promoting at
+           model-load time means every downstream consumer sees
+           the same shape regardless of UI entry point.
+
+        2. **Backfill ``start_time_seconds`` on clips.** Clips
+           authored before positional placement carried no
+           ``start_time_seconds`` (the field was added with the
+           timeline rewrite). Walk in list order, honoring the
+           legacy ``crossfade_seconds`` overlap so the migrated
+           positions match what the writer last heard on
+           playback. Clips that already have a value win — never
+           rewrite the writer's explicit placement.
+
+        The UI's ``_maybe_migrate_overlay_to_clips`` /
+        ``_reconcile_group_page_ids`` (group_editor_dialog.py)
+        stay in place as defense-in-depth — they handle stale
+        in-memory state the model layer wouldn't see (e.g. a
+        writer recording then immediately closing without a
+        validator pass).
+        """
+        if not self.audio_clips and self.overlay_audio_path:
+            self.audio_clips = [
+                GroupAudioClip(
+                    label="Take 1",
+                    audio_path=self.overlay_audio_path,
+                    duration_seconds=float(
+                        self.overlay_audio_duration_seconds
+                        or 0.0),
+                    trim_in_seconds=float(
+                        self.overlay_trim_in_seconds or 0.0),
+                    trim_out_seconds=float(
+                        self.overlay_trim_out_seconds or 0.0),
+                    start_time_seconds=0.0,
+                )
+            ]
+        if self.audio_clips:
+            running = 0.0
+            for i, clip in enumerate(self.audio_clips):
+                if clip.start_time_seconds is not None:
+                    kept = max(
+                        0.0,
+                        float(clip.duration_seconds or 0.0)
+                        - float(clip.trim_in_seconds or 0.0)
+                        - float(clip.trim_out_seconds or 0.0))
+                    running = (
+                        float(clip.start_time_seconds) + kept)
+                    continue
+                xf = float(clip.crossfade_seconds or 0.0)
+                start = (
+                    0.0 if i == 0 else max(0.0, running - xf))
+                clip.start_time_seconds = start
+                kept = max(
+                    0.0,
+                    float(clip.duration_seconds or 0.0)
+                    - float(clip.trim_in_seconds or 0.0)
+                    - float(clip.trim_out_seconds or 0.0))
+                running = start + kept
+        return self
+
 
 class SlideDeckProject(BaseModel):
     """An editable slide deck — built from a chapter's scenes /
@@ -563,6 +639,57 @@ class SlideDeckProject(BaseModel):
     microphone_device_name: str = ""
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
+
+    @model_validator(mode="after")
+    def _migrate_legacy_group_placements(self) -> "SlideDeckProject":
+        """Auto-place pages onto the group timeline for decks
+        written before per-page ``start_time_seconds_in_group``
+        existed.
+
+        New semantics: ``page.start_time_seconds_in_group is
+        None`` means "available in the tray, not on the
+        timeline." Old decks have every grouped page at
+        ``None`` because the field didn't exist when they were
+        saved — without migration those pages all land in the
+        tray on first reload and the writer sees an empty
+        timeline despite having designed a sequence.
+
+        Per-group rule: if EVERY page in the group has
+        ``start_time_seconds_in_group is None``, treat that as
+        a legacy save and place them sequentially in
+        ``page_ids`` order at running offsets summed from
+        ``duration_seconds``. If ANY page is already placed,
+        the writer has used the new editor — respect their
+        layout and leave the unplaced pages in the tray.
+
+        Idempotent: once a deck has been migrated and saved,
+        every page has a concrete offset (or the writer
+        deliberately moved one back to the tray), so the all-
+        None precondition fails and this loop becomes a
+        no-op.
+        """
+        if not self.groups:
+            return self
+        pages_by_id = {p.id: p for p in self.pages}
+        for group in self.groups:
+            ids = list(group.page_ids or [])
+            group_pages = [
+                pages_by_id[pid]
+                for pid in ids if pid in pages_by_id]
+            if not group_pages:
+                continue
+            any_placed = any(
+                p.start_time_seconds_in_group is not None
+                for p in group_pages)
+            if any_placed:
+                continue
+            running = 0.0
+            for page in group_pages:
+                page.start_time_seconds_in_group = round(
+                    running, 3)
+                running += max(
+                    0.25, float(page.duration_seconds or 0.0))
+        return self
 
 
 class VideoEditorSession(BaseModel):
