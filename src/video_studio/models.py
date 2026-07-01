@@ -1062,6 +1062,14 @@ class VideoStudio(BaseModel):
     # when no LLM is wired — backends always receive SOMETHING
     # usable.
     use_ai_prompt_refinement: bool = True
+    # The chapter the writer was last working on inside the
+    # studio. When set, the canvas filters to that chapter's
+    # scenes, new scenes inherit its id, and the slide / deck
+    # editors skip their chapter picker. Empty = "all
+    # chapters" (the legacy mixed view). Stored on the studio
+    # so it sticks across project close + reopen — the writer
+    # comes back to the same chapter they left.
+    active_chapter_id: str = ""
 
     # ---- scene helpers ----
     def get_scene(self, scene_id: str) -> Optional[Scene]:

@@ -373,6 +373,13 @@ class SceneCanvasView(QGraphicsView):
         self._studio: Optional[VideoStudio] = None
         self._cards: Dict[str, SceneCardItem] = {}
         self._hop_items: List[QGraphicsPathItem] = []
+        # When set, the canvas only renders scenes whose
+        # ``chapter_id`` matches this value (and hops between
+        # those scenes). Empty string = show everything, the
+        # legacy mixed view. Driven by the chapter combo in
+        # the studio toolbar so the writer can scope their
+        # work to one chapter at a time.
+        self._chapter_filter: str = ""
         # Tracks ongoing "connect from" mode when user picks
         # "Connect to ..." from the context menu — second click on
         # another card commits the new hop.
@@ -445,6 +452,23 @@ class SceneCanvasView(QGraphicsView):
         self._studio = studio
         self._rebuild_all()
 
+    def set_chapter_filter(self, chapter_id: str) -> None:
+        """Scope the canvas to a single chapter. Empty string
+        clears the filter (every scene is drawn again).
+
+        Idempotent — repeating the same filter is a no-op so
+        wiring it to the toolbar combo's ``currentIndexChanged``
+        signal doesn't redraw on every refresh tick.
+        """
+        normalized = chapter_id or ""
+        if self._chapter_filter == normalized:
+            return
+        self._chapter_filter = normalized
+        self._rebuild_all()
+
+    def chapter_filter(self) -> str:
+        return self._chapter_filter
+
     def _rebuild_all(self) -> None:
         """Clear and recreate every item. Cheap enough for the
         scene counts the studio holds (tens, not thousands)."""
@@ -455,8 +479,16 @@ class SceneCanvasView(QGraphicsView):
         if self._studio is None:
             return
         self._draw_grid()
-        # Cards
+        # Cards — skip scenes that don't match the active
+        # chapter filter when one is set. Hops between
+        # hidden scenes are skipped by ``_refresh_hops``
+        # via its endpoint check against ``self._cards``.
+        flt = self._chapter_filter
         for scene in self._studio.scenes:
+            if flt and (
+                    getattr(scene, "chapter_id", "") or ""
+            ) != flt:
+                continue
             card = self._make_card(scene)
             s.addItem(card)
             self._cards[scene.id] = card

@@ -910,16 +910,17 @@ class MapElementType(str, Enum):
     EVENT = "event"
 
 
-class PlaceType(str, Enum):
-    """Type of place on a map."""
-    SETTLEMENT = "settlement"
-    CITY = "city"
-    TOWN = "town"
-    VILLAGE = "village"
-    REGION = "region"
-    TERRITORY = "territory"
-    DISTRICT = "district"
-    OTHER = "other"
+# NOTE: A second, smaller PlaceType enum used to live here for the
+# map-marker widgets and it silently shadowed the full 28-value
+# enum above. Every UI file that imports ``PlaceType`` was actually
+# getting the 8-value subset — so PlaceEditor crashed when a Place
+# stored with e.g. ``TEMPLE`` (a member of the full enum, applied
+# at Place-class-definition time) tried
+# ``list(PlaceType).index(place.place_type)`` against the smaller
+# enum and hit ``ValueError: x not in list``. The full enum covers
+# every ``.SETTLEMENT`` / ``.CITY`` / ``.OTHER`` the map builders
+# reference, so the duplicate is deleted rather than renamed —
+# nothing needs the subset in isolation.
 
 
 class LandmarkType(str, Enum):

@@ -81,6 +81,7 @@ class VideoStudioWidget(QWidget):
         if project is None:
             self._canvas.load_studio(VideoStudio())
             self._update_status("No project loaded.")
+            self._populate_chapter_combo()
             return
         # Lazy attach a VideoStudio if the project's never had one.
         studio = getattr(project, "video_studio", None)
@@ -91,14 +92,131 @@ class VideoStudioWidget(QWidget):
             except Exception:
                 pass
         self._canvas.load_studio(studio)
+        # Restore the chapter selection the writer left on.
+        # ``_populate_chapter_combo`` reads ``studio.active_chapter_id``
+        # and sets the combo to match, then ``_on_chapter_filter_changed``
+        # fires once to push the filter into the canvas. This is also
+        # the path that picks up a brand-new project with no chapters
+        # yet — the combo collapses to just "All chapters".
+        self._populate_chapter_combo()
         # Backend selection comes from Settings → 🎨 Image
         # Generation; falls back to studio.backend_preference for
         # legacy projects that pre-date the Settings consolidation.
         self._sync_backends_from_settings()
         self._refresh_backend_info()
         self._load_styles_into_toolbar()
+        active_label = (
+            self._chapter_combo.currentText()
+            if self._chapter_combo.currentData()
+            else "all chapters")
         self._update_status(
-            f"{len(studio.scenes)} scene(s), {len(studio.hops)} hop(s).")
+            f"{len(studio.scenes)} scene(s), "
+            f"{len(studio.hops)} hop(s) — {active_label}.")
+
+    def _populate_chapter_combo(self) -> None:
+        """Refresh the toolbar chapter combo from the project's
+        manuscript + restore the previously-active selection.
+
+        Keeps the existing data-only signal flow simple by
+        blocking the combo's ``currentIndexChanged`` during
+        repopulation — we don't want every clear/add to
+        re-fire the filter and rebuild the canvas. After the
+        rebuild we restore the active id (or fall back to
+        "All chapters" when the saved id no longer matches any
+        chapter, e.g. the writer deleted that chapter).
+        """
+        if not hasattr(self, "_chapter_combo"):
+            return
+        self._chapter_combo.blockSignals(True)
+        try:
+            self._chapter_combo.clear()
+            self._chapter_combo.addItem("All chapters", "")
+            ms = (getattr(self._project, "manuscript", None)
+                  if self._project is not None else None)
+            for ch in (getattr(ms, "chapters", []) or []):
+                num = getattr(ch, "chapter_number", None) or \
+                    getattr(ch, "number", None)
+                title = getattr(ch, "title", "") or ""
+                if num is not None and title:
+                    label = f"Ch. {num} — {title}"
+                elif num is not None:
+                    label = f"Ch. {num}"
+                elif title:
+                    label = title
+                else:
+                    label = (getattr(ch, "id", "")
+                             or "(unnamed chapter)")
+                self._chapter_combo.addItem(
+                    label, getattr(ch, "id", ""))
+            # Restore the writer's previous pick.
+            studio = self._studio()
+            target = (
+                getattr(studio, "active_chapter_id", "")
+                if studio is not None else "") or ""
+            idx = self._chapter_combo.findData(target)
+            if idx < 0:
+                # Saved chapter no longer exists — collapse to
+                # the All-chapters view and clear the stale id so
+                # the next mutation doesn't keep re-writing a
+                # dangling reference.
+                idx = 0
+                if studio is not None:
+                    studio.active_chapter_id = ""
+            self._chapter_combo.setCurrentIndex(idx)
+        finally:
+            self._chapter_combo.blockSignals(False)
+        # Push the (possibly restored) filter into the canvas
+        # AFTER signals are re-enabled so the canvas redraws
+        # using the saved chapter — this is the path that gives
+        # the writer "I come back to where I left off."
+        self._on_chapter_filter_changed()
+
+    def _on_chapter_filter_changed(self, *_args) -> None:
+        """Combo → canvas filter → persist + emit save signal."""
+        if not hasattr(self, "_chapter_combo"):
+            return
+        chapter_id = (
+            self._chapter_combo.currentData() or "")
+        try:
+            self._canvas.set_chapter_filter(chapter_id)
+        except Exception as e:
+            print(f"[studio] set_chapter_filter failed: {e}")
+        studio = self._studio()
+        if studio is not None:
+            prior = getattr(studio, "active_chapter_id", "")
+            if prior != chapter_id:
+                studio.active_chapter_id = chapter_id
+                # contentChanged so the autosave timer picks up
+                # the new selection — and the writer comes back
+                # to this exact chapter next open.
+                self.contentChanged.emit()
+        # Status line — terse so it doesn't crowd the toolbar.
+        label = self._chapter_combo.currentText()
+        if chapter_id:
+            count = (
+                sum(1 for s in (studio.scenes if studio else [])
+                    if getattr(s, "chapter_id", "") == chapter_id))
+            self._update_status(
+                f"{label} — {count} scene(s) visible.")
+        else:
+            scenes_n = (len(studio.scenes)
+                        if studio is not None else 0)
+            hops_n = (len(studio.hops)
+                      if studio is not None else 0)
+            self._update_status(
+                f"All chapters — {scenes_n} scene(s), "
+                f"{hops_n} hop(s).")
+
+    def _active_chapter_id(self) -> str:
+        """Helper used by the scene-add + editor-open paths to
+        read the writer's current chapter scope. Empty string =
+        no scope (the legacy mixed view); a non-empty value is
+        the chapter every new operation should default to.
+        """
+        studio = self._studio()
+        if studio is None:
+            return ""
+        return getattr(studio, "active_chapter_id", "") or ""
 
     def set_llm_provider(self, provider: Callable[[], Any]) -> None:
         """Inject a callable returning a configured LLMClient.
@@ -127,6 +245,37 @@ class VideoStudioWidget(QWidget):
         toolbar_row1 = QHBoxLayout()
         toolbar_row1.setSpacing(6)
         toolbar_row1.setContentsMargins(0, 0, 0, 0)
+
+        # Chapter scope — writers said the canvas was a mush of
+        # every chapter's scenes. The combo on the LEFT of the
+        # toolbar lets them pick "I'm working on chapter X" so:
+        #   * the canvas filters to that chapter's scenes only;
+        #   * newly-added scenes inherit the chapter_id;
+        #   * the slide editor + chapter deck export skip the
+        #     "which chapter?" picker (use the active one);
+        # The pick persists on ``VideoStudio.active_chapter_id``
+        # so reopening the project drops the writer back into
+        # the same chapter view they left.
+        toolbar_row1.addWidget(QLabel("Chapter:"))
+        self._chapter_combo = QComboBox()
+        self._chapter_combo.setToolTip(
+            "Scope the studio to one chapter. New scenes you add "
+            "inherit its chapter_id, the canvas filters to its "
+            "scenes only, and editors (Slide editor, Export deck) "
+            "skip the chapter picker. Pick \"All chapters\" to see "
+            "the legacy mixed view.")
+        self._chapter_combo.setMinimumWidth(200)
+        self._chapter_combo.setMaximumWidth(280)
+        # Populate happens in ``set_project`` once a manuscript
+        # is wired in — at __init__ time there's nothing to
+        # show. ``addItem`` here just gives the combo a default
+        # row so it isn't visibly empty before a project loads.
+        self._chapter_combo.addItem("All chapters", "")
+        self._chapter_combo.currentIndexChanged.connect(
+            self._on_chapter_filter_changed)
+        toolbar_row1.addWidget(self._chapter_combo)
+
+        toolbar_row1.addWidget(self._vline())
 
         self._add_scene_btn = QPushButton("➕ Add")
         self._add_scene_btn.setToolTip(
@@ -886,7 +1035,16 @@ class VideoStudioWidget(QWidget):
                 self, "No project",
                 "Open or create a project first.")
             return
-        sc = Scene(name=f"Scene {len(studio.scenes) + 1}")
+        # New scenes inherit the active chapter scope when the
+        # writer has picked one in the toolbar combo — that's
+        # what they're working on, so the scene auto-tags
+        # instead of leaving them to remember "Pull from
+        # chapter" in the scene editor every time. Empty value
+        # means the legacy "all chapters" view; scenes stay
+        # untagged like before.
+        sc = Scene(
+            name=f"Scene {len(studio.scenes) + 1}",
+            chapter_id=self._active_chapter_id() or "")
         studio.add_scene(sc)
         self._canvas.refresh_all()
         # Offer to inherit hops from a recently-deleted scene before
@@ -904,7 +1062,8 @@ class VideoStudioWidget(QWidget):
         )
         col, row = _Cv._pixel_to_cell(scene_pos)
         sc = Scene(name=f"Scene {len(studio.scenes) + 1}",
-                   grid_col=max(col, 0), grid_row=max(row, 0))
+                   grid_col=max(col, 0), grid_row=max(row, 0),
+                   chapter_id=self._active_chapter_id() or "")
         studio.add_scene(sc)
         self._canvas.refresh_all()
         # If a previously-deleted scene lived at this cell, offer
@@ -2728,16 +2887,29 @@ class VideoStudioWidget(QWidget):
                 "Open a scene editor and use 'Pull from chapter' "
                 "to associate scenes with chapters.")
             return
-        chapter_id = self._pick_chapter_for_editor(
-            chapters_with_counts,
-            title="Slide editor",
-            prompt=(
-                "Pick a chapter to open in the slide editor. "
-                "Each action's favorite image becomes one slide; "
-                "you can record audio, fit timings, add "
-                "transitions, and export to MP4 or PowerPoint."))
-        if chapter_id is None:
-            return
+        # If the writer's toolbar has an active chapter that
+        # matches one of the chapters with scenes, skip the
+        # picker entirely — they've already said "I'm working
+        # on chapter X." Otherwise fall through to the legacy
+        # picker so the writer can still choose.
+        active = self._active_chapter_id()
+        active_in_list = next(
+            (cid for cid, _lbl, _n in chapters_with_counts
+             if cid == active),
+            None) if active else None
+        if active_in_list:
+            chapter_id = active_in_list
+        else:
+            chapter_id = self._pick_chapter_for_editor(
+                chapters_with_counts,
+                title="Slide editor",
+                prompt=(
+                    "Pick a chapter to open in the slide editor. "
+                    "Each action's favorite image becomes one slide; "
+                    "you can record audio, fit timings, add "
+                    "transitions, and export to MP4 or PowerPoint."))
+            if chapter_id is None:
+                return
         chapter_label = next(
             (lbl for cid, lbl, _ in chapters_with_counts
              if cid == chapter_id),
@@ -2912,6 +3084,20 @@ class VideoStudioWidget(QWidget):
         )
         dlg = ChapterDeckExportDialog(
             chapters_with_counts, parent=self)
+        # Pre-select the writer's active chapter so they don't
+        # have to re-pick it — the dialog still surfaces the
+        # format + title-card options that aren't on the
+        # toolbar. Falls back to whatever the combo defaulted
+        # to (usually the first chapter with scenes) when no
+        # active scope is set.
+        active = self._active_chapter_id()
+        if active:
+            try:
+                idx = dlg._chapter_combo.findData(active)
+                if idx >= 0:
+                    dlg._chapter_combo.setCurrentIndex(idx)
+            except Exception:
+                pass
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         chapter_id = dlg.selected_chapter_id()

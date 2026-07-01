@@ -752,10 +752,17 @@ Output schema (JSON):
     if not parsed:
         return {}
     out: dict = {}
-    desc = (parsed.get("description") or "").strip()
+    desc = _coerce_text_field(parsed.get("description"))
     if desc:
         out["description"] = desc
-    scen = (parsed.get("scenery_details") or "").strip()
+    # ``scenery_details`` may come back as a string OR — because
+    # the schema example mentions sub-categories ("lighting,
+    # atmosphere, props, sensory cues") — the LLM sometimes
+    # emits a dict like ``{"lighting": "...", "props": [...]}``.
+    # ``_coerce_text_field`` flattens any of those shapes to a
+    # single string so the SceneAction model only ever stores
+    # the writer-readable form.
+    scen = _coerce_text_field(parsed.get("scenery_details"))
     if scen:
         out["scenery_details"] = scen
     raw_chars = parsed.get("character_refs") or []
@@ -767,6 +774,45 @@ Output schema (JSON):
         out["location_refs"] = [
             str(l).strip() for l in raw_locs if str(l).strip()]
     return out
+
+
+def _coerce_text_field(value: Any) -> str:
+    """Flatten an LLM-returned value to a clean text string.
+
+    The LLM sometimes ignores ``"...": "..."`` in the JSON
+    schema and returns a structured value (dict of sub-keys,
+    or a list of bullet strings) for fields documented as
+    plain text. Crashing on ``.strip()`` of a dict is a worse
+    failure mode than presenting the writer with a flattened
+    rendering they can edit, so:
+
+      * ``str`` → trimmed string
+      * ``list`` → newline-joined trimmed items
+      * ``dict`` → ``"key: value"`` lines, recursing on values
+      * anything else → ``str(value)`` trimmed
+      * ``None`` / empty → ``""``
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        parts = [
+            _coerce_text_field(item) for item in value]
+        return "\n".join(p for p in parts if p).strip()
+    if isinstance(value, dict):
+        lines = []
+        for k, v in value.items():
+            sub = _coerce_text_field(v)
+            if not sub:
+                continue
+            label = str(k).strip().replace("_", " ")
+            if "\n" in sub:
+                lines.append(f"{label}:\n{sub}")
+            else:
+                lines.append(f"{label}: {sub}")
+        return "\n".join(lines).strip()
+    return str(value).strip()
 
 
 def refine_visual_prompt(

@@ -171,7 +171,18 @@ class PlaceEditor(QDialog):
         """Load place data into form."""
         self.name_edit.setText(self.place.name)
 
-        type_index = list(PlaceType).index(self.place.place_type)
+        # Guard against stored values that aren't in the current
+        # ``PlaceType`` — e.g. an older project saved a removed
+        # enum member, or a plain-string place_type slipped past
+        # Pydantic validation. Falling back to ``OTHER`` keeps
+        # the dialog editable so the writer can pick a real type
+        # from the combo and save, rather than the app aborting
+        # the moment they click Edit.
+        try:
+            type_index = list(PlaceType).index(
+                self.place.place_type)
+        except (ValueError, TypeError):
+            type_index = list(PlaceType).index(PlaceType.OTHER)
         self.type_combo.setCurrentIndex(type_index)
 
         self.description_edit.setPlainText(self.place.description)
