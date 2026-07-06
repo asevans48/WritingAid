@@ -521,6 +521,28 @@ class SlideGroup(BaseModel):
     # keys mean "no de-essing on that lane."
     track_deesser_intensity: Dict[int, float] = Field(
         default_factory=dict)
+    # Per-track mute state, keyed by ``track_index``. Missing
+    # keys mean "audible" (default). When True, ``compose_clips``
+    # drops every clip on that lane from the mix at recompose
+    # time — writers use this to solo the lane they're actively
+    # working on without moving clips around. Muted lanes stay
+    # visible on the timeline (dimmed with a 🔇 badge) so the
+    # writer can still see + edit their arrangement; the state
+    # only affects what gets rendered.
+    track_muted: Dict[int, bool] = Field(default_factory=dict)
+    # Per-track background flag, keyed by ``track_index``.
+    # Missing / False = foreground (default). When True,
+    # every clip on that lane is auto-looped by
+    # ``compose_clips`` until the last stopping point of the
+    # foreground lanes (or the next clip on the same lane,
+    # whichever comes first). Writers use this for music
+    # beds / ambient loops that should carry through a scene
+    # without having to be manually tiled to the narration's
+    # length. Model semantics are decoupled from the render:
+    # the timeline still shows the clip block at its native
+    # length, with a ↻ badge indicating the loop.
+    track_background: Dict[int, bool] = Field(
+        default_factory=dict)
     # Inter-group transition INTO this group from the
     # previous group in deck order. ``"cut"`` (default) =
     # hard concat (no crossfade); other values match

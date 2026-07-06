@@ -92,6 +92,14 @@ DEFAULT_PIXELS_PER_SECOND = 100
 MIN_PIXELS_PER_SECOND = 20
 MAX_PIXELS_PER_SECOND = 800
 
+# Qt widget size ceiling (24-bit signed). Any minimumWidth we
+# request above this is silently clamped, and the widget can
+# never paint past that x — so a clip / slide that would land
+# beyond becomes truly unreachable via scroll. The auto-zoom
+# path in ``_refresh_min_width`` uses this to know when to
+# drop the zoom instead of letting content overflow.
+QT_MAX_WIDGET_WIDTH = (1 << 24) - 1  # 16 777 215
+
 # Width in pixels of the trim-handle hot zone at each end of
 # an audio clip block. Wide enough to grab on a trackpad but
 # narrow enough that small blocks still let the writer click
@@ -253,11 +261,32 @@ class GroupTimelineWidget(QWidget):
             Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(
             self._on_custom_context_menu_requested)
+        # Cached ``sizeHint`` result — Qt calls sizeHint on
+        # every scroll event so it must be O(1). Refilled by
+        # ``_refresh_min_width`` (the only place content /
+        # zoom changes). Kept as ``None`` until the first
+        # refresh so ``sizeHint`` can fall back to a safe
+        # default while the widget is mid-construction.
+        self._cached_size_hint: Optional[QSize] = None
         # Initial minimum width (no audio yet) gives the writer
         # enough room to drop the first clip without a scroll
         # bar appearing for an empty timeline. ``_refresh_min_width``
-        # bumps this up as soon as audio loads.
+        # bumps this up as soon as content lands.
         self.setMinimumWidth(600)
+        # Widen NOW based on the deck/group we were constructed
+        # with. Callers used to rely on the subsequent
+        # ``set_group`` call to run ``_refresh_min_width``, but
+        # the group editor dialog never calls ``set_group`` after
+        # construction — it just uses the widget the constructor
+        # returns. Result: a group opened with placed slides but
+        # no audio kept ``minimumWidth`` at 600, and the host
+        # scroll area sized the timeline to the viewport instead
+        # of past-content. The scrollbar never engaged and the
+        # writer couldn't reach a slide dropped past the visible
+        # width. Calling ``_refresh_min_width`` here ensures the
+        # widget claims its true width from the moment the
+        # dialog first paints.
+        self._refresh_min_width()
 
     # ------------------------------------------------------------------
     # External API
@@ -275,32 +304,146 @@ class GroupTimelineWidget(QWidget):
         self.update()
 
     def _refresh_min_width(self) -> None:
-        """Set ``minimumWidth`` based on the audio duration so
-        the host's horizontal QScrollArea grows / shrinks
-        appropriately. Floor at 600 px so an empty timeline
-        still has room to drop clips on.
+        """Set ``minimumWidth`` based on the timeline's
+        end-of-content time so the host's horizontal
+        QScrollArea grows / shrinks appropriately. Floor at
+        600 px so an empty timeline still has room to drop
+        clips on.
 
-        Called from anywhere the composed duration can
-        change: ``set_group``, ``refresh_waveform``, the zoom
-        path, and explicitly by the host after recompose.
-        The audio bar widens with the timeline because
-        ``_track_rect`` reads from ``self.width()``.
+        End-of-content is ``max(audio_duration, last placed
+        slide end, last audio clip end)`` — not the composed
+        overlay duration alone. When the writer deletes the
+        audio, the overlay duration drops to 0 but any slides
+        (or unstitched audio clips) they've placed past the
+        deleted audio's old length still need to be reachable
+        via horizontal scroll. Sizing purely from
+        ``_audio_duration`` was the bug that stranded slides
+        past the visible edge with no way to scroll to them.
+
+        Called from anywhere the composed duration OR the
+        placed-content layout can change: ``set_group``,
+        ``refresh_waveform``, the zoom path, and explicitly
+        by the host after every mutation (record, delete,
+        drag, edge-resize).
+
+        Also caches the computed size so ``sizeHint`` can
+        return in O(1). Qt calls ``sizeHint`` during EVERY
+        scroll event on the host QScrollArea; without a cache,
+        each scroll tick was walking every placed slide + audio
+        clip via ``_content_end_seconds``, producing the
+        stutter writers reported after the sizeHint switched
+        to a content-aware value. ``updateGeometry`` only
+        fires when the cached size actually changed so scrolls
+        that don't touch data aren't paying a layout cost.
         """
         # Height also bumps with the lane count so the slide
         # band has room below all the audio lanes.
         self.setMinimumHeight(
             AUDIO_BAR_TOP + self._audio_area_height()
             + RULER_HEIGHT + 10 + SLIDE_BAND_HEIGHT + 20)
-        dur = self._audio_duration()
+        dur = self._content_end_seconds()
         if dur <= 0:
-            self.setMinimumWidth(
-                600 + LANE_HEADER_WIDTH)
-            return
-        natural_px = int(
-            dur * self._zoom_px_per_sec
-            + LEFT_PAD + LANE_HEADER_WIDTH + RIGHT_PAD)
-        self.setMinimumWidth(
-            max(600 + LANE_HEADER_WIDTH, natural_px))
+            width = 600 + LANE_HEADER_WIDTH
+        else:
+            margin = LEFT_PAD + LANE_HEADER_WIDTH + RIGHT_PAD
+            natural_px = int(
+                dur * self._zoom_px_per_sec + margin)
+            # Auto-zoom-out when content would overflow Qt's
+            # widget size cap. Qt silently clamps
+            # setMinimumWidth above ``QT_MAX_WIDGET_WIDTH`` —
+            # so a slide dragged to a huge start_time (or a
+            # zoom set high on already-large content) makes
+            # the widget cap out at ~16.7 M px and any block
+            # past that becomes unreachable. Instead of
+            # letting the overflow happen and blaming the
+            # writer for "scrolling not working", drop the
+            # zoom so the whole arrangement fits.
+            if natural_px > QT_MAX_WIDGET_WIDTH:
+                fit_zoom = max(
+                    float(MIN_PIXELS_PER_SECOND),
+                    (QT_MAX_WIDGET_WIDTH - margin) / dur)
+                if fit_zoom < self._zoom_px_per_sec - 0.5:
+                    self._zoom_px_per_sec = fit_zoom
+                natural_px = int(
+                    dur * self._zoom_px_per_sec + margin)
+            natural_px = min(
+                natural_px, QT_MAX_WIDGET_WIDTH)
+            width = max(600 + LANE_HEADER_WIDTH, natural_px)
+        self.setMinimumWidth(width)
+        new_hint = QSize(max(640, width), TRACK_HEIGHT)
+        if (self._cached_size_hint is None
+                or new_hint != self._cached_size_hint):
+            self._cached_size_hint = new_hint
+            # Only prod the host scroll area to re-layout when
+            # the hint actually changed. Blind ``updateGeometry``
+            # on every call cascades into fresh sizeHint /
+            # layout ticks and turned scrolling into a stutter.
+            self.updateGeometry()
+
+    def _content_end_seconds(self) -> float:
+        """Rightmost time any block extends to, across audio +
+        slides. Used by ``_refresh_min_width`` so the widget
+        grows past the audio duration when slides sit further
+        right (e.g. right after the writer deletes the audio,
+        or drags a slide past the overlay's end).
+
+        Walks ``deck.pages`` filtered by ``page.group_id ==
+        group.id`` — the authoritative membership — rather
+        than ``_placed_blocks`` / ``page_ids``. That way a
+        slide dropped in the group but not yet reconciled into
+        ``page_ids`` still contributes to the width, so the
+        scroll always reaches it.
+        """
+        end = self._audio_duration()
+        if self._group is not None:
+            gid = getattr(self._group, "id", None)
+            deck_pages = (
+                getattr(self._deck, "pages", None) or [])
+            for page in deck_pages:
+                if getattr(page, "group_id", None) != gid:
+                    continue
+                start = getattr(
+                    page, "start_time_seconds_in_group",
+                    None)
+                if start is None:
+                    continue
+                try:
+                    start_f = float(start)
+                except (TypeError, ValueError):
+                    continue
+                dur = max(0.25, float(
+                    getattr(page, "duration_seconds", 0.0)
+                    or 0.0))
+                block_end = start_f + dur
+                if block_end > end:
+                    end = block_end
+            for clip in (
+                    getattr(self._group, "audio_clips", None)
+                    or []):
+                start = float(
+                    getattr(clip, "start_time_seconds", 0.0)
+                    or 0.0)
+                # kept-seconds = trimmed window inside the
+                # source. Same math the painter uses (see
+                # ``_paint_clip_waveform``) so the visual
+                # extent of the clip block and the widget's
+                # width bound stay in lockstep.
+                src_dur = float(
+                    getattr(clip, "duration_seconds", 0.0)
+                    or 0.0)
+                tin = max(0.0, float(
+                    getattr(clip, "trim_in_seconds", 0.0)
+                    or 0.0))
+                tout = float(
+                    getattr(clip, "trim_out_seconds", 0.0)
+                    or 0.0)
+                if tout <= 0 or tout > src_dur:
+                    tout = src_dur
+                kept = max(0.0, tout - tin)
+                clip_end = start + kept
+                if clip_end > end:
+                    end = clip_end
+        return max(0.0, end)
 
     def zoom_px_per_sec(self) -> float:
         """Current pixel scale — the host's zoom buttons
@@ -408,6 +551,14 @@ class GroupTimelineWidget(QWidget):
         self.update()
 
     def sizeHint(self) -> QSize:
+        """Preferred size = ``_refresh_min_width``'s cached
+        computation. Qt calls this during every scroll event
+        on the host QScrollArea, so it MUST be O(1). The
+        cache is refilled by ``_refresh_min_width`` whenever
+        content or zoom changes.
+        """
+        if self._cached_size_hint is not None:
+            return self._cached_size_hint
         return QSize(640, TRACK_HEIGHT)
 
     # ------------------------------------------------------------------
@@ -798,8 +949,30 @@ class GroupTimelineWidget(QWidget):
         the strip is read-only so wide labels don't crowd a
         slider into the lane's narrow vertical space."""
         rect = self._lane_header_rect(track_index)
-        painter.fillRect(rect, QColor("#1e293b"))
-        painter.setPen(QPen(QColor("#334155"), 1))
+        muted = self._is_track_muted(track_index)
+        background = self._is_track_background(track_index)
+        # Deeper background + red accent when muted so writers
+        # can tell at a glance which lanes are silent in the
+        # mix. Blue-purple accent for background lanes so
+        # music-bed lanes read differently from foreground
+        # narration lanes. Mute wins visually when both apply.
+        if muted:
+            fill_color = QColor("#3f1d1d")
+            border_color = QColor("#7f1d1d")
+            name_color = QColor("#fecaca")
+            meta_color = QColor("#fca5a5")
+        elif background:
+            fill_color = QColor("#1e1b4b")
+            border_color = QColor("#4c1d95")
+            name_color = QColor("#c4b5fd")
+            meta_color = QColor("#a5b4fc")
+        else:
+            fill_color = QColor("#1e293b")
+            border_color = QColor("#334155")
+            name_color = QColor("#e2e8f0")
+            meta_color = QColor("#94a3b8")
+        painter.fillRect(rect, fill_color)
+        painter.setPen(QPen(border_color, 1))
         painter.drawRect(rect)
         from PyQt6.QtGui import QFont as _QF
         f = _QF(painter.font())
@@ -812,7 +985,11 @@ class GroupTimelineWidget(QWidget):
             names.get(track_index)
             or names.get(str(track_index))
             or f"Track {track_index + 1}")
-        painter.setPen(QColor("#e2e8f0"))
+        if muted:
+            name = f"🔇 {name}"
+        elif background:
+            name = f"🎵 {name}"
+        painter.setPen(name_color)
         painter.drawText(
             rect.left() + 6, rect.top() + 18, name)
         gains = (
@@ -827,10 +1004,40 @@ class GroupTimelineWidget(QWidget):
         f.setBold(False)
         f.setPointSize(8)
         painter.setFont(f)
-        painter.setPen(QColor("#94a3b8"))
+        painter.setPen(meta_color)
+        if muted:
+            meta_text = f"muted · {gain_text}"
+        elif background:
+            meta_text = f"bg loop ↻ · {gain_text}"
+        else:
+            meta_text = f"vol  {gain_text}"
         painter.drawText(
-            rect.left() + 6, rect.bottom() - 6,
-            f"vol  {gain_text}")
+            rect.left() + 6, rect.bottom() - 6, meta_text)
+
+    def _is_track_muted(self, track_index: int) -> bool:
+        """Look up ``track_index`` in ``track_muted`` (falling
+        back to string-keyed entries for JSON-roundtripped
+        dicts). Missing / False keys → audible."""
+        if self._group is None:
+            return False
+        mutes = getattr(self._group, "track_muted", None) or {}
+        return bool(
+            mutes.get(
+                track_index,
+                mutes.get(str(track_index), False)))
+
+    def _is_track_background(self, track_index: int) -> bool:
+        """Look up ``track_index`` in ``track_background``
+        (same int/str-key fallback as mute). Missing / False
+        keys → foreground."""
+        if self._group is None:
+            return False
+        bgs = getattr(
+            self._group, "track_background", None) or {}
+        return bool(
+            bgs.get(
+                track_index,
+                bgs.get(str(track_index), False)))
 
     def _draw_clip_blocks_for_lane(
             self, painter: QPainter, track_index: int,
@@ -1004,8 +1211,18 @@ class GroupTimelineWidget(QWidget):
         base = palette[idx % len(palette)]
         selected = (
             clip.id == self._selected_audio_clip_id)
+        muted = self._is_track_muted(
+            int(getattr(clip, "track_index", 0) or 0))
         fill = QColor(base)
-        fill.setAlpha(220 if selected else 170)
+        # Muted clips render dim + desaturated so the writer
+        # can tell the lane is out of the mix without having
+        # to check the header. Selection state still wins
+        # (the selected clip is fully lit even if muted) so
+        # right-click / delete / trim UX doesn't feel gated.
+        if muted and not selected:
+            fill.setAlpha(70)
+        else:
+            fill.setAlpha(220 if selected else 170)
         painter.fillRect(rect, fill)
         self._draw_clip_block_waveform(
             painter, clip, rect)
@@ -1029,6 +1246,15 @@ class GroupTimelineWidget(QWidget):
             painter.fillRect(left_handle, handle_color)
             painter.fillRect(right_handle, handle_color)
         label = (clip.label or f"Take {idx + 1}")
+        # ↻ prefix flags background clips so writers can tell
+        # at a glance that this take loops at render time.
+        # The block itself still renders at its native trimmed
+        # length (the loop is a rendering behavior, not a
+        # placement); the badge is the visible cue.
+        is_bg = self._is_track_background(
+            int(getattr(clip, "track_index", 0) or 0))
+        if is_bg:
+            label = f"↻ {label}"
         meta = f"  ({eff:.2f}s)"
         label_text = f"{label}{meta}"
         txt = fm.elidedText(
@@ -2312,11 +2538,24 @@ class GroupTimelineWidget(QWidget):
             # start — the enforcer needs the prior layout to
             # know whether subsequent clips should cascade.
             self._snapshot_audio_clip_layout()
+            drop_pt = event.position().toPoint()
             secs = max(
-                0.0,
-                self._x_to_seconds(
-                    event.position().toPoint().x()))
+                0.0, self._x_to_seconds(drop_pt.x()))
             clip.start_time_seconds = round(secs, 3)
+            # Honor the target lane the writer dropped onto.
+            # Without this, ``track_index`` kept its old value
+            # (usually 0), so a drop meant for track 2 landed
+            # on track 1 at the end of the existing content
+            # — the exact "dropped it at the end of track 1"
+            # symptom writers reported after adding a second
+            # lane. ``_lane_at_pos`` returns ``None`` when
+            # the drop is above / below every lane band; in
+            # that case we leave ``track_index`` alone so
+            # drops on the ruler or slide band don't yank the
+            # clip to lane 0 by surprise.
+            lane_idx = self._lane_at_pos(drop_pt)
+            if lane_idx is not None:
+                clip.track_index = int(lane_idx)
             self._enforce_audio_no_overlap(clip.id)
             self._drag_hover_x = None
             self._selected_audio_clip_id = clip.id

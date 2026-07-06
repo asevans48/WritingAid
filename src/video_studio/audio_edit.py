@@ -156,6 +156,8 @@ def compose_clips(
     default_crossfade_seconds: float = 0.15,
     track_gain_db: Optional[dict] = None,
     track_deesser_intensity: Optional[dict] = None,
+    track_muted: Optional[dict] = None,
+    track_background: Optional[dict] = None,
 ) -> AudioEditResult:
     """Position-aware audio composer.
 
@@ -213,6 +215,86 @@ def compose_clips(
         # noise reduction is too source-specific to apply
         # at the lane level.
         denoise_floor_db: float
+        # When > 0, apply an infinite ``aloop`` and cap at
+        # this many seconds (measured from clip.start).
+        # ``0`` (default) = no looping, clip plays once at
+        # its natural length. Set for clips on lanes flagged
+        # as background whenever there's a foreground extent
+        # to loop up to.
+        loop_to_seconds: float
+
+    def _is_bg(track_idx: int) -> bool:
+        if track_background is None:
+            return False
+        return bool(
+            track_background.get(
+                track_idx,
+                track_background.get(
+                    str(track_idx), False)))
+
+    def _is_muted(track_idx: int) -> bool:
+        if track_muted is None:
+            return False
+        return bool(
+            track_muted.get(
+                track_idx,
+                track_muted.get(str(track_idx), False)))
+
+    # Foreground end = last stopping point across every clip
+    # on a lane that isn't marked background AND isn't muted.
+    # Background clips loop UNTIL this time (or until the
+    # next clip on their own lane, whichever comes first).
+    # When no foreground clips exist, background clips render
+    # at their native length.
+    foreground_end = 0.0
+    for c in clips:
+        idx = int(getattr(c, "track_index", 0) or 0)
+        if _is_bg(idx) or _is_muted(idx):
+            continue
+        explicit = getattr(c, "start_time_seconds", None)
+        if explicit is None:
+            continue
+        full = float(
+            getattr(c, "duration_seconds", 0.0) or 0.0)
+        tin = max(0.0, float(
+            getattr(c, "trim_in_seconds", 0.0) or 0.0))
+        tout = float(
+            getattr(c, "trim_out_seconds", 0.0) or 0.0)
+        if tout <= 0 or tout > full:
+            tout = full
+        if tout <= tin:
+            continue
+        eff = tout - tin
+        end = float(explicit) + eff
+        if end > foreground_end:
+            foreground_end = end
+
+    # For each background clip, compute the next-clip-on-same-
+    # lane cutoff so a bed loops until its own lane's next
+    # clip takes over (rather than plowing through it).
+    # Missing next-clip → falls back to ``foreground_end``.
+    def _next_clip_on_lane(target_c) -> Optional[float]:
+        tidx = int(getattr(target_c, "track_index", 0) or 0)
+        t0 = float(
+            getattr(target_c, "start_time_seconds", 0.0)
+            or 0.0)
+        best: Optional[float] = None
+        for other in clips:
+            if other is target_c:
+                continue
+            if int(getattr(other, "track_index", 0)
+                   or 0) != tidx:
+                continue
+            other_start = getattr(
+                other, "start_time_seconds", None)
+            if other_start is None:
+                continue
+            other_start_f = float(other_start)
+            if other_start_f <= t0:
+                continue
+            if best is None or other_start_f < best:
+                best = other_start_f
+        return best
 
     renders: list[_ClipRender] = []
     for c in clips:
@@ -243,6 +325,23 @@ def compose_clips(
             # overlay; the source file stays on disk.
             continue
         start = max(0.0, float(explicit))
+        # Skip muted lanes entirely. ``track_muted`` is a
+        # ``{track_index: bool}`` dict; missing keys mean
+        # "audible" (default) so nothing changes for decks
+        # that don't use mute. Muted clips don't consume an
+        # ffmpeg input slot / filter chain — cheaper AND keeps
+        # the ``amix`` normalization from double-counting the
+        # silent lane.
+        track_idx_check = int(
+            getattr(c, "track_index", 0) or 0)
+        if track_muted is not None:
+            muted = bool(
+                track_muted.get(track_idx_check,
+                                track_muted.get(
+                                    str(track_idx_check),
+                                    False)))
+            if muted:
+                continue
         # Apply per-track lane gain ON TOP OF per-clip gain.
         # ``track_index`` defaults to 0 (the primary lane), so
         # legacy clips that pre-date the multi-track refactor
@@ -287,6 +386,22 @@ def compose_clips(
         # at the lane level). Negative value enables afftdn.
         denoise_floor = float(
             getattr(c, "denoise_floor_db", 0.0) or 0.0)
+        # Background looping: if the clip's lane is flagged
+        # as background AND there's foreground content on
+        # other lanes to loop up to, cap the loop at whichever
+        # comes first — the next clip on the same lane or
+        # ``foreground_end``. When neither is greater than
+        # this clip's own end, no looping is needed.
+        loop_to = 0.0
+        if _is_bg(track_idx) and foreground_end > start:
+            cap_end = foreground_end
+            next_start = _next_clip_on_lane(c)
+            if (next_start is not None
+                    and next_start < cap_end):
+                cap_end = next_start
+            duration_from_start = cap_end - start
+            if duration_from_start > eff_dur:
+                loop_to = duration_from_start
         renders.append(_ClipRender(
             path=path,
             start=start,
@@ -300,6 +415,7 @@ def compose_clips(
                 getattr(c, "fade_out_seconds", 0.0) or 0.0)),
             deesser_intensity=deesser,
             denoise_floor_db=denoise_floor,
+            loop_to_seconds=loop_to,
         ))
     if not renders:
         return AudioEditResult(
@@ -355,6 +471,22 @@ def compose_clips(
                 f"d={fd_out:.3f}")
         chain.append(
             "aformat=channel_layouts=mono:sample_rates=44100")
+        # Background looping — insert AFTER the aformat so
+        # ``aloop`` sees a normalized sample rate + channel
+        # layout, avoiding "different formats in loop" ffmpeg
+        # complaints. ``aloop=-1`` loops forever; ``size`` must
+        # cover one whole iteration so we pass the clip's
+        # kept-sample count (kept_seconds * 44100). ``atrim``
+        # then caps at the total loop length so the mix has a
+        # finite output.
+        if r.loop_to_seconds > r.eff_dur:
+            size_samples = max(
+                1, int(round(r.eff_dur * 44100)))
+            chain.append(
+                f"aloop=loop=-1:size={size_samples}")
+            chain.append(
+                f"atrim=end={r.loop_to_seconds:.3f}")
+            chain.append("asetpts=N/SR/TB")
         if r.start > 0:
             delay_ms = int(round(r.start * 1000))
             chain.append(f"adelay={delay_ms}|{delay_ms}")

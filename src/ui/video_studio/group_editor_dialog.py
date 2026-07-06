@@ -437,7 +437,11 @@ class GroupEditorDialog(QDialog):
                 self._group, "track_gain_db", None),
             track_deesser_intensity=getattr(
                 self._group,
-                "track_deesser_intensity", None))
+                "track_deesser_intensity", None),
+            track_muted=getattr(
+                self._group, "track_muted", None),
+            track_background=getattr(
+                self._group, "track_background", None))
         if not result.success:
             QMessageBox.warning(
                 self, "Compose failed",
@@ -891,6 +895,58 @@ class GroupEditorDialog(QDialog):
         self._add_track_btn_inline.clicked.connect(
             self._on_add_track)
         tracks_bar.addWidget(self._add_track_btn_inline)
+        # ⟲ Reset timeline — sweep every placed slide back to
+        # the tray and every audio clip back to the clip list,
+        # WITHOUT deleting a single one. Nothing is unlinked
+        # from the group; only the placement fields are
+        # cleared (``start_time_seconds_in_group`` on pages,
+        # ``start_time_seconds`` on clips). Writers asked for
+        # this after several rounds of "let me start the
+        # arrangement over" — the previous path was
+        # right-click every block one at a time, which they
+        # kept forgetting to do for one or two clips.
+        self._reset_timeline_btn = QPushButton(
+            "⟲ Reset timeline")
+        self._reset_timeline_btn.setToolTip(
+            "Move every placed slide back to the tray and "
+            "every audio clip back to the clip list. Nothing "
+            "is deleted — only the placement is cleared, so "
+            "you can rearrange from scratch without losing "
+            "any recordings or images.")
+        self._reset_timeline_btn.clicked.connect(
+            self._on_reset_timeline)
+        tracks_bar.addWidget(self._reset_timeline_btn)
+        # 🗑 Split-purpose escape hatches. These operate on
+        # the MODEL directly (not the paint layer), so a
+        # slide / clip stranded at a coordinate the widget
+        # can't paint or the scroll can't reach still gets
+        # unplaced. Writer never has to right-click / drag
+        # the stranded block. Clicked once, the arrangement
+        # for that half of the timeline is empty and the
+        # writer can rebuild it from the tray / clip list.
+        self._clear_images_btn = QPushButton(
+            "🗑 Remove all images from timeline")
+        self._clear_images_btn.setToolTip(
+            "Unplace every slide from the image track. "
+            "Slides return to the tray with their audio + "
+            "duration + labels intact. Use when a slide is "
+            "stranded outside the scrollable area — this "
+            "walks the model directly, so it works even for "
+            "slides you can't reach visually.")
+        self._clear_images_btn.clicked.connect(
+            self._on_all_slides_to_tray)
+        tracks_bar.addWidget(self._clear_images_btn)
+        self._clear_audio_btn = QPushButton(
+            "🗑 Remove all audio from timeline")
+        self._clear_audio_btn.setToolTip(
+            "Unplace every audio clip from the audio "
+            "tracks. Recordings return to the clip list with "
+            "their trims + fades + gain intact. Same model-"
+            "level escape as the image button: works even "
+            "when a clip is stranded off-screen.")
+        self._clear_audio_btn.clicked.connect(
+            self._on_all_audio_to_list)
+        tracks_bar.addWidget(self._clear_audio_btn)
         cv.addLayout(tracks_bar)
         cv.addWidget(self._timeline_scroll, stretch=1)
 
@@ -925,6 +981,26 @@ class GroupEditorDialog(QDialog):
         self._add_to_group_btn.clicked.connect(
             self._on_add_from_deck)
         tray_header.addWidget(self._add_to_group_btn)
+        # ⤴ Pull every placed slide back to the tray — a
+        # smaller-blast-radius option than "Reset timeline"
+        # (which also sweeps audio clips). Necessary because
+        # a slide dropped at a huge start time or one dragged
+        # past a subsequent scroll-shrink can end up outside
+        # the reachable viewport, where the writer can't
+        # right-click / drag it. This button always works
+        # regardless of scroll position because it walks the
+        # model directly.
+        self._all_slides_to_tray_btn = QPushButton(
+            "⤴ Bring all slides to tray")
+        self._all_slides_to_tray_btn.setToolTip(
+            "Move every slide on the timeline back to the "
+            "tray (audio clips stay put). Rescues slides "
+            "stranded off-screen when the timeline width "
+            "changed under them — the writer doesn't have "
+            "to reach them by scrolling.")
+        self._all_slides_to_tray_btn.clicked.connect(
+            self._on_all_slides_to_tray)
+        tray_header.addWidget(self._all_slides_to_tray_btn)
         cv.addLayout(tray_header)
         self._tray = _SlideTray(self._begin_tray_drag)
         # Double-click on a tray thumbnail opens the same
@@ -1343,6 +1419,147 @@ class GroupEditorDialog(QDialog):
         self._timeline.remove_placed(page.id)
         self._refresh_tray()
         self._refresh_detail_panel()
+        self.deck_modified.emit()
+
+    def _on_all_audio_to_list(self) -> None:
+        """Sweep every placed audio clip back to the clip list
+        without touching image slides.
+
+        Model-direct — walks ``self._group.audio_clips`` and
+        clears ``start_time_seconds`` on each one. Rescues
+        clips stranded off-screen without needing to right-
+        click them (which would need them to be visible). No
+        clip is deleted, no trim / fade / gain is lost.
+        """
+        clips = (
+            getattr(self._group, "audio_clips", None) or [])
+        placed = [
+            c for c in clips
+            if getattr(c, "start_time_seconds", None)
+            is not None]
+        if not placed:
+            QMessageBox.information(
+                self, "Nothing to move",
+                "No audio clips on the timeline right now.")
+            return
+        for clip in placed:
+            clip.start_time_seconds = None
+        # Full refresh — timeline redraws (empty audio lanes)
+        # and the clip list picks up the unplaced state so the
+        # writer can drag them back onto whichever lane they
+        # want.
+        self._timeline.clear_selection()
+        self._timeline.refresh_waveform()
+        self._timeline.update()
+        self._refresh_clip_list()
+        self._refresh_detail_panel()
+        self.deck_modified.emit()
+
+    def _on_all_slides_to_tray(self) -> None:
+        """Sweep every placed slide back to the tray without
+        touching audio.
+
+        Different from ``_on_reset_timeline`` (which also
+        clears audio-clip placement) because writers sometimes
+        just want to rebuild the visual arrangement while
+        keeping their recorded takes right where they are.
+        And unlike the right-click-a-block path, this
+        succeeds even when a slide is stranded outside the
+        reachable scroll area — the model walk doesn't need
+        the slide to be visible.
+        """
+        # Walk deck.pages by ``group_id`` — authoritative
+        # membership. Reading from ``page_ids`` would miss a
+        # page that drifted after a legacy migration; reading
+        # from group_id catches every slide the writer sees on
+        # the timeline.
+        placed = [
+            p for p in self._deck.pages
+            if getattr(p, "group_id", None) == self._group.id
+            and getattr(
+                p, "start_time_seconds_in_group", None)
+            is not None]
+        if not placed:
+            QMessageBox.information(
+                self, "Nothing to move",
+                "No slides on the timeline right now.")
+            return
+        now = datetime.now()
+        for page in placed:
+            page.start_time_seconds_in_group = None
+            page.updated_at = now
+        self._timeline.clear_selection()
+        self._timeline.refresh_waveform()
+        self._timeline.update()
+        self._refresh_tray()
+        self._refresh_detail_panel()
+        self.deck_modified.emit()
+
+    def _on_reset_timeline(self) -> None:
+        """Sweep every placed slide back to the tray and every
+        audio clip back to the clip list without deleting a
+        single one.
+
+        Clears ``start_time_seconds_in_group`` on every page
+        that belongs to this group, and ``start_time_seconds``
+        on every clip in ``audio_clips``. The clip files stay
+        on disk; the pages stay linked to the group via
+        ``page_ids``; the slide images stay in place. Writers
+        get a blank timeline they can rearrange from scratch
+        without having to re-record or re-pick anything.
+
+        Confirms first — this is a bulk operation and undoing
+        it means dragging every block back manually.
+        """
+        pages = self._group_pages()
+        placed_pages = [
+            p for p in pages
+            if getattr(
+                p, "start_time_seconds_in_group", None)
+            is not None]
+        placed_clips = [
+            c for c in (
+                getattr(self._group, "audio_clips", None)
+                or [])
+            if getattr(c, "start_time_seconds", None)
+            is not None]
+        if not placed_pages and not placed_clips:
+            QMessageBox.information(
+                self, "Nothing to reset",
+                "Timeline is already empty.")
+            return
+        counts = []
+        if placed_pages:
+            counts.append(
+                f"{len(placed_pages)} slide"
+                f"{'s' if len(placed_pages) != 1 else ''}")
+        if placed_clips:
+            counts.append(
+                f"{len(placed_clips)} audio clip"
+                f"{'s' if len(placed_clips) != 1 else ''}")
+        reply = QMessageBox.question(
+            self, "Reset timeline",
+            "Move "
+            + " and ".join(counts)
+            + " back to the tray / clip list?\n\n"
+            "Nothing is deleted — slides stay in the group, "
+            "clips stay recorded. Only the placement on the "
+            "timeline is cleared so you can rearrange from "
+            "scratch.")
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        now = datetime.now()
+        for page in placed_pages:
+            page.start_time_seconds_in_group = None
+            page.updated_at = now
+        for clip in placed_clips:
+            clip.start_time_seconds = None
+        self._timeline.clear_selection()
+        self._timeline.refresh_waveform()
+        self._timeline.update()
+        self._refresh_tray()
+        self._refresh_detail_panel()
+        self._refresh_clip_list()
         self.deck_modified.emit()
 
     def _on_remove_from_group(self) -> None:
@@ -3065,6 +3282,11 @@ class GroupEditorDialog(QDialog):
             getattr(
                 self._group,
                 "track_deesser_intensity", None) or {})
+        mutes = (
+            getattr(self._group, "track_muted", None) or {})
+        bgs = (
+            getattr(
+                self._group, "track_background", None) or {})
         cur_name = (
             names.get(track_index)
             or names.get(str(track_index))
@@ -3077,13 +3299,24 @@ class GroupEditorDialog(QDialog):
             deessers.get(
                 track_index,
                 deessers.get(str(track_index), 0.0)) or 0.0)
+        cur_muted = bool(
+            mutes.get(
+                track_index,
+                mutes.get(str(track_index), False)))
+        cur_bg = bool(
+            bgs.get(
+                track_index,
+                bgs.get(str(track_index), False)))
         deesser_summary = (
             f"{cur_deesser:.2f}" if cur_deesser > 0 else "off")
+        mute_summary = "MUTED" if cur_muted else "audible"
+        bg_summary = "BACKGROUND ↻" if cur_bg else "foreground"
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
         header = menu.addAction(
             f"🎚  {cur_name}  ·  {cur_gain:+.1f} dB  ·  "
-            f"de-esser {deesser_summary}")
+            f"de-esser {deesser_summary}  ·  {mute_summary}  "
+            f"·  {bg_summary}")
         header.setEnabled(False)
         menu.addSeparator()
         rename_act = menu.addAction("✏️  Rename track…")
@@ -3097,6 +3330,32 @@ class GroupEditorDialog(QDialog):
             "range for close-mic'd dialog. Higher values "
             "start to muffle consonants. Applied to every "
             "clip on this lane when the overlay renders.")
+        # ─ Mute toggle ─
+        mute_act = menu.addAction(
+            "🔈  Unmute track"
+            if cur_muted
+            else "🔇  Mute track")
+        mute_act.setToolTip(
+            "Silence every clip on this lane when the overlay "
+            "renders. Clips stay visible on the timeline (just "
+            "dimmed) so you can still edit them; toggling back "
+            "brings them right into the mix. Useful for "
+            "soloing the lane you're currently working on "
+            "without moving anything around.")
+        # ─ Background toggle ─
+        bg_act = menu.addAction(
+            "🎵  Set as foreground track"
+            if cur_bg
+            else "🎵  Set as background track (loop ↻)")
+        bg_act.setToolTip(
+            "Mark this lane as a background bed (music, "
+            "ambient loop). Every clip on the lane will loop "
+            "at render time until the last stopping point of "
+            "the foreground lanes — or until the next clip on "
+            "this same lane, whichever comes first. Clips "
+            "still show at their native length on the timeline "
+            "with a ↻ badge; the loop is applied by "
+            "``compose_clips`` at recompose time.")
         menu.addSeparator()
         remove_act = menu.addAction(
             "🗑  Remove track (clips fall to Track 1)")
@@ -3163,6 +3422,36 @@ class GroupEditorDialog(QDialog):
                     clean_de)
                 self._timeline.update()
                 self._recompose_overlay()
+        elif action is mute_act:
+            # Flip the lane's mute state; drop entries that
+            # go back to False so the dict stays minimal.
+            clean_mutes = {
+                int(k): bool(v)
+                for k, v in (mutes or {}).items()
+                if str(k).lstrip("-").isdigit()
+                and bool(v)}
+            if cur_muted:
+                clean_mutes.pop(track_index, None)
+            else:
+                clean_mutes[track_index] = True
+            self._group.track_muted = clean_mutes
+            self._timeline.update()
+            self._recompose_overlay()
+        elif action is bg_act:
+            # Flip the lane's background flag; same minimal-
+            # dict discipline as ``track_muted``.
+            clean_bgs = {
+                int(k): bool(v)
+                for k, v in (bgs or {}).items()
+                if str(k).lstrip("-").isdigit()
+                and bool(v)}
+            if cur_bg:
+                clean_bgs.pop(track_index, None)
+            else:
+                clean_bgs[track_index] = True
+            self._group.track_background = clean_bgs
+            self._timeline.update()
+            self._recompose_overlay()
         elif action is remove_act:
             # Move clips to lane 0 and drop the gain/name
             # entries.
@@ -3193,6 +3482,20 @@ class GroupEditorDialog(QDialog):
                 if str(k).lstrip("-").isdigit()
                 and int(k) != track_index}
             self._group.track_deesser_intensity = clean_de
+            clean_mutes = {
+                int(k): bool(v)
+                for k, v in (mutes or {}).items()
+                if str(k).lstrip("-").isdigit()
+                and int(k) != track_index
+                and bool(v)}
+            self._group.track_muted = clean_mutes
+            clean_bgs = {
+                int(k): bool(v)
+                for k, v in (bgs or {}).items()
+                if str(k).lstrip("-").isdigit()
+                and int(k) != track_index
+                and bool(v)}
+            self._group.track_background = clean_bgs
             self._timeline._refresh_min_width()
             self._timeline.update()
             self._refresh_tracks_count_label()
