@@ -524,6 +524,80 @@ def _set_slide_transition_effect(
         effect.set(k, v)
 
 
+def resolve_group_overlay(
+    group: SlideGroup,
+    working_dir: str = "",
+) -> str:
+    """Return an on-disk overlay WAV for ``group`` that carries
+    every audio-clip edit (gain, de-essing, noise reduction,
+    per-lane looping, fades, trims) baked in.
+
+    ``audio_clips`` is the source of truth; ``overlay_audio_path``
+    is a rendered cache the group editor refreshes after each
+    edit. Exports and previews used to trust that cache blindly —
+    so when the cache file was missing (deck moved between
+    machines, working_dir changed, the composed WAV was cleaned,
+    or the clips were populated by a path that never opened the
+    group editor) the export silently dropped the group's sound.
+
+    This helper closes that gap: if the cached file is present it
+    is returned as-is (fast path — the editor keeps it fresh);
+    otherwise the overlay is recomposed from ``audio_clips`` right
+    here so the narration — with all its edits — still lands in
+    the render. Returns "" when the group genuinely has no audio.
+    """
+    cached = (getattr(group, "overlay_audio_path", "") or "").strip()
+    if cached and Path(cached).exists() \
+            and Path(cached).stat().st_size > 0:
+        return cached
+    clips = getattr(group, "audio_clips", None) or []
+    if not clips:
+        return ""
+    # Cache missing but clips exist — recompose from the source
+    # of truth so the edits aren't lost. Import lazily to keep
+    # the module importable in environments without the audio
+    # stack wired up.
+    try:
+        from src.video_studio.audio_edit import compose_clips
+    except Exception:
+        return cached  # best effort — nothing else we can do
+    dest_dir = Path(
+        working_dir
+        or getattr(group, "working_dir", "")
+        or (Path.home() / ".writingaid_slides")) / "group_overlay"
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return cached
+    # Deterministic name so repeated exports reuse one file
+    # instead of littering the folder with timestamped renders.
+    dest = dest_dir / f"{group.id}_export_overlay.wav"
+    try:
+        result = compose_clips(
+            clips, dest,
+            track_gain_db=getattr(group, "track_gain_db", None),
+            track_deesser_intensity=getattr(
+                group, "track_deesser_intensity", None),
+            track_muted=getattr(group, "track_muted", None),
+            track_background=getattr(
+                group, "track_background", None))
+    except Exception:
+        return cached
+    if not result.success:
+        return cached
+    # Refresh the in-memory cache so later exports in this session
+    # take the fast path (and an autosave persists the valid
+    # path). Guarded — some SlideGroup builds may not expose the
+    # setters.
+    try:
+        group.overlay_audio_path = str(dest)
+        group.overlay_audio_duration_seconds = float(
+            result.duration_seconds or 0.0)
+    except Exception:
+        pass
+    return str(dest)
+
+
 def render_group_to_mp4(
     deck: SlideDeckProject,
     group: SlideGroup,
@@ -598,8 +672,12 @@ def render_group_to_mp4(
         copy.duration_seconds = round(hold, 3)
         copy.audio_path = ""
         render_pages.append(copy)
-    overlay_path = (
-        getattr(group, "overlay_audio_path", "") or "")
+    # Resolve (and, if the cache is missing, recompose) the
+    # group's overlay so every audio-clip edit — gain, de-essing,
+    # noise reduction, looping — is baked into the render even
+    # when the cached WAV went missing.
+    overlay_path = resolve_group_overlay(
+        group, working_dir=deck.working_dir)
     if overlay_path and Path(overlay_path).exists():
         render_pages[0].audio_path = overlay_path
     synthetic = SlideDeckProject(

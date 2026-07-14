@@ -110,6 +110,34 @@ def _concat_mp4_segments(
     inputs: list = []
     for p in segment_paths:
         inputs.extend(["-i", str(Path(p).resolve())])
+    # A segment with no narration renders as a SILENT mp4 with no
+    # audio stream at all (see ``stitch_slide_deck_to_mp4``). The
+    # concat / xfade filters below reference ``[i:a]`` for every
+    # input, so a single audio-less segment used to abort the whole
+    # export ("Stream specifier ':a' matches no streams") — the
+    # deck came out with no file, or the writer's audio-bearing
+    # groups lost their sound. Probe each segment and synthesize a
+    # matching-length silent track (via ``anullsrc``) for the ones
+    # that have no audio, so the graph always sees a uniform
+    # audio+video pair per input and audio-bearing groups keep
+    # their composed narration in the final render.
+    seg_has_audio: list = [
+        _ffprobe_has_audio(p) for p in segment_paths]
+    # Extra lavfi silence inputs, appended after the real segment
+    # inputs. ``silent_input_idx[seg]`` is the ffmpeg input index
+    # that carries that segment's synthesized silence.
+    silent_input_idx: dict = {}
+    next_input = n
+    for i, hasa in enumerate(seg_has_audio):
+        if not hasa:
+            inputs.extend([
+                "-f", "lavfi",
+                "-t", f"{durations[i]:.3f}",
+                "-i",
+                (f"anullsrc=channel_layout=stereo:"
+                 f"sample_rate={sample_rate}")])
+            silent_input_idx[i] = next_input
+            next_input += 1
     # Per-input normalize chains. Every input gets scale +
     # pad + setsar + fps for video, aformat + asetnsamples
     # for audio, so the concat / xfade filters see a uniform
@@ -126,7 +154,10 @@ def _concat_mp4_segments(
         "asetpts=N/SR/TB")
     for i in range(n):
         filter_parts.append(f"[{i}:v]{scale_pad}[v{i}]")
-        filter_parts.append(f"[{i}:a]{aformat}[a{i}]")
+        a_src = (
+            f"[{i}:a]" if seg_has_audio[i]
+            else f"[{silent_input_idx[i]}:a]")
+        filter_parts.append(f"{a_src}{aformat}[a{i}]")
     # Decide concat-vs-xfade per boundary. ``cumulative`` is
     # the running output time so each xfade offset lands at
     # the right moment in the composed timeline.
@@ -197,6 +228,30 @@ def _concat_mp4_segments(
                 "stderr (last 600):\n"
                 + (proc.stderr or "")[-600:])
     return (True, f"Concatenated to {output_path}.")
+
+
+def _ffprobe_has_audio(path: Path) -> bool:
+    """Return True when ``path`` has at least one audio stream.
+    Returns False on any probe failure — the concat path then
+    synthesizes silence for that segment, which is the safe
+    default (never abort the whole export over a probe hiccup)."""
+    import shutil as _sh
+    import subprocess as _sp
+    if _sh.which("ffprobe") is None:
+        return False
+    try:
+        proc = _sp.run(
+            ["ffprobe", "-v", "error",
+             "-select_streams", "a",
+             "-show_entries", "stream=codec_type",
+             "-of", "csv=p=0",
+             str(Path(path).resolve())],
+            capture_output=True, text=True, timeout=15)
+        if proc.returncode != 0:
+            return False
+        return "audio" in (proc.stdout or "")
+    except Exception:
+        return False
 
 
 def _ffprobe_duration(path: Path) -> float:
@@ -991,6 +1046,7 @@ class SlideEditorDialog(QDialog):
             self._script_edit.toPlainText().strip())
         page.updated_at = datetime.now()
         self._refresh_slides()
+        self.deck_modified.emit()
 
     def _move_slide(self, delta: int) -> None:
         page = self._selected_page()
@@ -1008,6 +1064,7 @@ class SlideEditorDialog(QDialog):
         for i, p in enumerate(self._deck.pages):
             p.index = i
         self._refresh_slides()
+        self.deck_modified.emit()
 
     def _on_remove_slide(self) -> None:
         page = self._selected_page()
@@ -1025,6 +1082,7 @@ class SlideEditorDialog(QDialog):
                 pid for pid in g.page_ids if pid != page.id]
         self._selected_page_id = None
         self._refresh_slides()
+        self.deck_modified.emit()
 
     def _on_open_preview(self) -> None:
         """Open the floating preview window (or focus it if
@@ -1150,6 +1208,7 @@ class SlideEditorDialog(QDialog):
             self._duration_spin.blockSignals(False)
         self._refresh_slides()
         self._refresh_audio_status()
+        self.deck_modified.emit()
 
     def _on_play_or_pause_audio(self) -> None:
         """Toggle between play, pause, and resume.
@@ -1235,6 +1294,7 @@ class SlideEditorDialog(QDialog):
             page.updated_at = datetime.now()
             self._refresh_slides()
             self._refresh_audio_status()
+            self.deck_modified.emit()
         self._audio_editor = AudioEditorDialog(
             source_path=path,
             on_applied=_on_applied,
@@ -1282,12 +1342,14 @@ class SlideEditorDialog(QDialog):
         page.updated_at = datetime.now()
         self._refresh_slides()
         self._refresh_audio_status()
+        self.deck_modified.emit()
 
     # ------------------------------------------------------------------
     # Master script + AI timings
     # ------------------------------------------------------------------
     def _on_wpm_changed(self, value: int) -> None:
         self._deck.wpm_estimate = int(value)
+        self.deck_modified.emit()
 
     def _on_suggest_timings(self) -> None:
         text = self._master_script_edit.toPlainText()
@@ -1295,6 +1357,7 @@ class SlideEditorDialog(QDialog):
         QMessageBox.information(
             self, "Suggested timings", msg)
         self._refresh_slides()
+        self.deck_modified.emit()
         # If the currently-selected slide got a new script, sync
         # the editor's per-slide controls.
         page = self._selected_page()
@@ -1413,6 +1476,7 @@ class SlideEditorDialog(QDialog):
         self._deck.groups = groups
         self._refresh_groups()
         self._stitch_list.setCurrentRow(new_row)
+        self.deck_modified.emit()
 
     def _on_stitch_transition_kind_changed(
             self, _idx: int) -> None:
@@ -1425,6 +1489,7 @@ class SlideEditorDialog(QDialog):
             kind)
         self._refresh_stitch_list()
         self._stitch_list.setCurrentRow(row)
+        self.deck_modified.emit()
 
     def _on_stitch_transition_secs_changed(self) -> None:
         row = self._stitch_list.currentRow()
@@ -1434,6 +1499,7 @@ class SlideEditorDialog(QDialog):
             float(self._stitch_trans_secs.value()))
         self._refresh_stitch_list()
         self._stitch_list.setCurrentRow(row)
+        self.deck_modified.emit()
 
     def _refresh_group_target_spin(self) -> None:
         gid = self._group_combo.currentData()
@@ -1506,6 +1572,7 @@ class SlideEditorDialog(QDialog):
         idx = self._group_combo.findData(g.id)
         if idx >= 0:
             self._group_combo.setCurrentIndex(idx)
+        self.deck_modified.emit()
 
     def _on_add_to_selected_group(self) -> None:
         gid = self._group_combo.currentData()
@@ -1515,6 +1582,7 @@ class SlideEditorDialog(QDialog):
         self._assign_page_to_group(page, gid)
         self._active_group_id = gid
         self._refresh_slides()
+        self.deck_modified.emit()
 
     def _on_remove_from_group(self) -> None:
         """Drop the current slide from its group, if any. The
@@ -1525,6 +1593,7 @@ class SlideEditorDialog(QDialog):
             return
         self._assign_page_to_group(page, None)
         self._refresh_slides()
+        self.deck_modified.emit()
 
     def _on_edit_group(self) -> None:
         """Open the interactive GroupEditorDialog on the
@@ -1586,6 +1655,7 @@ class SlideEditorDialog(QDialog):
             if g.id == gid:
                 g.target_total_seconds = float(
                     self._group_target_spin.value())
+        self.deck_modified.emit()
 
     def _on_distribute_group(self) -> None:
         gid = self._group_combo.currentData()
@@ -1601,6 +1671,7 @@ class SlideEditorDialog(QDialog):
             self, "Group timings",
             f"Updated {n} slide(s) inside '{g.name}'.")
         self._refresh_slides()
+        self.deck_modified.emit()
 
     # ------------------------------------------------------------------
     # Export
@@ -1788,13 +1859,19 @@ class SlideEditorDialog(QDialog):
                     or 0.0))
             if not placed:
                 continue
+            # Resolve (recomposing from audio_clips if the cached
+            # WAV is missing) so the PPTX embeds the group's edited
+            # narration — gain, de-essing, noise reduction,
+            # looping — not a stale/absent cache path.
+            from src.video_studio.slide_deck import (
+                resolve_group_overlay)
+            overlay_path = resolve_group_overlay(
+                g, working_dir=self._deck.working_dir)
             overlay_dur = float(
                 getattr(
                     g,
                     "overlay_audio_duration_seconds",
                     0.0) or 0.0)
-            overlay_path = (
-                getattr(g, "overlay_audio_path", "") or "")
             for i, src in enumerate(placed):
                 cur_start = float(
                     getattr(
