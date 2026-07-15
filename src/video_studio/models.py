@@ -648,6 +648,27 @@ class SlideDeckProject(BaseModel):
     working_dir: str = ""
     pages: List[SlidePage] = Field(default_factory=list)
     groups: List[SlideGroup] = Field(default_factory=list)
+    # Deck-wide background audio bed (music / ambience) that plays
+    # UNDER every group for the whole runtime of the deck. Composed
+    # from ``background_audio_clips`` (the source of truth — the
+    # writer can point this at a copy of a group's track or import
+    # a fresh file) into ``background_audio_path`` (a rendered
+    # cache), looped to the deck's full length and mixed beneath
+    # the per-group narrations on export. Empty list = no bed.
+    background_audio_clips: List["GroupAudioClip"] = Field(
+        default_factory=list)
+    background_audio_path: str = ""
+    background_audio_duration_seconds: float = 0.0
+    # Level of the bed relative to the narration, in dB. Negative
+    # ducks it under the voice; -12 dB is a safe music-bed default.
+    background_gain_db: float = -12.0
+    # Loop the bed to fill the whole deck when it is shorter than
+    # the deck's total runtime (the usual case for a short music
+    # loop under a long deck).
+    background_loop: bool = True
+    # Provenance note shown in the UI — e.g. "copied from group
+    # 'Bar' · Track 2" or "imported bed.wav". Cosmetic only.
+    background_source_label: str = ""
     # Average reading speed used by ``suggest_timings_from_script``
     # (words per minute). 150 wpm is a slightly slow voiceover
     # pace, which gives a forgiving timing budget; writers can

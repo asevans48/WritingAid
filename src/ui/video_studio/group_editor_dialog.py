@@ -3357,6 +3357,28 @@ class GroupEditorDialog(QDialog):
             "with a ↻ badge; the loop is applied by "
             "``compose_clips`` at recompose time.")
         menu.addSeparator()
+        # ─ Replicate this lane into another group ─
+        other_groups = [
+            g for g in (getattr(self._deck, "groups", None) or [])
+            if g.id != self._group.id]
+        copy_act = menu.addAction(
+            "📋  Copy this track to another group…")
+        copy_act.setToolTip(
+            "Replicate every clip on this lane — with its gain, "
+            "fades, de-esser and background-loop settings — into "
+            "another group. The copy is independent: editing it "
+            "later won't touch this one. Handy for reusing a "
+            "music bed or a recurring SFX across groups.")
+        copy_act.setEnabled(bool(other_groups))
+        # ─ Promote this lane to the deck-wide background bed ─
+        deck_bg_act = menu.addAction(
+            "🎼  Use this track as the deck background…")
+        deck_bg_act.setToolTip(
+            "Copy this lane's clips into the deck-wide background "
+            "bed — it will loop (ducked) under EVERY group for the "
+            "whole deck. Set the level from the deck's Background "
+            "controls in the slide editor.")
+        menu.addSeparator()
         remove_act = menu.addAction(
             "🗑  Remove track (clips fall to Track 1)")
         # Lane 0 is the canonical primary; refusing its removal
@@ -3364,6 +3386,12 @@ class GroupEditorDialog(QDialog):
         remove_act.setEnabled(track_index != 0)
         action = menu.exec(global_pos)
         if action is None:
+            return
+        if action is copy_act:
+            self._copy_track_to_group(track_index, other_groups)
+            return
+        if action is deck_bg_act:
+            self._track_to_deck_background(track_index, cur_name)
             return
         if action is rename_act:
             from PyQt6.QtWidgets import (
@@ -3500,6 +3528,107 @@ class GroupEditorDialog(QDialog):
             self._timeline.update()
             self._refresh_tracks_count_label()
             self._recompose_overlay()
+
+    def _recompose_group_overlay(self, group) -> None:
+        """Recompose an ARBITRARY group's overlay from its clips
+        (used when we mutate a group other than the one open in
+        this editor — e.g. after copying a track into it). Writes
+        a fresh rendered WAV and updates the group's cache so the
+        next export / open picks it up without a manual recompose.
+        """
+        from src.video_studio.audio_edit import compose_clips
+        from datetime import datetime as _dt
+        clips = getattr(group, "audio_clips", None) or []
+        if not clips:
+            group.overlay_audio_path = ""
+            group.overlay_audio_duration_seconds = 0.0
+            return
+        dest_dir = Path(
+            self._deck.working_dir
+            or (Path.home() / ".writingaid_slides")) / "group_overlay"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        stamp = _dt.now().strftime("%Y%m%d_%H%M%S")
+        dest = dest_dir / f"{group.id}_composed_{stamp}.wav"
+        result = compose_clips(
+            clips, dest,
+            track_gain_db=getattr(group, "track_gain_db", None),
+            track_deesser_intensity=getattr(
+                group, "track_deesser_intensity", None),
+            track_muted=getattr(group, "track_muted", None),
+            track_background=getattr(
+                group, "track_background", None))
+        if result.success:
+            group.overlay_audio_path = str(dest)
+            group.overlay_audio_duration_seconds = float(
+                result.duration_seconds or 0.0)
+
+    def _copy_track_to_group(
+            self, track_index: int, other_groups: list) -> None:
+        """Replicate this lane into another group the writer
+        picks, then recompose that group so its audio is ready."""
+        from src.video_studio.slide_deck import copy_group_track
+        if not other_groups:
+            return
+        labels = [
+            (g.name or g.id) for g in other_groups]
+        choice, ok = QInputDialog.getItem(
+            self, "Copy track to group",
+            "Copy this track into which group?",
+            labels, 0, False)
+        if not ok or not choice:
+            return
+        target = other_groups[labels.index(choice)]
+        new_idx = copy_group_track(
+            self._group, track_index, target)
+        self._recompose_group_overlay(target)
+        self.deck_modified.emit()
+        QMessageBox.information(
+            self, "Track copied",
+            f"Copied this track into '{target.name or target.id}' "
+            f"as Track {new_idx + 1}. Open that group to fine-tune "
+            f"its placement.")
+
+    def _track_to_deck_background(
+            self, track_index: int, track_name: str) -> None:
+        """Copy this lane's clips into the deck-wide background bed
+        so it loops (ducked) under every group."""
+        from src.video_studio.slide_deck import copy_group_track
+        clips = [
+            c for c in (getattr(
+                self._group, "audio_clips", None) or [])
+            if int(getattr(c, "track_index", 0) or 0)
+            == track_index]
+        if not clips:
+            QMessageBox.information(
+                self, "Empty track",
+                "This track has no clips to use as a background.")
+            return
+        if getattr(self._deck, "background_audio_clips", None):
+            if QMessageBox.question(
+                    self, "Replace deck background?",
+                    "The deck already has a background bed. "
+                    "Replace it with this track?") != \
+                    QMessageBox.StandardButton.Yes:
+                return
+        # Stage the clips onto a throwaway group so we can reuse
+        # copy_group_track's deep-copy + settings logic, then lift
+        # them onto the deck as track 0.
+        from src.video_studio.models import SlideGroup as _SG
+        scratch = _SG(name="_bg")
+        copy_group_track(self._group, track_index, scratch, 0)
+        self._deck.background_audio_clips = list(scratch.audio_clips)
+        self._deck.background_audio_path = ""  # force recompose
+        self._deck.background_audio_duration_seconds = 0.0
+        self._deck.background_source_label = (
+            f"copied from group "
+            f"'{self._group.name or self._group.id}' · "
+            f"{track_name}")
+        self.deck_modified.emit()
+        QMessageBox.information(
+            self, "Deck background set",
+            "This track is now the deck's background bed — it will "
+            "loop (ducked) under every group on export. Adjust its "
+            "level from the slide editor's Background controls.")
 
     def _on_slide_context_from_timeline(
             self, page_id: str, global_pos) -> None:

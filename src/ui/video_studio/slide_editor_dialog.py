@@ -213,8 +213,18 @@ def _concat_mp4_segments(
         "-map", f"[{last_a}]",
         "-c:v", "libx264", "-pix_fmt", "yuv420p",
         "-r", str(fps),
-        "-c:a", "aac", "-ar", str(sample_rate),
+        # Explicit AAC-LC at a fixed rate/bitrate + stereo. QuickTime
+        # is fussier than VLC/Chrome about audio: it silently plays
+        # NO audio when the profile is unusual or the channel layout
+        # metadata is missing. Pin the low-complexity profile and a
+        # concrete bitrate so the track is one QuickTime always
+        # decodes.
+        "-c:a", "aac", "-profile:a", "aac_low",
+        "-ar", str(sample_rate), "-b:a", "192k",
         "-ac", "2",
+        # +faststart moves the moov atom to the front so players
+        # can start immediately instead of after a full scan.
+        "-movflags", "+faststart",
         str(output_path.resolve()),
     ]
     try:
@@ -228,6 +238,72 @@ def _concat_mp4_segments(
                 "stderr (last 600):\n"
                 + (proc.stderr or "")[-600:])
     return (True, f"Concatenated to {output_path}.")
+
+
+def _mix_background_under_deck(
+    video_path: Path,
+    background_path: str,
+    *,
+    gain_db: float = -12.0,
+    loop: bool = True,
+    sample_rate: int = 48000,
+) -> Tuple[bool, str]:
+    """Mix a background bed UNDER an already-rendered deck video,
+    IN PLACE. The bed is looped (when ``loop``) and trimmed to the
+    deck's exact length, ducked by ``gain_db``, and summed with the
+    deck's existing narration — so the voice stays on top and the
+    music carries underneath the whole runtime. Rewrites
+    ``video_path`` on success."""
+    import subprocess as _sp
+    if not (background_path and Path(background_path).exists()):
+        return (False, "background file missing")
+    dur = _ffprobe_duration(video_path)
+    if dur <= 0:
+        return (False, "could not probe deck duration")
+    tmp = video_path.with_name(video_path.stem + "_bgmix.mp4")
+    loop_args = ["-stream_loop", "-1"] if loop else []
+    # Loop → trim to deck length → duck → stereo. Sum with the
+    # deck audio (duration=longest, but the bed is already capped
+    # to the deck length so the result is exactly the deck length).
+    filt = (
+        f"[1:a]volume={gain_db:.2f}dB,"
+        f"atrim=0:{dur:.3f},asetpts=N/SR/TB,"
+        f"aformat=sample_fmts=fltp:sample_rates={sample_rate}:"
+        f"channel_layouts=stereo[bg];"
+        f"[0:a]aformat=sample_fmts=fltp:sample_rates={sample_rate}:"
+        f"channel_layouts=stereo[deck];"
+        f"[deck][bg]amix=inputs=2:duration=longest:"
+        f"normalize=0[mix]")
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(video_path.resolve()),
+        *loop_args,
+        "-i", str(Path(background_path).resolve()),
+        "-filter_complex", filt,
+        "-map", "0:v:0", "-map", "[mix]",
+        "-c:v", "copy",
+        "-c:a", "aac", "-profile:a", "aac_low",
+        "-ar", str(sample_rate), "-b:a", "192k", "-ac", "2",
+        "-t", f"{dur:.3f}",
+        "-movflags", "+faststart",
+        str(tmp.resolve()),
+    ]
+    try:
+        proc = _sp.run(
+            cmd, capture_output=True, text=True, timeout=900)
+    except _sp.TimeoutExpired:
+        return (False, "background mix timed out")
+    if proc.returncode != 0:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return (False, (proc.stderr or "")[-300:])
+    try:
+        tmp.replace(video_path)
+    except Exception as e:
+        return (False, f"could not finalize: {e}")
+    return (True, "")
 
 
 def _ffprobe_has_audio(path: Path) -> bool:
@@ -375,6 +451,7 @@ class SlideEditorDialog(QDialog):
         self._active_group_id: str = ""
         self._build_ui()
         self._refresh_slides()
+        self._refresh_bg_status()
 
     # ------------------------------------------------------------------
     # UI
@@ -565,6 +642,61 @@ class SlideEditorDialog(QDialog):
         stitch_row.addStretch()
         stitch_v.addLayout(stitch_row)
         group_v.addWidget(stitch_box)
+
+        # ── Deck background bed ──────────────────────────────
+        # A single track that loops (ducked) UNDER every group for
+        # the whole deck — set it from any group's track, or import
+        # a music/ambience file.
+        bg_box = QGroupBox("Deck background music / ambience")
+        bg_v = QVBoxLayout(bg_box)
+        self._bg_status = QLabel()
+        self._bg_status.setWordWrap(True)
+        bg_v.addWidget(self._bg_status)
+        bg_btn_row = QHBoxLayout()
+        self._bg_from_group_btn = QPushButton(
+            "🎼 Set from group track…")
+        self._bg_from_group_btn.setToolTip(
+            "Use a copy of one group's audio track as the deck-"
+            "wide background bed. It loops under every group.")
+        self._bg_from_group_btn.clicked.connect(
+            self._on_bg_from_group)
+        bg_btn_row.addWidget(self._bg_from_group_btn)
+        self._bg_import_btn = QPushButton("📂 Import file…")
+        self._bg_import_btn.setToolTip(
+            "Import a music / ambience file to loop under the "
+            "whole deck.")
+        self._bg_import_btn.clicked.connect(self._on_bg_import)
+        bg_btn_row.addWidget(self._bg_import_btn)
+        self._bg_clear_btn = QPushButton("🗑 Clear")
+        self._bg_clear_btn.clicked.connect(self._on_bg_clear)
+        bg_btn_row.addWidget(self._bg_clear_btn)
+        bg_btn_row.addStretch()
+        bg_v.addLayout(bg_btn_row)
+        bg_opts_row = QHBoxLayout()
+        bg_opts_row.addWidget(QLabel("Level:"))
+        self._bg_gain_spin = QDoubleSpinBox()
+        self._bg_gain_spin.setRange(-40.0, 6.0)
+        self._bg_gain_spin.setDecimals(1)
+        self._bg_gain_spin.setSingleStep(1.0)
+        self._bg_gain_spin.setSuffix(" dB")
+        self._bg_gain_spin.setValue(
+            float(getattr(self._deck, "background_gain_db", -12.0)
+                  or -12.0))
+        self._bg_gain_spin.setToolTip(
+            "Background level relative to the narration. Negative "
+            "ducks it under the voice; -12 dB is a safe default.")
+        self._bg_gain_spin.valueChanged.connect(
+            self._on_bg_gain_changed)
+        bg_opts_row.addWidget(self._bg_gain_spin)
+        self._bg_loop_check = QCheckBox("Loop to fill deck")
+        self._bg_loop_check.setChecked(
+            bool(getattr(self._deck, "background_loop", True)))
+        self._bg_loop_check.toggled.connect(
+            self._on_bg_loop_toggled)
+        bg_opts_row.addWidget(self._bg_loop_check)
+        bg_opts_row.addStretch()
+        bg_v.addLayout(bg_opts_row)
+        group_v.addWidget(bg_box)
 
         # ── Slide tab body: form + script + audio ────────────
         slide_box = QGroupBox("Selected slide")
@@ -1674,6 +1806,156 @@ class SlideEditorDialog(QDialog):
         self.deck_modified.emit()
 
     # ------------------------------------------------------------------
+    # Deck background bed
+    # ------------------------------------------------------------------
+    def _refresh_bg_status(self) -> None:
+        """Update the background-bed status label + control
+        enabled state from the deck model."""
+        if not hasattr(self, "_bg_status"):
+            return
+        clips = getattr(
+            self._deck, "background_audio_clips", None) or []
+        has_bg = bool(clips)
+        if has_bg:
+            src = (getattr(
+                self._deck, "background_source_label", "")
+                or "custom")
+            dur = float(getattr(
+                self._deck,
+                "background_audio_duration_seconds", 0.0) or 0.0)
+            dur_txt = f" · {dur:.1f}s loop" if dur > 0 else ""
+            self._bg_status.setText(
+                f"🎵 Background set — {src}{dur_txt}. "
+                f"Loops under every group on export.")
+        else:
+            self._bg_status.setText(
+                "No background bed. Add music / ambience that "
+                "plays under the whole deck.")
+        self._bg_clear_btn.setEnabled(has_bg)
+        self._bg_gain_spin.setEnabled(has_bg)
+        self._bg_loop_check.setEnabled(has_bg)
+
+    def _set_deck_background_clips(
+            self, clips: list, label: str) -> None:
+        """Point the deck's background bed at ``clips`` (already
+        model instances), clear the rendered cache so it
+        recomposes, and refresh the UI."""
+        self._deck.background_audio_clips = list(clips)
+        self._deck.background_audio_path = ""
+        self._deck.background_audio_duration_seconds = 0.0
+        self._deck.background_source_label = label
+        # Compose eagerly so the status shows a duration and the
+        # first export doesn't stall on a cold recompose.
+        try:
+            from src.video_studio.slide_deck import (
+                resolve_deck_background)
+            resolve_deck_background(self._deck)
+        except Exception:
+            pass
+        self._refresh_bg_status()
+        self.deck_modified.emit()
+
+    def _on_bg_from_group(self) -> None:
+        """Pick a group + one of its tracks to use as the deck-
+        wide background bed (a copy — the group keeps its own)."""
+        from src.video_studio.slide_deck import copy_group_track
+        groups = [
+            g for g in (getattr(self._deck, "groups", None) or [])
+            if (getattr(g, "audio_clips", None) or [])]
+        if not groups:
+            QMessageBox.information(
+                self, "No audio",
+                "No group has any audio tracks to use as a "
+                "background yet.")
+            return
+        glabels = [(g.name or g.id) for g in groups]
+        gchoice, ok = QInputDialog.getItem(
+            self, "Background from group",
+            "Use a track from which group?", glabels, 0, False)
+        if not ok or not gchoice:
+            return
+        group = groups[glabels.index(gchoice)]
+        # Enumerate the group's distinct track indices.
+        tracks = sorted({
+            int(getattr(c, "track_index", 0) or 0)
+            for c in group.audio_clips})
+        names = getattr(group, "track_names", None) or {}
+        tlabels = [
+            (names.get(t) or names.get(str(t)) or f"Track {t + 1}")
+            for t in tracks]
+        tchoice, ok = QInputDialog.getItem(
+            self, "Background track",
+            f"Which track from '{gchoice}'?", tlabels, 0, False)
+        if not ok or not tchoice:
+            return
+        track_index = tracks[tlabels.index(tchoice)]
+        # Stage onto a scratch group to reuse the deep-copy logic.
+        from src.video_studio.models import SlideGroup as _SG
+        scratch = _SG(name="_bg")
+        copy_group_track(group, track_index, scratch, 0)
+        self._set_deck_background_clips(
+            scratch.audio_clips,
+            f"copied from group '{gchoice}' · {tchoice}")
+        QMessageBox.information(
+            self, "Background set",
+            "That track is now the deck's background bed. Adjust "
+            "the level below; it loops under every group on "
+            "export.")
+
+    def _on_bg_import(self) -> None:
+        """Import an audio file to use as the deck background."""
+        from src.video_studio.models import GroupAudioClip
+        picked, _ = QFileDialog.getOpenFileName(
+            self, "Import background audio", "",
+            "Audio (*.wav *.mp3 *.m4a *.aac *.ogg *.flac "
+            "*.opus *.aiff);;All files (*)")
+        if not picked:
+            return
+        src = Path(picked)
+        import shutil as _sh
+        dest_dir = self._working_dir / "deck_background"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dest = dest_dir / f"bg_{stamp}{src.suffix.lower()}"
+        try:
+            _sh.copy2(src, dest)
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Import failed",
+                f"Could not copy '{src.name}': {e}")
+            return
+        dur = probe_audio_duration_seconds(dest)
+        clip = GroupAudioClip(
+            label=src.stem,
+            audio_path=str(dest),
+            duration_seconds=float(dur or 0.0),
+            start_time_seconds=0.0,
+            track_index=0)
+        self._set_deck_background_clips(
+            [clip], f"imported {src.name}")
+
+    def _on_bg_clear(self) -> None:
+        if QMessageBox.question(
+                self, "Clear background?",
+                "Remove the deck's background bed?") != \
+                QMessageBox.StandardButton.Yes:
+            return
+        self._deck.background_audio_clips = []
+        self._deck.background_audio_path = ""
+        self._deck.background_audio_duration_seconds = 0.0
+        self._deck.background_source_label = ""
+        self._refresh_bg_status()
+        self.deck_modified.emit()
+
+    def _on_bg_gain_changed(self, value: float) -> None:
+        self._deck.background_gain_db = float(value)
+        self.deck_modified.emit()
+
+    def _on_bg_loop_toggled(self, checked: bool) -> None:
+        self._deck.background_loop = bool(checked)
+        self.deck_modified.emit()
+
+    # ------------------------------------------------------------------
     # Export
     # ------------------------------------------------------------------
     def _render_deck_via_groups(
@@ -1744,14 +2026,73 @@ class SlideEditorDialog(QDialog):
         # one entry per join between consecutive segments
         # that actually rendered.
         seg_transitions: list = []
+        # Per-group audio diagnosis, surfaced back to the writer in
+        # the export dialog so a "no sound" report can be traced
+        # without a terminal. Each entry says what audio the group
+        # actually contributed.
+        audio_report: list = []
+        # Ground-truth probe of each rendered segment file (does the
+        # concat input actually carry audio?) — bridges the gap
+        # between "overlay resolved" and "final file is silent".
+        seg_audio_report: list = []
         try:
             for i, (group, orphans) in enumerate(
                     ordered_groups):
                 seg_path = segments_dir / f"seg_{i:03d}.mp4"
                 if group is not None:
+                    # Inspect exactly what audio this group brings:
+                    # placed-slide count, member (tray) slides,
+                    # audio-clip count, whether the overlay
+                    # resolves on disk, and any per-slide audio.
+                    try:
+                        from src.video_studio.slide_deck import (
+                            resolve_group_overlay)
+                        _members = [
+                            p for p in self._deck.pages
+                            if getattr(p, "group_id", None)
+                            == group.id]
+                        _placed = [
+                            p for p in _members
+                            if getattr(
+                                p,
+                                "start_time_seconds_in_group",
+                                None) is not None]
+                        _clips = getattr(
+                            group, "audio_clips", []) or []
+                        _clip_files = sum(
+                            1 for c in _clips
+                            if getattr(c, "audio_path", "")
+                            and Path(c.audio_path).exists())
+                        _ov = resolve_group_overlay(
+                            group,
+                            working_dir=self._deck.working_dir)
+                        _ov_ok = bool(
+                            _ov and Path(_ov).exists())
+                        _per_slide = sum(
+                            1 for p in _members
+                            if getattr(p, "audio_path", "")
+                            and Path(p.audio_path).exists())
+                        line = (
+                            f"'{group.name or group.id}': "
+                            f"members={len(_members)} "
+                            f"placed={len(_placed)} "
+                            f"clips={len(_clips)} "
+                            f"clip_files_on_disk={_clip_files} "
+                            f"overlay_ok={_ov_ok} "
+                            f"per_slide_audio={_per_slide}")
+                        audio_report.append(line)
+                        print(f"[deck render] group {line}")
+                    except Exception as _diag_exc:
+                        audio_report.append(
+                            f"'{getattr(group,'name','?')}': "
+                            f"diag failed: {_diag_exc}")
                     ok, msg = render_group_to_mp4(
                         self._deck, group, seg_path)
+                    _seg_label = group.name or group.id
                     if not ok:
+                        seg_audio_report.append(
+                            f"seg{i} '{_seg_label}': "
+                            f"RENDER FAILED — {msg}")
                         print(
                             f"[deck render] skipping group "
                             f"'{group.name}': {msg}")
@@ -1769,11 +2110,25 @@ class SlideEditorDialog(QDialog):
                     )
                     ok, msg = stitch_slide_deck_to_mp4(
                         synth, seg_path)
+                    _seg_label = "orphans"
                     if not ok:
+                        seg_audio_report.append(
+                            f"seg{i} orphans: "
+                            f"RENDER FAILED — {msg}")
                         print(
                             f"[deck render] orphan batch "
                             f"failed: {msg}")
                         continue
+                # Probe the ACTUAL rendered segment — this is the
+                # ground truth of whether the group's audio made it
+                # into the segment file, independent of whether the
+                # overlay merely resolved.
+                _seg_audio = _ffprobe_has_audio(seg_path)
+                seg_audio_report.append(
+                    f"seg{i} '{_seg_label}': audio={_seg_audio}")
+                print(
+                    f"[deck render] seg{i} '{_seg_label}' "
+                    f"rendered audio={_seg_audio}")
                 if segment_paths:
                     kind = (
                         getattr(
@@ -1797,11 +2152,55 @@ class SlideEditorDialog(QDialog):
             ok, msg = _concat_mp4_segments(
                 segment_paths, out_path,
                 transitions=seg_transitions)
+            report = ""
+            if seg_audio_report:
+                report += (
+                    "\n\nRendered segments:\n  • "
+                    + "\n  • ".join(seg_audio_report))
+            if audio_report:
+                report += (
+                    "\n\nAudio diagnosis (per group):\n  • "
+                    + "\n  • ".join(audio_report))
             if not ok:
-                return (False, msg)
+                return (
+                    False,
+                    "CONCAT FAILED: " + (msg or "")
+                    + report)
+            # Mix the deck-wide background bed under everything —
+            # looped to the full deck length and ducked — so the
+            # music/ambience carries beneath every group.
+            try:
+                from src.video_studio.slide_deck import (
+                    resolve_deck_background)
+                bg = resolve_deck_background(self._deck)
+                if bg and Path(bg).exists():
+                    bg_ok, bg_msg = _mix_background_under_deck(
+                        out_path, bg,
+                        gain_db=float(getattr(
+                            self._deck,
+                            "background_gain_db", -12.0)
+                            or -12.0),
+                        loop=bool(getattr(
+                            self._deck,
+                            "background_loop", True)))
+                    report += (
+                        "\n\nBackground bed: "
+                        + ("mixed under deck"
+                           if bg_ok
+                           else f"FAILED — {bg_msg}"))
+            except Exception as _bg_exc:
+                report += f"\n\nBackground bed error: {_bg_exc}"
+            # Probe the finished file so the writer sees at a
+            # glance whether the export actually carries an audio
+            # track — the single most useful fact for a
+            # "no sound" report.
+            final_has_audio = _ffprobe_has_audio(out_path)
             return (
                 True,
-                msg or f"Deck rendered to {out_path}.")
+                (msg or f"Deck rendered to {out_path}.")
+                + f"\n\nFinal file has audio track: "
+                + ("YES" if final_has_audio else "NO")
+                + report)
         finally:
             # Segments are baked into out_path already — drop
             # the temp directory so we don't leak files next
@@ -1893,8 +2292,19 @@ class SlideEditorDialog(QDialog):
                                 "duration_seconds", 0.0)
                             or 0.0))
                     tail = max(0.0, overlay_dur - cur_start)
-                    hold = (
-                        max(own, tail) if tail > 0 else own)
+                    # Mirror render_group_to_mp4: cap the trailing
+                    # post-narration hold so PowerPoint advances
+                    # into the next group promptly instead of
+                    # lingering ~0.5s on the last image.
+                    if tail > 0:
+                        from src.video_studio.slide_deck import (
+                            MAX_TRAILING_HOLD_SECONDS)
+                        hold = max(
+                            tail,
+                            min(own,
+                                tail + MAX_TRAILING_HOLD_SECONDS))
+                    else:
+                        hold = own
                 copy = src.model_copy(deep=False)
                 copy.duration_seconds = round(hold, 3)
                 # First placed slide in the group carries the

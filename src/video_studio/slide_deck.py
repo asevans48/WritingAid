@@ -30,6 +30,14 @@ from src.video_studio.stitcher import (
 # the audio mux can drop the slide entirely on some ffmpeg builds.
 MIN_SLIDE_SECONDS = 1.0
 
+# How long the LAST slide of a group may keep showing after its
+# narration has finished. Kept tiny so groups butt-join cleanly on
+# a cut instead of freezing on the final image for ~0.5s (the "gap
+# between groups" writers see when no transition is selected). When
+# the narration runs longer than the slide, the slide still
+# stretches to cover it — this only caps the trailing silent hold.
+MAX_TRAILING_HOLD_SECONDS = 0.15
+
 
 def build_slide_deck_from_chapter(
     chapter_scenes: List[Any],
@@ -524,6 +532,121 @@ def _set_slide_transition_effect(
         effect.set(k, v)
 
 
+def _track_map_get(m: Any, idx: int, default: Any = None) -> Any:
+    """Read a per-track dict that may be keyed by int OR str
+    (JSON round-trips int keys to strings)."""
+    if not m:
+        return default
+    if idx in m:
+        return m[idx]
+    if str(idx) in m:
+        return m[str(idx)]
+    return default
+
+
+def _next_free_track(group: SlideGroup) -> int:
+    """Lowest track index not already used by a clip in ``group``."""
+    used = {
+        int(getattr(c, "track_index", 0) or 0)
+        for c in (getattr(group, "audio_clips", None) or [])}
+    i = 0
+    while i in used:
+        i += 1
+    return i
+
+
+def copy_group_track(
+    src_group: SlideGroup,
+    track_index: int,
+    dst_group: SlideGroup,
+    dst_track_index: Optional[int] = None,
+) -> int:
+    """Replicate one lane from ``src_group`` into ``dst_group``.
+
+    Copies every clip on ``src_group``'s ``track_index`` — with
+    all its edits (gain, fades, trims, de-esser, denoise) — plus
+    that lane's settings (name, gain, de-esser, mute, background
+    loop). Clips are DEEP-copied with fresh ids so the two groups
+    stay fully independent: editing one lane never touches the
+    other. Lands on ``dst_track_index`` (or the next free lane in
+    the destination when omitted). Returns the destination track
+    index. Does NOT recompose — the caller owns that so it can
+    batch the render.
+    """
+    from uuid import uuid4
+    src_clips = [
+        c for c in (getattr(src_group, "audio_clips", None) or [])
+        if int(getattr(c, "track_index", 0) or 0) == track_index]
+    if dst_track_index is None:
+        dst_track_index = _next_free_track(dst_group)
+    if getattr(dst_group, "audio_clips", None) is None:
+        dst_group.audio_clips = []
+    for c in src_clips:
+        nc = c.model_copy(deep=True)
+        nc.id = f"aclip_{uuid4().hex[:10]}"
+        nc.track_index = int(dst_track_index)
+        dst_group.audio_clips.append(nc)
+    # Carry the lane's treatment across so the copy sounds the
+    # same, not just plays the same clips.
+    for attr in (
+            "track_names", "track_gain_db",
+            "track_deesser_intensity", "track_muted",
+            "track_background"):
+        src_map = getattr(src_group, attr, None) or {}
+        val = _track_map_get(src_map, track_index, None)
+        if val is None:
+            continue
+        dst_map = dict(getattr(dst_group, attr, None) or {})
+        # Normalize to int keys so the destination stays clean.
+        dst_map = {
+            int(k): v for k, v in dst_map.items()
+            if str(k).lstrip("-").isdigit()}
+        dst_map[int(dst_track_index)] = val
+        setattr(dst_group, attr, dst_map)
+    return int(dst_track_index)
+
+
+def resolve_deck_background(deck: SlideDeckProject) -> str:
+    """Return an on-disk WAV for the deck's background bed, with
+    all its clip edits baked in — recomposing from
+    ``background_audio_clips`` when the cached file is missing.
+    Returns "" when the deck has no background bed. Mirrors
+    ``resolve_group_overlay`` but for the deck-wide track."""
+    clips = getattr(deck, "background_audio_clips", None) or []
+    if not clips:
+        return ""
+    cached = (
+        getattr(deck, "background_audio_path", "") or "").strip()
+    if cached and Path(cached).exists() \
+            and Path(cached).stat().st_size > 0:
+        return cached
+    try:
+        from src.video_studio.audio_edit import compose_clips
+    except Exception:
+        return cached
+    dest_dir = Path(
+        deck.working_dir
+        or (Path.home() / ".writingaid_slides")) / "deck_background"
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return cached
+    dest = dest_dir / f"{deck.id}_background.wav"
+    try:
+        result = compose_clips(clips, dest)
+    except Exception:
+        return cached
+    if not result.success:
+        return cached
+    try:
+        deck.background_audio_path = str(dest)
+        deck.background_audio_duration_seconds = float(
+            result.duration_seconds or 0.0)
+    except Exception:
+        pass
+    return str(dest)
+
+
 def resolve_group_overlay(
     group: SlideGroup,
     working_dir: str = "",
@@ -640,9 +763,57 @@ def render_group_to_mp4(
                 p, "start_time_seconds_in_group", 0.0)
             or 0.0))
     if not placed:
-        return (False,
-                f"Group '{group.name or group.id}' has no "
-                "placed slides.")
+        # A group can carry a fully recorded + edited audio track
+        # while its member slides still sit in the tray (the writer
+        # recorded narration but never dragged the slides onto the
+        # group timeline). Skipping the group outright then drops
+        # its sound from every export — the deck renders its
+        # visuals as orphan slides but comes out silent, which is
+        # exactly the "12 minutes of video, no audio" symptom.
+        #
+        # Recover gracefully: if the group has audio and at least
+        # one member slide, auto-place the members evenly across
+        # the narration so the sound has slides to ride on. Uses
+        # deep-copied pages so the writer's saved placement (empty)
+        # is not mutated behind their back.
+        overlay_probe = resolve_group_overlay(
+            group, working_dir=deck.working_dir)
+        if overlay_probe and Path(overlay_probe).exists():
+            members = [
+                p for p in deck.pages
+                if p.group_id == group.id]
+            order = {
+                pid: i for i, pid in enumerate(
+                    getattr(group, "page_ids", []) or [])}
+            members.sort(
+                key=lambda p: (
+                    order.get(p.id, 1_000_000),
+                    getattr(p, "index", 0)))
+            if members:
+                span = float(
+                    getattr(
+                        group,
+                        "overlay_audio_duration_seconds",
+                        0.0) or 0.0)
+                if span <= 0:
+                    span = max(1.0, len(members) * 3.0)
+                per = max(0.25, span / len(members))
+                placed = []
+                for i, m in enumerate(members):
+                    c = m.model_copy(deep=False)
+                    c.start_time_seconds_in_group = round(
+                        i * per, 3)
+                    placed.append(c)
+                print(
+                    f"[slide_deck] group "
+                    f"'{group.name or group.id}' had audio but "
+                    f"no placed slides — auto-placed "
+                    f"{len(placed)} member slide(s) across "
+                    f"{span:.1f}s so its narration exports.")
+        if not placed:
+            return (False,
+                    f"Group '{group.name or group.id}' has no "
+                    "placed slides.")
     overlay_dur = float(
         getattr(
             group,
@@ -667,10 +838,24 @@ def render_group_to_mp4(
                         src, "duration_seconds", 0.0)
                     or 0.0))
             tail = max(0.0, overlay_dur - cur_start)
-            hold = max(own, tail) if tail > 0 else own
+            if tail > 0:
+                # There is narration under this group. The last
+                # slide should stretch to cover it, but NOT sit
+                # frozen and silent for long after the voice stops
+                # — that trailing dead-air reads as a ~0.5s gap
+                # before the next group on a cut (a transition
+                # hides it by overlapping, which is why the gap
+                # only shows without one). Cap the post-narration
+                # hold to a few frames so groups flow straight
+                # into each other while a transition, if set, still
+                # has content to fade over.
+                hold = max(
+                    tail,
+                    min(own, tail + MAX_TRAILING_HOLD_SECONDS))
+            else:
+                hold = own
         copy = src.model_copy(deep=False)
         copy.duration_seconds = round(hold, 3)
-        copy.audio_path = ""
         render_pages.append(copy)
     # Resolve (and, if the cache is missing, recompose) the
     # group's overlay so every audio-clip edit — gain, de-essing,
@@ -678,8 +863,36 @@ def render_group_to_mp4(
     # when the cached WAV went missing.
     overlay_path = resolve_group_overlay(
         group, working_dir=deck.working_dir)
-    if overlay_path and Path(overlay_path).exists():
-        render_pages[0].audio_path = overlay_path
+    has_overlay = bool(
+        overlay_path and Path(overlay_path).exists())
+    if has_overlay:
+        # The composed overlay is the group's authoritative audio
+        # — it already blends every take + edit — so per-slide
+        # audio_path values are redundant and would double up.
+        # Strip them and let the overlay own the group's sound.
+        for copy in render_pages:
+            copy.audio_path = ""
+        # Attach the overlay to the first page that has a VALID
+        # image on disk. ``stitch_slide_deck_to_mp4`` drops any
+        # page whose image is missing before it builds the audio
+        # mix — so if we blindly hung the overlay on
+        # ``render_pages[0]`` and that first slide's image happened
+        # to be gone, the audio was silently discarded along with
+        # it while the remaining slides still rendered. That is the
+        # "images export, audio doesn't" symptom. Anchoring the
+        # audio to a surviving page guarantees the mix step sees
+        # it.
+        anchor = next(
+            (c for c in render_pages
+             if getattr(c, "image_path", "")
+             and Path(c.image_path).exists()),
+            render_pages[0])
+        anchor.audio_path = overlay_path
+    # else: NO group overlay — keep each slide's own audio_path so
+    # narration the writer attached per-slide (via the main slide
+    # editor's Import / Record / Edit) still exports. Stripping it
+    # here is what silently muted decks whose audio lived on the
+    # slides rather than in a group audio track.
     synthetic = SlideDeckProject(
         id=f"render_{group.id}",
         name=f"Group {group.name or group.id}",
