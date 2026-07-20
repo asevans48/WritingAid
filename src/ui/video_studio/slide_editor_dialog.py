@@ -25,10 +25,11 @@ from PyQt6.QtGui import QPixmap
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
-    QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QInputDialog,
-    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
-    QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy,
-    QSpinBox, QSplitter, QTabWidget, QVBoxLayout, QWidget,
+    QFileDialog, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout,
+    QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
+    QSizePolicy, QSpinBox, QSplitter, QTabWidget, QVBoxLayout,
+    QWidget,
 )
 
 from src.video_studio.models import (
@@ -240,65 +241,100 @@ def _concat_mp4_segments(
     return (True, f"Concatenated to {output_path}.")
 
 
-def _mix_background_under_deck(
+def _apply_universal_background(
     video_path: Path,
     background_path: str,
+    regions: list,
     *,
     gain_db: float = -12.0,
-    loop: bool = True,
+    extra_tail: float = 0.0,
+    deck_dur: float = 0.0,
     sample_rate: int = 48000,
+    fps: int = 30,
 ) -> Tuple[bool, str]:
-    """Mix a background bed UNDER an already-rendered deck video,
-    IN PLACE. The bed is looped (when ``loop``) and trimmed to the
-    deck's exact length, ducked by ``gain_db``, and summed with the
-    deck's existing narration — so the voice stays on top and the
-    music carries underneath the whole runtime. Rewrites
-    ``video_path`` on success."""
+    """Mix the deck bed into ``video_path`` across ``regions`` —
+    each ``(start_seconds, play_length_seconds)`` — IN PLACE.
+
+    Every region drops a fresh-from-the-start looped copy of the
+    bed at its offset, ducked by ``gain_db``; regions never overlap
+    so the sum is clean. When ``extra_tail`` > 0 the video is
+    extended (last frame held) so a completing final loop has
+    picture under it. Rewrites ``video_path`` on success."""
     import subprocess as _sp
     if not (background_path and Path(background_path).exists()):
         return (False, "background file missing")
-    dur = _ffprobe_duration(video_path)
-    if dur <= 0:
+    if not regions:
+        return (True, "no background regions")
+    if deck_dur <= 0:
+        deck_dur = _ffprobe_duration(video_path)
+    if deck_dur <= 0:
         return (False, "could not probe deck duration")
-    tmp = video_path.with_name(video_path.stem + "_bgmix.mp4")
-    loop_args = ["-stream_loop", "-1"] if loop else []
-    # Loop → trim to deck length → duck → stereo. Sum with the
-    # deck audio (duration=longest, but the bed is already capped
-    # to the deck length so the result is exactly the deck length).
-    filt = (
-        f"[1:a]volume={gain_db:.2f}dB,"
-        f"atrim=0:{dur:.3f},asetpts=N/SR/TB,"
+    extend = max(0.0, float(extra_tail))
+    new_total = deck_dur + extend
+    tmp = video_path.with_name(video_path.stem + "_ubg.mp4")
+    inputs = ["-i", str(video_path.resolve())]
+    for _ in regions:
+        inputs.extend([
+            "-stream_loop", "-1",
+            "-i", str(Path(background_path).resolve())])
+    aq = (
         f"aformat=sample_fmts=fltp:sample_rates={sample_rate}:"
-        f"channel_layouts=stereo[bg];"
-        f"[0:a]aformat=sample_fmts=fltp:sample_rates={sample_rate}:"
-        f"channel_layouts=stereo[deck];"
-        f"[deck][bg]amix=inputs=2:duration=longest:"
+        f"channel_layouts=stereo")
+    parts: list = []
+    # Deck (narration + any group beds) audio — pad with silence so
+    # it spans the (possibly extended) full length.
+    parts.append(f"[0:a]{aq},apad[decka]")
+    mix_labels = ["[decka]"]
+    for k, region in enumerate(regions):
+        rs = float(region[0])
+        length = float(region[1])
+        idx = k + 1
+        delay_ms = int(round(rs * 1000))
+        parts.append(
+            f"[{idx}:a]atrim=0:{length:.3f},asetpts=N/SR/TB,"
+            f"volume={gain_db:.2f}dB,"
+            f"adelay={delay_ms}|{delay_ms},{aq}[b{k}]")
+        mix_labels.append(f"[b{k}]")
+    parts.append(
+        "".join(mix_labels)
+        + f"amix=inputs={len(mix_labels)}:duration=longest:"
         f"normalize=0[mix]")
+    if extend > 0.01:
+        # Hold the final frame for the loop tail.
+        parts.append(
+            f"[0:v]tpad=stop_mode=clone:"
+            f"stop_duration={extend:.3f},"
+            f"fps={fps}[vout]")
+        vmap = "[vout]"
+        vcodec = ["-c:v", "libx264", "-pix_fmt", "yuv420p",
+                  "-r", str(fps)]
+    else:
+        vmap = "0:v:0"
+        vcodec = ["-c:v", "copy"]
+    filt = ";".join(parts)
     cmd = [
         "ffmpeg", "-y",
-        "-i", str(video_path.resolve()),
-        *loop_args,
-        "-i", str(Path(background_path).resolve()),
+        *inputs,
         "-filter_complex", filt,
-        "-map", "0:v:0", "-map", "[mix]",
-        "-c:v", "copy",
+        "-map", vmap, "-map", "[mix]",
+        *vcodec,
         "-c:a", "aac", "-profile:a", "aac_low",
         "-ar", str(sample_rate), "-b:a", "192k", "-ac", "2",
-        "-t", f"{dur:.3f}",
+        "-t", f"{new_total:.3f}",
         "-movflags", "+faststart",
         str(tmp.resolve()),
     ]
     try:
         proc = _sp.run(
-            cmd, capture_output=True, text=True, timeout=900)
+            cmd, capture_output=True, text=True, timeout=1200)
     except _sp.TimeoutExpired:
-        return (False, "background mix timed out")
+        return (False, "universal background mix timed out")
     if proc.returncode != 0:
         try:
             tmp.unlink(missing_ok=True)
         except Exception:
             pass
-        return (False, (proc.stderr or "")[-300:])
+        return (False, (proc.stderr or "")[-400:])
     try:
         tmp.replace(video_path)
     except Exception as e:
@@ -417,7 +453,12 @@ class SlideEditorDialog(QDialog):
         # the right so only ONE big section needs horizontal
         # room at a time.
         self.resize(1100, 680)
-        self.setMinimumSize(880, 560)
+        # Keep the floor low enough to fit small / display-scaled
+        # laptops (a 768px panel at 150% scaling is only ~512 logical
+        # px tall). Every heavy panel — the slide list, the slide
+        # form, and the Groups tab — lives in its own scroll area,
+        # so a short window scrolls instead of crushing its controls.
+        self.setMinimumSize(760, 460)
         self._deck = deck
         self._working_dir = Path(deck.working_dir) if deck.working_dir else None
         if self._working_dir is None or not self._working_dir.exists():
@@ -434,6 +475,19 @@ class SlideEditorDialog(QDialog):
         self._player = QMediaPlayer(self)
         self._player_audio = QAudioOutput(self)
         self._player.setAudioOutput(self._player_audio)
+        # Background-bed recorder (deck landing page — record a bed
+        # before ever opening a group). Lazily importing the
+        # recorder keeps the dialog usable in environments without
+        # the audio-capture stack.
+        try:
+            from src.video_studio.audio_recorder import AudioRecorder
+            self._bg_recorder = AudioRecorder()
+        except Exception:
+            self._bg_recorder = None
+        self._bg_record_target: Optional[Path] = None
+        self._bg_rec_pulse = QTimer(self)
+        self._bg_rec_pulse.timeout.connect(self._pulse_bg_rec)
+        self._bg_rec_pulse_on = False
         # Floating preview window — lazily created on first
         # 🖥 Preview click. Held here so the slide editor can
         # push selection changes into it while it's open.
@@ -538,7 +592,10 @@ class SlideEditorDialog(QDialog):
         self._group_combo.currentIndexChanged.connect(
             self._on_group_combo_changed)
         group_v.addWidget(self._group_combo)
-        group_actions = QHBoxLayout()
+        # 2×2 grid rather than one long row so the four group-action
+        # buttons never get clipped on a narrow / small-laptop
+        # window.
+        group_actions = QGridLayout()
         self._new_group_btn = QPushButton("+ New group")
         self._new_group_btn.clicked.connect(self._on_new_group)
         self._add_to_group_btn = QPushButton(
@@ -561,10 +618,10 @@ class SlideEditorDialog(QDialog):
             "overlay's duration.")
         self._edit_group_btn.clicked.connect(
             self._on_edit_group)
-        group_actions.addWidget(self._new_group_btn)
-        group_actions.addWidget(self._add_to_group_btn)
-        group_actions.addWidget(self._remove_from_group_btn)
-        group_actions.addWidget(self._edit_group_btn)
+        group_actions.addWidget(self._new_group_btn, 0, 0)
+        group_actions.addWidget(self._add_to_group_btn, 0, 1)
+        group_actions.addWidget(self._remove_from_group_btn, 1, 0)
+        group_actions.addWidget(self._edit_group_btn, 1, 1)
         group_v.addLayout(group_actions)
         target_row = QHBoxLayout()
         target_row.addWidget(QLabel("Target total:"))
@@ -672,6 +729,37 @@ class SlideEditorDialog(QDialog):
         bg_btn_row.addWidget(self._bg_clear_btn)
         bg_btn_row.addStretch()
         bg_v.addLayout(bg_btn_row)
+        # Record / play the bed right here on the deck landing page,
+        # before ever opening a group.
+        bg_rec_row = QHBoxLayout()
+        self._bg_record_btn = QPushButton("🎤 Record background")
+        self._bg_record_btn.setCheckable(True)
+        self._bg_record_btn.setToolTip(
+            "Record a background track from your microphone. It "
+            "becomes the deck bed and loops under the export.")
+        self._bg_record_btn.toggled.connect(
+            self._on_bg_record_toggled)
+        bg_rec_row.addWidget(self._bg_record_btn)
+        self._bg_rec_indicator = QLabel("")
+        bg_rec_row.addWidget(self._bg_rec_indicator)
+        self._bg_play_btn = QPushButton("▶ Play")
+        self._bg_play_btn.setToolTip(
+            "Play / pause the background bed.")
+        self._bg_play_btn.clicked.connect(self._on_bg_play)
+        bg_rec_row.addWidget(self._bg_play_btn)
+        self._bg_stop_btn = QPushButton("■ Stop")
+        self._bg_stop_btn.clicked.connect(self._on_bg_stop)
+        bg_rec_row.addWidget(self._bg_stop_btn)
+        self._bg_edit_btn = QPushButton("✏️ Edit track…")
+        self._bg_edit_btn.setToolTip(
+            "Open the full audio editor on the background track — "
+            "trim, gain, fades, de-esser, noise reduction, and "
+            "multi-lane arrangement, exactly like a group's audio "
+            "track. Record or import more clips in there too.")
+        self._bg_edit_btn.clicked.connect(self._on_bg_edit)
+        bg_rec_row.addWidget(self._bg_edit_btn)
+        bg_rec_row.addStretch()
+        bg_v.addLayout(bg_rec_row)
         bg_opts_row = QHBoxLayout()
         bg_opts_row.addWidget(QLabel("Level:"))
         self._bg_gain_spin = QDoubleSpinBox()
@@ -696,6 +784,34 @@ class SlideEditorDialog(QDialog):
         bg_opts_row.addWidget(self._bg_loop_check)
         bg_opts_row.addStretch()
         bg_v.addLayout(bg_opts_row)
+        # Universal vs gap-fill, and loop-tail behavior.
+        self._bg_universal_check = QCheckBox(
+            "Universal — override every group's own background")
+        self._bg_universal_check.setToolTip(
+            "ON: this bed replaces any group's own background loop "
+            "and plays under the WHOLE deck.\n"
+            "OFF: it only fills the groups that have no background "
+            "of their own; a group with its own loop uses that, and "
+            "this bed restarts from the top afterward.")
+        self._bg_universal_check.setChecked(
+            bool(getattr(
+                self._deck, "background_is_universal", False)))
+        self._bg_universal_check.toggled.connect(
+            self._on_bg_universal_toggled)
+        bg_v.addWidget(self._bg_universal_check)
+        self._bg_complete_check = QCheckBox(
+            "Let the final loop finish past the last slide")
+        self._bg_complete_check.setToolTip(
+            "ON: at the deck's end, let the current loop of the bed "
+            "play out (the video holds its last frame for the "
+            "tail).\nOFF: cut the bed exactly at the deck's end.")
+        self._bg_complete_check.setChecked(
+            bool(getattr(
+                self._deck,
+                "background_complete_final_loop", False)))
+        self._bg_complete_check.toggled.connect(
+            self._on_bg_complete_toggled)
+        bg_v.addWidget(self._bg_complete_check)
         group_v.addWidget(bg_box)
 
         # ── Slide tab body: form + script + audio ────────────
@@ -997,7 +1113,23 @@ class SlideEditorDialog(QDialog):
         slide_tab.setParent(self)
         slide_tab.hide()
         self._hidden_slide_tab = slide_tab
-        self._tabs.addTab(groups_tab, "🧩 Groups")
+        # Wrap the Groups tab in a scroll area so its stack of
+        # panels (groups, stitch order, background bed, deck
+        # actions) never gets crushed on a small laptop. The
+        # minimum width keeps the button rows at a usable size —
+        # when the window is narrower than that, a horizontal
+        # scrollbar appears instead of smashing the buttons
+        # together; the vertical scrollbar handles the tall stack.
+        groups_scroll = QScrollArea()
+        groups_scroll.setWidgetResizable(True)
+        groups_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        # Wide enough to hold the deck-actions row (Preview / Export
+        # MP4 / Export PowerPoint) and the background button rows on
+        # one line each; narrower windows get a horizontal scrollbar
+        # rather than crushed buttons.
+        groups_tab.setMinimumWidth(520)
+        groups_scroll.setWidget(groups_tab)
+        self._tabs.addTab(groups_scroll, "🧩 Groups")
         self._tabs.addTab(script_tab, "📝 Master script")
         splitter.addWidget(self._tabs)
         # Tabs claim ~3x the room of the slide list — the list
@@ -1813,36 +1945,52 @@ class SlideEditorDialog(QDialog):
         enabled state from the deck model."""
         if not hasattr(self, "_bg_status"):
             return
-        clips = getattr(
-            self._deck, "background_audio_clips", None) or []
+        bg_group = getattr(self._deck, "background_group", None)
+        clips = (
+            getattr(bg_group, "audio_clips", None) or []
+            if bg_group is not None else [])
         has_bg = bool(clips)
         if has_bg:
             src = (getattr(
                 self._deck, "background_source_label", "")
                 or "custom")
             dur = float(getattr(
-                self._deck,
-                "background_audio_duration_seconds", 0.0) or 0.0)
+                bg_group,
+                "overlay_audio_duration_seconds", 0.0) or 0.0)
             dur_txt = f" · {dur:.1f}s loop" if dur > 0 else ""
+            n = len(clips)
+            clip_txt = f" · {n} clip(s)" if n else ""
+            mode = (
+                "universal (overrides group beds)"
+                if getattr(
+                    self._deck, "background_is_universal", False)
+                else "fills groups with no bed of their own")
             self._bg_status.setText(
-                f"🎵 Background set — {src}{dur_txt}. "
-                f"Loops under every group on export.")
+                f"🎵 Background set — {src}{dur_txt}{clip_txt}. "
+                f"Mode: {mode}.")
         else:
             self._bg_status.setText(
-                "No background bed. Add music / ambience that "
-                "plays under the whole deck.")
+                "No background bed. Record, import, or set one from "
+                "a group — it plays under the deck on export.")
         self._bg_clear_btn.setEnabled(has_bg)
         self._bg_gain_spin.setEnabled(has_bg)
         self._bg_loop_check.setEnabled(has_bg)
+        if hasattr(self, "_bg_play_btn"):
+            self._bg_play_btn.setEnabled(has_bg)
+            self._bg_stop_btn.setEnabled(has_bg)
+            self._bg_edit_btn.setEnabled(has_bg)
+            self._bg_universal_check.setEnabled(has_bg)
+            self._bg_complete_check.setEnabled(has_bg)
 
     def _set_deck_background_clips(
             self, clips: list, label: str) -> None:
-        """Point the deck's background bed at ``clips`` (already
-        model instances), clear the rendered cache so it
-        recomposes, and refresh the UI."""
-        self._deck.background_audio_clips = list(clips)
-        self._deck.background_audio_path = ""
-        self._deck.background_audio_duration_seconds = 0.0
+        """Replace the deck's background bed with a fresh group
+        wrapping ``clips`` (already model instances). Storing the
+        bed as a ``SlideGroup`` is what gives it the group editor's
+        full toolset. Clears the rendered cache so it recomposes."""
+        g = SlideGroup(name="Deck background")
+        g.audio_clips = list(clips)
+        self._deck.background_group = g
         self._deck.background_source_label = label
         # Compose eagerly so the status shows a duration and the
         # first export doesn't stall on a cold recompose.
@@ -1940,9 +2088,7 @@ class SlideEditorDialog(QDialog):
                 "Remove the deck's background bed?") != \
                 QMessageBox.StandardButton.Yes:
             return
-        self._deck.background_audio_clips = []
-        self._deck.background_audio_path = ""
-        self._deck.background_audio_duration_seconds = 0.0
+        self._deck.background_group = None
         self._deck.background_source_label = ""
         self._refresh_bg_status()
         self.deck_modified.emit()
@@ -1953,6 +2099,174 @@ class SlideEditorDialog(QDialog):
 
     def _on_bg_loop_toggled(self, checked: bool) -> None:
         self._deck.background_loop = bool(checked)
+        self.deck_modified.emit()
+
+    def _on_bg_universal_toggled(self, checked: bool) -> None:
+        self._deck.background_is_universal = bool(checked)
+        self._refresh_bg_status()
+        self.deck_modified.emit()
+
+    def _on_bg_complete_toggled(self, checked: bool) -> None:
+        self._deck.background_complete_final_loop = bool(checked)
+        self.deck_modified.emit()
+
+    def _pulse_bg_rec(self) -> None:
+        self._bg_rec_pulse_on = not self._bg_rec_pulse_on
+        self._bg_rec_indicator.setText(
+            "● REC" if self._bg_rec_pulse_on else "○ REC")
+
+    def _on_bg_record_toggled(self, checked: bool) -> None:
+        if checked:
+            self._start_bg_recording()
+        else:
+            self._stop_bg_recording()
+
+    def _start_bg_recording(self) -> None:
+        if self._bg_recorder is None:
+            QMessageBox.warning(
+                self, "Recording unavailable",
+                "The audio recorder isn't available in this "
+                "environment.")
+            self._bg_record_btn.blockSignals(True)
+            self._bg_record_btn.setChecked(False)
+            self._bg_record_btn.blockSignals(False)
+            return
+        # Stop any playback so the mic take doesn't capture it.
+        try:
+            self._player.stop()
+        except Exception:
+            pass
+        dest_dir = self._working_dir / "deck_background"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._bg_record_target = dest_dir / f"bg_rec_{stamp}.wav"
+        device_name = (
+            getattr(self._deck, "microphone_device_name", "")
+            or None)
+        try:
+            self._bg_recorder.start(
+                self._bg_record_target, device_name=device_name)
+        except ModuleNotFoundError as e:
+            QMessageBox.warning(
+                self, "Recording dependencies missing", str(e))
+            self._bg_record_btn.blockSignals(True)
+            self._bg_record_btn.setChecked(False)
+            self._bg_record_btn.blockSignals(False)
+            return
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Recording failed",
+                f"Could not start recording: {e}")
+            self._bg_record_btn.blockSignals(True)
+            self._bg_record_btn.setChecked(False)
+            self._bg_record_btn.blockSignals(False)
+            return
+        self._bg_record_btn.setText("⏹ Stop recording")
+        self._bg_rec_pulse.start(500)
+
+    def _stop_bg_recording(self) -> None:
+        self._bg_rec_pulse.stop()
+        self._bg_rec_indicator.setText("")
+        self._bg_record_btn.setText("🎤 Record background")
+        take = None
+        if self._bg_recorder is not None:
+            try:
+                take = self._bg_recorder.stop()
+            except Exception as e:
+                QMessageBox.warning(
+                    self, "Recording finalize failed", str(e))
+        if take is None:
+            return
+        path = getattr(take, "path", None) or self._bg_record_target
+        if (path is None or not Path(path).exists()
+                or Path(path).stat().st_size == 0):
+            QMessageBox.warning(
+                self, "Recording empty",
+                "The recorder finalized but the WAV file is empty. "
+                "Check microphone permissions in System Settings → "
+                "Privacy & Security → Microphone.")
+            return
+        from src.video_studio.models import GroupAudioClip
+        dur = float(getattr(take, "duration_seconds", 0.0) or 0.0)
+        clip = GroupAudioClip(
+            label="Recorded bed",
+            audio_path=str(path),
+            duration_seconds=dur,
+            start_time_seconds=0.0,
+            track_index=0)
+        self._set_deck_background_clips([clip], "recorded")
+
+    def _on_bg_play(self) -> None:
+        """Play / pause the composed background bed."""
+        from PyQt6.QtMultimedia import QMediaPlayer as _QMP
+        if self._player.playbackState() == \
+                _QMP.PlaybackState.PlayingState:
+            self._player.pause()
+            self._bg_play_btn.setText("▶ Play")
+            return
+        from src.video_studio.slide_deck import (
+            resolve_deck_background)
+        bg = resolve_deck_background(self._deck)
+        if not (bg and Path(bg).exists()):
+            QMessageBox.information(
+                self, "No background",
+                "Record, import, or set a background bed first.")
+            return
+        self._player.setSource(
+            QUrl.fromLocalFile(str(Path(bg).resolve())))
+        self._player.play()
+        self._bg_play_btn.setText("⏸ Pause")
+
+    def _on_bg_stop(self) -> None:
+        try:
+            self._player.stop()
+        except Exception:
+            pass
+        self._bg_play_btn.setText("▶ Play")
+
+    def _on_bg_edit(self) -> None:
+        """Open the deck background track in the FULL group audio
+        editor — same trim / gain / fade / de-esser / denoise /
+        lane toolset group tracks get. The bed is stored as a
+        SlideGroup, so this is the identical editor; it just has no
+        slides in its tray."""
+        bg_group = getattr(self._deck, "background_group", None)
+        if bg_group is None:
+            # Allow opening an empty bed to record/import into.
+            bg_group = SlideGroup(name="Deck background")
+            self._deck.background_group = bg_group
+        # Stop any playback so the editor can own the audio device.
+        try:
+            self._player.stop()
+        except Exception:
+            pass
+        from src.ui.video_studio.group_editor_dialog import (
+            GroupEditorDialog)
+        dlg = GroupEditorDialog(
+            self._deck, bg_group,
+            chapters_provider=self._chapters_provider,
+            save_chapter_text=self._save_chapter_text_cb,
+            open_in_writer=self._open_in_writer_cb,
+            scenes_provider=self._scenes_provider)
+        dlg.setWindowTitle("🎼 Edit deck background track")
+        dlg.finished.connect(lambda *_a: self._after_bg_edit())
+        # Forward the editor's mutations to the studio autosave.
+        dlg.deck_modified.connect(self.deck_modified)
+        self._bg_editor = dlg  # keep a ref so Qt doesn't GC it
+        dlg.show()
+        dlg.raise_()
+
+    def _after_bg_edit(self) -> None:
+        """After the background editor closes, drop the stale bed
+        cache so the export recomposes with the new edits, and
+        refresh the status line."""
+        bg_group = getattr(self._deck, "background_group", None)
+        if bg_group is not None and not (
+                getattr(bg_group, "audio_clips", None) or []):
+            # Writer emptied the track — treat as cleared.
+            self._deck.background_group = None
+            self._deck.background_source_label = ""
+        self._refresh_bg_status()
         self.deck_modified.emit()
 
     # ------------------------------------------------------------------
@@ -2026,6 +2340,20 @@ class SlideEditorDialog(QDialog):
         # one entry per join between consecutive segments
         # that actually rendered.
         seg_transitions: list = []
+        # Per-segment metadata aligned with ``segment_paths``:
+        # ``(group_or_None, has_own_bed)``. Drives the deck-bed
+        # region planning after the concat.
+        segment_meta: list = []
+        # A universal deck bed REPLACES each group's own background
+        # lane, so those groups must render narration-only. Compute
+        # the flag once up front.
+        from src.video_studio.slide_deck import (
+            group_has_background_lane as _has_bed)
+        _bg_group = getattr(self._deck, "background_group", None)
+        deck_bg_universal = bool(
+            getattr(self._deck, "background_is_universal", False)
+            and _bg_group is not None
+            and (getattr(_bg_group, "audio_clips", None) or []))
         # Per-group audio diagnosis, surfaced back to the writer in
         # the export dialog so a "no sound" report can be traced
         # without a terminal. Each entry says what audio the group
@@ -2087,7 +2415,8 @@ class SlideEditorDialog(QDialog):
                             f"'{getattr(group,'name','?')}': "
                             f"diag failed: {_diag_exc}")
                     ok, msg = render_group_to_mp4(
-                        self._deck, group, seg_path)
+                        self._deck, group, seg_path,
+                        exclude_background=deck_bg_universal)
                     _seg_label = group.name or group.id
                     if not ok:
                         seg_audio_report.append(
@@ -2144,6 +2473,15 @@ class SlideEditorDialog(QDialog):
                          if group is not None else 0.0) or 0.0)
                     seg_transitions.append((kind, secs))
                 segment_paths.append(seg_path)
+                # In OFF (gap-fill) mode a group with its own
+                # background-loop lane keeps it; in universal mode
+                # every group renders narration-only, so no segment
+                # "owns" a bed and the whole deck is one region.
+                seg_has_bed = bool(
+                    group is not None
+                    and not deck_bg_universal
+                    and _has_bed(group))
+                segment_meta.append((group, seg_has_bed))
             if not segment_paths:
                 return (
                     False,
@@ -2166,28 +2504,82 @@ class SlideEditorDialog(QDialog):
                     False,
                     "CONCAT FAILED: " + (msg or "")
                     + report)
-            # Mix the deck-wide background bed under everything —
-            # looped to the full deck length and ducked — so the
-            # music/ambience carries beneath every group.
+            # Deck background bed — region-aware. In universal mode
+            # it loops under the whole deck (replacing group beds,
+            # which were rendered narration-only above). In gap-fill
+            # mode it only covers the runs of groups with no bed of
+            # their own, restarting from the top after each bed-group
+            # interruption. Loops are whole cycles; the final loop
+            # optionally runs past the last slide.
             try:
                 from src.video_studio.slide_deck import (
-                    resolve_deck_background)
+                    resolve_deck_background,
+                    plan_universal_background_regions)
                 bg = resolve_deck_background(self._deck)
-                if bg and Path(bg).exists():
-                    bg_ok, bg_msg = _mix_background_under_deck(
-                        out_path, bg,
-                        gain_db=float(getattr(
-                            self._deck,
-                            "background_gain_db", -12.0)
-                            or -12.0),
-                        loop=bool(getattr(
-                            self._deck,
-                            "background_loop", True)))
-                    report += (
-                        "\n\nBackground bed: "
-                        + ("mixed under deck"
-                           if bg_ok
-                           else f"FAILED — {bg_msg}"))
+                if bg and Path(bg).exists() and segment_meta:
+                    # Compute each segment's [start,end) in the final
+                    # timeline, honoring transition overlaps (xfade
+                    # compresses the join by its seconds).
+                    seg_durs = [
+                        _ffprobe_duration(p) for p in segment_paths]
+                    starts: list = []
+                    cursor = 0.0
+                    for si, d in enumerate(seg_durs):
+                        starts.append(cursor)
+                        cursor += d
+                        if si < len(seg_durs) - 1:
+                            tkind, tsecs = (
+                                seg_transitions[si]
+                                if si < len(seg_transitions)
+                                else ("cut", 0.0))
+                            if (tkind or "cut") != "cut" \
+                                    and float(tsecs or 0.0) > 0:
+                                cursor -= float(tsecs)
+                    deck_dur = (
+                        starts[-1] + seg_durs[-1]
+                        if seg_durs else 0.0)
+                    group_timeline = [
+                        (starts[si],
+                         starts[si] + seg_durs[si],
+                         bool(segment_meta[si][1]))
+                        for si in range(len(seg_durs))]
+                    universal_len = _ffprobe_duration(Path(bg))
+                    regions, extra_tail = \
+                        plan_universal_background_regions(
+                            group_timeline, deck_dur,
+                            universal_len,
+                            bool(getattr(
+                                self._deck,
+                                "background_is_universal", False)),
+                            bool(getattr(
+                                self._deck,
+                                "background_complete_final_loop",
+                                False)))
+                    if regions:
+                        bg_ok, bg_msg = _apply_universal_background(
+                            out_path, bg, regions,
+                            gain_db=float(getattr(
+                                self._deck,
+                                "background_gain_db", -12.0)
+                                or -12.0),
+                            extra_tail=extra_tail,
+                            deck_dur=deck_dur)
+                        mode = ("universal"
+                                if getattr(
+                                    self._deck,
+                                    "background_is_universal",
+                                    False)
+                                else "gap-fill")
+                        report += (
+                            f"\n\nBackground bed ({mode}, "
+                            f"{len(regions)} region(s)): "
+                            + ("mixed"
+                               if bg_ok
+                               else f"FAILED — {bg_msg}"))
+                    else:
+                        report += (
+                            "\n\nBackground bed: no regions to "
+                            "fill (every group owns a bed).")
             except Exception as _bg_exc:
                 report += f"\n\nBackground bed error: {_bg_exc}"
             # Probe the finished file so the writer sees at a

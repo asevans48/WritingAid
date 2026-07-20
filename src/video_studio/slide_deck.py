@@ -606,45 +606,160 @@ def copy_group_track(
     return int(dst_track_index)
 
 
-def resolve_deck_background(deck: SlideDeckProject) -> str:
-    """Return an on-disk WAV for the deck's background bed, with
-    all its clip edits baked in — recomposing from
-    ``background_audio_clips`` when the cached file is missing.
-    Returns "" when the deck has no background bed. Mirrors
-    ``resolve_group_overlay`` but for the deck-wide track."""
-    clips = getattr(deck, "background_audio_clips", None) or []
+def group_has_background_lane(group: SlideGroup) -> bool:
+    """True when ``group`` owns a background-loop lane with clips —
+    i.e. a lane flagged in ``track_background`` that actually has
+    audio on it. This is what the deck-wide universal bed defers to
+    (OFF mode) or replaces (ON mode)."""
+    bgs = getattr(group, "track_background", None) or {}
+    bg_lanes = {
+        int(k) for k, v in bgs.items()
+        if str(k).lstrip("-").isdigit() and bool(v)}
+    if not bg_lanes:
+        return False
+    for c in (getattr(group, "audio_clips", None) or []):
+        if int(getattr(c, "track_index", 0) or 0) in bg_lanes:
+            return True
+    return False
+
+
+def plan_universal_background_regions(
+    group_timeline: List[Tuple[float, float, bool]],
+    deck_dur: float,
+    universal_len: float,
+    is_universal: bool,
+    complete_final: bool,
+) -> Tuple[List[Tuple[float, float]], float]:
+    """Decide WHERE (and for how long) the deck's background bed
+    plays over the final timeline.
+
+    ``group_timeline`` is one ``(start, end, has_own_bed)`` per
+    rendered segment, in final-video seconds. Returns
+    ``(regions, extra_tail)`` where each region is
+    ``(start_seconds, play_length_seconds)`` — the bed is dropped in
+    at ``start`` and loops for ``play_length`` — and ``extra_tail``
+    is how many seconds the deck video must be extended past its
+    natural end so the final loop can complete (0 when it is cut).
+
+    Rules encoded:
+      * Universal (ON): one region covering the whole deck; group
+        beds are suppressed elsewhere.
+      * Non-universal (OFF): regions are the maximal runs of
+        consecutive segments with NO background lane of their own;
+        a group that owns a bed is left to play it, and the deck
+        bed restarts from the beginning at the next no-bed run.
+      * Loops are whole cycles. A mid-deck region is cut at its
+        boundary (the next bed-group takes over). Only the region
+        that reaches the deck's end honors ``complete_final`` —
+        letting the last loop finish past the end (``extra_tail``).
+    """
+    import math
+    regions: List[Tuple[float, float]] = []
+    extra_tail = 0.0
+    if universal_len <= 0 or not group_timeline or deck_dur <= 0:
+        return regions, extra_tail
+    if is_universal:
+        runs: List[Tuple[float, float]] = [(0.0, deck_dur)]
+    else:
+        runs = []
+        cur: Optional[List[float]] = None
+        for (s, e, has_bed) in group_timeline:
+            if has_bed:
+                if cur is not None:
+                    runs.append((cur[0], cur[1]))
+                    cur = None
+            else:
+                if cur is None:
+                    cur = [s, e]
+                else:
+                    cur[1] = e
+        if cur is not None:
+            runs.append((cur[0], cur[1]))
+    for (rs, re) in runs:
+        length = max(0.0, re - rs)
+        if length <= 0:
+            continue
+        reaches_end = abs(re - deck_dur) < 0.05
+        if reaches_end and complete_final:
+            cycles = max(1, math.ceil(length / universal_len - 1e-6))
+            full = cycles * universal_len
+            extra_tail = max(extra_tail, (rs + full) - deck_dur)
+            length = full
+        regions.append((round(rs, 3), round(length, 3)))
+    return regions, extra_tail
+
+
+def compose_group_overlay_variant(
+    group: SlideGroup,
+    working_dir: str,
+    exclude_background: bool,
+) -> str:
+    """Compose ``group``'s overlay, optionally EXCLUDING its
+    background-loop lanes (narration / foreground only). Used when
+    a universal deck bed replaces group beds: the group renders its
+    voice, the deck bed carries the music. Returns the WAV path, or
+    "" when there's nothing to render. Non-excluded calls just defer
+    to the normal resolver so the cache stays shared."""
+    if not exclude_background:
+        return resolve_group_overlay(group, working_dir=working_dir)
+    clips = getattr(group, "audio_clips", None) or []
     if not clips:
         return ""
-    cached = (
-        getattr(deck, "background_audio_path", "") or "").strip()
-    if cached and Path(cached).exists() \
-            and Path(cached).stat().st_size > 0:
-        return cached
+    bgs = getattr(group, "track_background", None) or {}
+    bg_lanes = {
+        int(k) for k, v in bgs.items()
+        if str(k).lstrip("-").isdigit() and bool(v)}
+    if not bg_lanes:
+        # No bed to strip — identical to the normal overlay.
+        return resolve_group_overlay(group, working_dir=working_dir)
     try:
         from src.video_studio.audio_edit import compose_clips
     except Exception:
-        return cached
+        return resolve_group_overlay(group, working_dir=working_dir)
+    # Mute the background lanes on top of any existing mutes.
+    muted = {
+        int(k): bool(v)
+        for k, v in (getattr(group, "track_muted", None) or {}).items()
+        if str(k).lstrip("-").isdigit()}
+    for lane in bg_lanes:
+        muted[lane] = True
     dest_dir = Path(
-        deck.working_dir
-        or (Path.home() / ".writingaid_slides")) / "deck_background"
+        working_dir
+        or (Path.home() / ".writingaid_slides")) / "group_overlay"
     try:
         dest_dir.mkdir(parents=True, exist_ok=True)
     except Exception:
-        return cached
-    dest = dest_dir / f"{deck.id}_background.wav"
+        return resolve_group_overlay(group, working_dir=working_dir)
+    dest = dest_dir / f"{group.id}_narration.wav"
     try:
-        result = compose_clips(clips, dest)
+        result = compose_clips(
+            clips, dest,
+            track_gain_db=getattr(group, "track_gain_db", None),
+            track_deesser_intensity=getattr(
+                group, "track_deesser_intensity", None),
+            track_muted=muted,
+            track_background=getattr(
+                group, "track_background", None))
     except Exception:
-        return cached
+        return resolve_group_overlay(group, working_dir=working_dir)
     if not result.success:
-        return cached
-    try:
-        deck.background_audio_path = str(dest)
-        deck.background_audio_duration_seconds = float(
-            result.duration_seconds or 0.0)
-    except Exception:
-        pass
+        return ""
     return str(dest)
+
+
+def resolve_deck_background(deck: SlideDeckProject) -> str:
+    """Return an on-disk WAV for the deck's background bed, with
+    every clip edit (trim, gain, fades, de-esser, noise reduction,
+    per-lane treatment) baked in. The bed is stored as a
+    ``SlideGroup`` (``deck.background_group``), so this just defers
+    to ``resolve_group_overlay`` — the exact renderer group tracks
+    use. Returns "" when there is no bed."""
+    bg_group = getattr(deck, "background_group", None)
+    if bg_group is None or not (
+            getattr(bg_group, "audio_clips", None) or []):
+        return ""
+    return resolve_group_overlay(
+        bg_group, working_dir=deck.working_dir)
 
 
 def resolve_group_overlay(
@@ -728,6 +843,7 @@ def render_group_to_mp4(
     width: int = 1280,
     height: int = 720,
     fps: int = 30,
+    exclude_background: bool = False,
 ) -> Tuple[bool, str]:
     """Render ONE group into an MP4 the same way the group
     editor's "Preview" button does.
@@ -860,9 +976,12 @@ def render_group_to_mp4(
     # Resolve (and, if the cache is missing, recompose) the
     # group's overlay so every audio-clip edit — gain, de-essing,
     # noise reduction, looping — is baked into the render even
-    # when the cached WAV went missing.
-    overlay_path = resolve_group_overlay(
-        group, working_dir=deck.working_dir)
+    # when the cached WAV went missing. When ``exclude_background``
+    # is set (a universal deck bed is replacing group beds), render
+    # the group's narration WITHOUT its own background-loop lanes so
+    # the two beds don't fight.
+    overlay_path = compose_group_overlay_variant(
+        group, deck.working_dir, exclude_background)
     has_overlay = bool(
         overlay_path and Path(overlay_path).exists())
     if has_overlay:

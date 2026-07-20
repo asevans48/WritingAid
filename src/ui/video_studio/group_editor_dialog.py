@@ -3603,22 +3603,22 @@ class GroupEditorDialog(QDialog):
                 self, "Empty track",
                 "This track has no clips to use as a background.")
             return
-        if getattr(self._deck, "background_audio_clips", None):
+        existing = getattr(self._deck, "background_group", None)
+        if existing is not None and (
+                getattr(existing, "audio_clips", None) or []):
             if QMessageBox.question(
                     self, "Replace deck background?",
                     "The deck already has a background bed. "
                     "Replace it with this track?") != \
                     QMessageBox.StandardButton.Yes:
                 return
-        # Stage the clips onto a throwaway group so we can reuse
-        # copy_group_track's deep-copy + settings logic, then lift
-        # them onto the deck as track 0.
+        # Copy this lane (clips + its lane treatment) into a fresh
+        # background group so the deck bed is fully editable and
+        # independent of this group.
         from src.video_studio.models import SlideGroup as _SG
-        scratch = _SG(name="_bg")
-        copy_group_track(self._group, track_index, scratch, 0)
-        self._deck.background_audio_clips = list(scratch.audio_clips)
-        self._deck.background_audio_path = ""  # force recompose
-        self._deck.background_audio_duration_seconds = 0.0
+        bg = _SG(name="Deck background")
+        copy_group_track(self._group, track_index, bg, 0)
+        self._deck.background_group = bg
         self._deck.background_source_label = (
             f"copied from group "
             f"'{self._group.name or self._group.id}' · "

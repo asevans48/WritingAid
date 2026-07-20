@@ -649,12 +649,18 @@ class SlideDeckProject(BaseModel):
     pages: List[SlidePage] = Field(default_factory=list)
     groups: List[SlideGroup] = Field(default_factory=list)
     # Deck-wide background audio bed (music / ambience) that plays
-    # UNDER every group for the whole runtime of the deck. Composed
-    # from ``background_audio_clips`` (the source of truth — the
-    # writer can point this at a copy of a group's track or import
-    # a fresh file) into ``background_audio_path`` (a rendered
-    # cache), looped to the deck's full length and mixed beneath
-    # the per-group narrations on export. Empty list = no bed.
+    # UNDER every group for the whole runtime of the deck. Stored as
+    # a full ``SlideGroup`` (minus slides) so the bed gets the exact
+    # same editing toolset as a group's audio track — per-clip trim,
+    # gain, fades, de-esser, noise reduction, plus lanes with their
+    # own gain/mute/loop. ``resolve_group_overlay`` renders it (with
+    # every edit baked in) into a cache, which the export loops to
+    # the deck length and mixes beneath the narrations. ``None`` =
+    # no bed.
+    background_group: Optional["SlideGroup"] = None
+    # LEGACY bed storage (pre-``background_group``). Kept so old
+    # projects still load; a validator promotes these into
+    # ``background_group`` on load and they stop being written.
     background_audio_clips: List["GroupAudioClip"] = Field(
         default_factory=list)
     background_audio_path: str = ""
@@ -666,8 +672,24 @@ class SlideDeckProject(BaseModel):
     # the deck's total runtime (the usual case for a short music
     # loop under a long deck).
     background_loop: bool = True
+    # UNIVERSAL mode. When True, this deck bed overrides every
+    # group's own background-loop lane and plays under the ENTIRE
+    # deck, looping in complete cycles (it is never cut short at a
+    # group boundary — only at the deck's end, subject to
+    # ``background_complete_final_loop``). When False, the deck bed
+    # only fills the stretches where a group has NO background-loop
+    # lane of its own: a group that owns a loop uses that instead,
+    # and the deck bed restarts from the beginning the next time a
+    # no-bed group is reached.
+    background_is_universal: bool = False
+    # Loop-tail behavior at the DECK'S END. When True, let the
+    # final loop of the bed play to completion even if that runs
+    # past the last slide (the video holds its final frame for the
+    # tail). When False (default), the bed is cut at the deck's end
+    # so audio and video finish together.
+    background_complete_final_loop: bool = False
     # Provenance note shown in the UI — e.g. "copied from group
-    # 'Bar' · Track 2" or "imported bed.wav". Cosmetic only.
+    # 'Bar' · Track 2", "imported bed.wav", or "recorded". Cosmetic.
     background_source_label: str = ""
     # Average reading speed used by ``suggest_timings_from_script``
     # (words per minute). 150 wpm is a slightly slow voiceover
@@ -732,6 +754,27 @@ class SlideDeckProject(BaseModel):
                     running, 3)
                 running += max(
                     0.25, float(page.duration_seconds or 0.0))
+        return self
+
+    @model_validator(mode="after")
+    def _migrate_legacy_background(self) -> "SlideDeckProject":
+        """Promote a legacy ``background_audio_clips`` bed into a
+        full ``background_group`` so it becomes editable with the
+        group editor's toolset. Idempotent: once ``background_group``
+        exists, the legacy fields are cleared and this is a no-op."""
+        if self.background_group is None and self.background_audio_clips:
+            self.background_group = SlideGroup(
+                name="Deck background",
+                audio_clips=list(self.background_audio_clips),
+                overlay_audio_path=self.background_audio_path,
+                overlay_audio_duration_seconds=(
+                    self.background_audio_duration_seconds),
+            )
+        # Legacy fields are no longer the source of truth.
+        if self.background_group is not None:
+            self.background_audio_clips = []
+            self.background_audio_path = ""
+            self.background_audio_duration_seconds = 0.0
         return self
 
 
