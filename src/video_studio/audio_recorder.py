@@ -346,30 +346,6 @@ class AudioRecorder:
         return None
 
 
-def list_input_devices() -> list[tuple[int, str]]:
-    """Return ``(portaudio_index, name)`` tuples for every
-    input device PortAudio sees. Used as a fallback when the Qt
-    ``QMediaDevices`` enumeration returns no devices (which has
-    happened on fresh macOS installs without mic permission).
-
-    Returns an empty list when sounddevice isn't installed —
-    don't crash the UI just for device enumeration.
-    """
-    try:
-        import sounddevice as sd
-    except ImportError:
-        return []
-    try:
-        out: list[tuple[int, str]] = []
-        for idx, info in enumerate(sd.query_devices()):
-            if info.get("max_input_channels", 0) > 0:
-                out.append((idx, str(info.get("name", ""))))
-        return out
-    except Exception as exc:
-        print(f"[recorder] list_input_devices failed: {exc}")
-        return []
-
-
 def recorder_dependencies_available() -> bool:
     """Cheap up-front check the UI can call before exposing the
     record button. Avoids the writer pressing record only to get

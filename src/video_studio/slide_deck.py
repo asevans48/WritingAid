@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
 from src.video_studio.models import (
-    SlideDeckProject, SlideGroup, SlidePage,
+    SlideDeckProject, SlideGroup, SlidePage, TitleCard,
 )
 from src.video_studio.stitcher import (
     ffmpeg_available, stitch_clips, stitch_with_transitions,
@@ -63,9 +63,24 @@ def build_slide_deck_from_chapter(
     page_index = 0
     for scene in chapter_scenes:
         scene_label = scene.name or f"Scene {page_index + 1}"
-        if (getattr(scene, "mode", "video") == "slideshow"
-                and (getattr(scene, "actions", None) or [])):
-            for action in scene.actions:
+        actions = getattr(scene, "actions", None) or []
+        # Use per-action favorite images whenever the actions HAVE
+        # images — not only when the scene is flagged "slideshow".
+        # Favoriting or importing an action image doesn't flip the
+        # scene's mode, so gating on mode alone made the editor
+        # ignore favorited photos and report "no favorites."
+        has_action_images = any(
+            (getattr(a, "images", None) or []) for a in actions)
+        if actions and (
+                getattr(scene, "mode", "video") == "slideshow"
+                or has_action_images):
+            for action in actions:
+                # A lone image is implicitly the favorite — persist
+                # that so provenance is explicit downstream.
+                try:
+                    action.ensure_single_image_favorite()
+                except Exception:
+                    pass
                 img = action.favorite_image()
                 if img is None:
                     continue
@@ -88,6 +103,7 @@ def build_slide_deck_from_chapter(
                             or default_duration_seconds)),
                     source_scene_id=scene.id,
                     source_action_id=action.id,
+                    text_overlay=getattr(img, "overlay", None),
                 )
                 deck.pages.append(page)
                 page_index += 1
@@ -627,54 +643,45 @@ def plan_universal_background_regions(
     group_timeline: List[Tuple[float, float, bool]],
     deck_dur: float,
     universal_len: float,
-    is_universal: bool,
     complete_final: bool,
 ) -> Tuple[List[Tuple[float, float]], float]:
     """Decide WHERE (and for how long) the deck's background bed
     plays over the final timeline.
 
-    ``group_timeline`` is one ``(start, end, has_own_bed)`` per
-    rendered segment, in final-video seconds. Returns
-    ``(regions, extra_tail)`` where each region is
-    ``(start_seconds, play_length_seconds)`` — the bed is dropped in
-    at ``start`` and loops for ``play_length`` — and ``extra_tail``
-    is how many seconds the deck video must be extended past its
-    natural end so the final loop can complete (0 when it is cut).
+    ``group_timeline`` is one ``(start, end, suppress_here)`` per
+    rendered segment, in final-video seconds — ``suppress_here`` is
+    True where the bed must NOT play (a group with its own bed in
+    gap-fill mode, or a card whose deck-background was disabled).
+    The caller folds universal-vs-gap-fill INTO those flags, so this
+    function just walks the maximal runs where the bed IS allowed.
 
-    Rules encoded:
-      * Universal (ON): one region covering the whole deck; group
-        beds are suppressed elsewhere.
-      * Non-universal (OFF): regions are the maximal runs of
-        consecutive segments with NO background lane of their own;
-        a group that owns a bed is left to play it, and the deck
-        bed restarts from the beginning at the next no-bed run.
-      * Loops are whole cycles. A mid-deck region is cut at its
-        boundary (the next bed-group takes over). Only the region
-        that reaches the deck's end honors ``complete_final`` —
-        letting the last loop finish past the end (``extra_tail``).
+    Returns ``(regions, extra_tail)`` where each region is
+    ``(start_seconds, play_length_seconds)`` — the bed drops in at
+    ``start`` and loops for ``play_length`` — and ``extra_tail`` is
+    how many seconds the video must extend past its natural end so
+    the final loop can complete (0 when cut). Loops are whole
+    cycles; a mid-deck region is cut at its boundary; only the run
+    that reaches the deck's end honors ``complete_final``.
     """
     import math
     regions: List[Tuple[float, float]] = []
     extra_tail = 0.0
     if universal_len <= 0 or not group_timeline or deck_dur <= 0:
         return regions, extra_tail
-    if is_universal:
-        runs: List[Tuple[float, float]] = [(0.0, deck_dur)]
-    else:
-        runs = []
-        cur: Optional[List[float]] = None
-        for (s, e, has_bed) in group_timeline:
-            if has_bed:
-                if cur is not None:
-                    runs.append((cur[0], cur[1]))
-                    cur = None
+    runs: List[Tuple[float, float]] = []
+    cur: Optional[List[float]] = None
+    for (s, e, suppress_here) in group_timeline:
+        if suppress_here:
+            if cur is not None:
+                runs.append((cur[0], cur[1]))
+                cur = None
+        else:
+            if cur is None:
+                cur = [s, e]
             else:
-                if cur is None:
-                    cur = [s, e]
-                else:
-                    cur[1] = e
-        if cur is not None:
-            runs.append((cur[0], cur[1]))
+                cur[1] = e
+    if cur is not None:
+        runs.append((cur[0], cur[1]))
     for (rs, re) in runs:
         length = max(0.0, re - rs)
         if length <= 0:
@@ -834,6 +841,557 @@ def resolve_group_overlay(
     except Exception:
         pass
     return str(dest)
+
+
+# ---------------------------------------------------------------------
+# Export compression (target file size)
+# ---------------------------------------------------------------------
+def estimate_deck_duration_seconds(deck: SlideDeckProject) -> float:
+    """Rough total runtime of the deck from the model (no render):
+    per group, the larger of its placed-slide holds or its overlay
+    audio; summed across groups, minus inter-group transition
+    overlaps. Good enough to size a compression target."""
+    total = 0.0
+    first = True
+    for g in (getattr(deck, "groups", None) or []):
+        placed = [
+            p for p in deck.pages
+            if getattr(p, "group_id", None) == g.id
+            and getattr(p, "start_time_seconds_in_group", None)
+            is not None]
+        if not placed:
+            continue
+        holds = sum(
+            max(0.25, float(getattr(p, "duration_seconds", 0.0)
+                            or 0.0))
+            for p in placed)
+        overlay = float(
+            getattr(g, "overlay_audio_duration_seconds", 0.0) or 0.0)
+        seg = max(holds, overlay)
+        if not first:
+            secs = float(
+                getattr(g, "inter_group_transition_seconds", 0.0)
+                or 0.0)
+            kind = getattr(g, "inter_group_transition_in", "cut")
+            if (kind or "cut") != "cut" and secs > 0:
+                seg = max(0.0, seg - secs)
+        total += seg
+        first = False
+    # Orphan slides (no group) each add their own hold.
+    group_ids = {g.id for g in (getattr(deck, "groups", None) or [])}
+    for p in deck.pages:
+        gid = getattr(p, "group_id", None)
+        if not gid or gid not in group_ids:
+            total += max(0.25, float(
+                getattr(p, "duration_seconds", 0.0) or 0.0))
+    return round(total, 2)
+
+
+def recommend_export_target_mb(
+    deck: SlideDeckProject,
+    width: int = 1280,
+    height: int = 720,
+) -> Tuple[float, str]:
+    """Heuristic compression recommendation: a target size (MB)
+    that keeps a narrated slideshow crisp but shareable. Returns
+    ``(target_mb, rationale)``. Deterministic — always available,
+    no LLM required."""
+    dur = estimate_deck_duration_seconds(deck)
+    minutes = max(0.1, dur / 60.0)
+    # Any video-background card pushes the per-minute budget up
+    # (motion needs more bits than near-static slides).
+    has_video = any(
+        getattr(p, "card", None)
+        and getattr(p.card, "kind", "") == "video"
+        for p in deck.pages)
+    px = width * height
+    # MB per minute, tuned for x264 at these resolutions.
+    if px >= 1920 * 1080:
+        mb_per_min = 22.0 if has_video else 14.0
+    elif px >= 1280 * 720:
+        mb_per_min = 12.0 if has_video else 8.0
+    else:
+        mb_per_min = 7.0 if has_video else 5.0
+    target = max(2.0, round(minutes * mb_per_min, 1))
+    rationale = (
+        f"~{dur:.0f}s deck at {width}×{height}"
+        + (" with video background" if has_video else "")
+        + f" → ~{mb_per_min:.0f} MB/min ≈ {target:.0f} MB "
+          "(good balance of quality and shareable size).")
+    return (target, rationale)
+
+
+def compress_to_target_size(
+    video_path: Path,
+    target_mb: float,
+    audio_kbps: int = 192,
+) -> Tuple[bool, str]:
+    """Re-encode ``video_path`` IN PLACE (two-pass x264) to land
+    near ``target_mb`` megabytes. Splits the budget between video
+    and a fixed audio bitrate; clamps the video bitrate to a sane
+    floor so tiny targets still produce a watchable file."""
+    if target_mb <= 0:
+        return (True, "no target")
+    if not ffmpeg_available():
+        return (False, "ffmpeg not found on PATH.")
+    dur = _probe_media_duration(video_path)
+    if dur <= 0:
+        return (False, "could not probe duration")
+    has_audio_stream = _probe_has_audio(video_path)
+    ab = audio_kbps if has_audio_stream else 0
+    # Total budget → video bitrate, with a 3% container margin.
+    total_kbps = (target_mb * 8.0 * 1024.0) / dur
+    video_kbps = int(max(120.0, total_kbps * 0.97 - ab))
+    passlog = video_path.with_name(video_path.stem + "_2pass")
+    tmp = video_path.with_name(video_path.stem + "_sized.mp4")
+    null_dev = "/dev/null"
+    base = ["ffmpeg", "-y", "-i", str(video_path.resolve()),
+            "-c:v", "libx264", "-b:v", f"{video_kbps}k",
+            "-pix_fmt", "yuv420p", "-preset", "medium",
+            "-passlogfile", str(passlog)]
+    p1 = base + ["-pass", "1", "-an", "-f", "mp4", null_dev]
+    p2 = base + ["-pass", "2"]
+    if has_audio_stream:
+        p2 += ["-c:a", "aac", "-b:a", f"{ab}k", "-ac", "2"]
+    else:
+        p2 += ["-an"]
+    p2 += ["-movflags", "+faststart", str(tmp.resolve())]
+    try:
+        r1 = subprocess.run(
+            p1, capture_output=True, text=True, timeout=1800)
+        if r1.returncode != 0:
+            return (False, "compress pass 1 failed:\n"
+                    + (r1.stderr or "")[-300:])
+        r2 = subprocess.run(
+            p2, capture_output=True, text=True, timeout=1800)
+        if r2.returncode != 0:
+            return (False, "compress pass 2 failed:\n"
+                    + (r2.stderr or "")[-300:])
+    except subprocess.TimeoutExpired:
+        return (False, "compression timed out.")
+    finally:
+        for suffix in ("-0.log", "-0.log.mbtree"):
+            try:
+                Path(str(passlog) + suffix).unlink(missing_ok=True)
+            except Exception:
+                pass
+    try:
+        tmp.replace(video_path)
+    except Exception as e:
+        return (False, f"could not finalize: {e}")
+    actual_mb = video_path.stat().st_size / (1024 * 1024)
+    return (True, f"compressed to {actual_mb:.1f} MB "
+            f"(target {target_mb:.0f} MB, {video_kbps}k video).")
+
+
+def _probe_media_duration(path: Path) -> float:
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error",
+             "-show_entries", "format=duration",
+             "-of", "default=nw=1:nk=1", str(Path(path).resolve())],
+            capture_output=True, text=True, timeout=30)
+        return float((proc.stdout or "0").strip() or 0.0)
+    except Exception:
+        return 0.0
+
+
+def _probe_has_audio(path: Path) -> bool:
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a",
+             "-show_entries", "stream=codec_type", "-of",
+             "csv=p=0", str(Path(path).resolve())],
+            capture_output=True, text=True, timeout=30)
+        return "audio" in (proc.stdout or "")
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------
+# Title / ending cards
+# ---------------------------------------------------------------------
+_FONT_CANDIDATES = (
+    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/System/Library/Fonts/Helvetica.ttc",
+    "/Library/Fonts/Arial.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/"
+    "LiberationSans-Bold.ttf",
+)
+
+
+def _resolve_font_file() -> str:
+    """First available TTF/TTC on disk for ffmpeg ``drawtext``.
+    Returns "" when none is found (caller then skips text)."""
+    for cand in _FONT_CANDIDATES:
+        if Path(cand).exists():
+            return cand
+    return ""
+
+
+def _sanitize_color(value: str, default: str = "black") -> str:
+    """Accept ``#RRGGBB`` / ``#RGB`` / a named color; fall back to
+    ``default`` for anything ffmpeg wouldn't parse."""
+    v = (value or "").strip()
+    if not v:
+        return default
+    if re.fullmatch(r"#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})", v):
+        # ffmpeg wants 0xRRGGBB.
+        h = v.lstrip("#")
+        if len(h) == 3:
+            h = "".join(c * 2 for c in h)
+        return f"0x{h.upper()}"
+    if re.fullmatch(r"[A-Za-z]+", v):
+        return v.lower()
+    return default
+
+
+def _hex_to_rgba(value: str, default: str = "#FFFFFF") -> tuple:
+    """Parse ``#RRGGBB`` / ``#RGB`` into an ``(r, g, b, 255)``
+    tuple for PIL, falling back to ``default``."""
+    v = (value or "").strip() or default
+    m = re.fullmatch(r"#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})", v)
+    if not m:
+        v = default
+    h = v.lstrip("#")
+    if len(h) == 3:
+        h = "".join(c * 2 for c in h)
+    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), 255)
+
+
+def _render_text_overlay_png(
+    card: TitleCard, width: int, height: int, out_png: Path,
+) -> bool:
+    """Render the card's title + subtitle onto a full-frame
+    TRANSPARENT PNG via PIL (this ffmpeg build has no ``drawtext``).
+    The PNG is then overlaid — and faded — by ffmpeg. Returns True
+    when text was drawn."""
+    title = (getattr(card, "title", "") or "").strip()
+    subtitle = (getattr(card, "subtitle", "") or "").strip()
+    if not (title or subtitle):
+        return False
+    fontfile = _resolve_font_file()
+    if not fontfile:
+        return False
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except Exception:
+        return False
+    scale = height / 1080.0
+    title_px = max(10, int((getattr(card, "title_size", 72)
+                            or 72) * scale))
+    sub_px = max(8, int((getattr(card, "subtitle_size", 40)
+                         or 40) * scale))
+    gap = int(24 * scale)
+    try:
+        tfont = ImageFont.truetype(fontfile, title_px)
+        sfont = ImageFont.truetype(fontfile, sub_px)
+    except Exception:
+        return False
+    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    def _measure(text: str, font) -> tuple:
+        b = draw.textbbox((0, 0), text, font=font)
+        return (b[2] - b[0], b[3] - b[1])
+
+    tw, th = _measure(title, tfont) if title else (0, 0)
+    sw, sh = _measure(subtitle, sfont) if subtitle else (0, 0)
+    block_h = (th if title else 0) + ((sh + gap) if subtitle else 0)
+    block_w = max(tw, sw)
+    pos = (getattr(card, "text_position", "center")
+           or "center").lower()
+    if pos == "top":
+        top = int(height * 0.10)
+    elif pos == "bottom":
+        top = int(height * 0.90 - block_h)
+    else:
+        top = int((height - block_h) / 2)
+    # ── Effect: legibility box behind the text block ──
+    box_color = (getattr(card, "text_box_color", "") or "").strip()
+    if box_color:
+        try:
+            r, g, b, _ = _hex_to_rgba(box_color, "#000000")
+            alpha = int(max(0.0, min(1.0, float(
+                getattr(card, "text_box_opacity", 0.5)
+                or 0.5))) * 255)
+            padx = int(28 * scale)
+            pady = int(18 * scale)
+            bx0 = int((width - block_w) / 2) - padx
+            by0 = top - pady
+            bx1 = int((width + block_w) / 2) + padx
+            by1 = top + block_h + pady
+            draw.rectangle(
+                [bx0, by0, bx1, by1], fill=(r, g, b, alpha))
+        except Exception:
+            pass
+    outline_color = (
+        getattr(card, "text_outline_color", "") or "").strip()
+    outline_w = int(getattr(card, "text_outline_width", 0) or 0)
+    outline_px = max(0, int(outline_w * scale))
+    shadow = bool(getattr(card, "text_shadow", False))
+
+    def _draw_line(text, font, cx_y, fill):
+        w0, _h0 = _measure(text, font)
+        x = (width - w0) / 2
+        yy = cx_y
+        # Effect: drop shadow.
+        if shadow:
+            off = max(2, int(3 * scale))
+            draw.text(
+                (x + off, yy + off), text, font=font,
+                fill=(0, 0, 0, 160))
+        # Effect: outline / stroke (PIL supports stroke_width).
+        if outline_px > 0 and outline_color:
+            draw.text(
+                (x, yy), text, font=font, fill=fill,
+                stroke_width=outline_px,
+                stroke_fill=_hex_to_rgba(outline_color, "#000000"))
+        else:
+            draw.text((x, yy), text, font=font, fill=fill)
+
+    y = top
+    if title:
+        _draw_line(
+            title, tfont, y,
+            _hex_to_rgba(
+                getattr(card, "title_color", "#FFFFFF"), "#FFFFFF"))
+        y += th + gap
+    if subtitle:
+        _draw_line(
+            subtitle, sfont, y,
+            _hex_to_rgba(
+                getattr(card, "subtitle_color", "#DDDDDD"),
+                "#DDDDDD"))
+    try:
+        img.save(str(out_png))
+    except Exception:
+        return False
+    return True
+
+
+def bake_text_overlay(
+    image_path: str,
+    overlay: TitleCard,
+    out_path: Path,
+) -> bool:
+    """Composite ``overlay``'s styled text (with effects) directly
+    onto ``image_path`` and save to ``out_path``. Used to burn a
+    per-slide text overlay into the still before it flows through
+    the normal image-based render. Returns True on success."""
+    if overlay is None:
+        return False
+    try:
+        from PIL import Image
+    except Exception:
+        return False
+    try:
+        base = Image.open(image_path).convert("RGBA")
+    except Exception:
+        return False
+    w, h = base.size
+    txt_png = out_path.with_name(out_path.stem + "_txt.png")
+    if not _render_text_overlay_png(overlay, w, h, txt_png):
+        return False
+    try:
+        txt = Image.open(str(txt_png)).convert("RGBA")
+        combined = Image.alpha_composite(base, txt)
+        combined.convert("RGB").save(str(out_path))
+        ok = True
+    except Exception:
+        ok = False
+    finally:
+        try:
+            txt_png.unlink(missing_ok=True)
+        except Exception:
+            pass
+    return ok
+
+
+def render_card_to_mp4(
+    card: TitleCard,
+    output_path: Path,
+    duration: float,
+    audio_path: str = "",
+    width: int = 1280,
+    height: int = 720,
+    fps: int = 30,
+) -> Tuple[bool, str]:
+    """Render a title / ending card to an MP4 of ``duration``
+    seconds: a color / image / video background with the card's
+    styled title + subtitle over it (fading in and out), plus the
+    card's audio when supplied. The output concatenates with the
+    other deck segments."""
+    if not ffmpeg_available():
+        return (False, "ffmpeg not found on PATH.")
+    dur = max(0.5, float(duration or 0.5))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    kind = (getattr(card, "kind", "color") or "color").lower()
+    media = getattr(card, "bg_media_path", "") or ""
+    inputs: List[str] = []
+    filters: List[str] = []
+    scale_crop = (
+        f"scale={width}:{height}:"
+        f"force_original_aspect_ratio=increase,"
+        f"crop={width}:{height},setsar=1,fps={fps}")
+    if kind == "image" and media and Path(media).exists():
+        inputs += [
+            "-loop", "1", "-t", f"{dur:.3f}",
+            "-i", str(Path(media).resolve())]
+        filters.append(f"[0:v]{scale_crop},format=yuv420p[bg]")
+    elif kind == "video" and media and Path(media).exists():
+        inputs += ["-stream_loop", "-1",
+                   "-i", str(Path(media).resolve())]
+        filters.append(
+            f"[0:v]{scale_crop},trim=0:{dur:.3f},"
+            f"setpts=PTS-STARTPTS,format=yuv420p[bg]")
+    else:
+        color = _sanitize_color(getattr(card, "bg_color", "#000000"))
+        inputs += [
+            "-f", "lavfi", "-t", f"{dur:.3f}",
+            "-i", f"color=c={color}:s={width}x{height}:r={fps}"]
+        filters.append("[0:v]format=yuv420p[bg]")
+    n_video_inputs = 1  # the background is input 0
+    # --- styled text as a faded overlay (PIL PNG, no drawtext) ---
+    fade = max(0.0, float(getattr(card, "text_fade_seconds", 0.0)
+                          or 0.0))
+    text_png = output_path.with_name(
+        output_path.stem + "_cardtext.png")
+    last = "bg"
+    made_text = _render_text_overlay_png(
+        card, width, height, text_png)
+    if made_text:
+        inputs += [
+            "-loop", "1", "-t", f"{dur:.3f}",
+            "-i", str(text_png.resolve())]
+        txt_idx = n_video_inputs
+        n_video_inputs += 1
+        fchain = "format=rgba"
+        if fade > 0:
+            out_st = max(0.0, dur - fade)
+            fchain += (
+                f",fade=t=in:st=0:d={fade:.3f}:alpha=1"
+                f",fade=t=out:st={out_st:.3f}:d={fade:.3f}:alpha=1")
+        filters.append(f"[{txt_idx}:v]{fchain}[txt]")
+        filters.append("[bg][txt]overlay=0:0[v]")
+        last = "v"
+    filter_str = ";".join(filters)
+    has_audio = bool(
+        audio_path and Path(audio_path).exists()
+        and Path(audio_path).stat().st_size > 0)
+    if has_audio:
+        inputs += ["-i", str(Path(audio_path).resolve())]
+    cmd = [
+        "ffmpeg", "-y",
+        *inputs,
+        "-filter_complex", filter_str,
+        "-map", f"[{last}]",
+    ]
+    if has_audio:
+        cmd += ["-map", f"{n_video_inputs}:a",
+                "-c:a", "aac", "-profile:a", "aac_low",
+                "-ar", "48000", "-b:a", "192k", "-ac", "2"]
+    cmd += [
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(fps),
+        "-t", f"{dur:.3f}",
+        "-movflags", "+faststart",
+        str(output_path.resolve()),
+    ]
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=600)
+    except subprocess.TimeoutExpired:
+        return (False, "card render timed out.")
+    finally:
+        try:
+            text_png.unlink(missing_ok=True)
+        except Exception:
+            pass
+    if proc.returncode != 0:
+        return (False,
+                "ffmpeg card render failed. stderr (last 400):\n"
+                + (proc.stderr or "")[-400:])
+    return (True, f"Card rendered to {output_path}.")
+
+
+def render_black_spacer(
+    output_path: Path,
+    duration: float,
+    width: int = 1280,
+    height: int = 720,
+    fps: int = 30,
+) -> Tuple[bool, str]:
+    """Render a silent BLACK video of ``duration`` seconds — the
+    dark-space scene break inserted between groups. No audio track
+    (the concat synthesizes silence / the bed carries over)."""
+    if not ffmpeg_available():
+        return (False, "ffmpeg not found on PATH.")
+    dur = max(0.1, float(duration or 0.0))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-t", f"{dur:.3f}",
+        "-i", f"color=c=black:s={width}x{height}:r={fps}",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(fps),
+        "-t", f"{dur:.3f}", "-movflags", "+faststart",
+        str(output_path.resolve()),
+    ]
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        return (False, "black spacer render timed out.")
+    if proc.returncode != 0:
+        return (False,
+                "black spacer render failed:\n"
+                + (proc.stderr or "")[-300:])
+    return (True, f"Black spacer ({dur:.2f}s) rendered.")
+
+
+def group_card_page(
+    deck: SlideDeckProject, group: SlideGroup,
+) -> Optional[SlidePage]:
+    """When ``group`` is a CARD group — its single placed slide is a
+    title / ending card — return that card page; otherwise None. A
+    card lives in its own group so it gets the same audio overlay
+    and inter-group transition as any other group."""
+    placed = [
+        p for p in deck.pages
+        if getattr(p, "group_id", None) == group.id
+        and getattr(p, "start_time_seconds_in_group", None)
+        is not None]
+    if len(placed) == 1 and getattr(placed[0], "card", None):
+        return placed[0]
+    return None
+
+
+def render_card_group_to_mp4(
+    deck: SlideDeckProject,
+    group: SlideGroup,
+    card_page: SlidePage,
+    output_path: Path,
+    width: int = 1280,
+    height: int = 720,
+    fps: int = 30,
+) -> Tuple[bool, str]:
+    """Render a card group: the card visual (via
+    ``render_card_to_mp4``) held for the card's duration — stretched
+    to the group's audio overlay when that runs longer — with the
+    group's composed narration under it."""
+    overlay = resolve_group_overlay(group, working_dir=deck.working_dir)
+    overlay_dur = float(
+        getattr(group, "overlay_audio_duration_seconds", 0.0) or 0.0)
+    dur = max(0.5, float(
+        getattr(card_page, "duration_seconds", 0.0) or 0.0))
+    if overlay and Path(overlay).exists() and overlay_dur > dur:
+        dur = overlay_dur
+    return render_card_to_mp4(
+        card_page.card, output_path, dur,
+        audio_path=(overlay or ""),
+        width=width, height=height, fps=fps)
 
 
 def render_group_to_mp4(
@@ -1046,8 +1604,26 @@ def stitch_slide_deck_to_mp4(
         if p.image_path and Path(p.image_path).exists()]
     if not pages:
         return (False, "No slides with usable images.")
-    # Stitch images (no audio) first.
-    image_paths = [Path(p.image_path) for p in pages]
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    # Bake any per-slide TEXT OVERLAY onto its image (into a temp
+    # file) so the rest of the pipeline treats it as a normal still.
+    # Non-mutating — we only swap the path used for this render.
+    _baked: List[Path] = []
+    image_paths: List[Path] = []
+    for p in pages:
+        src_img = Path(p.image_path)
+        ov = getattr(p, "text_overlay", None)
+        if ov is not None:
+            try:
+                baked = output_path.parent / (
+                    f"_ov_{p.id}"
+                    f"{Path(p.image_path).suffix or '.png'}")
+                if bake_text_overlay(p.image_path, ov, baked):
+                    src_img = baked
+                    _baked.append(baked)
+            except Exception:
+                pass
+        image_paths.append(src_img)
     image_durations = [
         max(MIN_SLIDE_SECONDS, float(p.duration_seconds))
         for p in pages]
@@ -1080,6 +1656,13 @@ def stitch_slide_deck_to_mp4(
             image_paths, silent_path,
             clip_durations=image_durations)
         offsets_adjusted = False
+    # The baked overlay stills have been consumed by the visual
+    # stitch — drop them now.
+    for bp in _baked:
+        try:
+            bp.unlink(missing_ok=True)
+        except Exception:
+            pass
     if not visual_result.success:
         return (False, visual_result.error)
     # No audio at all? Done.

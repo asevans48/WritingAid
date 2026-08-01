@@ -199,6 +199,52 @@ class AudioEditorDialog(QDialog):
             "for multi-take projects.")
         form.addRow("", self._normalize_check)
 
+        # De-esser (sibilance).
+        self._deesser_spin = QDoubleSpinBox()
+        self._deesser_spin.setRange(0.0, 1.0)
+        self._deesser_spin.setDecimals(2)
+        self._deesser_spin.setSingleStep(0.05)
+        self._deesser_spin.setValue(0.0)
+        self._deesser_spin.setToolTip(
+            "Tame harsh 's'/'sh'/'ch' sounds. 0 = off; 0.4–0.6 is "
+            "the usual range for close-mic'd dialog; higher starts "
+            "to muffle consonants.")
+        form.addRow("De-esser", self._deesser_spin)
+
+        # High-pass (rumble removal).
+        self._highpass_spin = QDoubleSpinBox()
+        self._highpass_spin.setRange(0.0, 300.0)
+        self._highpass_spin.setDecimals(0)
+        self._highpass_spin.setSingleStep(10.0)
+        self._highpass_spin.setSuffix(" Hz")
+        self._highpass_spin.setSpecialValueText("Off")
+        self._highpass_spin.setValue(0.0)
+        self._highpass_spin.setToolTip(
+            "Roll off low-frequency rumble / handling noise below "
+            "this cutoff. 0 = off; 80–120 Hz suits most voice "
+            "recordings.")
+        form.addRow("High-pass", self._highpass_spin)
+
+        # Fades.
+        self._fade_in_spin = QDoubleSpinBox()
+        self._fade_in_spin.setRange(0.0, 10.0)
+        self._fade_in_spin.setDecimals(2)
+        self._fade_in_spin.setSingleStep(0.1)
+        self._fade_in_spin.setSuffix(" s")
+        self._fade_in_spin.setToolTip(
+            "Linear fade up from silence at the start of the "
+            "(trimmed) take.")
+        form.addRow("Fade in", self._fade_in_spin)
+        self._fade_out_spin = QDoubleSpinBox()
+        self._fade_out_spin.setRange(0.0, 10.0)
+        self._fade_out_spin.setDecimals(2)
+        self._fade_out_spin.setSingleStep(0.1)
+        self._fade_out_spin.setSuffix(" s")
+        self._fade_out_spin.setToolTip(
+            "Linear fade down to silence at the end of the "
+            "(trimmed) take.")
+        form.addRow("Fade out", self._fade_out_spin)
+
         outer.addWidget(edits)
 
         # Save mode.
@@ -295,13 +341,20 @@ class AudioEditorDialog(QDialog):
             self._denoise_strength_spin.value())
         gain = float(self._gain_spin.value())
         normalize = self._normalize_check.isChecked()
+        deesser = float(self._deesser_spin.value())
+        highpass = float(self._highpass_spin.value())
+        fade_in = float(self._fade_in_spin.value())
+        fade_out = float(self._fade_out_spin.value())
         if not (denoise or normalize
                 or in_pt > 0 or out_pt > 0
-                or abs(gain) > 0.001):
+                or abs(gain) > 0.001
+                or deesser > 0 or highpass > 0
+                or fade_in > 0 or fade_out > 0):
             QMessageBox.information(
                 self, "No changes",
-                "Set at least one edit (trim, denoise, gain, or "
-                "normalize) before applying.")
+                "Set at least one edit (trim, denoise, de-esser, "
+                "high-pass, gain, normalize, or fade) before "
+                "applying.")
             return
         # Build the dest path.
         if self._mode_overwrite.isChecked():
@@ -331,7 +384,11 @@ class AudioEditorDialog(QDialog):
             denoise=denoise,
             denoise_strength_db=denoise_strength,
             gain_db=gain,
-            normalize=normalize)
+            normalize=normalize,
+            deesser_intensity=deesser,
+            highpass_hz=highpass,
+            fade_in_seconds=fade_in,
+            fade_out_seconds=fade_out)
         self._apply_btn.setEnabled(True)
         if not result.success:
             self._status_label.setText(

@@ -196,8 +196,19 @@ def _concat_mp4_segments(
             offset = max(0.0, cumulative - secs)
             new_v = f"vx{i}"
             new_a = f"ax{i}"
+            # A preceding ``concat`` sets its output timebase to
+            # 1/1000000, while a raw normalized input is 1/fps —
+            # ``xfade`` refuses to combine mismatched timebases
+            # ("do not match" / -22). Force BOTH operands to a
+            # common timebase with ``settb`` right before the
+            # xfade so cut→fade boundary sequences (e.g. a title
+            # card, then content, then a faded ending card) render.
+            lv = f"lv{i}"
+            rv = f"rv{i}"
+            filter_parts.append(f"[{last_v}]settb=AVTB[{lv}]")
+            filter_parts.append(f"[v{i}]settb=AVTB[{rv}]")
             filter_parts.append(
-                f"[{last_v}][v{i}]xfade=transition={kind}:"
+                f"[{lv}][{rv}]xfade=transition={kind}:"
                 f"duration={secs:.3f}:offset={offset:.3f}"
                 f"[{new_v}]")
             filter_parts.append(
@@ -405,6 +416,7 @@ class SlideEditorDialog(QDialog):
         save_chapter_text=None,
         open_in_writer=None,
         scenes_provider=None,
+        llm_provider=None,
         parent: Optional[QWidget] = None,
     ):
         # Independent top-level so the floating chapter prose
@@ -437,6 +449,10 @@ class SlideEditorDialog(QDialog):
         # from actions" button uses it to find every action's
         # favorite image across the whole project.
         self._scenes_provider = scenes_provider
+        # Optional LLM provider (callable returning an LLMClient) —
+        # powers the in-editor agent that can create / edit slides
+        # from a chat with the user. None hides the assistant.
+        self._llm_provider = llm_provider
         # Optional save-back / jump-to-writer callbacks. The slim
         # editor inside the prose window uses these to write
         # chapter edits home + bounce to the main writer for
@@ -506,6 +522,7 @@ class SlideEditorDialog(QDialog):
         self._build_ui()
         self._refresh_slides()
         self._refresh_bg_status()
+        self._refresh_export_size_status()
 
     # ------------------------------------------------------------------
     # UI
@@ -645,6 +662,25 @@ class SlideEditorDialog(QDialog):
             self._on_distribute_group)
         target_row.addWidget(self._distribute_btn)
         group_v.addLayout(target_row)
+        # ── Title / ending cards ─────────────────────────────
+        cards_row = QHBoxLayout()
+        self._add_title_card_btn = QPushButton("➕ Title card")
+        self._add_title_card_btn.setToolTip(
+            "Add a title card group at the FRONT of the deck: a "
+            "color / image / video background with styled text, its "
+            "own audio, and a transition into the first group.")
+        self._add_title_card_btn.clicked.connect(
+            lambda: self._on_add_card("title"))
+        cards_row.addWidget(self._add_title_card_btn)
+        self._add_ending_card_btn = QPushButton("➕ Ending card")
+        self._add_ending_card_btn.setToolTip(
+            "Add an ending card group at the BACK of the deck — "
+            "same features as the title card.")
+        self._add_ending_card_btn.clicked.connect(
+            lambda: self._on_add_card("ending"))
+        cards_row.addWidget(self._add_ending_card_btn)
+        cards_row.addStretch()
+        group_v.addLayout(cards_row)
 
         # ── Stitch Order panel ───────────────────────────────
         # Visible record of how the deck preview / export will
@@ -696,6 +732,20 @@ class SlideEditorDialog(QDialog):
         self._stitch_trans_secs.editingFinished.connect(
             self._on_stitch_transition_secs_changed)
         stitch_row.addWidget(self._stitch_trans_secs)
+        stitch_row.addWidget(QLabel("  Black gap before:"))
+        self._stitch_black_secs = QDoubleSpinBox()
+        self._stitch_black_secs.setRange(0.0, 30.0)
+        self._stitch_black_secs.setDecimals(2)
+        self._stitch_black_secs.setSingleStep(0.25)
+        self._stitch_black_secs.setSuffix(" s")
+        self._stitch_black_secs.setToolTip(
+            "Insert this many seconds of BLACK screen before the "
+            "selected group — a dark scene-break that eases the "
+            "transition. 0 = none. The background bed keeps playing "
+            "under the black.")
+        self._stitch_black_secs.editingFinished.connect(
+            self._on_stitch_black_secs_changed)
+        stitch_row.addWidget(self._stitch_black_secs)
         stitch_row.addStretch()
         stitch_v.addLayout(stitch_row)
         group_v.addWidget(stitch_box)
@@ -813,6 +863,42 @@ class SlideEditorDialog(QDialog):
             self._on_bg_complete_toggled)
         bg_v.addWidget(self._bg_complete_check)
         group_v.addWidget(bg_box)
+
+        # ── Export size / compression ────────────────────────
+        comp_box = QGroupBox("Export size / compression")
+        comp_v = QVBoxLayout(comp_box)
+        comp_row = QHBoxLayout()
+        comp_row.addWidget(QLabel("Target size:"))
+        self._export_target_spin = QDoubleSpinBox()
+        self._export_target_spin.setRange(0.0, 100000.0)
+        self._export_target_spin.setDecimals(0)
+        self._export_target_spin.setSingleStep(5.0)
+        self._export_target_spin.setSuffix(" MB")
+        self._export_target_spin.setSpecialValueText(
+            "Off (quality default)")
+        self._export_target_spin.setValue(
+            float(getattr(
+                self._deck, "export_target_size_mb", 0.0) or 0.0))
+        self._export_target_spin.setToolTip(
+            "When set, the finished MP4 is re-encoded (two-pass) to "
+            "land near this size. 0 = no target — encode at the "
+            "default quality.")
+        self._export_target_spin.valueChanged.connect(
+            self._on_export_target_changed)
+        comp_row.addWidget(self._export_target_spin)
+        self._export_recommend_btn = QPushButton("🤖 Recommend…")
+        self._export_recommend_btn.setToolTip(
+            "Let the assistant suggest a target size for this deck "
+            "— plus title/ending cards and material worth adding.")
+        self._export_recommend_btn.clicked.connect(
+            self._on_export_recommend)
+        comp_row.addWidget(self._export_recommend_btn)
+        comp_row.addStretch()
+        comp_v.addLayout(comp_row)
+        self._export_size_status = QLabel("")
+        self._export_size_status.setWordWrap(True)
+        comp_v.addWidget(self._export_size_status)
+        group_v.addWidget(comp_box)
 
         # ── Slide tab body: form + script + audio ────────────
         slide_box = QGroupBox("Selected slide")
@@ -1131,6 +1217,17 @@ class SlideEditorDialog(QDialog):
         groups_scroll.setWidget(groups_tab)
         self._tabs.addTab(groups_scroll, "🧩 Groups")
         self._tabs.addTab(script_tab, "📝 Master script")
+        # ── Assistant tab: natural-language slide creation / editing
+        # via the deterministic slide_agent tools. Only shown when an
+        # LLM provider is wired in.
+        if self._llm_provider is not None:
+            from src.ui.video_studio.slide_agent_panel import (
+                SlideAgentPanel)
+            self._agent_panel = SlideAgentPanel(
+                self._deck, llm_provider=self._llm_provider)
+            self._agent_panel.deckChanged.connect(
+                self._on_agent_deck_changed)
+            self._tabs.addTab(self._agent_panel, "🤖 Assistant")
         splitter.addWidget(self._tabs)
         # Tabs claim ~3x the room of the slide list — the list
         # is just a navigator, the tabs are the workspace.
@@ -1698,6 +1795,8 @@ class SlideEditorDialog(QDialog):
         editable = (row > 0)
         self._stitch_trans_combo.setEnabled(editable)
         self._stitch_trans_secs.setEnabled(editable)
+        if hasattr(self, "_stitch_black_secs"):
+            self._stitch_black_secs.setEnabled(editable)
         if (row < 0 or row >= len(self._deck.groups)
                 or not editable):
             self._stitch_trans_combo.blockSignals(True)
@@ -1706,6 +1805,10 @@ class SlideEditorDialog(QDialog):
             self._stitch_trans_secs.blockSignals(True)
             self._stitch_trans_secs.setValue(0.0)
             self._stitch_trans_secs.blockSignals(False)
+            if hasattr(self, "_stitch_black_secs"):
+                self._stitch_black_secs.blockSignals(True)
+                self._stitch_black_secs.setValue(0.0)
+                self._stitch_black_secs.blockSignals(False)
             return
         g = self._deck.groups[row]
         cur_kind = (
@@ -1721,6 +1824,19 @@ class SlideEditorDialog(QDialog):
             getattr(g, "inter_group_transition_seconds", 0.0)
             or 0.0))
         self._stitch_trans_secs.blockSignals(False)
+        if hasattr(self, "_stitch_black_secs"):
+            self._stitch_black_secs.blockSignals(True)
+            self._stitch_black_secs.setValue(float(
+                getattr(g, "pre_black_seconds", 0.0) or 0.0))
+            self._stitch_black_secs.blockSignals(False)
+
+    def _on_stitch_black_secs_changed(self) -> None:
+        row = self._stitch_list.currentRow()
+        if row <= 0 or row >= len(self._deck.groups):
+            return
+        self._deck.groups[row].pre_black_seconds = float(
+            self._stitch_black_secs.value())
+        self.deck_modified.emit()
 
     def _on_stitch_selection_changed(self) -> None:
         self._refresh_stitch_detail()
@@ -1821,6 +1937,62 @@ class SlideEditorDialog(QDialog):
         page.group_id = new_gid
         page.updated_at = datetime.now()
 
+    def _on_add_card(self, role: str) -> None:
+        """Create a title / ending CARD group and open its editor.
+        A card is its own single-slide group so it inherits the
+        same audio overlay + inter-group transition as any group;
+        title cards pin to the front, ending cards to the back."""
+        from src.video_studio.models import TitleCard
+        is_title = (role == "title")
+        card = TitleCard(
+            role=role,
+            title=("Title" if is_title else "The End"),
+            subtitle=("Subtitle" if is_title else ""),
+            text_fade_seconds=0.6)
+        page = SlidePage(
+            label=("Title card" if is_title else "Ending card"),
+            card=card,
+            duration_seconds=4.0,
+            start_time_seconds_in_group=0.0)
+        group = SlideGroup(
+            name=("Title card" if is_title else "Ending card"))
+        page.group_id = group.id
+        group.page_ids = [page.id]
+        self._deck.pages.append(page)
+        if is_title:
+            self._deck.groups.insert(0, group)
+        else:
+            self._deck.groups.append(group)
+        self._refresh_groups()
+        self._refresh_slides()
+        self.deck_modified.emit()
+        # Open the card's group in the GROUP EDITOR — that's where
+        # the writer edits the card (🎬 Edit card…) and records /
+        # edits its audio, exactly like any other group.
+        self._edit_card_audio(group)
+
+
+    def _edit_card_audio(self, group) -> None:
+        """Open the full group editor on a card group. The group
+        editor detects the card and adds a '🎬 Edit card…' button,
+        so the writer edits the card's appearance AND records /
+        edits its audio there — the same toolset as any group. On
+        close, refresh so any card / timing changes show."""
+        from src.ui.video_studio.group_editor_dialog import (
+            GroupEditorDialog)
+        dlg = GroupEditorDialog(
+            self._deck, group,
+            chapters_provider=self._chapters_provider,
+            save_chapter_text=self._save_chapter_text_cb,
+            open_in_writer=self._open_in_writer_cb,
+            scenes_provider=self._scenes_provider)
+        dlg.setWindowTitle("🎬 Card — edit & record")
+        dlg.deck_modified.connect(self.deck_modified)
+        dlg.finished.connect(lambda *_a: self._after_group_edit())
+        self._card_audio_editor = dlg
+        dlg.show()
+        dlg.raise_()
+
     def _on_new_group(self) -> None:
         name, ok = QInputDialog.getText(
             self, "New slide group", "Group name:")
@@ -1876,6 +2048,9 @@ class SlideEditorDialog(QDialog):
             None)
         if g is None:
             return
+        # Card groups open the SAME group editor as any group — it
+        # detects the card and adds a "🎬 Edit card…" button, so
+        # appearance editing and audio recording live in one place.
         from src.ui.video_studio.group_editor_dialog import (
             GroupEditorDialog)
         # The group editor owns its own mic picker (recording
@@ -2109,6 +2284,147 @@ class SlideEditorDialog(QDialog):
     def _on_bg_complete_toggled(self, checked: bool) -> None:
         self._deck.background_complete_final_loop = bool(checked)
         self.deck_modified.emit()
+
+    # ------------------------------------------------------------------
+    # Export size / compression + agent recommendations
+    # ------------------------------------------------------------------
+    def _on_agent_deck_changed(self) -> None:
+        """The in-editor assistant applied tool calls to the deck —
+        refresh every panel so the change is visible, and persist."""
+        try:
+            self._refresh_slides()
+            self._refresh_groups()
+            self._refresh_stitch_list()
+            self._refresh_bg_status()
+            self._refresh_export_size_status()
+            # Pull the compression + background controls back in sync
+            # with any values the agent set.
+            if hasattr(self, "_export_target_spin"):
+                self._export_target_spin.blockSignals(True)
+                self._export_target_spin.setValue(float(getattr(
+                    self._deck, "export_target_size_mb", 0.0) or 0.0))
+                self._export_target_spin.blockSignals(False)
+            if hasattr(self, "_bg_gain_spin"):
+                self._bg_gain_spin.blockSignals(True)
+                self._bg_gain_spin.setValue(float(getattr(
+                    self._deck, "background_gain_db", -12.0) or -12.0))
+                self._bg_gain_spin.blockSignals(False)
+            if hasattr(self, "_bg_universal_check"):
+                self._bg_universal_check.blockSignals(True)
+                self._bg_universal_check.setChecked(bool(getattr(
+                    self._deck, "background_is_universal", False)))
+                self._bg_universal_check.blockSignals(False)
+        except Exception as exc:
+            print(f"[slide editor] agent refresh failed: {exc}")
+        self.deck_modified.emit()
+
+    def _on_export_target_changed(self, value: float) -> None:
+        self._deck.export_target_size_mb = float(value)
+        self._refresh_export_size_status()
+        self.deck_modified.emit()
+
+    def _on_export_recommend(self) -> None:
+        """Suggest a compression target plus card / material
+        additions. Heuristic-first (always works); enriched by the
+        LLM director when one is wired in."""
+        from src.video_studio.slide_deck import (
+            recommend_export_target_mb, estimate_deck_duration_seconds,
+            group_card_page)
+        target, rationale = recommend_export_target_mb(self._deck)
+        dur = estimate_deck_duration_seconds(self._deck)
+        tips: list = []
+        # Cards.
+        has_title = any(
+            (cp := group_card_page(self._deck, g)) is not None
+            and getattr(cp.card, "role", "") == "title"
+            for g in self._deck.groups)
+        has_ending = any(
+            (cp := group_card_page(self._deck, g)) is not None
+            and getattr(cp.card, "role", "") == "ending"
+            for g in self._deck.groups)
+        if not has_title:
+            tips.append(
+                "Add a TITLE card up front (deck name / chapter) — "
+                "gives viewers context before the first slide.")
+        if not has_ending:
+            tips.append(
+                "Add an ENDING card (credits / 'The End' / call to "
+                "action) so the deck closes deliberately.")
+        # Material.
+        silent_groups = [
+            g.name or g.id for g in self._deck.groups
+            if not (getattr(g, "audio_clips", None) or [])
+            and group_card_page(self._deck, g) is None]
+        if silent_groups:
+            tips.append(
+                "These groups have no narration yet: "
+                + ", ".join(silent_groups[:6])
+                + (" …" if len(silent_groups) > 6 else "")
+                + " — record or import audio for them.")
+        bg_group = getattr(self._deck, "background_group", None)
+        if not (bg_group and (getattr(
+                bg_group, "audio_clips", None) or [])):
+            tips.append(
+                "No background bed — a soft music loop under the "
+                "whole deck lifts production value.")
+        # Optional LLM enrichment.
+        llm_line = self._maybe_llm_recommend(dur, target)
+        body = (
+            f"Suggested export size: ~{target:.0f} MB\n{rationale}\n\n"
+            "Suggestions:\n  • " + "\n  • ".join(tips)
+            if tips else
+            f"Suggested export size: ~{target:.0f} MB\n{rationale}")
+        if llm_line:
+            body += f"\n\nAssistant:\n{llm_line}"
+        box = QMessageBox(self)
+        box.setWindowTitle("Recommendation")
+        box.setText(body)
+        apply_btn = box.addButton(
+            f"Set target to {target:.0f} MB",
+            QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        if box.clickedButton() is apply_btn:
+            self._export_target_spin.setValue(target)
+
+    def _maybe_llm_recommend(
+            self, duration: float, target_mb: float) -> str:
+        """Ask the LLM director for a one-paragraph recommendation
+        when one is available; return "" otherwise (heuristic-only).
+        """
+        llm = getattr(self, "_llm_provider", None)
+        if llm is None or not hasattr(llm, "generate_text"):
+            return ""
+        try:
+            n_groups = len(self._deck.groups)
+            prompt = (
+                "You are helping polish a narrated slide-deck video. "
+                f"It has {n_groups} group(s) and runs about "
+                f"{duration:.0f} seconds. In 2-3 sentences, "
+                "recommend a target export size for easy sharing and "
+                "suggest one title-card and one ending-card idea and "
+                "any material that would strengthen it. Be concise.")
+            out = llm.generate_text(prompt)
+            return (out or "").strip()[:600]
+        except Exception:
+            return ""
+
+    def _refresh_export_size_status(self) -> None:
+        if not hasattr(self, "_export_size_status"):
+            return
+        from src.video_studio.slide_deck import (
+            estimate_deck_duration_seconds)
+        dur = estimate_deck_duration_seconds(self._deck)
+        target = float(getattr(
+            self._deck, "export_target_size_mb", 0.0) or 0.0)
+        if target > 0:
+            self._export_size_status.setText(
+                f"~{dur:.0f}s deck · target {target:.0f} MB "
+                "(two-pass on export).")
+        else:
+            self._export_size_status.setText(
+                f"~{dur:.0f}s deck · no size target "
+                "(default quality). Use 🤖 Recommend for a suggestion.")
 
     def _pulse_bg_rec(self) -> None:
         self._bg_rec_pulse_on = not self._bg_rec_pulse_on
@@ -2414,9 +2730,21 @@ class SlideEditorDialog(QDialog):
                         audio_report.append(
                             f"'{getattr(group,'name','?')}': "
                             f"diag failed: {_diag_exc}")
-                    ok, msg = render_group_to_mp4(
-                        self._deck, group, seg_path,
-                        exclude_background=deck_bg_universal)
+                    # A card group (its single placed slide is a
+                    # title / ending card) renders via the card
+                    # renderer; everything else via the normal group
+                    # renderer.
+                    from src.video_studio.slide_deck import (
+                        group_card_page as _card_page,
+                        render_card_group_to_mp4 as _render_card)
+                    _cp = _card_page(self._deck, group)
+                    if _cp is not None:
+                        ok, msg = _render_card(
+                            self._deck, group, _cp, seg_path)
+                    else:
+                        ok, msg = render_group_to_mp4(
+                            self._deck, group, seg_path,
+                            exclude_background=deck_bg_universal)
                     _seg_label = group.name or group.id
                     if not ok:
                         seg_audio_report.append(
@@ -2458,6 +2786,28 @@ class SlideEditorDialog(QDialog):
                 print(
                     f"[deck render] seg{i} '{_seg_label}' "
                     f"rendered audio={_seg_audio}")
+                # Dark-space scene break BEFORE this group — insert
+                # a black spacer segment (hard cut into it; the
+                # group's own transition then plays out of the
+                # black). Skipped for the very first segment.
+                if group is not None and segment_paths:
+                    pb = float(getattr(
+                        group, "pre_black_seconds", 0.0) or 0.0)
+                    if pb > 0:
+                        from src.video_studio.slide_deck import (
+                            render_black_spacer)
+                        black_path = (
+                            segments_dir / f"black_{i:03d}.mp4")
+                        bok, _bmsg = render_black_spacer(
+                            black_path, pb)
+                        if bok:
+                            seg_transitions.append(("cut", 0.0))
+                            segment_paths.append(black_path)
+                            # Bed keeps playing under the black.
+                            segment_meta.append((None, False))
+                            seg_audio_report.append(
+                                f"black spacer {pb:.1f}s before "
+                                f"'{_seg_label}'")
                 if segment_paths:
                     kind = (
                         getattr(
@@ -2473,15 +2823,25 @@ class SlideEditorDialog(QDialog):
                          if group is not None else 0.0) or 0.0)
                     seg_transitions.append((kind, secs))
                 segment_paths.append(seg_path)
-                # In OFF (gap-fill) mode a group with its own
-                # background-loop lane keeps it; in universal mode
-                # every group renders narration-only, so no segment
-                # "owns" a bed and the whole deck is one region.
-                seg_has_bed = bool(
-                    group is not None
-                    and not deck_bg_universal
-                    and _has_bed(group))
-                segment_meta.append((group, seg_has_bed))
+                # Should the deck bed be SUPPRESSED under this
+                # segment? Universal mode replaces group beds, so
+                # only an explicit card-suppress hides it there;
+                # gap-fill mode also defers to a group's own bed.
+                if group is not None:
+                    if deck_bg_universal:
+                        _sup = bool(getattr(
+                            group,
+                            "suppress_deck_background", False))
+                    else:
+                        _sup = (
+                            _has_bed(group)
+                            or bool(getattr(
+                                group,
+                                "suppress_deck_background",
+                                False)))
+                else:
+                    _sup = False
+                segment_meta.append((group, _sup))
             if not segment_paths:
                 return (
                     False,
@@ -2544,13 +2904,13 @@ class SlideEditorDialog(QDialog):
                          bool(segment_meta[si][1]))
                         for si in range(len(seg_durs))]
                     universal_len = _ffprobe_duration(Path(bg))
+                    # segment_meta's suppress flag already encodes
+                    # universal-vs-gap-fill AND per-card suppression,
+                    # so the planner just walks the allowed runs.
                     regions, extra_tail = \
                         plan_universal_background_regions(
                             group_timeline, deck_dur,
                             universal_len,
-                            bool(getattr(
-                                self._deck,
-                                "background_is_universal", False)),
                             bool(getattr(
                                 self._deck,
                                 "background_complete_final_loop",
@@ -2582,6 +2942,22 @@ class SlideEditorDialog(QDialog):
                             "fill (every group owns a bed).")
             except Exception as _bg_exc:
                 report += f"\n\nBackground bed error: {_bg_exc}"
+            # Compress the finished file to the writer's target size
+            # (two-pass) when one is set — the very last step so it
+            # sizes the fully-composed deck (cards, audio, bed).
+            try:
+                target_mb = float(getattr(
+                    self._deck, "export_target_size_mb", 0.0) or 0.0)
+                if target_mb > 0:
+                    from src.video_studio.slide_deck import (
+                        compress_to_target_size)
+                    cok, cmsg = compress_to_target_size(
+                        out_path, target_mb)
+                    report += ("\n\nCompression: "
+                               + (cmsg if cok
+                                  else f"FAILED — {cmsg}"))
+            except Exception as _cx:
+                report += f"\n\nCompression error: {_cx}"
             # Probe the finished file so the writer sees at a
             # glance whether the export actually carries an audio
             # track — the single most useful fact for a

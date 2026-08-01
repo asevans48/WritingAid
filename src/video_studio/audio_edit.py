@@ -47,6 +47,7 @@ def edit_audio(
     fade_in_seconds: float = 0.0,
     fade_out_seconds: float = 0.0,
     highpass_hz: float = 0.0,
+    deesser_intensity: float = 0.0,
 ) -> AudioEditResult:
     """Apply an edit chain to ``src`` and write the result to
     ``dest``. Empty / zero parameters are no-ops, so callers can
@@ -99,6 +100,13 @@ def edit_audio(
         # Treat ``denoise_strength_db`` as the noise floor —
         # more negative → more aggressive.
         filters.append(f"afftdn=nf={denoise_strength_db:.1f}")
+    if deesser_intensity > 0:
+        # Tame sibilance ('s'/'sh'/'ch'). Same filter the
+        # multi-clip mixer uses: intensity 0..1, mode 'o'
+        # (de-essed output). Runs before gain so a following
+        # boost compensates for the slight loudness dip.
+        di = max(0.0, min(1.0, float(deesser_intensity)))
+        filters.append(f"deesser=i={di:.3f}:m=0.5:f=0.5:s=o")
     if gain_db != 0:
         filters.append(f"volume={gain_db:.2f}dB")
     if normalize:

@@ -393,9 +393,20 @@ class SceneActionDialog(QDialog):
             "assembling the chapter deck — pick the best render.")
         self._set_favorite_btn.clicked.connect(
             self._on_set_favorite_image)
+        # Add / edit a styled TEXT OVERLAY (title, subtitle, color,
+        # position, effects) baked onto this image when it becomes a
+        # slide — reuses the title-card editor in overlay mode.
+        self._text_overlay_btn = QPushButton("🎬 Text & effects…")
+        self._text_overlay_btn.setToolTip(
+            "Add or edit text (title / subtitle) with color, "
+            "position, and effects (outline, shadow, box) burned "
+            "onto the selected image when it renders as a slide.")
+        self._text_overlay_btn.clicked.connect(
+            self._on_edit_text_overlay)
         btn_row.addWidget(self._generate_image_btn)
         btn_row.addWidget(self._upload_image_btn)
         btn_row.addWidget(self._set_favorite_btn)
+        btn_row.addWidget(self._text_overlay_btn)
         btn_row.addWidget(self._open_image_btn)
         btn_row.addWidget(self._delete_image_btn)
         btn_row.addStretch()
@@ -924,6 +935,50 @@ class SceneActionDialog(QDialog):
                     Qt.ItemDataRole.UserRole) == new_img.id):
                 self._images_list.setCurrentRow(i)
                 break
+
+    def _selected_image(self):
+        """The currently-selected ActionImage, or None."""
+        item = self._images_list.currentItem()
+        if item is None:
+            return None
+        img_id = item.data(Qt.ItemDataRole.UserRole)
+        return next(
+            (i for i in self._action.images if i.id == img_id),
+            None)
+
+    def _on_edit_text_overlay(self) -> None:
+        """Add / edit the selected image's styled text overlay
+        (title, subtitle, color, position, effects). Baked onto the
+        image when it renders as a slide."""
+        img = self._selected_image()
+        if img is None:
+            QMessageBox.information(
+                self, "No image selected",
+                "Pick an image first, then click "
+                "'🎬 Text & effects…' to add text to it.")
+            return
+        from src.video_studio.models import TitleCard
+        from src.ui.video_studio.card_editor_dialog import (
+            CardEditorDialog)
+        # Edit a working copy so Cancel discards cleanly.
+        existing = getattr(img, "overlay", None)
+        card = (
+            existing.model_copy(deep=True) if existing is not None
+            else TitleCard(role="overlay", title="",
+                           text_fade_seconds=0.0))
+        dlg = CardEditorDialog(
+            card, title_bar="Slide text & effects",
+            text_overlay_mode=True, parent=self)
+        if dlg.exec():
+            # An empty overlay (no text) clears it.
+            if not (card.title.strip() or card.subtitle.strip()):
+                img.overlay = None
+            else:
+                card.role = "overlay"
+                img.overlay = card
+            from datetime import datetime
+            self._action.updated_at = datetime.now()
+            self._refresh_image_list()
 
     def _on_set_favorite_image(self) -> None:
         """Mark the currently-selected image as the action's

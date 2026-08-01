@@ -1993,6 +1993,7 @@ class VideoStudioWidget(QWidget):
         # cheaper than calling ``action.favorite_image()`` per
         # page when the deck is big.
         action_favorites: dict = {}
+        action_overlays: dict = {}  # action_id → TitleCard | None
         for scene in (getattr(studio, "scenes", []) or []):
             for action in (
                     getattr(scene, "actions", []) or []):
@@ -2005,6 +2006,11 @@ class VideoStudioWidget(QWidget):
                 path = getattr(fav, "file_path", "") or ""
                 if path:
                     action_favorites[action.id] = path
+                # Track the favorite image's text overlay too so a
+                # slide picks up overlay edits made in the action
+                # editor (or a favorite swap that changes it).
+                action_overlays[action.id] = getattr(
+                    fav, "overlay", None)
         if not action_favorites:
             return 0
         updated = 0
@@ -2018,9 +2024,18 @@ class VideoStudioWidget(QWidget):
                 new_path = action_favorites.get(aid)
                 if not new_path:
                     continue
+                changed = False
                 if (getattr(page, "image_path", "")
                         != new_path):
                     page.image_path = new_path
+                    changed = True
+                # Sync the per-slide text overlay from the favorite.
+                if aid in action_overlays:
+                    new_ov = action_overlays[aid]
+                    if getattr(page, "text_overlay", None) is not new_ov:
+                        page.text_overlay = new_ov
+                        changed = True
+                if changed:
                     try:
                         page.updated_at = _dt.now()
                     except Exception:
@@ -2936,12 +2951,51 @@ class VideoStudioWidget(QWidget):
                 chapter_id=chapter_id,
                 chapter_label=chapter_label)
             studio.slide_decks.append(deck)
+        elif not deck.pages:
+            # A previous open built an empty deck (e.g. before any
+            # favorites existed, or under the old slideshow-only
+            # gate). Rebuild now that favorited action images may
+            # be present — an empty deck has nothing to preserve.
+            rebuilt = build_slide_deck_from_chapter(
+                scenes, working_dir,
+                chapter_id=chapter_id,
+                chapter_label=chapter_label)
+            if rebuilt.pages:
+                deck.pages = rebuilt.pages
+        # Nudge the writer about any action that has several images
+        # but no favorite chosen — those silently fall back to the
+        # first image. Non-blocking: the deck still builds.
+        needs_fav = []
+        for scene in scenes:
+            for action in (getattr(scene, "actions", None) or []):
+                try:
+                    if action.needs_favorite_choice():
+                        needs_fav.append(
+                            f"{scene.name or 'Scene'} → "
+                            f"{action.name or 'action'}")
+                except Exception:
+                    pass
         if not deck.pages:
-            QMessageBox.information(
-                self, "No slides",
-                "None of this chapter's scenes have a favorite "
-                "image on disk. Generate or mark favorites first.")
+            hint = (
+                "None of this chapter's scenes have an image on "
+                "disk for their actions. Generate or add images "
+                "for the actions first.")
+            if needs_fav:
+                hint += (
+                    "\n\nSome actions have multiple images but no "
+                    "favorite chosen:\n  • "
+                    + "\n  • ".join(needs_fav[:12]))
+            QMessageBox.information(self, "No slides", hint)
             return
+        if needs_fav:
+            QMessageBox.information(
+                self, "Favorites needed",
+                "These actions have more than one image but no "
+                "favorite chosen — the deck used the first image "
+                "for each. Set a favorite in the action editor to "
+                "control which one shows:\n  • "
+                + "\n  • ".join(needs_fav[:12])
+                + ("\n  • …" if len(needs_fav) > 12 else ""))
         # Run the favorite propagation BEFORE we open the
         # editor so any stale ``page.image_path`` values get
         # rewritten to the current favorites. Self-heals decks
@@ -2963,6 +3017,7 @@ class VideoStudioWidget(QWidget):
             save_chapter_text=self._save_chapter_text,
             open_in_writer=self._jump_to_writer,
             scenes_provider=self._scenes_snapshot_for_reading,
+            llm_provider=self._llm_provider,
             parent=self)
         # Non-modal show so the floating chapter prose window
         # remains interactive — a modal slide editor would block

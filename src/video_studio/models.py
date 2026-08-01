@@ -70,6 +70,12 @@ class ActionImage(BaseModel):
     # internal montage within a single beat.
     included_in_slideshow: bool = True
     display_seconds: float = 3.0
+    # Optional styled TEXT OVERLAY baked onto this image when it
+    # becomes a slide — title / subtitle with color, position, and
+    # effects (outline / shadow / box). Reuses the ``TitleCard``
+    # model; only its text + effect fields matter here (the image
+    # itself is the background). ``None`` = no overlay.
+    overlay: Optional["TitleCard"] = None
     created_at: datetime = Field(default_factory=datetime.now)
 
 
@@ -132,12 +138,48 @@ class SceneAction(BaseModel):
     updated_at: datetime = Field(default_factory=datetime.now)
 
     def favorite_image(self) -> Optional[ActionImage]:
+        """The image to use for this action's slide.
+
+        Rules:
+          * No images        → None.
+          * Exactly one image → that image IS the favorite (no
+            explicit pick needed).
+          * Several images    → the explicitly-favorited one; if
+            none is set (or it points at a deleted image) fall back
+            to the first so the deck still builds, but
+            ``needs_favorite_choice()`` will flag that the writer
+            should pick one.
+        """
+        if not self.images:
+            return None
+        if len(self.images) == 1:
+            return self.images[0]
+        if self.favorite_image_id:
+            for img in self.images:
+                if img.id == self.favorite_image_id:
+                    return img
+        return self.images[0]
+
+    def ensure_single_image_favorite(self) -> bool:
+        """Persist the favorite when the action has exactly one
+        image and none is marked yet — a lone image is always the
+        favorite. Returns True when it set one."""
+        if (self.favorite_image_id is None
+                and len(self.images) == 1):
+            self.favorite_image_id = self.images[0].id
+            return True
+        return False
+
+    def needs_favorite_choice(self) -> bool:
+        """True when the action has MORE THAN ONE image but no
+        valid explicit favorite — the writer must choose which one
+        the slide deck should use."""
+        if len(self.images) <= 1:
+            return False
         if not self.favorite_image_id:
-            return self.images[0] if self.images else None
-        for img in self.images:
-            if img.id == self.favorite_image_id:
-                return img
-        return self.images[0] if self.images else None
+            return True
+        return not any(
+            i.id == self.favorite_image_id for i in self.images)
 
     def included_images(self) -> List[ActionImage]:
         """Images marked for inclusion in the scene's slide deck."""
@@ -221,16 +263,6 @@ def style_preset_phrase(key: str) -> str:
         if k == key and k:
             return phrase
     return ""
-
-
-def style_preset_label(key: str) -> str:
-    """Human-readable label for a preset key (the second tuple
-    item when the key is empty serves as the dropdown's first
-    entry; for real keys we render the key with underscores
-    swapped for spaces and title-cased)."""
-    if not key:
-        return "(no preset)"
-    return key.replace("_", " ").title()
 
 
 class Narration(BaseModel):
@@ -327,6 +359,48 @@ class ChapterDeck(BaseModel):
     updated_at: datetime = Field(default_factory=datetime.now)
 
 
+class TitleCard(BaseModel):
+    """A generated title / ending card: a colored, image, or video
+    background with styled text over it. When a ``SlidePage`` carries
+    a ``card``, it is rendered from these fields instead of from an
+    ``image_path`` favorite — but it still flows through the group
+    timeline like any slide (its own duration, audio overlay, and
+    inter-group transition all apply)."""
+    # Background source: a flat color, a still image, or a video.
+    kind: str = "color"                 # "color" | "image" | "video"
+    bg_color: str = "#000000"           # used when kind == "color"
+    bg_media_path: str = ""             # image / video file path
+    # Text. Title is the big line; subtitle is the smaller line under
+    # it. Either can be blank.
+    title: str = ""
+    subtitle: str = ""
+    title_color: str = "#FFFFFF"
+    subtitle_color: str = "#DDDDDD"
+    title_size: int = 72                # px at 1080p; scaled to render
+    subtitle_size: int = 40
+    # Vertical placement of the text block.
+    text_position: str = "center"       # "center" | "top" | "bottom"
+    # Seconds to fade the text in at the start and out at the end.
+    # 0 = hard on/off. The card's background is always solid; only
+    # the text fades. (Fade applies to CARDS; a per-slide text
+    # overlay is baked into a still, so its fade is ignored.)
+    text_fade_seconds: float = 0.6
+    # ── Effects (work on both cards and baked-in slide overlays) ──
+    # Outline / stroke around the glyphs. Empty = no outline.
+    text_outline_color: str = ""        # e.g. "#000000"
+    text_outline_width: int = 0         # px at 1080p; 0 = off
+    # Soft drop shadow behind the text.
+    text_shadow: bool = False
+    # Semi-transparent box behind the text block for legibility over
+    # busy images. Empty = no box.
+    text_box_color: str = ""            # e.g. "#000000"
+    text_box_opacity: float = 0.5       # 0..1
+    # Role marker so the editor can label / order these — a "title"
+    # card is pinned to the front, an "ending" card to the back,
+    # "overlay" is a per-slide text overlay baked onto the image.
+    role: str = "card"       # "title" | "ending" | "card" | "overlay"
+
+
 class SlidePage(BaseModel):
     """One page of a SlideDeckProject — an image with a narration
     take, a duration the stitcher honors, and optional script text
@@ -336,12 +410,24 @@ class SlidePage(BaseModel):
     page has at most one ``audio_path`` (record-and-replace flow);
     ``locked_duration`` lets the writer keep a slide at exactly N
     seconds even if a longer audio take lands on it.
+
+    When ``card`` is set, this page is a generated title / ending
+    card (color / image / video background with styled text) rather
+    than a favorite-image slide.
     """
     id: str = Field(
         default_factory=lambda: f"page_{uuid4().hex[:10]}")
     index: int = 0
     label: str = ""
     image_path: str = ""
+    # When set, this page is a generated title / ending card. Its
+    # visual is rendered from ``card`` (color / image / video +
+    # styled text); ``image_path`` may be blank for such pages.
+    card: Optional["TitleCard"] = None
+    # Optional styled TEXT OVERLAY baked onto this slide's image at
+    # render time (title / subtitle + color + effects). Carried over
+    # from the source action image's ``overlay``. ``None`` = none.
+    text_overlay: Optional["TitleCard"] = None
     audio_path: str = ""
     audio_duration_seconds: float = 0.0
     duration_seconds: float = 4.0
@@ -554,6 +640,17 @@ class SlideGroup(BaseModel):
     # very first group in the deck.
     inter_group_transition_in: str = "cut"
     inter_group_transition_seconds: float = 0.0
+    # Seconds of BLACK screen inserted BEFORE this group (between it
+    # and the previous group) to give the eye a beat and aid the
+    # transition — a scene break. 0 = none. Ignored for the very
+    # first group. The deck bed keeps playing under the black for
+    # audio continuity.
+    pre_black_seconds: float = 0.0
+    # When True, the deck-wide background bed is NOT played under
+    # this group. Exposed on title / ending cards so a card can be
+    # silent (or carry only its own audio) while the bed plays
+    # under everything else.
+    suppress_deck_background: bool = False
     created_at: datetime = Field(default_factory=datetime.now)
 
     @model_validator(mode="after")
@@ -691,6 +788,12 @@ class SlideDeckProject(BaseModel):
     # Provenance note shown in the UI — e.g. "copied from group
     # 'Bar' · Track 2", "imported bed.wav", or "recorded". Cosmetic.
     background_source_label: str = ""
+    # Export compression. When > 0, the finished MP4 is re-encoded
+    # (two-pass x264) to land near this many megabytes — the writer
+    # sets it directly or accepts the agent's recommendation. 0 =
+    # no target (quality default). The renderer computes the video
+    # bitrate from this and the deck's runtime.
+    export_target_size_mb: float = 0.0
     # Average reading speed used by ``suggest_timings_from_script``
     # (words per minute). 150 wpm is a slightly slow voiceover
     # pace, which gives a forgiving timing budget; writers can
@@ -1243,9 +1346,6 @@ class VideoStudio(BaseModel):
     def hops_out_of(self, scene_id: str) -> List[SceneHop]:
         return [h for h in self.hops if h.from_scene_id == scene_id]
 
-    def hops_into(self, scene_id: str) -> List[SceneHop]:
-        return [h for h in self.hops if h.to_scene_id == scene_id]
-
     # ---- character refs ----
     def get_character_reference(
         self, name: str,
@@ -1257,16 +1357,6 @@ class VideoStudio(BaseModel):
             if ref.name.strip().lower() == norm:
                 return ref
         return None
-
-    def upsert_character_reference(
-        self, ref: CharacterReference,
-    ) -> CharacterReference:
-        for i, existing in enumerate(self.character_references):
-            if existing.id == ref.id:
-                self.character_references[i] = ref
-                return ref
-        self.character_references.append(ref)
-        return ref
 
     # ---- board management ----
     def clear_board(self) -> int:

@@ -516,6 +516,19 @@ class GroupEditorDialog(QDialog):
             self._on_mic_changed)
         top.addWidget(QLabel("Mic:"))
         top.addWidget(self._mic_picker, stretch=1)
+        # When this group is a title / ending CARD, surface its
+        # appearance editor right here so the writer edits the card
+        # AND records its audio in one place.
+        from src.video_studio.slide_deck import group_card_page
+        self._card_page = group_card_page(self._deck, self._group)
+        if self._card_page is not None:
+            self._edit_card_btn = QPushButton("🎬 Edit card…")
+            self._edit_card_btn.setToolTip(
+                "Edit this card's background, text, colors, fade, "
+                "duration, and transition.")
+            self._edit_card_btn.clicked.connect(
+                self._on_edit_card_appearance)
+            top.addWidget(self._edit_card_btn)
         outer.addLayout(top)
 
         # Up-front check of recording prerequisites. We compute
@@ -1586,6 +1599,44 @@ class GroupEditorDialog(QDialog):
         self.setWindowTitle(
             f"Group editor — {self._group.name or 'group'}")
         self.deck_modified.emit()
+
+    def _on_edit_card_appearance(self) -> None:
+        """Open the card appearance editor for a card group, and
+        write its timing / transition / background-suppress back
+        onto the card page + this group."""
+        page = getattr(self, "_card_page", None)
+        if page is None or getattr(page, "card", None) is None:
+            return
+        from src.ui.video_studio.card_editor_dialog import (
+            CardEditorDialog)
+        bg_group = getattr(self._deck, "background_group", None)
+        deck_has_bg = bool(
+            bg_group is not None
+            and (getattr(bg_group, "audio_clips", None) or []))
+        dlg = CardEditorDialog(
+            page.card,
+            title_bar=(page.label or "Card"),
+            deck_has_background=deck_has_bg,
+            deck_background_enabled=not bool(getattr(
+                self._group, "suppress_deck_background", False)),
+            parent=self)
+        dlg.set_timing(
+            float(getattr(page, "duration_seconds", 4.0) or 4.0),
+            getattr(self._group, "inter_group_transition_in", "cut"),
+            getattr(
+                self._group,
+                "inter_group_transition_seconds", 0.0))
+        if dlg.exec():
+            page.duration_seconds = dlg.duration_seconds()
+            self._group.inter_group_transition_in = (
+                dlg.transition_kind())
+            self._group.inter_group_transition_seconds = (
+                dlg.transition_seconds())
+            self._group.suppress_deck_background = (
+                not dlg.deck_background_enabled())
+            from datetime import datetime as _dt
+            page.updated_at = _dt.now()
+            self.deck_modified.emit()
 
     def _on_mic_changed(self, description: str) -> None:
         """Persist the mic pick on the deck so the next session
