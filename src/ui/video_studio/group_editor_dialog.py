@@ -764,7 +764,7 @@ class GroupEditorDialog(QDialog):
         # Selected slide tab — writers asked for view-on-double-
         # click instead.
         self._timeline.slideDoubleClicked.connect(
-            self._view_slide)
+            self._on_slide_activated)
         self._timeline.timelineChanged.connect(
             self._on_timeline_changed)
         self._timeline.trimChanged.connect(
@@ -1237,11 +1237,23 @@ class GroupEditorDialog(QDialog):
             selected_id=page_id or None)
 
     def _on_tray_double_clicked(self, item) -> None:
-        """Dispatch tray double-click to the shared viewer.
-        The QListWidget hands us the item; we pull the page id
-        off its UserRole data."""
+        """Dispatch tray double-click. The QListWidget hands us the
+        item; we pull the page id off its UserRole data."""
         page_id = item.data(Qt.ItemDataRole.UserRole)
         if page_id:
+            self._on_slide_activated(str(page_id))
+
+    def _on_slide_activated(self, page_id) -> None:
+        """Double-click on a slide (tray OR timeline). A DESIGNED
+        slide (one carrying a ``card``) opens the designer so the
+        writer edits what they built; any other slide opens the
+        full-size image viewer."""
+        page = self._find_page(str(page_id)) if page_id else None
+        if page is None:
+            return
+        if getattr(page, "card", None) is not None:
+            self._redesign_slide(page)
+        else:
             self._view_slide(str(page_id))
 
     def _on_tray_context_menu(self, point) -> None:
@@ -1657,9 +1669,17 @@ class GroupEditorDialog(QDialog):
         self.deck_modified.emit()
 
     def _on_edit_card_appearance(self) -> None:
-        """Open the card appearance editor for a card group, and
-        write its timing / transition / background-suppress back
-        onto the card page + this group."""
+        """Open the DESIGNER on the group's card slide (the same
+        canvas the writer used to build it) so editing is consistent
+        with double-click / 'Redesign slide'."""
+        page = getattr(self, "_card_page", None)
+        if page is None or getattr(page, "card", None) is None:
+            return
+        self._redesign_slide(page)
+
+    def _on_edit_card_appearance_legacy(self) -> None:
+        """(Unused) legacy title/subtitle form editor, superseded by
+        the canvas designer."""
         page = getattr(self, "_card_page", None)
         if page is None or getattr(page, "card", None) is None:
             return

@@ -408,6 +408,12 @@ class SlideEditorDialog(QDialog):
     # when the editor finally closed, so a long editing session
     # without a close meant no autosaves.
     deck_modified = pyqtSignal()
+    # Ask the host to SAVE NOW (synchronously), bypassing the autosave
+    # debounce. Emitted when a nested dialog (group / card editor)
+    # closes so its last mutations — timeline placement, a freshly
+    # designed slide — reach disk immediately, even if the writer
+    # reloads the app before the debounce timer would have fired.
+    flush_requested = pyqtSignal()
 
     def __init__(
         self,
@@ -564,7 +570,7 @@ class SlideEditorDialog(QDialog):
             self._on_slide_list_context)
         # Double-click a slide → jump straight into its group editor.
         self._slide_list.itemDoubleClicked.connect(
-            lambda _it: self._edit_selected_slide_group())
+            self._on_slide_double_click)
         left_v.addWidget(self._slide_list, stretch=1)
         slide_btns = QHBoxLayout()
         self._move_up_btn = QPushButton("↑")
@@ -1631,6 +1637,80 @@ class SlideEditorDialog(QDialog):
             return
         self._remove_group(self._deck.groups[row])
 
+    def _on_slide_double_click(self, item) -> None:
+        """Double-click in the 'Slides (in order)' list. A DESIGNED
+        slide (carrying a ``card``) opens the designer so the writer
+        edits what they built; any other slide opens its group
+        editor."""
+        pid = item.data(Qt.ItemDataRole.UserRole) if item else None
+        page = next(
+            (p for p in self._deck.pages if p.id == pid), None)
+        if page is not None and getattr(page, "card", None) is not None:
+            self._edit_designed_slide(page)
+        else:
+            self._edit_selected_slide_group()
+
+    def _edit_designed_slide(self, page) -> None:
+        """Open the canvas designer on a designed slide from the main
+        editor and re-render its still in place. Mirrors the group
+        editor's redesign path so both surfaces edit identically."""
+        card = getattr(page, "card", None)
+        if card is None:
+            return
+        from pathlib import Path
+        from datetime import datetime
+        from src.video_studio.slide_deck import render_card_to_png
+        from src.ui.video_studio.card_editor_dialog import (
+            CardEditorDialog)
+        group = next(
+            (g for g in self._deck.groups
+             if g.id == getattr(page, "group_id", None)), None)
+        bg_group = getattr(self._deck, "background_group", None)
+        deck_has_bg = bool(
+            bg_group is not None
+            and (getattr(bg_group, "audio_clips", None) or []))
+        dlg = CardEditorDialog(
+            card,
+            title_bar=(page.label or "Designed slide"),
+            deck_has_background=deck_has_bg,
+            deck_background_enabled=(
+                not bool(getattr(group, "suppress_deck_background",
+                                 False)) if group else True),
+            canvas_mode=True,
+            parent=self)
+        dlg.set_timing(
+            float(getattr(page, "duration_seconds", 4.0) or 4.0),
+            "cut", 0.0)
+        if not dlg.exec():
+            return
+        dest = Path(page.image_path) if page.image_path else (
+            Path(self._deck.working_dir or (
+                Path.home() / ".writingaid_slides")) / "slides"
+            / f"designed_{datetime.now():%Y%m%d_%H%M%S}.png")
+        if not render_card_to_png(card, dest):
+            QMessageBox.warning(
+                self, "Render failed",
+                "Could not re-render the designed slide.")
+            return
+        page.image_path = str(dest)
+        first = next(
+            (e for e in sorted(
+                getattr(card, "elements", None) or [],
+                key=lambda e: getattr(e, "z", 0))
+             if getattr(e, "kind", "") == "text"
+             and (getattr(e, "text", "") or "").strip()), None)
+        if first is not None:
+            page.label = first.text.splitlines()[0][:40]
+        page.duration_seconds = dlg.duration_seconds()
+        if group is not None:
+            group.suppress_deck_background = (
+                not dlg.deck_background_enabled())
+        page.updated_at = datetime.now()
+        self._refresh_slides()
+        self.deck_modified.emit()
+        # Designer closed — persist the re-render + timing now.
+        self.flush_requested.emit()
+
     def _edit_selected_slide_group(self) -> None:
         """Open the group editor (or card editor) for the selected
         slide — the 'go into the editor' action from the slide list."""
@@ -2006,6 +2086,10 @@ class SlideEditorDialog(QDialog):
     # Groups
     # ------------------------------------------------------------------
     def _refresh_groups(self) -> None:
+        # Keep title/ending card groups pinned front/back before we
+        # render any group-ordered UI, so the left pane, the combo,
+        # and the stitch order all agree.
+        self._pin_card_groups()
         # Rebuild the combo items, but DO NOT change the writer's
         # sticky pick. The combo represents the destination for
         # the next "Add slide to selected group" click — it
@@ -2117,22 +2201,48 @@ class SlideEditorDialog(QDialog):
     def _on_stitch_move(self, delta: int) -> None:
         """Swap the selected group with its neighbor. Updates
         ``deck.groups`` order, which is what the deck preview /
-        export concat walks."""
+        export concat walks.
+
+        Title / ending card groups are PINNED (front / back), so they
+        can't be reordered and nothing can cross them — otherwise a
+        move would just be undone by the pin re-sort, which reads as a
+        confusing 'reset'. We refuse those moves up front instead."""
         row = self._stitch_list.currentRow()
         new_row = row + delta
         if (row < 0 or new_row < 0
                 or new_row >= len(self._deck.groups)):
             return
+        mover = self._deck.groups[row]
+        target = self._deck.groups[new_row]
+        if getattr(mover, "role", "") in ("title", "ending"):
+            QMessageBox.information(
+                self, "Pinned card",
+                "Title cards stay at the front of the deck and ending "
+                "cards at the back — they can't be reordered.")
+            return
+        if getattr(target, "role", "") in ("title", "ending"):
+            # Moving a normal group across a pinned card would be
+            # undone by the pin — treat it as a no-op rather than a
+            # flicker.
+            return
         groups = list(self._deck.groups)
         groups[row], groups[new_row] = (
             groups[new_row], groups[row])
         self._deck.groups = groups
+        self._pin_card_groups()
         self._refresh_groups()
         # The left slide list is ordered by group, so reordering
         # groups must re-sort it to stay in sync with the center.
         self._refresh_slides()
-        self._stitch_list.setCurrentRow(new_row)
+        self._refresh_stitch_list()
+        # Reselect the moved group by identity (its index may have
+        # shifted after pinning).
+        for i, g in enumerate(self._deck.groups):
+            if g.id == mover.id:
+                self._stitch_list.setCurrentRow(i)
+                break
         self.deck_modified.emit()
+        self.flush_requested.emit()
 
     def _on_stitch_transition_kind_changed(
             self, _idx: int) -> None:
@@ -2214,55 +2324,54 @@ class SlideEditorDialog(QDialog):
         page.updated_at = datetime.now()
 
     def _on_add_card(self, role: str) -> None:
-        """Create a title / ending CARD group and open its editor.
-        A card is its own single-slide group so it inherits the
-        same audio overlay + inter-group transition as any group;
-        title cards pin to the front, ending cards to the back."""
-        from src.video_studio.models import TitleCard
+        """Create an EMPTY title / ending card group, pinned to the
+        FRONT (title) or BACK (ending) of the deck. The group starts
+        with no slides — in the timeline or the tray — because the
+        writer builds the card's slide themselves with 'New designed
+        slide' in the group editor. Only one title and one ending
+        card group per deck; the pin sticks across save + reload via
+        the group's ``role``."""
         is_title = (role == "title")
-        # Cards are singletons: at most one title and one ending card
-        # per deck. If one already exists, tell the writer and bail
-        # rather than stacking a second card.
+        # Singleton by GROUP role now that the group starts empty
+        # (there's no card page to key on yet).
         existing = next(
-            (p for p in self._deck.pages
-             if getattr(p, "card", None) is not None
-             and getattr(p.card, "role", "") == role),
+            (g for g in self._deck.groups
+             if getattr(g, "role", "") == role),
             None)
         if existing is not None:
             noun = "title" if is_title else "ending"
             QMessageBox.information(
                 self, f"{noun.capitalize()} card exists",
-                f"This deck already has a {noun} card "
-                f"(“{existing.label}”). Edit the existing "
-                f"one instead — only one {noun} card is allowed "
+                f"This deck already has a {noun} card group "
+                f"(“{existing.name}”). Open it and edit its "
+                f"slide instead — only one {noun} card is allowed "
                 "per deck.")
             return
-        card = TitleCard(
-            role=role,
-            title=("Title" if is_title else "The End"),
-            subtitle=("Subtitle" if is_title else ""),
-            text_fade_seconds=0.6)
-        page = SlidePage(
-            label=("Title card" if is_title else "Ending card"),
-            card=card,
-            duration_seconds=4.0,
-            start_time_seconds_in_group=0.0)
         group = SlideGroup(
-            name=("Title card" if is_title else "Ending card"))
-        page.group_id = group.id
-        group.page_ids = [page.id]
-        self._deck.pages.append(page)
+            name=("Title card" if is_title else "Ending card"),
+            role=role)
         if is_title:
             self._deck.groups.insert(0, group)
         else:
             self._deck.groups.append(group)
+        self._pin_card_groups()
         self._refresh_groups()
         self._refresh_slides()
         self.deck_modified.emit()
-        # Open the card's group in the GROUP EDITOR — that's where
-        # the writer edits the card (🎬 Edit card…) and records /
-        # edits its audio, exactly like any other group.
+        # Open the group editor so the writer creates the card's
+        # designed slide (➕ New designed slide) and records / edits
+        # its audio — exactly like any other group.
         self._edit_card_audio(group)
+
+    def _pin_card_groups(self) -> None:
+        """Reorder ``deck.groups`` so title-card groups are first and
+        ending-card groups last (stable for everything else). Mirrors
+        the model validator so the in-session order matches what will
+        be saved / reloaded."""
+        def _key(g) -> int:
+            r = getattr(g, "role", "") or ""
+            return 0 if r == "title" else (2 if r == "ending" else 1)
+        self._deck.groups = sorted(self._deck.groups, key=_key)
 
 
     def _edit_card_audio(self, group) -> None:
@@ -2372,12 +2481,22 @@ class SlideEditorDialog(QDialog):
         dlg.raise_()
 
     def _after_group_edit(self) -> None:
+        # Pin card groups BEFORE rebuilding the lists so the slides-
+        # in-order list and the stitch list reflect the front/back
+        # placement (otherwise a title card could momentarily show a
+        # position lower than where it renders).
+        self._pin_card_groups()
         self._refresh_slides()
         self._refresh_groups()
+        self._refresh_stitch_list()
         # Final emit on close — covers anything that might have
         # mutated state without going through a handler that
         # already emitted (defensive belt + suspenders).
         self.deck_modified.emit()
+        # A nested editor just closed — flush to disk NOW so its last
+        # mutations (timeline placement, a new designed slide) survive
+        # a reload even if the debounce timer hasn't fired.
+        self.flush_requested.emit()
 
     def _on_group_target_changed(self) -> None:
         gid = self._group_combo.currentData()

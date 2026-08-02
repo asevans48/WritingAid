@@ -3210,6 +3210,10 @@ class VideoStudioWidget(QWidget):
         dlg.finished.connect(
             lambda *_: self.flushSaveRequested.emit())
         dlg.deck_modified.connect(self.contentChanged)
+        # A nested group / card editor closed inside the slide editor
+        # — save synchronously now so its last mutations land on disk
+        # even if the writer reloads before the debounce fires.
+        dlg.flush_requested.connect(self.flushSaveRequested)
         # ``show()`` alone — no raise_() / activateWindow(). On
         # macOS those force-grab focus and trigger the focus-
         # stealing path that minimizes other open windows of the

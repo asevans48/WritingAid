@@ -19,10 +19,11 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QBrush, QColor, QDrag, QFont, QImage, QPainter, QPen, QPixmap,
+    QTextCursor, QTextOption,
 )
 from PyQt6.QtWidgets import (
-    QGraphicsItem, QGraphicsRectItem, QGraphicsScene, QGraphicsView,
-    QListWidget, QListWidgetItem,
+    QGraphicsItem, QGraphicsRectItem, QGraphicsScene,
+    QGraphicsTextItem, QGraphicsView, QListWidget, QListWidgetItem,
 )
 
 from src.video_studio.models import SlideElement
@@ -118,6 +119,7 @@ class ElementItem(QGraphicsRectItem):
         self.video_loop: bool = True
         self._pixmap: Optional[QPixmap] = None
         self._active_handle: Optional[str] = None
+        self._editing: bool = False  # inline text editor is open
 
     # -- model round-trip ---------------------------------------------
     def load(self, el: SlideElement) -> None:
@@ -329,6 +331,10 @@ class ElementItem(QGraphicsRectItem):
             fill = _qcolor(self.box_color, "#000000")
             fill.setAlphaF(max(0.0, min(1.0, self.box_opacity)))
             painter.fillRect(r, fill)
+        # While the inline editor is open, the QGraphicsTextItem draws
+        # the glyphs — skip our own so it doesn't double up.
+        if self._editing:
+            return
         font = QFont()
         font.setPixelSize(max(6, int(self.font_size)))
         font.setBold(bool(self.bold))
@@ -383,6 +389,38 @@ class ElementItem(QGraphicsRectItem):
         event.accept()
 
 
+class _InlineTextEditorItem(QGraphicsTextItem):
+    """A transient, editable text item shown over a text element so
+    the writer can type directly on the preview. Commits on focus-out
+    or Enter; Escape cancels."""
+
+    def __init__(self, canvas: "SlideDesignCanvas", element) -> None:
+        super().__init__()
+        self._canvas = canvas
+        self.element = element
+        self.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextEditorInteraction)
+        self.document().setDocumentMargin(0)
+
+    def focusOutEvent(self, event) -> None:
+        super().focusOutEvent(event)
+        self._canvas._commit_inline_edit()
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            self._canvas._cancel_inline_edit()
+            event.accept()
+            return
+        # Enter commits; Shift+Enter inserts a newline (multi-line).
+        if (event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+                and not (event.modifiers()
+                         & Qt.KeyboardModifier.ShiftModifier)):
+            self._canvas._commit_inline_edit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 class SlideDesignCanvas(QGraphicsView):
     """The design surface: a 16:9 frame with a color/image background
     plus draggable, resizable, layered elements. Accepts drops from an
@@ -403,6 +441,7 @@ class SlideDesignCanvas(QGraphicsView):
         self._bg_color = "#1e1e28"
         self._bg_pixmap: Optional[QPixmap] = None
         self._items: List[ElementItem] = []
+        self._editor: Optional[_InlineTextEditorItem] = None
         self._scene.selectionChanged.connect(self._on_scene_selection)
         self.setBackgroundBrush(QBrush(QColor("#2b2b33")))
 
@@ -570,6 +609,9 @@ class SlideDesignCanvas(QGraphicsView):
             getattr(card, "bg_media_path", "") or "")
 
     def apply_to_card(self, card) -> None:
+        # Flush any in-progress inline edit so its text is captured.
+        if self._editor is not None:
+            self._commit_inline_edit()
         card.elements = [
             item.to_model()
             for item in self.elements_bottom_to_top()]
@@ -585,10 +627,73 @@ class SlideDesignCanvas(QGraphicsView):
         if item.kind in ("image", "video"):
             self.addMediaRequested.emit(item)
         else:
-            self.editRequested.emit(item)
+            self.start_inline_edit(item)
+
+    # -- inline text editing ------------------------------------------
+    def start_inline_edit(self, item: ElementItem) -> None:
+        """Open a caret-driven editor directly over ``item`` so the
+        writer types on the preview. No-op for non-text elements."""
+        if item is None or item.kind != "text":
+            return
+        if self._editor is not None:
+            self._commit_inline_edit()
+        editor = _InlineTextEditorItem(self, item)
+        f = QFont()
+        f.setPixelSize(max(6, int(item.font_size)))
+        f.setBold(bool(item.bold))
+        f.setItalic(bool(item.italic))
+        editor.setFont(f)
+        editor.setDefaultTextColor(_qcolor(item.color, "#FFFFFF"))
+        editor.setPlainText(item.text or "")
+        editor.setTextWidth(max(20.0, item.rect().width()))
+        opt = editor.document().defaultTextOption()
+        opt.setAlignment({
+            "left": Qt.AlignmentFlag.AlignLeft,
+            "right": Qt.AlignmentFlag.AlignRight,
+        }.get(item.align, Qt.AlignmentFlag.AlignHCenter))
+        opt.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        editor.document().setDefaultTextOption(opt)
+        editor.setPos(item.pos())
+        editor.setZValue(100000)
+        self._scene.addItem(editor)
+        self._editor = editor
+        item._editing = True
+        item.update()
+        editor.setFocus(Qt.FocusReason.MouseFocusReason)
+        cur = editor.textCursor()
+        cur.select(QTextCursor.SelectionType.Document)
+        editor.setTextCursor(cur)
+
+    def _finish_inline_edit(self, commit: bool) -> None:
+        editor = self._editor
+        if editor is None:
+            return
+        item = editor.element
+        self._editor = None            # guard re-entry from focus-out
+        if commit and item is not None:
+            item.text = editor.toPlainText()
+        if item is not None:
+            item._editing = False
+            item.update()
+        self._scene.removeItem(editor)
+        if commit:
+            self._emit_changed()
+            # Refresh the side panel's Text field from the item.
+            self.selectionChanged.emit(self.selected())
+
+    def _commit_inline_edit(self) -> None:
+        self._finish_inline_edit(commit=True)
+
+    def _cancel_inline_edit(self) -> None:
+        self._finish_inline_edit(commit=False)
 
     def keyPressEvent(self, event) -> None:
-        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+        # While an inline text editor is open, every key — Backspace,
+        # Delete, arrows — belongs to the text editor. Only hijack
+        # Delete/Backspace to remove the selected element when NOT
+        # editing text.
+        if self._editor is None and event.key() in (
+                Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             self.delete_selected()
             event.accept()
             return

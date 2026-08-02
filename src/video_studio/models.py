@@ -652,6 +652,11 @@ class SlideGroup(BaseModel):
     # built from. Lets a re-sync match a group back to its scene even
     # after a rename. Empty for hand-made / card groups.
     source_scene_id: str = ""
+    # Card role for pinned groups: "title" pins the group to the
+    # FRONT of the deck, "ending" to the BACK, "" is an ordinary
+    # group. A title / ending card group starts EMPTY — the writer
+    # creates its designed slide themselves.
+    role: str = ""           # "" | "title" | "ending"
     page_ids: List[str] = Field(default_factory=list)
     # When > 0, the editor evenly distributes this duration across
     # the unlocked pages in the group (locked pages keep their
@@ -901,6 +906,13 @@ class SlideDeckProject(BaseModel):
     # no target (quality default). The renderer computes the video
     # bitrate from this and the deck's runtime.
     export_target_size_mb: float = 0.0
+    # Set once the legacy per-page placement migration has run. Modern
+    # decks (built with the timeline that has
+    # ``start_time_seconds_in_group``) save this True so the migration
+    # never re-runs and force-places slides the writer deliberately
+    # left in the tray — the placement / tray state a writer sets is
+    # then durable across reloads.
+    placements_migrated: bool = False
     # Average reading speed used by ``suggest_timings_from_script``
     # (words per minute). 150 wpm is a slightly slow voiceover
     # pace, which gives a forgiving timing budget; writers can
@@ -937,12 +949,22 @@ class SlideDeckProject(BaseModel):
         the writer has used the new editor — respect their
         layout and leave the unplaced pages in the tray.
 
-        Idempotent: once a deck has been migrated and saved,
-        every page has a concrete offset (or the writer
-        deliberately moved one back to the tray), so the all-
-        None precondition fails and this loop becomes a
-        no-op.
+        One-time: once this has run (or the deck was authored with
+        the modern timeline), ``placements_migrated`` is True and this
+        is skipped forever. That is what makes a deliberately-empty
+        timeline — e.g. a fresh title/ending card group whose designed
+        slide the writer left in the tray, or a slide moved back to
+        the tray — DURABLE. Without the guard, every reload would
+        force-place any group that currently has nothing on its
+        timeline, silently discarding the writer's tray/placement
+        intent (the reported "designed slides get removed from the
+        timeline on reload").
         """
+        if self.placements_migrated:
+            return self
+        # Whatever we find below (or don't), this deck now uses the
+        # modern semantics — never auto-place again.
+        self.placements_migrated = True
         if not self.groups:
             return self
         pages_by_id = {p.id: p for p in self.pages}
@@ -985,6 +1007,38 @@ class SlideDeckProject(BaseModel):
             self.background_audio_clips = []
             self.background_audio_path = ""
             self.background_audio_duration_seconds = 0.0
+        return self
+
+    @model_validator(mode="after")
+    def _pin_card_group_order(self) -> "SlideDeckProject":
+        """Keep title-card groups at the FRONT and ending-card groups
+        at the BACK of the deck, preserving the relative order of
+        everything else. This is what makes a title / ending card's
+        placement 'stick' across save + reload no matter what order
+        the writer added or reordered groups in."""
+        if self.groups:
+            # Back-compat: older decks stored the card role on the
+            # card PAGE (in an unpinned group). Infer the group role
+            # from a title/ending card page so those groups pin too.
+            pages_by_id = {p.id: p for p in self.pages}
+            for g in self.groups:
+                if getattr(g, "role", "") or "":
+                    continue
+                for pid in (g.page_ids or []):
+                    pg = pages_by_id.get(pid)
+                    card = getattr(pg, "card", None) if pg else None
+                    r = getattr(card, "role", "") if card else ""
+                    if r in ("title", "ending"):
+                        g.role = r
+                        break
+
+            def _key(g) -> int:
+                r = getattr(g, "role", "") or ""
+                return 0 if r == "title" else (2 if r == "ending"
+                                               else 1)
+            # Python's sort is stable, so within each bucket the
+            # writer's existing order is preserved.
+            self.groups = sorted(self.groups, key=_key)
         return self
 
 
