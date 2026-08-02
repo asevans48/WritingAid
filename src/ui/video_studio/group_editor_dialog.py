@@ -1677,43 +1677,6 @@ class GroupEditorDialog(QDialog):
             return
         self._redesign_slide(page)
 
-    def _on_edit_card_appearance_legacy(self) -> None:
-        """(Unused) legacy title/subtitle form editor, superseded by
-        the canvas designer."""
-        page = getattr(self, "_card_page", None)
-        if page is None or getattr(page, "card", None) is None:
-            return
-        from src.ui.video_studio.card_editor_dialog import (
-            CardEditorDialog)
-        bg_group = getattr(self._deck, "background_group", None)
-        deck_has_bg = bool(
-            bg_group is not None
-            and (getattr(bg_group, "audio_clips", None) or []))
-        dlg = CardEditorDialog(
-            page.card,
-            title_bar=(page.label or "Card"),
-            deck_has_background=deck_has_bg,
-            deck_background_enabled=not bool(getattr(
-                self._group, "suppress_deck_background", False)),
-            parent=self)
-        dlg.set_timing(
-            float(getattr(page, "duration_seconds", 4.0) or 4.0),
-            getattr(self._group, "inter_group_transition_in", "cut"),
-            getattr(
-                self._group,
-                "inter_group_transition_seconds", 0.0))
-        if dlg.exec():
-            page.duration_seconds = dlg.duration_seconds()
-            self._group.inter_group_transition_in = (
-                dlg.transition_kind())
-            self._group.inter_group_transition_seconds = (
-                dlg.transition_seconds())
-            self._group.suppress_deck_background = (
-                not dlg.deck_background_enabled())
-            from datetime import datetime as _dt
-            page.updated_at = _dt.now()
-            self.deck_modified.emit()
-
     def _on_mic_changed(self, description: str) -> None:
         """Persist the mic pick on the deck so the next session
         picks it up. The deck is the live model on

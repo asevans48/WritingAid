@@ -318,7 +318,6 @@ class CardEditorDialog(QDialog):
         row.addWidget(self._palette)
         self._canvas = SlideDesignCanvas()
         self._canvas.selectionChanged.connect(self._on_canvas_selection)
-        self._canvas.editRequested.connect(self._on_edit_element_text)
         self._canvas.addMediaRequested.connect(self._on_add_media)
         row.addWidget(self._canvas, 1)
         cbl.addLayout(row, 1)
@@ -481,10 +480,6 @@ class CardEditorDialog(QDialog):
 
     def _on_layer_down(self) -> None:
         self._canvas.lower_selected()
-
-    def _on_edit_element_text(self, item) -> None:
-        self._pb_text.setFocus()
-        self._pb_text.selectAll()
 
     def _on_add_media(self, item) -> None:
         """A newly dropped image/video needs a file. For a video,

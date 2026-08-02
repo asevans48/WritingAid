@@ -428,7 +428,6 @@ class SlideDesignCanvas(QGraphicsView):
 
     changed = pyqtSignal()
     selectionChanged = pyqtSignal(object)   # ElementItem or None
-    editRequested = pyqtSignal(object)      # ElementItem to edit
     addMediaRequested = pyqtSignal(object)  # ElementItem needing a file
 
     def __init__(self, parent=None) -> None:
