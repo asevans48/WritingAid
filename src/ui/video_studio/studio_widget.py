@@ -3127,6 +3127,19 @@ class VideoStudioWidget(QWidget):
             assign_orphan_slides_to_scene_groups(deck, names)
         except Exception as exc:
             print(f"[studio] scene-grouping sync failed: {exc}")
+        # Bring in slides for any actions the writer favorited AFTER
+        # the deck was first built — they attach to their scene's
+        # group so reopening the editor surfaces new favorites without
+        # discarding the existing arrangement.
+        try:
+            from src.video_studio.slide_deck import (
+                sync_scene_actions_into_deck)
+            n_new = sync_scene_actions_into_deck(deck, scenes)
+            if n_new:
+                print(f"[studio] added {n_new} new action slide(s) "
+                      "to the deck.")
+        except Exception as exc:
+            print(f"[studio] action-slide sync failed: {exc}")
         # Nudge the writer about any action that has several images
         # but no favorite chosen — those silently fall back to the
         # first image. Non-blocking: the deck still builds.

@@ -155,6 +155,105 @@ def build_slide_deck_from_chapter(
     return deck
 
 
+def _group_timeline_end(
+    deck: SlideDeckProject, group: SlideGroup,
+) -> float:
+    """End time (seconds) of a group's placed timeline — where the
+    next appended slide should start. 0.0 when nothing is placed."""
+    end = 0.0
+    for p in deck.pages:
+        if getattr(p, "group_id", None) != group.id:
+            continue
+        st = getattr(p, "start_time_seconds_in_group", None)
+        if st is None:
+            continue
+        end = max(
+            end,
+            float(st) + max(
+                MIN_SLIDE_SECONDS,
+                float(getattr(p, "duration_seconds", 0.0) or 0.0)))
+    return end
+
+
+def sync_scene_actions_into_deck(
+    deck: SlideDeckProject,
+    scenes: List[Any],
+    default_duration_seconds: float = 4.0,
+) -> int:
+    """Bring an EXISTING deck up to date with the scenes' current
+    actions: add a slide for every action that has a usable favorite
+    image but no slide yet, attaching it to that scene's group
+    (creating the group if the scene doesn't have one). Newly added
+    slides land at the end of the group's timeline.
+
+    Idempotent — matches groups by ``source_scene_id`` and slides by
+    ``source_action_id``, so a re-run only adds what's genuinely new.
+    Existing slides (and their placement) are never touched; image
+    swaps on existing slides are handled separately. Returns the
+    number of slides added."""
+    existing_action_ids = {
+        getattr(p, "source_action_id", None)
+        for p in deck.pages
+        if getattr(p, "source_action_id", None)}
+    group_by_scene: dict = {}
+    for g in deck.groups:
+        sid = getattr(g, "source_scene_id", "") or ""
+        if sid and sid not in group_by_scene:
+            group_by_scene[sid] = g
+    next_index = max(
+        (getattr(p, "index", 0) or 0 for p in deck.pages),
+        default=-1) + 1
+    added = 0
+    for scene in scenes:
+        for action in (getattr(scene, "actions", None) or []):
+            if action.id in existing_action_ids:
+                continue
+            try:
+                action.ensure_single_image_favorite()
+            except Exception:
+                pass
+            img = action.favorite_image()
+            if img is None:
+                continue
+            path_str = (getattr(img, "file_path", "") or "").strip()
+            if not path_str:
+                continue
+            p = Path(path_str)
+            if not p.exists() or p.stat().st_size == 0:
+                continue
+            group = group_by_scene.get(scene.id)
+            if group is None:
+                group = SlideGroup(
+                    name=(scene.name or "Scene"),
+                    source_scene_id=scene.id)
+                deck.groups.append(group)
+                group_by_scene[scene.id] = group
+            dur = max(
+                MIN_SLIDE_SECONDS,
+                float(
+                    getattr(action, "display_seconds", 0)
+                    or getattr(scene, "image_display_seconds", 0)
+                    or default_duration_seconds))
+            start = _group_timeline_end(deck, group)
+            page = SlidePage(
+                index=next_index,
+                label=(action.name or f"Action {next_index + 1}"),
+                image_path=str(p),
+                duration_seconds=dur,
+                source_scene_id=scene.id,
+                source_action_id=action.id,
+                text_overlay=getattr(img, "overlay", None),
+                group_id=group.id,
+                start_time_seconds_in_group=round(start, 3),
+            )
+            group.page_ids.append(page.id)
+            deck.pages.append(page)
+            existing_action_ids.add(action.id)
+            next_index += 1
+            added += 1
+    return added
+
+
 def rebuild_scene_group(
     deck: SlideDeckProject,
     scene: Any,
