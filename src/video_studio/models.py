@@ -359,6 +359,70 @@ class ChapterDeck(BaseModel):
     updated_at: datetime = Field(default_factory=datetime.now)
 
 
+class TextBox(BaseModel):
+    """A free-floating, PowerPoint-style text box on a card. Geometry
+    is NORMALIZED to a 16:9 frame (0..1) so it renders identically at
+    any output resolution and survives resizing of the design canvas.
+    A card may carry any number of these in addition to (or instead
+    of) its legacy title / subtitle."""
+    id: str = Field(default_factory=lambda: f"tb_{uuid4().hex[:8]}")
+    text: str = "Text"
+    # Box geometry as fractions of the frame (top-left origin).
+    x: float = 0.15
+    y: float = 0.40
+    w: float = 0.70
+    h: float = 0.20
+    # Font size in px at a 1080p reference height; scaled to render.
+    font_size: int = 72
+    color: str = "#FFFFFF"
+    align: str = "center"        # "left" | "center" | "right"
+    valign: str = "middle"       # "top" | "middle" | "bottom"
+    bold: bool = False
+    italic: bool = False
+    # Per-box legibility effects (mirror the card-level ones).
+    box_color: str = ""          # semi-transparent fill; "" = none
+    box_opacity: float = 0.5     # 0..1
+    outline_color: str = ""      # glyph stroke; "" = none
+    outline_width: int = 0       # px at 1080p
+    shadow: bool = False
+
+
+class SlideElement(BaseModel):
+    """One free-placed element on a designed slide/card. Generalizes
+    ``TextBox`` to also cover images and (playing) videos so a slide
+    can be composed PowerPoint-style from layered pieces.
+
+    Geometry is NORMALIZED to a 16:9 frame (0..1). ``z`` orders the
+    layers — higher ``z`` renders in front. ``kind`` selects which
+    fields matter: text fields for ``"text"``; ``media_path`` (+ the
+    video_* flags) for ``"image"`` / ``"video"``."""
+    id: str = Field(default_factory=lambda: f"el_{uuid4().hex[:8]}")
+    kind: str = "text"           # "text" | "image" | "video"
+    # Geometry as fractions of the frame (top-left origin).
+    x: float = 0.15
+    y: float = 0.40
+    w: float = 0.70
+    h: float = 0.20
+    z: int = 0                   # layer order; higher = front
+    # ── Text (kind == "text") ──
+    text: str = "Text"
+    font_size: int = 72          # px at 1080p reference height
+    color: str = "#FFFFFF"
+    align: str = "center"        # "left" | "center" | "right"
+    valign: str = "middle"       # "top" | "middle" | "bottom"
+    bold: bool = False
+    italic: bool = False
+    box_color: str = ""          # legibility fill; "" = none
+    box_opacity: float = 0.5
+    outline_color: str = ""
+    outline_width: int = 0
+    shadow: bool = False
+    # ── Media (kind == "image" | "video") ──
+    media_path: str = ""
+    video_muted: bool = False    # play a video element silently
+    video_loop: bool = True      # loop the clip for the slide's span
+
+
 class TitleCard(BaseModel):
     """A generated title / ending card: a colored, image, or video
     background with styled text over it. When a ``SlidePage`` carries
@@ -399,6 +463,45 @@ class TitleCard(BaseModel):
     # card is pinned to the front, an "ending" card to the back,
     # "overlay" is a per-slide text overlay baked onto the image.
     role: str = "card"       # "title" | "ending" | "card" | "overlay"
+    # Free-placed text boxes (PowerPoint-style). LEGACY: superseded by
+    # ``elements`` (which also covers images / video). Kept so older
+    # projects deserialize; the validator below migrates them into
+    # ``elements`` on load, then clears this list.
+    text_boxes: List["TextBox"] = Field(default_factory=list)
+    # Free-placed, layered elements — text / image / video — that make
+    # up a designed slide. Rendered in ``z`` order over the background
+    # (and over the legacy title/subtitle block, which stays for
+    # title/ending cards).
+    elements: List["SlideElement"] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _migrate_text_boxes(self) -> "TitleCard":
+        """Fold legacy ``text_boxes`` into ``elements`` (as text
+        elements) so designed slides authored before the element model
+        keep working, then clear the old list to avoid double-render.
+        Assigns ``z`` by order when elements have none."""
+        if self.text_boxes and not self.elements:
+            migrated: List["SlideElement"] = []
+            for i, tb in enumerate(self.text_boxes):
+                migrated.append(SlideElement(
+                    id=getattr(tb, "id", None) or SlideElement().id,
+                    kind="text", z=i,
+                    x=tb.x, y=tb.y, w=tb.w, h=tb.h,
+                    text=tb.text, font_size=tb.font_size,
+                    color=tb.color, align=tb.align, valign=tb.valign,
+                    bold=tb.bold, italic=tb.italic,
+                    box_color=tb.box_color,
+                    box_opacity=tb.box_opacity,
+                    outline_color=tb.outline_color,
+                    outline_width=tb.outline_width,
+                    shadow=tb.shadow))
+            self.elements = migrated
+            self.text_boxes = []
+        # Normalize z so layer ordering is always well-defined.
+        for i, el in enumerate(
+                sorted(self.elements, key=lambda e: e.z)):
+            el.z = i
+        return self
 
 
 class SlidePage(BaseModel):
@@ -545,6 +648,10 @@ class SlideGroup(BaseModel):
     id: str = Field(
         default_factory=lambda: f"sgrp_{uuid4().hex[:10]}")
     name: str = ""
+    # Provenance: the scene (the video-studio card) this group was
+    # built from. Lets a re-sync match a group back to its scene even
+    # after a rename. Empty for hand-made / card groups.
+    source_scene_id: str = ""
     page_ids: List[str] = Field(default_factory=list)
     # When > 0, the editor evenly distributes this duration across
     # the unlocked pages in the group (locked pages keep their

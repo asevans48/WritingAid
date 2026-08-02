@@ -6,7 +6,6 @@ the transition INTO the card. Audio is edited via the group editor
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import Qt
@@ -14,16 +13,11 @@ from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox,
     QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox,
-    QHBoxLayout, QLabel, QLineEdit, QPushButton, QSpinBox,
-    QVBoxLayout, QWidget,
+    QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
+    QScrollArea, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from src.video_studio.models import TitleCard
-
-
-def _color_button(initial: str) -> "QPushButton":
-    btn = QPushButton(initial or "#000000")
-    return btn
 
 
 class CardEditorDialog(QDialog):
@@ -40,6 +34,7 @@ class CardEditorDialog(QDialog):
         deck_has_background: bool = False,
         deck_background_enabled: bool = True,
         text_overlay_mode: bool = False,
+        canvas_mode: bool = False,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -51,14 +46,34 @@ class CardEditorDialog(QDialog):
         # so the background + timing/transition + audio sections are
         # hidden — only text + effects remain.
         self._overlay_mode = text_overlay_mode
+        # In canvas mode the writer designs the slide on a live
+        # WYSIWYG canvas — drag/resize free-floating text boxes,
+        # PowerPoint-style — instead of the fixed title/subtitle form.
+        self._canvas_mode = canvas_mode
+        self._loading_props = False
         self.setWindowTitle(f"🎬 {title_bar}")
-        self.resize(460, 640)
+        if canvas_mode:
+            # Fits a 13" laptop (min height ~600); the content scrolls
+            # so every control stays reachable on a small screen.
+            self.resize(900, 680)
+            self.setMinimumSize(640, 480)
+        else:
+            self.resize(460, 640)
+            self.setMinimumSize(380, 420)
         self._build_ui()
         self._load_from_card()
 
     # -- UI ------------------------------------------------------------
     def _build_ui(self) -> None:
-        v = QVBoxLayout(self)
+        # All sections live inside a scroll area so the dialog fits a
+        # laptop screen — the OK/Cancel bar is pinned OUTSIDE it so
+        # it's always reachable no matter how tall the content grows.
+        outer = QVBoxLayout(self)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        content = QWidget()
+        v = QVBoxLayout(content)
 
         bg_box = QGroupBox("Background")
         bg_form = QFormLayout(bg_box)
@@ -251,13 +266,386 @@ class CardEditorDialog(QDialog):
             self._edit_audio_btn.hide()
             self._bg_under_card.hide()
 
+        if self._canvas_mode:
+            self._build_canvas_section(v, bg_box, txt_box, fx_box)
+        # Content goes in the scroll area; buttons stay pinned below.
+        scroll.setWidget(content)
+        outer.addWidget(scroll, 1)
         self._buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel)
         self._buttons.accepted.connect(self._on_accept)
         self._buttons.rejected.connect(self.reject)
-        v.addWidget(self._buttons)
+        outer.addWidget(self._buttons)
         self._sync_kind()
+
+    # -- WYSIWYG canvas (canvas_mode) ---------------------------------
+    def _build_canvas_section(
+        self, v, bg_box, txt_box, fx_box,
+    ) -> None:
+        """Insert the live design canvas (with a draggable element
+        palette) at the top and a per-element properties panel below
+        the background controls. The fixed title/subtitle text form
+        and the card-level effects box are hidden — in canvas mode
+        every piece is a free, layered element."""
+        from src.ui.video_studio.slide_canvas import (
+            SlideDesignCanvas, ElementPalette)
+        txt_box.hide()
+        fx_box.hide()
+        canvas_box = QGroupBox(
+            "Design canvas — drag a piece from the palette onto the "
+            "slide, then drag to move, drag edges to resize, "
+            "double-click to edit")
+        cbl = QVBoxLayout(canvas_box)
+        toolbar = QHBoxLayout()
+        self._del_btn = QPushButton("🗑 Delete")
+        self._del_btn.clicked.connect(self._on_delete_element)
+        self._up_btn = QPushButton("⬆ Layer up")
+        self._up_btn.clicked.connect(self._on_layer_up)
+        self._down_btn = QPushButton("⬇ Layer down")
+        self._down_btn.clicked.connect(self._on_layer_down)
+        toolbar.addWidget(QLabel("Drag from palette →"))
+        toolbar.addStretch()
+        toolbar.addWidget(self._up_btn)
+        toolbar.addWidget(self._down_btn)
+        toolbar.addWidget(self._del_btn)
+        cbl.addLayout(toolbar)
+        # Palette on the left, canvas on the right.
+        row = QHBoxLayout()
+        self._palette = ElementPalette()
+        self._palette.itemDoubleClicked.connect(
+            self._on_palette_double_click)
+        row.addWidget(self._palette)
+        self._canvas = SlideDesignCanvas()
+        self._canvas.selectionChanged.connect(self._on_canvas_selection)
+        self._canvas.editRequested.connect(self._on_edit_element_text)
+        self._canvas.addMediaRequested.connect(self._on_add_media)
+        row.addWidget(self._canvas, 1)
+        cbl.addLayout(row, 1)
+        v.insertWidget(0, canvas_box, 1)
+        self._props_box = self._build_element_props()
+        v.insertWidget(2, self._props_box)
+        # Background edits update the canvas live.
+        self._kind.currentIndexChanged.connect(self._update_canvas_bg)
+        self._bg_color.textChanged.connect(self._update_canvas_bg)
+        self._bg_media.textChanged.connect(self._update_canvas_bg)
+        self._on_canvas_selection(None)
+
+    def _build_element_props(self) -> QGroupBox:
+        box = QGroupBox("Selected element")
+        outer = QVBoxLayout(box)
+        self._kind_label = QLabel("—")
+        outer.addWidget(self._kind_label)
+        # ── Text controls (shown for text elements) ──
+        self._text_props = QWidget()
+        form = QFormLayout(self._text_props)
+        form.setContentsMargins(0, 0, 0, 0)
+        self._pb_text = QPlainTextEdit()
+        self._pb_text.setPlaceholderText("Type the text…")
+        self._pb_text.setFixedHeight(56)
+        self._pb_text.textChanged.connect(self._push_props)
+        form.addRow("Text", self._pb_text)
+        style_row = QHBoxLayout()
+        self._pb_size = QSpinBox()
+        self._pb_size.setRange(8, 400)
+        self._pb_size.setValue(72)
+        self._pb_size.setSuffix(" px")
+        self._pb_size.valueChanged.connect(self._push_props)
+        self._pb_color = QLineEdit("#FFFFFF")
+        self._pb_color.textChanged.connect(self._push_props)
+        pick = QPushButton("Pick…")
+        pick.clicked.connect(lambda: self._pick_color(self._pb_color))
+        style_row.addWidget(QLabel("Size"))
+        style_row.addWidget(self._pb_size)
+        style_row.addWidget(QLabel("Color"))
+        style_row.addWidget(self._pb_color)
+        style_row.addWidget(pick)
+        sw = QWidget()
+        sw.setLayout(style_row)
+        form.addRow("Font", sw)
+        align_row = QHBoxLayout()
+        self._pb_align = QComboBox()
+        for lbl, key in (("Left", "left"), ("Center", "center"),
+                         ("Right", "right")):
+            self._pb_align.addItem(lbl, key)
+        self._pb_align.setCurrentIndex(1)
+        self._pb_align.currentIndexChanged.connect(self._push_props)
+        self._pb_valign = QComboBox()
+        for lbl, key in (("Top", "top"), ("Middle", "middle"),
+                         ("Bottom", "bottom")):
+            self._pb_valign.addItem(lbl, key)
+        self._pb_valign.setCurrentIndex(1)
+        self._pb_valign.currentIndexChanged.connect(self._push_props)
+        self._pb_bold = QCheckBox("Bold")
+        self._pb_bold.toggled.connect(self._push_props)
+        self._pb_italic = QCheckBox("Italic")
+        self._pb_italic.toggled.connect(self._push_props)
+        align_row.addWidget(QLabel("Align"))
+        align_row.addWidget(self._pb_align)
+        align_row.addWidget(self._pb_valign)
+        align_row.addWidget(self._pb_bold)
+        align_row.addWidget(self._pb_italic)
+        aw = QWidget()
+        aw.setLayout(align_row)
+        form.addRow("Layout", aw)
+        fill_row = QHBoxLayout()
+        self._pb_fill = QLineEdit("")
+        self._pb_fill.setPlaceholderText("none")
+        self._pb_fill.textChanged.connect(self._push_props)
+        fill_pick = QPushButton("Pick…")
+        fill_pick.clicked.connect(
+            lambda: self._pick_color(self._pb_fill))
+        self._pb_fill_op = QDoubleSpinBox()
+        self._pb_fill_op.setRange(0.0, 1.0)
+        self._pb_fill_op.setSingleStep(0.1)
+        self._pb_fill_op.setValue(0.5)
+        self._pb_fill_op.valueChanged.connect(self._push_props)
+        fill_row.addWidget(self._pb_fill)
+        fill_row.addWidget(fill_pick)
+        fill_row.addWidget(QLabel("Opacity"))
+        fill_row.addWidget(self._pb_fill_op)
+        fw = QWidget()
+        fw.setLayout(fill_row)
+        form.addRow("Box fill", fw)
+        fx_row = QHBoxLayout()
+        self._pb_outline = QLineEdit("")
+        self._pb_outline.setPlaceholderText("none")
+        self._pb_outline.textChanged.connect(self._push_props)
+        out_pick = QPushButton("Pick…")
+        out_pick.clicked.connect(
+            lambda: self._pick_color(self._pb_outline))
+        self._pb_outline_w = QSpinBox()
+        self._pb_outline_w.setRange(0, 20)
+        self._pb_outline_w.setSuffix(" px")
+        self._pb_outline_w.valueChanged.connect(self._push_props)
+        self._pb_shadow = QCheckBox("Shadow")
+        self._pb_shadow.toggled.connect(self._push_props)
+        fx_row.addWidget(self._pb_outline)
+        fx_row.addWidget(out_pick)
+        fx_row.addWidget(self._pb_outline_w)
+        fx_row.addWidget(self._pb_shadow)
+        xw = QWidget()
+        xw.setLayout(fx_row)
+        form.addRow("Effects", xw)
+        outer.addWidget(self._text_props)
+        # ── Media controls (shown for image / video elements) ──
+        self._media_props = QWidget()
+        mform = QFormLayout(self._media_props)
+        mform.setContentsMargins(0, 0, 0, 0)
+        self._pm_file = QLabel("(no file)")
+        self._pm_file.setWordWrap(True)
+        mform.addRow("File", self._pm_file)
+        mbtn_row = QHBoxLayout()
+        self._pm_replace = QPushButton("Choose file…")
+        self._pm_replace.clicked.connect(self._on_replace_media)
+        self._pm_record = QPushButton("● Record video…")
+        self._pm_record.clicked.connect(self._on_record_media)
+        mbtn_row.addWidget(self._pm_replace)
+        mbtn_row.addWidget(self._pm_record)
+        mbtn_w = QWidget()
+        mbtn_w.setLayout(mbtn_row)
+        mform.addRow("Source", mbtn_w)
+        vid_row = QHBoxLayout()
+        self._pm_muted = QCheckBox("Muted")
+        self._pm_muted.toggled.connect(self._push_props)
+        self._pm_loop = QCheckBox("Loop to slide length")
+        self._pm_loop.toggled.connect(self._push_props)
+        vid_row.addWidget(self._pm_muted)
+        vid_row.addWidget(self._pm_loop)
+        vid_row.addStretch()
+        vw = QWidget()
+        vw.setLayout(vid_row)
+        mform.addRow("Video", vw)
+        outer.addWidget(self._media_props)
+        self._media_props.hide()
+        return box
+
+    def _update_canvas_bg(self, *args) -> None:
+        if not self._canvas_mode:
+            return
+        self._canvas.set_background(
+            self._kind.currentData() or "color",
+            self._bg_color.text().strip() or "#000000",
+            self._bg_media.text().strip())
+
+    def _on_palette_double_click(self, item) -> None:
+        # Double-clicking a palette entry adds it at the frame center.
+        kind = item.data(Qt.ItemDataRole.UserRole)
+        self._canvas.add_element(kind)
+
+    def _on_delete_element(self) -> None:
+        self._canvas.delete_selected()
+
+    def _on_layer_up(self) -> None:
+        self._canvas.raise_selected()
+
+    def _on_layer_down(self) -> None:
+        self._canvas.lower_selected()
+
+    def _on_edit_element_text(self, item) -> None:
+        self._pb_text.setFocus()
+        self._pb_text.selectAll()
+
+    def _on_add_media(self, item) -> None:
+        """A newly dropped image/video needs a file. For a video,
+        offer record-or-choose; for an image, just choose."""
+        if item.kind == "video":
+            from PyQt6.QtWidgets import QMessageBox
+            box = QMessageBox(self)
+            box.setWindowTitle("Add video")
+            box.setText("Record a new video, or choose an existing "
+                        "file?")
+            rec = box.addButton(
+                "● Record…", QMessageBox.ButtonRole.AcceptRole)
+            cho = box.addButton(
+                "Choose file…", QMessageBox.ButtonRole.ActionRole)
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            box.exec()
+            if box.clickedButton() is rec:
+                self._record_into(item)
+            elif box.clickedButton() is cho:
+                self._choose_media(item, "video")
+        else:
+            self._choose_media(item, "image")
+
+    def _on_replace_media(self) -> None:
+        item = self._canvas.selected()
+        if item is not None and item.kind in ("image", "video"):
+            self._choose_media(item, item.kind)
+
+    def _on_record_media(self) -> None:
+        item = self._canvas.selected()
+        if item is not None:
+            self._record_into(item)
+
+    def _choose_media(self, item, kind: str) -> None:
+        if kind == "video":
+            filt = "Video (*.mp4 *.mov *.mkv *.webm);;All files (*)"
+        else:
+            filt = ("Image (*.png *.jpg *.jpeg *.webp *.bmp *.gif);;"
+                    "All files (*)")
+        picked, _ = QFileDialog.getOpenFileName(
+            self, f"Choose {kind}", "", filt)
+        if not picked:
+            return
+        item.media_path = picked
+        item.reload_pixmap()
+        if kind == "video":
+            self._set_video_preview(item, picked)
+        self._on_canvas_selection(item)
+        item.update()
+
+    def _record_into(self, item) -> None:
+        """Record a webcam+mic video and use it as this element."""
+        from src.ui.video_studio.video_record_dialog import (
+            VideoRecordDialog)
+        dest_dir = self._recording_dir()
+        dlg = VideoRecordDialog(dest_dir, parent=self)
+        if dlg.exec() and dlg.output_path:
+            item.kind = "video"
+            item.media_path = dlg.output_path
+            self._set_video_preview(item, dlg.output_path)
+            self._on_canvas_selection(item)
+            item.update()
+
+    def _set_video_preview(self, item, path: str) -> None:
+        """Extract a first frame so the video element shows a real
+        thumbnail on the canvas."""
+        try:
+            from pathlib import Path as _P
+            from PyQt6.QtGui import QPixmap
+            from src.video_studio.slide_deck import _video_first_frame
+            frame = _P(self._recording_dir()) / (
+                f"_prev_{item.el_id or 'v'}.png")
+            if _video_first_frame(path, frame):
+                item.set_preview_pixmap(QPixmap(str(frame)))
+        except Exception:
+            pass
+
+    def _recording_dir(self) -> str:
+        from pathlib import Path as _P
+        d = _P.home() / ".writingaid_slides" / "designed"
+        d.mkdir(parents=True, exist_ok=True)
+        return str(d)
+
+    def _on_canvas_selection(self, item) -> None:
+        """Populate the properties panel from the selected element, or
+        disable it when nothing is selected. Shows text OR media
+        controls depending on the element kind."""
+        has = item is not None
+        self._props_box.setEnabled(has)
+        for w in (self._del_btn, self._up_btn, self._down_btn):
+            w.setEnabled(has)
+        if not has:
+            self._kind_label.setText("Select or drop an element to "
+                                     "edit it.")
+            self._text_props.hide()
+            self._media_props.hide()
+            return
+        is_text = item.kind == "text"
+        self._text_props.setVisible(is_text)
+        self._media_props.setVisible(not is_text)
+        self._kind_label.setText({
+            "text": "📝 Text element",
+            "image": "🖼 Image element",
+            "video": "🎞 Video element (plays in export)",
+        }.get(item.kind, item.kind))
+        self._loading_props = True
+        try:
+            if is_text:
+                self._pb_text.setPlainText(item.text or "")
+                self._pb_size.setValue(int(item.font_size or 72))
+                self._pb_color.setText(item.color or "#FFFFFF")
+                self._pb_align.setCurrentIndex(max(
+                    0, self._pb_align.findData(item.align or "center")))
+                self._pb_valign.setCurrentIndex(max(
+                    0, self._pb_valign.findData(
+                        item.valign or "middle")))
+                self._pb_bold.setChecked(bool(item.bold))
+                self._pb_italic.setChecked(bool(item.italic))
+                self._pb_fill.setText(item.box_color or "")
+                self._pb_fill_op.setValue(
+                    float(item.box_opacity or 0.5))
+                self._pb_outline.setText(item.outline_color or "")
+                self._pb_outline_w.setValue(
+                    int(item.outline_width or 0))
+                self._pb_shadow.setChecked(bool(item.shadow))
+            else:
+                name = (item.media_path or "").rsplit("/", 1)[-1]
+                self._pm_file.setText(name or "(no file yet)")
+                self._pm_record.setVisible(item.kind == "video")
+                self._pm_muted.setVisible(item.kind == "video")
+                self._pm_loop.setVisible(item.kind == "video")
+                self._pm_muted.setChecked(bool(item.video_muted))
+                self._pm_loop.setChecked(bool(item.video_loop))
+        finally:
+            self._loading_props = False
+
+    def _push_props(self, *args) -> None:
+        """Write the properties panel back onto the selected element
+        and repaint it — live, as the writer edits."""
+        if self._loading_props:
+            return
+        item = self._canvas.selected()
+        if item is None:
+            return
+        if item.kind == "text":
+            item.text = self._pb_text.toPlainText()
+            item.font_size = int(self._pb_size.value())
+            item.color = self._pb_color.text().strip() or "#FFFFFF"
+            item.align = self._pb_align.currentData() or "center"
+            item.valign = self._pb_valign.currentData() or "middle"
+            item.bold = bool(self._pb_bold.isChecked())
+            item.italic = bool(self._pb_italic.isChecked())
+            item.box_color = self._pb_fill.text().strip()
+            item.box_opacity = float(self._pb_fill_op.value())
+            item.outline_color = self._pb_outline.text().strip()
+            item.outline_width = int(self._pb_outline_w.value())
+            item.shadow = bool(self._pb_shadow.isChecked())
+        else:
+            item.video_muted = bool(self._pm_muted.isChecked())
+            item.video_loop = bool(self._pm_loop.isChecked())
+        item.update()
 
     # -- helpers -------------------------------------------------------
     def _pick_color(self, target: QLineEdit) -> None:
@@ -318,6 +706,8 @@ class CardEditorDialog(QDialog):
             getattr(c, "text_box_color", "") or "")
         self._box_opacity.setValue(
             float(getattr(c, "text_box_opacity", 0.5) or 0.5))
+        if self._canvas_mode:
+            self._canvas.load_card(c)
         self._sync_kind()
 
     def _on_accept(self) -> None:
@@ -339,6 +729,8 @@ class CardEditorDialog(QDialog):
         c.text_shadow = bool(self._shadow.isChecked())
         c.text_box_color = self._box_color.text().strip()
         c.text_box_opacity = float(self._box_opacity.value())
+        if self._canvas_mode:
+            self._canvas.apply_to_card(c)
         self.accept()
 
     # Values the host reads after exec() for the card's group / page.

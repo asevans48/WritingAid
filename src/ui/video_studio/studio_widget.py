@@ -13,16 +13,15 @@ path; no separate save button.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Callable, List, Optional
 
 from PyQt6.QtCore import Qt, QPointF, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QFont
+from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QFileDialog, QFrame, QGroupBox,
-    QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
-    QPushButton, QScrollArea, QSizePolicy, QSplitter, QVBoxLayout,
+    QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+    QPushButton, QSizePolicy, QSplitter, QVBoxLayout,
     QWidget,
 )
 
@@ -38,7 +37,6 @@ from src.video_studio.backends.image_base import (
     ImageBackend, ImageGenerationRequest,
 )
 from src.video_studio.backends.registry import (
-    all_backends, all_image_backends, available_image_backends,
     default_backend, default_image_backend, get_backend,
     get_image_backend,
 )
@@ -521,6 +519,12 @@ class VideoStudioWidget(QWidget):
             self._upload_clip_from_canvas)
         self._canvas.switchModeRequested.connect(
             self._switch_scene_mode)
+        self._canvas.resetSlideDeckRequested.connect(
+            self._reset_slide_deck_for_scene)
+        self._canvas.syncSlideDeckRequested.connect(
+            self._sync_slide_deck_for_scene)
+        self._canvas.resetVideoEditorRequested.connect(
+            self._reset_video_editor_for_scene)
         self._canvas.sceneMoved.connect(
             lambda *_: self.contentChanged.emit())
         splitter.addWidget(self._canvas)
@@ -1675,13 +1679,6 @@ class VideoStudioWidget(QWidget):
         self._update_status("")
         return False
 
-    def reset_memory_check_skip(self) -> None:
-        """Re-enable the memory pre-flight after a session-wide
-        ``Proceed anyway``. Useful for the Project menu / a future
-        toolbar reset, or for tests that need to restore the
-        prompt-on-tight-memory behavior."""
-        self._skip_memory_checks_session = False
-
     def _generate_image_for_scene(self, scene_id: str) -> None:
         """Generate an image still for a scene via the current
         ImageBackend. Uses ``scene.image_display_seconds`` as the
@@ -2511,6 +2508,161 @@ class VideoStudioWidget(QWidget):
             f"{'🖼 slideshow' if new_mode == 'slideshow' else '🎬 video'}"
             f" mode.")
 
+    def _deck_for_scene(self, scene):
+        """Return the loaded slide deck whose chapter matches this
+        scene, or None. Scenes group into a per-chapter deck, so a
+        card's reset/sync actions target that deck."""
+        studio = self._studio()
+        if studio is None or scene is None:
+            return None
+        cid = getattr(scene, "chapter_id", "") or ""
+        for d in (getattr(studio, "slide_decks", []) or []):
+            if d.chapter_id == cid:
+                return d
+        return None
+
+    def _reset_slide_deck_for_scene(self, scene_id: str) -> None:
+        """Canvas menu: rebuild THIS scene's group in the deck from
+        its current favorite images, discarding that scene's slide
+        edits (timings, text, transitions). Other scenes untouched."""
+        studio = self._studio()
+        if studio is None:
+            return
+        scene = studio.get_scene(scene_id)
+        if scene is None:
+            return
+        deck = self._deck_for_scene(scene)
+        if deck is None:
+            QMessageBox.information(
+                self, "No slide deck",
+                "This scene's chapter has no slide deck yet. Open the "
+                "slide editor for it first, then reset.")
+            return
+        reply = QMessageBox.question(
+            self, "Reset slide deck?",
+            f"Rebuild '{scene.name}' from its current favorite "
+            "images?\n\nThis replaces that scene's slides, timings, "
+            "text, and transitions in the deck with a fresh build "
+            "from the scene's actions. Other scenes are left "
+            "untouched.",
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        from src.video_studio.slide_deck import rebuild_scene_group
+        working_dir = (
+            self._studio_root_dir() / "slide_decks"
+            / (scene.chapter_id or "_"))
+        working_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            grp = rebuild_scene_group(deck, scene, working_dir)
+        except Exception as exc:
+            QMessageBox.warning(
+                self, "Reset failed",
+                f"Could not rebuild the scene's slides:\n{exc}")
+            return
+        self.contentChanged.emit()
+        n = len(grp.page_ids) if grp else 0
+        self._update_status(
+            f"Reset '{scene.name}' → {n} slide(s) from favorites.")
+        QMessageBox.information(
+            self, "Slide deck reset",
+            f"Rebuilt '{scene.name}' into {n} slide(s) from its "
+            "favorite images.")
+
+    def _sync_slide_deck_for_scene(self, scene_id: str) -> None:
+        """Canvas menu: push THIS scene's group edits back onto the
+        scene — slide durations → action ``display_seconds`` and the
+        (possibly renamed) group name → scene name."""
+        studio = self._studio()
+        if studio is None:
+            return
+        scene = studio.get_scene(scene_id)
+        if scene is None:
+            return
+        deck = self._deck_for_scene(scene)
+        if deck is None:
+            QMessageBox.information(
+                self, "No slide deck",
+                "This scene's chapter has no slide deck yet — nothing "
+                "to sync back.")
+            return
+        from src.video_studio.slide_deck import sync_group_to_scene
+        try:
+            changed = sync_group_to_scene(deck, scene)
+        except Exception as exc:
+            QMessageBox.warning(
+                self, "Sync failed",
+                f"Could not sync the slide deck back:\n{exc}")
+            return
+        if changed:
+            from datetime import datetime
+            scene.updated_at = datetime.now()
+            self._canvas.refresh_scene_card(scene_id)
+            self.contentChanged.emit()
+        self._update_status(
+            f"Synced slide deck → '{scene.name}' "
+            f"({changed} field(s) updated).")
+        QMessageBox.information(
+            self, "Synced to scene",
+            f"Applied {changed} change(s) from the slide deck back "
+            f"onto '{scene.name}' (slide durations and group name)."
+            if changed else
+            "The slide deck already matches this scene — nothing to "
+            "sync.")
+
+    def _reset_video_editor_for_scene(self, scene_id: str) -> None:
+        """Canvas menu: drop the saved video-editor session (recorded
+        voiceover takes + mic choice) for this scene's favorite clip,
+        so the next open of the video editor starts clean."""
+        studio = self._studio()
+        if studio is None:
+            return
+        scene = studio.get_scene(scene_id)
+        if scene is None:
+            return
+        clip = scene.favorite_clip() or (
+            scene.clips[-1] if scene.clips else None)
+        path = Path(clip.file_path) if (
+            clip and clip.file_path) else None
+        if path is None:
+            QMessageBox.information(
+                self, "No video",
+                "This scene has no generated clip, so there's no "
+                "video-editor session to reset.")
+            return
+        key = str(path.resolve())
+        sessions = getattr(studio, "video_editor_sessions", []) or []
+        match = next(
+            (s for s in sessions
+             if s.source_path
+             and str(Path(s.source_path).resolve()) == key),
+            None)
+        if match is None:
+            QMessageBox.information(
+                self, "Nothing to reset",
+                "This scene's clip has no saved video-editor session "
+                "(no recorded takes yet).")
+            return
+        n = len(match.voiceovers or [])
+        reply = QMessageBox.question(
+            self, "Reset video editor?",
+            f"Delete the video-editor session for '{scene.name}'?\n\n"
+            f"This removes {n} recorded voiceover take(s) and the "
+            "saved mic choice. The source clip itself is not touched.",
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        studio.video_editor_sessions = [
+            s for s in sessions if s is not match]
+        self.contentChanged.emit()
+        self._update_status(
+            f"Reset video editor for '{scene.name}' "
+            f"({n} take(s) cleared).")
+
     def _generate_image_for_action(
         self, scene: Scene, action,
     ) -> Optional[Any]:
@@ -2962,6 +3114,19 @@ class VideoStudioWidget(QWidget):
                 chapter_label=chapter_label)
             if rebuilt.pages:
                 deck.pages = rebuilt.pages
+                deck.groups = rebuilt.groups
+        # Legacy decks (built before scenes became groups) come in
+        # ungrouped — group each slide by its scene so the editor
+        # shows scene→group / action→slide. Only touches a deck with
+        # no groups; an already-arranged deck is left alone.
+        try:
+            from src.video_studio.slide_deck import (
+                assign_orphan_slides_to_scene_groups)
+            names = {
+                s.id: (s.name or "Scene") for s in scenes}
+            assign_orphan_slides_to_scene_groups(deck, names)
+        except Exception as exc:
+            print(f"[studio] scene-grouping sync failed: {exc}")
         # Nudge the writer about any action that has several images
         # but no favorite chosen — those silently fall back to the
         # first image. Non-blocking: the deck still builds.
@@ -3112,10 +3277,9 @@ class VideoStudioWidget(QWidget):
           5. Report skipped scenes + save path.
         """
         from src.video_studio.deck_export import (
-            build_deck_entries, collect_chapter_scenes,
+            collect_chapter_scenes,
         )
-        from src.video_studio.stitcher import (
-            stitch_clips, ffmpeg_available)
+        from src.video_studio.stitcher import ffmpeg_available
         studio = self._studio()
         if studio is None or not studio.scenes:
             QMessageBox.information(

@@ -20,7 +20,7 @@ from typing import Any, Callable, List, Optional
 from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QDesktopServices, QGuiApplication, QPixmap
 from PyQt6.QtWidgets import (
-    QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
+    QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
     QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton,
     QScrollArea, QVBoxLayout, QWidget,

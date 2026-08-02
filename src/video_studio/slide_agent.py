@@ -93,9 +93,13 @@ def _clean_args(tool: Dict[str, Any], args: Dict[str, Any]) -> Dict[str, Any]:
 # Deck helpers
 # ---------------------------------------------------------------------
 def _page_at(deck: SlideDeckProject, one_based: int) -> Optional[SlidePage]:
+    # Use the deck's group/render order so "slide #N" matches what the
+    # user sees in the editor's slide list.
+    from src.video_studio.slide_deck import ordered_pages
+    pages = ordered_pages(deck)
     idx = int(one_based) - 1
-    if 0 <= idx < len(deck.pages):
-        return deck.pages[idx]
+    if 0 <= idx < len(pages):
+        return pages[idx]
     return None
 
 
@@ -262,6 +266,30 @@ def _tool_set_compression(deck, a):
     return f"Export will compress to ~{a['mb']:.0f} MB (two-pass)."
 
 
+def _tool_remove_slide(deck, a):
+    page = _page_at(deck, a["slide"])
+    if page is None:
+        return f"No slide #{a['slide']} (deck has {len(deck.pages)})."
+    label = page.label or "slide"
+    deck.pages = [p for p in deck.pages if p.id != page.id]
+    for g in deck.groups:
+        g.page_ids = [pid for pid in g.page_ids if pid != page.id]
+    return f"Removed slide #{a['slide']} ('{label}')."
+
+
+def _tool_remove_group(deck, a):
+    g = _group_at(deck, a["group"])
+    if g is None:
+        return f"No group #{a['group']} (deck has {len(deck.groups)})."
+    members = [p for p in deck.pages if p.group_id == g.id]
+    ids = {p.id for p in members}
+    name = g.name or g.id
+    deck.pages = [p for p in deck.pages if p.id not in ids]
+    deck.groups = [gg for gg in deck.groups if gg.id != g.id]
+    return (f"Removed group #{a['group']} ('{name}') and its "
+            f"{len(members)} slide(s).")
+
+
 def _tool_list_slides(deck, a):
     return deck_state_summary(deck)
 
@@ -374,6 +402,16 @@ TOOLS: List[Dict[str, Any]] = [
          "mb": {"type": "float", "min": 0.0, "max": 100000.0,
                 "default": 0.0}},
      "fn": _tool_set_compression},
+    {"name": "remove_slide",
+     "desc": "Remove a single slide from the deck by its number.",
+     "params": {
+         "slide": {"type": "int", "min": 1, "default": 1}},
+     "fn": _tool_remove_slide},
+    {"name": "remove_group",
+     "desc": "Remove a group AND all of its slides from the deck.",
+     "params": {
+         "group": {"type": "int", "min": 1, "default": 1}},
+     "fn": _tool_remove_group},
     {"name": "list_slides",
      "desc": "List the current slides and groups (read-only).",
      "params": {}, "fn": _tool_list_slides},
@@ -393,8 +431,9 @@ def deck_state_summary(deck: SlideDeckProject) -> str:
                  f"{len(deck.pages)} slide(s), "
                  f"{len(deck.groups)} group(s).")
     if deck.pages:
-        lines.append("Slides:")
-        for i, p in enumerate(deck.pages, start=1):
+        from src.video_studio.slide_deck import ordered_pages
+        lines.append("Slides (in deck order):")
+        for i, p in enumerate(ordered_pages(deck), start=1):
             kind = ("CARD" if getattr(p, "card", None)
                     else "image")
             ov = " +text" if getattr(p, "text_overlay", None) else ""
@@ -525,12 +564,45 @@ def _try_load_actions(s: str) -> List[Dict[str, Any]]:
     return []
 
 
+def _remap_index(
+    args: Dict[str, Any], key: str,
+    snap_ids: List[str], live_ids: List[str],
+) -> None:
+    """Re-map a 1-based ``args[key]`` from the START-of-turn order
+    (``snap_ids``) to the item's CURRENT position (``live_ids``), so
+    prior add/remove calls in the same turn don't shift what a later
+    index refers to. A target that was deleted maps to an
+    out-of-range index (the tool then reports 'no such #')."""
+    if key not in args or args[key] is None:
+        return
+    try:
+        oi = int(args[key]) - 1
+    except (TypeError, ValueError):
+        return
+    if not (0 <= oi < len(snap_ids)):
+        return
+    target_id = snap_ids[oi]
+    try:
+        ci = live_ids.index(target_id)
+        args[key] = ci + 1
+    except ValueError:
+        args[key] = len(live_ids) + 1  # deleted → out of range
+
+
 def execute_tool_calls(
     deck: SlideDeckProject, calls: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
     """Validate + run each call on ``deck``. Returns a result record
     per call: ``{tool, ok, message}``. Unknown tools are reported, not
     executed."""
+    from src.video_studio.slide_deck import ordered_pages
+    # Snapshot the slide / group order at the START of the turn.
+    # A model plans a whole batch against the state it was shown, but
+    # an earlier add/remove call shifts the numbers a later call
+    # references. Re-map each index to the target's CURRENT position
+    # so "slide 2 / group 3" mean what the model intended.
+    snap_pages = [p.id for p in ordered_pages(deck)]
+    snap_groups = [g.id for g in deck.groups]
     results: List[Dict[str, Any]] = []
     for call in calls:
         name = str(call.get("tool", "")).strip()
@@ -541,6 +613,10 @@ def execute_tool_calls(
                 "message": f"Unknown tool '{name}'."})
             continue
         args = _clean_args(tool, call.get("args") or {})
+        _remap_index(args, "slide", snap_pages,
+                     [p.id for p in ordered_pages(deck)])
+        _remap_index(args, "group", snap_groups,
+                     [g.id for g in deck.groups])
         try:
             msg = tool["fn"](deck, args)
             results.append({"tool": name, "ok": True, "message": msg})

@@ -14,7 +14,7 @@ users add hops via a context menu ("Connect to → …").
 from __future__ import annotations
 
 import math
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import (
@@ -355,6 +355,9 @@ class SceneCanvasView(QGraphicsView):
     uploadClipRequested = pyqtSignal(str)       # upload image/video file
     switchModeRequested = pyqtSignal(str, str)  # scene_id, "video"|"slideshow"
     sceneMoved = pyqtSignal(str, int, int)      # scene_id, col, row
+    resetSlideDeckRequested = pyqtSignal(str)   # rebuild scene's deck group
+    syncSlideDeckRequested = pyqtSignal(str)    # push deck edits → scene
+    resetVideoEditorRequested = pyqtSignal(str)  # clear scene's VE session
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -413,14 +416,6 @@ class SceneCanvasView(QGraphicsView):
             return
         super().wheelEvent(event)
 
-    def reset_zoom(self) -> None:
-        """Snap back to 1:1 zoom and re-center on the scene."""
-        self.resetTransform()
-        self._zoom_level = 1.0
-        s = self.scene()
-        if s is not None:
-            self.centerOn(s.itemsBoundingRect().center())
-
     def fit_to_view(self) -> None:
         """Scale so every card fits in the viewport. Capped at the
         zoom max so a single-scene board doesn't end up
@@ -465,9 +460,6 @@ class SceneCanvasView(QGraphicsView):
             return
         self._chapter_filter = normalized
         self._rebuild_all()
-
-    def chapter_filter(self) -> str:
-        return self._chapter_filter
 
     def _rebuild_all(self) -> None:
         """Clear and recreate every item. Cheap enough for the
@@ -676,6 +668,20 @@ class SceneCanvasView(QGraphicsView):
                 "Stitch slide deck → video",
                 lambda: self.stitchSlideDeckRequested.emit(
                     scene_id))
+        menu.addSeparator()
+        # Slide-deck / video-editor sync for THIS scene's card.
+        sync_menu = menu.addMenu("🔄 Slide deck / video editor")
+        sync_menu.addAction(
+            "Reset slide deck (rebuild this scene's group from "
+            "favorites)",
+            lambda: self.resetSlideDeckRequested.emit(scene_id))
+        sync_menu.addAction(
+            "Sync slide deck → this scene (durations, group name)",
+            lambda: self.syncSlideDeckRequested.emit(scene_id))
+        sync_menu.addSeparator()
+        sync_menu.addAction(
+            "Reset video editor (clear this scene's takes)",
+            lambda: self.resetVideoEditorRequested.emit(scene_id))
         menu.addSeparator()
         # Open paths — let the writer view what's been generated
         # without digging into the editor or Finder.

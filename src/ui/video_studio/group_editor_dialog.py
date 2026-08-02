@@ -42,15 +42,13 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout,
     QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMessageBox, QPushButton,
-    QMenu, QScrollArea, QSplitter, QVBoxLayout, QWidget,
+    QMenu, QScrollArea, QVBoxLayout, QWidget,
 )
 
 from src.ui.video_studio.group_timeline_widget import (
     GroupTimelineWidget, start_slide_drag,
 )
-from src.video_studio.audio_recorder import (
-    AudioRecorder, recorder_dependencies_available,
-)
+from src.video_studio.audio_recorder import AudioRecorder
 from src.video_studio.models import (
     CHAPTER_TRANSITIONS, SlideDeckProject, SlideGroup, SlidePage,
 )
@@ -994,6 +992,31 @@ class GroupEditorDialog(QDialog):
         self._add_to_group_btn.clicked.connect(
             self._on_add_from_deck)
         tray_header.addWidget(self._add_to_group_btn)
+        # ➕ New slide — create a brand-new slide in THIS group from
+        # an imported image. It joins the tray; drag it onto the
+        # timeline like any other. Shows up in the main slide
+        # editor's "Slides (in order)" list under this group.
+        self._new_slide_btn = QPushButton("➕ New slide…")
+        self._new_slide_btn.setToolTip(
+            "Create a new slide in this group from an image file. "
+            "It appears in the tray (and in the main editor's slide "
+            "list under this group).")
+        self._new_slide_btn.clicked.connect(self._on_new_slide)
+        tray_header.addWidget(self._new_slide_btn)
+        # ➕ New designed slide — a PowerPoint-style slide built from
+        # scratch: pick a background (solid color / image / video),
+        # type a title + subtitle, and style them (color, position,
+        # outline, shadow, box). It renders to a still image so it
+        # flows through the deck exactly like any other slide, and can
+        # be re-opened and re-designed later.
+        self._new_designed_btn = QPushButton("➕ New designed slide…")
+        self._new_designed_btn.setToolTip(
+            "Build a slide from scratch — background color/image, "
+            "styled title + subtitle — like a PowerPoint slide. Lands "
+            "in the tray; drag it onto the timeline.")
+        self._new_designed_btn.clicked.connect(
+            self._on_new_designed_slide)
+        tray_header.addWidget(self._new_designed_btn)
         # ⤴ Pull every placed slide back to the tray — a
         # smaller-blast-radius option than "Reset timeline"
         # (which also sweeps audio clips). Necessary because
@@ -1235,6 +1258,14 @@ class GroupEditorDialog(QDialog):
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
         view_act = menu.addAction("🔍  Preview slide image…")
+        # Designed slides (built via "New designed slide") carry a
+        # ``card`` — offer to re-open the designer and re-render.
+        redesign_act = None
+        if getattr(page, "card", None) is not None:
+            redesign_act = menu.addAction("🎨  Redesign slide…")
+            redesign_act.setToolTip(
+                "Re-open the background + text designer for this "
+                "slide and re-render it.")
         menu.addSeparator()
         place_act = menu.addAction(
             "📥  Place at end of timeline")
@@ -1242,12 +1273,37 @@ class GroupEditorDialog(QDialog):
             "Add this slide to the timeline right after the "
             "last placed slide. You can also drag the thumb "
             "directly onto the timeline to position it.")
+        menu.addSeparator()
+        remove_act = menu.addAction(
+            "🗑  Remove from group")
+        remove_act.setToolTip(
+            "Drop this slide from the group (stays in the deck).")
+        delete_act = menu.addAction(
+            "❌  Delete slide from the deck")
+        delete_act.setToolTip(
+            "Delete this slide everywhere. Cannot be undone.")
         action = menu.exec(
             self._tray.viewport().mapToGlobal(point))
         if action is view_act:
             self._view_slide(page_id)
+        elif redesign_act is not None and action is redesign_act:
+            self._redesign_slide(page)
         elif action is place_act:
             self._place_slide_at_end(page)
+        elif action is remove_act:
+            # Drop from the group (stays in the deck) — direct by id.
+            pg = self._find_page(page_id)
+            if pg is not None:
+                pg.group_id = None
+                pg.start_time_seconds_in_group = None
+                pg.updated_at = datetime.now()
+                self._group.page_ids = [
+                    pid for pid in self._group.page_ids
+                    if pid != page_id]
+                self._refresh_tray()
+                self.deck_modified.emit()
+        elif action is delete_act:
+            self._delete_slide(page_id)
 
     def _place_slide_at_end(self, page) -> None:
         """Drop an unplaced slide back onto the timeline,
@@ -1885,6 +1941,202 @@ class GroupEditorDialog(QDialog):
         page.updated_at = datetime.now()
         self._group.page_ids.append(page.id)
         self._refresh_tray()
+        self.deck_modified.emit()
+
+    def _on_new_slide(self) -> None:
+        """Create a brand-new slide in this group from an imported
+        image. It lands in the tray; the writer drags it onto the
+        timeline. Appears in the main editor's slide list too."""
+        picked, _ = QFileDialog.getOpenFileName(
+            self, "New slide — pick an image", "",
+            "Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif);;"
+            "All files (*)")
+        if not picked:
+            return
+        src = Path(picked)
+        dest_dir = Path(
+            self._deck.working_dir
+            or (Path.home() / ".writingaid_slides")) / "slides"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dest = dest_dir / f"slide_{stamp}{src.suffix.lower()}"
+        try:
+            import shutil as _sh
+            _sh.copy2(src, dest)
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Import failed",
+                f"Could not copy '{src.name}': {e}")
+            return
+        page = SlidePage(
+            label=src.stem,
+            image_path=str(dest),
+            duration_seconds=4.0,
+            group_id=self._group.id)
+        self._deck.pages.append(page)
+        self._group.page_ids.append(page.id)
+        self._refresh_tray()
+        self.deck_modified.emit()
+        QMessageBox.information(
+            self, "Slide added",
+            "New slide added to the tray — drag it onto the "
+            "timeline to place it.")
+
+    def _on_new_designed_slide(self) -> None:
+        """Create a brand-new PowerPoint-style slide in this group:
+        open the card designer (background + styled text), render the
+        result to a still image, and add it as a slide. The page keeps
+        its ``card`` so the writer can re-open the designer later."""
+        from src.video_studio.models import TitleCard, SlideElement
+        from src.video_studio.slide_deck import render_card_to_png
+        from src.ui.video_studio.card_editor_dialog import (
+            CardEditorDialog)
+        card = TitleCard(
+            role="content",
+            kind="color",
+            bg_color="#1e1e28",
+            text_fade_seconds=0.0,
+            elements=[
+                SlideElement(
+                    kind="text", text="Title", z=0,
+                    x=0.15, y=0.34, w=0.70, h=0.18,
+                    font_size=96, color="#FFFFFF", bold=True),
+                SlideElement(
+                    kind="text", text="Subtitle", z=1,
+                    x=0.20, y=0.56, w=0.60, h=0.12,
+                    font_size=48, color="#DDDDDD")])
+        bg_group = getattr(self._deck, "background_group", None)
+        deck_has_bg = bool(
+            bg_group is not None
+            and (getattr(bg_group, "audio_clips", None) or []))
+        dlg = CardEditorDialog(
+            card,
+            title_bar="Designed slide",
+            deck_has_background=deck_has_bg,
+            deck_background_enabled=not bool(getattr(
+                self._group, "suppress_deck_background", False)),
+            canvas_mode=True,
+            parent=self)
+        dlg.set_timing(4.0, "cut", 0.0)
+        if not dlg.exec():
+            return
+        # Render the designed card to a still image the pipeline can
+        # treat as a normal slide.
+        dest_dir = Path(
+            self._deck.working_dir
+            or (Path.home() / ".writingaid_slides")) / "slides"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dest = dest_dir / f"designed_{stamp}.png"
+        if not render_card_to_png(card, dest):
+            QMessageBox.warning(
+                self, "Render failed",
+                "Could not render the designed slide to an image. "
+                "Check that Pillow is installed.")
+            return
+        page = SlidePage(
+            label=self._card_label(card),
+            image_path=str(dest),
+            card=card,
+            duration_seconds=dlg.duration_seconds(),
+            group_id=self._group.id)
+        self._group.suppress_deck_background = (
+            not dlg.deck_background_enabled())
+        self._deck.pages.append(page)
+        self._group.page_ids.append(page.id)
+        self._refresh_tray()
+        self.deck_modified.emit()
+        QMessageBox.information(
+            self, "Designed slide added",
+            "Your designed slide is in the tray — drag it onto the "
+            "timeline to place it. Re-open the group's card editor "
+            "to redesign it later.")
+
+    @staticmethod
+    def _card_label(card) -> str:
+        """Best label for a designed slide: first non-empty text
+        element (by layer order), else the legacy title, else a
+        generic name."""
+        for e in sorted(
+                (getattr(card, "elements", None) or []),
+                key=lambda e: getattr(e, "z", 0)):
+            if getattr(e, "kind", "text") != "text":
+                continue
+            t = (getattr(e, "text", "") or "").strip()
+            if t:
+                return t.splitlines()[0][:40]
+        return (getattr(card, "title", "") or "").strip() \
+            or "Designed slide"
+
+    def _redesign_slide(self, page) -> None:
+        """Re-open the card designer on an existing designed slide and
+        re-render its still image in place."""
+        card = getattr(page, "card", None)
+        if card is None:
+            return
+        from src.video_studio.slide_deck import render_card_to_png
+        from src.ui.video_studio.card_editor_dialog import (
+            CardEditorDialog)
+        bg_group = getattr(self._deck, "background_group", None)
+        deck_has_bg = bool(
+            bg_group is not None
+            and (getattr(bg_group, "audio_clips", None) or []))
+        dlg = CardEditorDialog(
+            card,
+            title_bar=(page.label or "Designed slide"),
+            deck_has_background=deck_has_bg,
+            deck_background_enabled=not bool(getattr(
+                self._group, "suppress_deck_background", False)),
+            canvas_mode=True,
+            parent=self)
+        dlg.set_timing(
+            float(getattr(page, "duration_seconds", 4.0) or 4.0),
+            "cut", 0.0)
+        if not dlg.exec():
+            return
+        # Re-render over the SAME image file so placements/thumbnails
+        # pick up the change without a new path.
+        dest = Path(page.image_path) if page.image_path else (
+            Path(self._deck.working_dir or (
+                Path.home() / ".writingaid_slides")) / "slides"
+            / f"designed_{datetime.now():%Y%m%d_%H%M%S}.png")
+        if not render_card_to_png(card, dest):
+            QMessageBox.warning(
+                self, "Render failed",
+                "Could not re-render the designed slide.")
+            return
+        page.image_path = str(dest)
+        page.label = self._card_label(card)
+        page.duration_seconds = dlg.duration_seconds()
+        self._group.suppress_deck_background = (
+            not dlg.deck_background_enabled())
+        page.updated_at = datetime.now()
+        self._refresh_tray()
+        self._timeline.update()
+        self.deck_modified.emit()
+
+    def _delete_slide(self, page_id: str) -> None:
+        """Delete a slide entirely from the group AND the deck."""
+        page = next(
+            (p for p in self._deck.pages if p.id == page_id), None)
+        if page is None:
+            return
+        if QMessageBox.question(
+                self, "Delete slide?",
+                f"Delete '{page.label or 'slide'}' from the deck? "
+                "This removes it everywhere, not just this "
+                "group.") != QMessageBox.StandardButton.Yes:
+            return
+        self._deck.pages = [
+            p for p in self._deck.pages if p.id != page_id]
+        for g in self._deck.groups:
+            g.page_ids = [
+                pid for pid in g.page_ids if pid != page_id]
+        self._timeline.select_audio_clip(None)
+        self._reconcile_group_page_ids()
+        self._refresh_tray()
+        self._timeline.refresh_waveform()
+        self._timeline.update()
         self.deck_modified.emit()
 
     # ------------------------------------------------------------------
@@ -3266,24 +3518,6 @@ class GroupEditorDialog(QDialog):
             self._clip_list.addItem(item)
         self._clip_list.blockSignals(False)
 
-    def _on_clips_reordered(self, *_a) -> None:
-        """The list widget reordered itself via internal D&D.
-        Sync the model's ``audio_clips`` list to match the new
-        visual order, then recompose."""
-        new_ids = []
-        for i in range(self._clip_list.count()):
-            item = self._clip_list.item(i)
-            new_ids.append(
-                item.data(Qt.ItemDataRole.UserRole))
-        by_id = {
-            c.id: c
-            for c in (
-                getattr(self._group, "audio_clips", []) or [])}
-        reordered = [by_id[i] for i in new_ids if i in by_id]
-        self._group.audio_clips = reordered
-        self._refresh_clip_list()
-        self._recompose_overlay()
-
     def _on_clip_renamed(self, item) -> None:
         """Inline rename from the list — strip the rendered
         prefix back off so we just store the writer's label."""
@@ -3755,6 +3989,11 @@ class GroupEditorDialog(QDialog):
         remove_act.setToolTip(
             "Drops the slide from the group's member list. "
             "The slide stays in the deck and other groups.")
+        delete_act = menu.addAction(
+            "❌  Delete slide from the deck")
+        delete_act.setToolTip(
+            "Delete this slide everywhere — removes it from the "
+            "group AND the whole deck. Cannot be undone.")
         action = menu.exec(global_pos)
         if action is None:
             return
@@ -3785,6 +4024,8 @@ class GroupEditorDialog(QDialog):
             self._on_unplace_selected()
         elif action is remove_act:
             self._on_remove_from_group()
+        elif action is delete_act:
+            self._delete_slide(page_id)
 
     def _open_slide_transition_dialog(self, page) -> None:
         """Modal dialog to pick the transition INTO ``page`` +

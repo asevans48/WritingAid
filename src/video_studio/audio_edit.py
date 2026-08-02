@@ -13,7 +13,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 # Tiny alias so ``compose_clips`` can declare a function-local
 # dataclass without re-importing ``dataclass`` inside its body.

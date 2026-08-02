@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Optional, Tuple
 
 from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QPixmap
@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
     QFileDialog, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout,
     QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
+    QMenu, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
     QSizePolicy, QSpinBox, QSplitter, QTabWidget, QVBoxLayout,
     QWidget,
 )
@@ -558,6 +558,13 @@ class SlideEditorDialog(QDialog):
         self._slide_list = QListWidget()
         self._slide_list.itemSelectionChanged.connect(
             self._on_slide_selected)
+        self._slide_list.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu)
+        self._slide_list.customContextMenuRequested.connect(
+            self._on_slide_list_context)
+        # Double-click a slide → jump straight into its group editor.
+        self._slide_list.itemDoubleClicked.connect(
+            lambda _it: self._edit_selected_slide_group())
         left_v.addWidget(self._slide_list, stretch=1)
         slide_btns = QHBoxLayout()
         self._move_up_btn = QPushButton("↑")
@@ -567,11 +574,20 @@ class SlideEditorDialog(QDialog):
         self._move_down_btn.clicked.connect(
             lambda: self._move_slide(+1))
         self._remove_slide_btn = QPushButton("Remove")
+        self._remove_slide_btn.setToolTip(
+            "Remove the selected slide from the deck.")
         self._remove_slide_btn.clicked.connect(
             self._on_remove_slide)
+        self._remove_group_btn = QPushButton("🗑 Group")
+        self._remove_group_btn.setToolTip(
+            "Remove the selected slide's WHOLE group (all its "
+            "slides) from the deck.")
+        self._remove_group_btn.clicked.connect(
+            self._on_remove_selected_slides_group)
         slide_btns.addWidget(self._move_up_btn)
         slide_btns.addWidget(self._move_down_btn)
         slide_btns.addWidget(self._remove_slide_btn)
+        slide_btns.addWidget(self._remove_group_btn)
         slide_btns.addStretch()
         left_v.addLayout(slide_btns)
         left.setMinimumWidth(180)
@@ -710,8 +726,15 @@ class SlideEditorDialog(QDialog):
         self._stitch_down_btn = QPushButton("↓ Move down")
         self._stitch_down_btn.clicked.connect(
             lambda: self._on_stitch_move(+1))
+        self._stitch_remove_btn = QPushButton("🗑 Remove group")
+        self._stitch_remove_btn.setToolTip(
+            "Remove the selected group (and all its slides) from "
+            "the deck.")
+        self._stitch_remove_btn.clicked.connect(
+            self._on_stitch_remove_group)
         stitch_row.addWidget(self._stitch_up_btn)
         stitch_row.addWidget(self._stitch_down_btn)
+        stitch_row.addWidget(self._stitch_remove_btn)
         stitch_row.addWidget(QLabel("  Transition in:"))
         self._stitch_trans_combo = QComboBox()
         # Reuse the chapter transitions list so writers get the
@@ -907,6 +930,35 @@ class SlideEditorDialog(QDialog):
         self._label_edit.editingFinished.connect(
             self._commit_slide_fields)
         form.addRow("Label", self._label_edit)
+
+        # ── Slide image — build / replace the visual ──
+        img_row = QHBoxLayout()
+        self._slide_image_thumb = QLabel("(no image)")
+        self._slide_image_thumb.setFixedSize(132, 74)
+        self._slide_image_thumb.setAlignment(
+            Qt.AlignmentFlag.AlignCenter)
+        self._slide_image_thumb.setStyleSheet(
+            "border:1px solid #cbd5e1; background:#0f172a; "
+            "color:#64748b; font-size:10px;")
+        img_row.addWidget(self._slide_image_thumb)
+        img_btns = QVBoxLayout()
+        self._set_image_btn = QPushButton("🖼 Set / import image…")
+        self._set_image_btn.setToolTip(
+            "Build this slide's visual — import an image file. The "
+            "transition below plays INTO this slide.")
+        self._set_image_btn.clicked.connect(self._on_set_slide_image)
+        img_btns.addWidget(self._set_image_btn)
+        self._image_path_label = QLabel("")
+        self._image_path_label.setWordWrap(True)
+        self._image_path_label.setStyleSheet(
+            "color:#6b7280; font-size:10px;")
+        img_btns.addWidget(self._image_path_label)
+        img_btns.addStretch()
+        img_row.addLayout(img_btns)
+        img_row.addStretch()
+        img_wrap = QWidget()
+        img_wrap.setLayout(img_row)
+        form.addRow("Image", img_wrap)
 
         self._duration_spin = QDoubleSpinBox()
         self._duration_spin.setRange(
@@ -1182,23 +1234,12 @@ class SlideEditorDialog(QDialog):
         script_tab_v.setContentsMargins(6, 6, 6, 6)
         script_tab_v.addWidget(master_box)
 
-        # ── Slide tab REMOVED from the tab widget ─────────────
-        # The Group editor (🧩 Edit group…) covers every per-
-        # slide field the old Slide tab had — duration, lock,
-        # transition, script, audio. Hiding the tab keeps the
-        # writer focused on group work without losing any
-        # capability. The slide_tab widget + its children stay
-        # ALIVE because the slide-list selection handlers
-        # (``_on_slide_selected``, ``_set_slide_panel_enabled``,
-        # ``_commit_slide_fields``) still call into them.
-        # Reparenting to ``self`` + hiding keeps Qt from
-        # garbage-collecting the C++ widgets when the tab
-        # widget no longer owns them — without this parent
-        # bump the writer's first slide click crashes with
-        # ``wrapped C/C++ object has been deleted``.
-        slide_tab.setParent(self)
-        slide_tab.hide()
-        self._hidden_slide_tab = slide_tab
+        # ── Slide tab — per-slide editor ─────────────────────
+        # Select a slide on the left, then build its image + set its
+        # incoming transition, duration, lock, script and audio here.
+        # (The group editor covers the same fields on the timeline;
+        # this tab is the quick per-slide surface writers asked for.)
+        self._slide_tab = slide_tab
         # Wrap the Groups tab in a scroll area so its stack of
         # panels (groups, stitch order, background bed, deck
         # actions) never gets crushed on a small laptop. The
@@ -1216,6 +1257,9 @@ class SlideEditorDialog(QDialog):
         groups_tab.setMinimumWidth(520)
         groups_scroll.setWidget(groups_tab)
         self._tabs.addTab(groups_scroll, "🧩 Groups")
+        # Per-slide editor (image + transition + duration + script +
+        # audio) — select a slide on the left to edit it here.
+        self._tabs.addTab(self._slide_tab, "🖼 Slide")
         self._tabs.addTab(script_tab, "📝 Master script")
         # ── Assistant tab: natural-language slide creation / editing
         # via the deterministic slide_agent tools. Only shown when an
@@ -1262,43 +1306,19 @@ class SlideEditorDialog(QDialog):
             self._transition_combo, self._transition_seconds_spin,
             self._script_edit, self._import_audio_btn,
             self._play_audio_btn, self._stop_audio_btn,
-            self._clear_audio_btn,
+            self._clear_audio_btn, self._set_image_btn,
         ):
             w.setEnabled(enabled)
+        if not enabled:
+            self._refresh_slide_image_preview(None)
 
     # ------------------------------------------------------------------
     # Slide list
     # ------------------------------------------------------------------
-    def _refresh_slides_text_only(self) -> None:
-        """Refresh each list row's label without recreating the
-        items — preserves selection without re-firing
-        ``itemSelectionChanged`` (which would re-enter the page-
-        load handler we may already be inside)."""
-        for i, page in enumerate(self._deck.pages, start=1):
-            if i - 1 >= self._slide_list.count():
-                break
-            item = self._slide_list.item(i - 1)
-            audio_mark = ""
-            if page.audio_path:
-                audio_mark = (
-                    f" 🔊 {page.audio_duration_seconds:.1f}s")
-            lock_mark = " 🔒" if page.locked_duration else ""
-            group_mark = ""
-            if page.group_id:
-                group = next(
-                    (g for g in self._deck.groups
-                     if g.id == page.group_id),
-                    None)
-                if group:
-                    group_mark = f"  [{group.name}]"
-            item.setText(
-                f"{i}. {page.label or 'Slide'}{group_mark}\n"
-                f"   {page.duration_seconds:.2f}s"
-                f"{audio_mark}{lock_mark}")
-
     def _refresh_slides(self) -> None:
         self._slide_list.clear()
-        for i, page in enumerate(self._deck.pages, start=1):
+        from src.video_studio.slide_deck import ordered_pages
+        for i, page in enumerate(ordered_pages(self._deck), start=1):
             audio_mark = ""
             if page.audio_path:
                 audio_mark = (
@@ -1371,12 +1391,13 @@ class SlideEditorDialog(QDialog):
                   self._transition_seconds_spin,
                   self._script_edit):
             w.blockSignals(False)
-        # First slide has nothing to transition from.
-        is_first = (
-            self._deck.pages
-            and self._deck.pages[0].id == page.id)
+        # First slide (in render order) has nothing to cross from.
+        from src.video_studio.slide_deck import ordered_pages
+        _ordered = ordered_pages(self._deck)
+        is_first = bool(_ordered and _ordered[0].id == page.id)
         self._transition_combo.setEnabled(not is_first)
         self._transition_seconds_spin.setEnabled(not is_first)
+        self._refresh_slide_image_preview(page)
         self._refresh_audio_status()
         self._sync_preview_window_selection(page.id)
         # Sticky group picker: the dropdown shows the writer's
@@ -1409,21 +1430,147 @@ class SlideEditorDialog(QDialog):
         self._refresh_slides()
         self.deck_modified.emit()
 
+    def _refresh_slide_image_preview(self, page=None) -> None:
+        """Update the Slide tab's image thumbnail + path label for
+        the given (or currently-selected) slide."""
+        if not hasattr(self, "_slide_image_thumb"):
+            return
+        if page is None:
+            page = self._selected_page()
+        img = getattr(page, "image_path", "") if page else ""
+        card = getattr(page, "card", None) if page else None
+        if card is not None:
+            self._slide_image_thumb.setPixmap(QPixmap())
+            self._slide_image_thumb.setText("🎬 card")
+            self._image_path_label.setText(
+                "This is a title/ending card — edit it via the "
+                "group editor's 🎬 Edit card button.")
+            self._set_image_btn.setEnabled(False)
+            return
+        self._set_image_btn.setEnabled(page is not None)
+        if img and Path(img).exists():
+            pix = QPixmap(str(img))
+            if not pix.isNull():
+                self._slide_image_thumb.setPixmap(
+                    pix.scaled(
+                        self._slide_image_thumb.size(),
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation))
+                self._slide_image_thumb.setText("")
+            else:
+                self._slide_image_thumb.setPixmap(QPixmap())
+                self._slide_image_thumb.setText("(unreadable)")
+            self._image_path_label.setText(Path(img).name)
+        else:
+            self._slide_image_thumb.setPixmap(QPixmap())
+            self._slide_image_thumb.setText("(no image)")
+            self._image_path_label.setText(
+                "No image — click Set / import image."
+                if page is not None else "")
+
+    def _on_set_slide_image(self) -> None:
+        """Build / replace the selected slide's image by importing a
+        file. Copies it into the deck's working dir so the slide is
+        self-contained, then refreshes the list + preview."""
+        page = self._selected_page()
+        if page is None:
+            QMessageBox.information(
+                self, "No slide selected",
+                "Select a slide on the left first.")
+            return
+        picked, _ = QFileDialog.getOpenFileName(
+            self, "Set slide image", "",
+            "Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif);;"
+            "All files (*)")
+        if not picked:
+            return
+        src = Path(picked)
+        dest_dir = self._working_dir / "slides"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dest = dest_dir / f"slide_{stamp}{src.suffix.lower()}"
+        try:
+            import shutil as _sh
+            _sh.copy2(src, dest)
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Import failed",
+                f"Could not copy '{src.name}': {e}")
+            return
+        page.image_path = str(dest)
+        page.updated_at = datetime.now()
+        self._refresh_slides()
+        self._refresh_slide_image_preview(page)
+        self._sync_preview_window_selection(page.id)
+        self.deck_modified.emit()
+
     def _move_slide(self, delta: int) -> None:
+        """Move the selected slide up/down in the DISPLAYED (group)
+        order so the left pane behaves like the deck's real order:
+          * within a group → swap timeline positions with the
+            neighbor;
+          * among orphan slides → swap their list positions;
+          * across a group boundary → move the slide into the
+            neighbor's group, placed next to that neighbor.
+        """
         page = self._selected_page()
         if page is None:
             return
-        idx = next(
-            (i for i, p in enumerate(self._deck.pages)
-             if p.id == page.id),
-            -1)
-        new_idx = idx + delta
-        if idx < 0 or not (0 <= new_idx < len(self._deck.pages)):
+        from src.video_studio.slide_deck import ordered_pages
+        ordered = ordered_pages(self._deck)
+        ci = next(
+            (i for i, p in enumerate(ordered) if p.id == page.id), -1)
+        ni = ci + delta
+        if ci < 0 or not (0 <= ni < len(ordered)):
             return
-        self._deck.pages.pop(idx)
-        self._deck.pages.insert(new_idx, page)
-        for i, p in enumerate(self._deck.pages):
-            p.index = i
+        other = ordered[ni]
+        gids = {g.id for g in self._deck.groups}
+        cur_g = page.group_id if page.group_id in gids else None
+        oth_g = other.group_id if other.group_id in gids else None
+        if cur_g is not None and cur_g == oth_g:
+            # Same group — swap timeline slots.
+            cs = page.start_time_seconds_in_group
+            os_ = other.start_time_seconds_in_group
+            page.start_time_seconds_in_group = os_
+            other.start_time_seconds_in_group = cs
+        elif cur_g is None and oth_g is None:
+            # Both ungrouped — swap positions in deck.pages.
+            pages = self._deck.pages
+            i = next(k for k, p in enumerate(pages)
+                     if p.id == page.id)
+            j = next(k for k, p in enumerate(pages)
+                     if p.id == other.id)
+            pages[i], pages[j] = pages[j], pages[i]
+        else:
+            # Crossing a boundary — move the slide into the
+            # neighbor's group (or out to orphan), placed adjacent.
+            for g in self._deck.groups:
+                if page.id in (g.page_ids or []):
+                    g.page_ids = [x for x in g.page_ids
+                                  if x != page.id]
+            if oth_g is not None:
+                page.group_id = other.group_id
+                tg = next(g for g in self._deck.groups
+                          if g.id == oth_g)
+                if page.id not in tg.page_ids:
+                    tg.page_ids.append(page.id)
+                base = float(
+                    other.start_time_seconds_in_group or 0.0)
+                page.start_time_seconds_in_group = (
+                    base - 0.01 if delta < 0 else base + 0.01)
+            else:
+                # Moved out to the orphan region — drop its group and
+                # slot it next to the orphan neighbor in deck.pages.
+                page.group_id = None
+                page.start_time_seconds_in_group = None
+                pages = self._deck.pages
+                i = next(k for k, p in enumerate(pages)
+                         if p.id == page.id)
+                pages.pop(i)
+                j = next(k for k, p in enumerate(pages)
+                         if p.id == other.id)
+                pages.insert(j + (0 if delta < 0 else 1), page)
+        page.updated_at = datetime.now()
         self._refresh_slides()
         self.deck_modified.emit()
 
@@ -1444,6 +1591,132 @@ class SlideEditorDialog(QDialog):
         self._selected_page_id = None
         self._refresh_slides()
         self.deck_modified.emit()
+
+    def _remove_group(self, group) -> None:
+        """Remove ``group`` — and every slide that belongs to it —
+        from the deck. Confirms first; refreshes all panels."""
+        if group is None:
+            return
+        members = [
+            p for p in self._deck.pages
+            if getattr(p, "group_id", None) == group.id]
+        name = group.name or group.id
+        reply = QMessageBox.question(
+            self, "Remove group?",
+            f"Remove group '{name}' and its {len(members)} "
+            f"slide(s) from the deck?")
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        member_ids = {p.id for p in members}
+        self._deck.pages = [
+            p for p in self._deck.pages if p.id not in member_ids]
+        self._deck.groups = [
+            g for g in self._deck.groups if g.id != group.id]
+        if self._selected_page_id in member_ids:
+            self._selected_page_id = None
+            self._set_slide_panel_enabled(False)
+        if getattr(self, "_active_group_id", "") == group.id:
+            self._active_group_id = ""
+        self._refresh_slides()
+        self._refresh_groups()
+        self.deck_modified.emit()
+
+    def _on_stitch_remove_group(self) -> None:
+        """Remove the group selected in the stitch-order list."""
+        row = self._stitch_list.currentRow()
+        if row < 0 or row >= len(self._deck.groups):
+            QMessageBox.information(
+                self, "No group selected",
+                "Select a group in the stitch-order list first.")
+            return
+        self._remove_group(self._deck.groups[row])
+
+    def _edit_selected_slide_group(self) -> None:
+        """Open the group editor (or card editor) for the selected
+        slide — the 'go into the editor' action from the slide list."""
+        page = self._selected_page()
+        if page is None:
+            return
+        from src.video_studio.slide_deck import group_card_page
+        group = next(
+            (g for g in self._deck.groups
+             if g.id == getattr(page, "group_id", None)), None)
+        if group is None:
+            QMessageBox.information(
+                self, "Not in a group",
+                "This slide isn't in a group yet. Add it to a group "
+                "(Groups tab → Add slide to selected group) to edit "
+                "it on a timeline.")
+            return
+        # A single-card group opens the card editor directly.
+        if group_card_page(self._deck, group) is not None:
+            self._edit_card_audio(group)
+        else:
+            self._edit_card_audio(group)
+
+    def _on_slide_list_context(self, pos) -> None:
+        """Right-click menu on the 'Slides (in order)' list — edit,
+        reorder, or remove the slide / its group."""
+        item = self._slide_list.itemAt(pos)
+        if item is not None:
+            self._slide_list.setCurrentItem(item)
+            self._on_slide_selected()
+        page = self._selected_page()
+        menu = QMenu(self)
+        edit_act = menu.addAction("✏️ Edit slide's group…")
+        card_act = None
+        if page is not None and getattr(page, "card", None):
+            card_act = menu.addAction("🎬 Edit card…")
+        menu.addSeparator()
+        up_act = menu.addAction("↑ Move up")
+        down_act = menu.addAction("↓ Move down")
+        menu.addSeparator()
+        rm_slide_act = menu.addAction("🗑 Remove slide")
+        rm_group_act = menu.addAction("🗑 Remove group")
+        edit_act.setEnabled(page is not None)
+        up_act.setEnabled(page is not None)
+        down_act.setEnabled(page is not None)
+        rm_slide_act.setEnabled(page is not None)
+        rm_group_act.setEnabled(
+            page is not None
+            and getattr(page, "group_id", None) is not None)
+        action = menu.exec(self._slide_list.mapToGlobal(pos))
+        if action is None:
+            return
+        if action is edit_act:
+            self._edit_selected_slide_group()
+        elif card_act is not None and action is card_act:
+            group = next(
+                (g for g in self._deck.groups
+                 if g.id == page.group_id), None)
+            if group is not None:
+                self._edit_card_audio(group)
+        elif action is up_act:
+            self._move_slide(-1)
+        elif action is down_act:
+            self._move_slide(+1)
+        elif action is rm_slide_act:
+            self._on_remove_slide()
+        elif action is rm_group_act:
+            self._on_remove_selected_slides_group()
+
+    def _on_remove_selected_slides_group(self) -> None:
+        """Remove the WHOLE group of the slide selected on the left."""
+        page = self._selected_page()
+        if page is None:
+            QMessageBox.information(
+                self, "No slide selected",
+                "Select a slide on the left; its group is removed.")
+            return
+        gid = getattr(page, "group_id", None)
+        group = next(
+            (g for g in self._deck.groups if g.id == gid), None)
+        if group is None:
+            QMessageBox.information(
+                self, "Not in a group",
+                "This slide isn't part of a group.")
+            return
+        self._remove_group(group)
 
     def _on_open_preview(self) -> None:
         """Open the floating preview window (or focus it if
@@ -1855,6 +2128,9 @@ class SlideEditorDialog(QDialog):
             groups[new_row], groups[row])
         self._deck.groups = groups
         self._refresh_groups()
+        # The left slide list is ordered by group, so reordering
+        # groups must re-sort it to stay in sync with the center.
+        self._refresh_slides()
         self._stitch_list.setCurrentRow(new_row)
         self.deck_modified.emit()
 
@@ -1944,6 +2220,23 @@ class SlideEditorDialog(QDialog):
         title cards pin to the front, ending cards to the back."""
         from src.video_studio.models import TitleCard
         is_title = (role == "title")
+        # Cards are singletons: at most one title and one ending card
+        # per deck. If one already exists, tell the writer and bail
+        # rather than stacking a second card.
+        existing = next(
+            (p for p in self._deck.pages
+             if getattr(p, "card", None) is not None
+             and getattr(p.card, "role", "") == role),
+            None)
+        if existing is not None:
+            noun = "title" if is_title else "ending"
+            QMessageBox.information(
+                self, f"{noun.capitalize()} card exists",
+                f"This deck already has a {noun} card "
+                f"(“{existing.label}”). Edit the existing "
+                f"one instead — only one {noun} card is allowed "
+                "per deck.")
+            return
         card = TitleCard(
             role=role,
             title=("Title" if is_title else "The End"),

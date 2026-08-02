@@ -532,11 +532,6 @@ class GroupTimelineWidget(QWidget):
         self._selected_page_id = None
         self.update()
 
-    def select_page(self, page_id: str) -> None:
-        if any(p.id == page_id for p in self._placed_pages()):
-            self._selected_page_id = page_id
-            self.update()
-
     def remove_placed(self, page_id: str) -> None:
         """Pull a slide off the timeline (back to the tray)
         without removing it from the group."""
@@ -588,17 +583,6 @@ class GroupTimelineWidget(QWidget):
         if out <= 0 or out > dur:
             return dur
         return out
-
-    def _visible_duration(self) -> float:
-        """The full audio duration — the bar always renders the
-        WHOLE file. The trim window is a *selection overlay* on
-        top of the bar, not a viewport crop. Previously this
-        returned ``trim_out − trim_in``, which made the
-        pixel↔seconds mapping shrink to the trim window while
-        the waveform stayed drawn at full-file scale — clicks
-        landed at the wrong time, the user's "selection not
-        tracking the mouse" report."""
-        return self._audio_duration()
 
     def _track_count(self) -> int:
         """How many audio lanes to render. At least 1 so a
@@ -1488,9 +1472,6 @@ class GroupTimelineWidget(QWidget):
             if x_left <= pos.x() <= x_right:
                 return clip.id
         return None
-
-    def selected_audio_clip_id(self) -> Optional[str]:
-        return self._selected_audio_clip_id
 
     def select_audio_clip(
             self, clip_id: Optional[str]) -> None:

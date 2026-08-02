@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, List, Optional
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import (
     QFrame, QLabel, QPlainTextEdit, QPushButton, QTextEdit,

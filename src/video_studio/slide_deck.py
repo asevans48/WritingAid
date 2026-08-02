@@ -11,9 +11,7 @@ single master mix.
 from __future__ import annotations
 
 import re
-import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
@@ -71,6 +69,13 @@ def build_slide_deck_from_chapter(
         # ignore favorited photos and report "no favorites."
         has_action_images = any(
             (getattr(a, "images", None) or []) for a in actions)
+        # Each SCENE becomes a GROUP named after the scene (the card
+        # in the video studio); each ACTION becomes a SLIDE placed on
+        # that group's timeline. The group is created lazily on the
+        # scene's first usable slide so scenes with no image don't
+        # leave empty groups behind.
+        scene_group = None
+        running = 0.0
         if actions and (
                 getattr(scene, "mode", "video") == "slideshow"
                 or has_action_images):
@@ -90,26 +95,35 @@ def build_slide_deck_from_chapter(
                 p = Path(path_str)
                 if not p.exists() or p.stat().st_size == 0:
                     continue
+                dur = max(
+                    MIN_SLIDE_SECONDS,
+                    float(
+                        action.display_seconds
+                        or scene.image_display_seconds
+                        or default_duration_seconds))
+                if scene_group is None:
+                    scene_group = SlideGroup(
+                        name=scene_label, source_scene_id=scene.id)
+                    deck.groups.append(scene_group)
                 page = SlidePage(
                     index=page_index,
-                    label=f"{scene_label} → "
-                          + (action.name or f"action {page_index + 1}"),
+                    label=(action.name
+                           or f"Action {page_index + 1}"),
                     image_path=str(p),
-                    duration_seconds=max(
-                        MIN_SLIDE_SECONDS,
-                        float(
-                            action.display_seconds
-                            or scene.image_display_seconds
-                            or default_duration_seconds)),
+                    duration_seconds=dur,
                     source_scene_id=scene.id,
                     source_action_id=action.id,
                     text_overlay=getattr(img, "overlay", None),
+                    group_id=scene_group.id,
+                    start_time_seconds_in_group=round(running, 3),
                 )
+                scene_group.page_ids.append(page.id)
+                running += dur
                 deck.pages.append(page)
                 page_index += 1
             continue
         # Non-slideshow scene — single slide from the favorite
-        # clip when it's an image.
+        # clip when it's an image. Still gets its own scene group.
         clip = scene.favorite_clip()
         if clip is None or not clip.file_path:
             continue
@@ -119,6 +133,9 @@ def build_slide_deck_from_chapter(
                 or p.suffix.lower() not in
                 {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}):
             continue
+        scene_group = SlideGroup(
+            name=scene_label, source_scene_id=scene.id)
+        deck.groups.append(scene_group)
         page = SlidePage(
             index=page_index,
             label=scene_label,
@@ -129,10 +146,121 @@ def build_slide_deck_from_chapter(
                     scene.image_display_seconds
                     or default_duration_seconds)),
             source_scene_id=scene.id,
+            group_id=scene_group.id,
+            start_time_seconds_in_group=0.0,
         )
+        scene_group.page_ids.append(page.id)
         deck.pages.append(page)
         page_index += 1
     return deck
+
+
+def rebuild_scene_group(
+    deck: SlideDeckProject,
+    scene: Any,
+    working_dir: Path,
+) -> Optional[SlideGroup]:
+    """RESET one scene's contribution to the deck: drop the scene's
+    existing group + slides and rebuild them fresh from the scene's
+    current actions / favorites. Keeps the group in its original
+    position when it had one. Returns the new group (or None when the
+    scene now yields no slides). Other scenes' groups are untouched."""
+    tmp = build_slide_deck_from_chapter(
+        [scene], Path(working_dir),
+        chapter_id=getattr(deck, "chapter_id", ""))
+    sid = getattr(scene, "id", "")
+    # Find where the old group sat so the rebuild lands in place.
+    old_pos = next(
+        (i for i, g in enumerate(deck.groups)
+         if getattr(g, "source_scene_id", "") == sid),
+        len(deck.groups))
+    old_page_ids = {
+        p.id for p in deck.pages
+        if getattr(p, "source_scene_id", None) == sid}
+    deck.pages = [
+        p for p in deck.pages if p.id not in old_page_ids]
+    deck.groups = [
+        g for g in deck.groups
+        if getattr(g, "source_scene_id", "") != sid]
+    deck.pages.extend(tmp.pages)
+    for off, g in enumerate(tmp.groups):
+        deck.groups.insert(min(old_pos + off, len(deck.groups)), g)
+    return tmp.groups[0] if tmp.groups else None
+
+
+def sync_group_to_scene(deck: SlideDeckProject, scene: Any) -> int:
+    """SYNC a scene's group edits back onto the scene: push each
+    slide's duration onto its source action's ``display_seconds`` and
+    the group's (possibly renamed) name back onto the scene. Returns
+    the count of fields changed."""
+    sid = getattr(scene, "id", "")
+    actions_by_id = {
+        a.id: a for a in (getattr(scene, "actions", None) or [])}
+    changed = 0
+    for p in deck.pages:
+        if getattr(p, "source_scene_id", None) != sid:
+            continue
+        aid = getattr(p, "source_action_id", None)
+        a = actions_by_id.get(aid) if aid else None
+        if a is None:
+            continue
+        dur = round(float(getattr(p, "duration_seconds", 0.0) or 0.0), 2)
+        if abs(float(getattr(a, "display_seconds", 0.0) or 0.0)
+               - dur) > 0.01:
+            a.display_seconds = dur
+            changed += 1
+    g = next(
+        (g for g in deck.groups
+         if getattr(g, "source_scene_id", "") == sid), None)
+    if g is not None and g.name and g.name != getattr(
+            scene, "name", ""):
+        try:
+            scene.name = g.name
+            changed += 1
+        except Exception:
+            pass
+    return changed
+
+
+def assign_orphan_slides_to_scene_groups(
+    deck: SlideDeckProject,
+    scene_names_by_id: dict,
+) -> int:
+    """Bring a LEGACY ungrouped deck up to the scene→group /
+    action→slide model: group every slide by its ``source_scene_id``
+    into a group named after the scene (the video-studio card).
+
+    Only runs when the deck has NO groups yet — a deck the writer has
+    already arranged into groups is left untouched. Returns the number
+    of slides grouped."""
+    if getattr(deck, "groups", None):
+        return 0
+    by_scene: dict = {}
+    grouped = 0
+    for p in deck.pages:
+        sid = getattr(p, "source_scene_id", None)
+        if not sid:
+            continue
+        g = by_scene.get(sid)
+        if g is None:
+            name = scene_names_by_id.get(sid) or "Scene"
+            g = SlideGroup(name=name, source_scene_id=sid)
+            deck.groups.append(g)
+            by_scene[sid] = g
+        p.group_id = g.id
+        if p.id not in g.page_ids:
+            g.page_ids.append(p.id)
+        grouped += 1
+    # Place each group's slides sequentially on its timeline.
+    for g in by_scene.values():
+        members = [p for p in deck.pages if p.group_id == g.id]
+        running = 0.0
+        for p in members:
+            p.start_time_seconds_in_group = round(running, 3)
+            running += max(
+                MIN_SLIDE_SECONDS,
+                float(getattr(p, "duration_seconds", 0.0) or 0.0))
+    return grouped
 
 
 def suggest_timings_from_script(
@@ -290,8 +418,6 @@ def export_slide_deck_to_pptx(
         from pptx import Presentation
         from pptx.util import Inches
         from pptx.dml.color import RGBColor
-        from pptx.oxml.ns import qn
-        from lxml import etree
     except Exception as e:
         return (
             False,
@@ -1071,7 +1197,18 @@ def _render_text_overlay_png(
     when text was drawn."""
     title = (getattr(card, "title", "") or "").strip()
     subtitle = (getattr(card, "subtitle", "") or "").strip()
-    if not (title or subtitle):
+    # Text elements (kind == "text"), in layer order, plus any legacy
+    # text_boxes that haven't been migrated yet.
+    boxes = [
+        e for e in sorted(
+            (getattr(card, "elements", None) or []),
+            key=lambda e: getattr(e, "z", 0))
+        if getattr(e, "kind", "text") == "text"
+        and (getattr(e, "text", "") or "").strip()]
+    boxes += [
+        b for b in (getattr(card, "text_boxes", None) or [])
+        if (getattr(b, "text", "") or "").strip()]
+    if not (title or subtitle or boxes):
         return False
     fontfile = _resolve_font_file()
     if not fontfile:
@@ -1166,11 +1303,103 @@ def _render_text_overlay_png(
             _hex_to_rgba(
                 getattr(card, "subtitle_color", "#DDDDDD"),
                 "#DDDDDD"))
+    # ── Free-placed PowerPoint-style text boxes ──
+    for box in boxes:
+        _draw_text_box(draw, box, width, height, scale, fontfile)
     try:
         img.save(str(out_png))
     except Exception:
         return False
     return True
+
+
+def _draw_text_box(
+    draw, box, width: int, height: int,
+    scale: float, fontfile: str,
+) -> None:
+    """Draw one free-placed ``TextBox`` onto ``draw``: word-wrap the
+    text to the box width, vertically align it, and apply the box's
+    legibility fill / outline / shadow. Geometry is normalized (0..1)
+    so it lands identically at any resolution."""
+    from PIL import ImageFont
+    text = (getattr(box, "text", "") or "").strip()
+    if not text:
+        return
+    fpx = max(8, int((getattr(box, "font_size", 72) or 72) * scale))
+    try:
+        font = ImageFont.truetype(fontfile, fpx)
+    except Exception:
+        return
+    bx = float(getattr(box, "x", 0.1)) * width
+    by = float(getattr(box, "y", 0.1)) * height
+    bw = max(1.0, float(getattr(box, "w", 0.8)) * width)
+    bh = max(1.0, float(getattr(box, "h", 0.2)) * height)
+
+    def _tw(s: str) -> float:
+        b = draw.textbbox((0, 0), s, font=font)
+        return b[2] - b[0]
+
+    # Word-wrap each paragraph to the box width.
+    lines: list = []
+    for para in text.split("\n"):
+        cur = ""
+        for word in para.split(" "):
+            trial = (cur + " " + word).strip()
+            if not cur or _tw(trial) <= bw:
+                cur = trial
+            else:
+                lines.append(cur)
+                cur = word
+        lines.append(cur)
+    asc, desc = font.getmetrics()
+    lh = asc + desc
+    total_h = lh * max(1, len(lines))
+    valign = (getattr(box, "valign", "middle") or "middle").lower()
+    if valign == "top":
+        ty = by
+    elif valign == "bottom":
+        ty = by + bh - total_h
+    else:
+        ty = by + (bh - total_h) / 2.0
+    # Legibility fill behind the whole box.
+    fill_hex = (getattr(box, "box_color", "") or "").strip()
+    if fill_hex:
+        try:
+            r, g, b, _ = _hex_to_rgba(fill_hex, "#000000")
+            alpha = int(max(0.0, min(1.0, float(
+                getattr(box, "box_opacity", 0.5) or 0.5))) * 255)
+            draw.rectangle(
+                [bx, by, bx + bw, by + bh], fill=(r, g, b, alpha))
+        except Exception:
+            pass
+    align = (getattr(box, "align", "center") or "center").lower()
+    outline_hex = (getattr(box, "outline_color", "") or "").strip()
+    outline_px = max(
+        0, int((getattr(box, "outline_width", 0) or 0) * scale))
+    shadow = bool(getattr(box, "shadow", False))
+    fill = _hex_to_rgba(getattr(box, "color", "#FFFFFF"), "#FFFFFF")
+    y = ty
+    for ln in lines:
+        w0 = _tw(ln)
+        if align == "left":
+            x = bx
+        elif align == "right":
+            x = bx + bw - w0
+        else:
+            x = bx + (bw - w0) / 2.0
+        if shadow:
+            off = max(2, int(3 * scale))
+            draw.text(
+                (x + off, y + off), ln, font=font,
+                fill=(0, 0, 0, 160))
+        if outline_px > 0 and outline_hex:
+            draw.text(
+                (x, y), ln, font=font, fill=fill,
+                stroke_width=outline_px,
+                stroke_fill=_hex_to_rgba(outline_hex, "#000000"))
+        else:
+            draw.text((x, y), ln, font=font, fill=fill)
+        y += lh
 
 
 def bake_text_overlay(
@@ -1209,6 +1438,155 @@ def bake_text_overlay(
         except Exception:
             pass
     return ok
+
+
+def _video_first_frame(path: str, out_png: Path) -> bool:
+    """Extract a video's first frame to ``out_png``. Best-effort."""
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(Path(path).resolve()),
+             "-vframes", "1", str(out_png)],
+            capture_output=True, timeout=30)
+        return out_png.exists()
+    except Exception:
+        return False
+
+
+def _paste_media_element(
+    base_rgba, el, width: int, height: int, out_path: Path,
+) -> None:
+    """Composite one image / video element onto ``base_rgba`` (a PIL
+    RGBA image, mutated in place): fit the media within the element's
+    normalized box, centered. A video contributes its first frame in
+    the still — its motion is added by the MP4 renderer."""
+    try:
+        from PIL import Image, ImageOps
+    except Exception:
+        return
+    path = getattr(el, "media_path", "") or ""
+    if not path or not Path(path).exists():
+        return
+    tmp_frame = None
+    try:
+        if getattr(el, "kind", "") == "video":
+            tmp_frame = out_path.with_name(
+                out_path.stem + f"_el_{getattr(el, 'id', 'v')}.png")
+            if not _video_first_frame(path, tmp_frame):
+                return
+            img = Image.open(str(tmp_frame)).convert("RGBA")
+        else:
+            img = Image.open(path).convert("RGBA")
+    except Exception:
+        return
+    try:
+        bx = int(float(getattr(el, "x", 0.0)) * width)
+        by = int(float(getattr(el, "y", 0.0)) * height)
+        bw = max(1, int(float(getattr(el, "w", 0.2)) * width))
+        bh = max(1, int(float(getattr(el, "h", 0.2)) * height))
+        fitted = ImageOps.contain(img, (bw, bh))
+        ox = bx + (bw - fitted.width) // 2
+        oy = by + (bh - fitted.height) // 2
+        base_rgba.alpha_composite(fitted, (ox, oy))
+    except Exception:
+        pass
+    finally:
+        if tmp_frame is not None:
+            try:
+                tmp_frame.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+def render_card_to_png(
+    card: TitleCard,
+    out_path: Path,
+    width: int = 1920,
+    height: int = 1080,
+) -> bool:
+    """Render a card — solid-color / image / video background plus its
+    styled title + subtitle (with box / outline / shadow effects) — to
+    a STILL PNG.
+
+    A "designed" content slide (PowerPoint-style: pick a background,
+    type text, style it) stores this PNG as its ``image_path`` so it
+    flows through EVERY existing pipeline — deck stitch, xfade
+    transitions, PowerPoint export, list thumbnails — with no
+    card-specific handling anywhere. The page keeps its ``card`` too so
+    the writer can re-open the designer and re-render. Returns True on
+    success."""
+    try:
+        from PIL import Image, ImageOps
+    except Exception:
+        return False
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    kind = (getattr(card, "kind", "color") or "color").lower()
+    media = getattr(card, "bg_media_path", "") or ""
+    base = None
+    if kind == "image" and media and Path(media).exists():
+        try:
+            src = Image.open(media).convert("RGB")
+            base = ImageOps.fit(
+                src, (width, height), Image.LANCZOS)
+        except Exception:
+            base = None
+    elif kind == "video" and media and Path(media).exists():
+        # Best-effort: grab the first frame so a still exists.
+        try:
+            frame = out_path.with_name(out_path.stem + "_frame.png")
+            subprocess.run(
+                ["ffmpeg", "-y", "-i",
+                 str(Path(media).resolve()),
+                 "-vframes", "1", str(frame)],
+                capture_output=True, timeout=30)
+            if frame.exists():
+                src = Image.open(str(frame)).convert("RGB")
+                base = ImageOps.fit(
+                    src, (width, height), Image.LANCZOS)
+                frame.unlink(missing_ok=True)
+        except Exception:
+            base = None
+    if base is None:
+        rgba = _hex_to_rgba(
+            getattr(card, "bg_color", "#000000"), "#000000")
+        base = Image.new("RGB", (width, height), rgba[:3])
+    # ── Composite free-placed elements (image / video-still / text)
+    #    in LAYER order so what the designer shows matches the still. ──
+    from PIL import ImageDraw
+    base_rgba = base.convert("RGBA")
+    draw = ImageDraw.Draw(base_rgba)
+    scale = height / 1080.0
+    fontfile = _resolve_font_file()
+    for el in sorted(
+            (getattr(card, "elements", None) or []),
+            key=lambda e: getattr(e, "z", 0)):
+        kind = getattr(el, "kind", "text")
+        if kind in ("image", "video"):
+            _paste_media_element(base_rgba, el, width, height, out_path)
+        elif kind == "text" and (
+                getattr(el, "text", "") or "").strip() and fontfile:
+            _draw_text_box(draw, el, width, height, scale, fontfile)
+    # Legacy title / subtitle block on top (title / ending cards; a
+    # designed slide leaves these blank). Render via a copy with the
+    # elements stripped so it draws ONLY the title/subtitle.
+    if (getattr(card, "title", "") or "").strip() or (
+            getattr(card, "subtitle", "") or "").strip():
+        try:
+            tmp = card.model_copy(deep=True)
+            tmp.elements = []
+            tmp.text_boxes = []
+            txt_png = out_path.with_name(out_path.stem + "_txt.png")
+            if _render_text_overlay_png(tmp, width, height, txt_png):
+                txt = Image.open(str(txt_png)).convert("RGBA")
+                base_rgba.alpha_composite(txt)
+                txt_png.unlink(missing_ok=True)
+        except Exception:
+            pass
+    base = base_rgba.convert("RGB")
+    try:
+        base.save(str(out_path))
+        return True
+    except Exception:
+        return False
 
 
 def render_card_to_mp4(
@@ -1255,12 +1633,47 @@ def render_card_to_mp4(
             "-i", f"color=c={color}:s={width}x{height}:r={fps}"]
         filters.append("[0:v]format=yuv420p[bg]")
     n_video_inputs = 1  # the background is input 0
+    last = "bg"
+    # --- free-placed image / video ELEMENTS, layered by z under the
+    #     text (each scaled to fit its box, centered via pad; videos
+    #     loop to fill the slide and play muted) ---
+    media_els = sorted(
+        [e for e in (getattr(card, "elements", None) or [])
+         if getattr(e, "kind", "") in ("image", "video")
+         and getattr(e, "media_path", "")
+         and Path(e.media_path).exists()],
+        key=lambda e: getattr(e, "z", 0))
+    for el in media_els:
+        ex = int(float(el.x) * width)
+        ey = int(float(el.y) * height)
+        ew = max(2, int(float(el.w) * width))
+        eh = max(2, int(float(el.h) * height))
+        idx = n_video_inputs
+        fit = (
+            f"scale={ew}:{eh}:force_original_aspect_ratio=decrease,"
+            f"pad={ew}:{eh}:(ow-iw)/2:(oh-ih)/2:color=black@0")
+        if el.kind == "image":
+            inputs += [
+                "-loop", "1", "-t", f"{dur:.3f}",
+                "-i", str(Path(el.media_path).resolve())]
+            filters.append(
+                f"[{idx}:v]{fit},format=rgba[e{idx}]")
+        else:
+            inputs += [
+                "-stream_loop", "-1",
+                "-i", str(Path(el.media_path).resolve())]
+            filters.append(
+                f"[{idx}:v]{fit},trim=0:{dur:.3f},"
+                f"setpts=PTS-STARTPTS,format=rgba[e{idx}]")
+        filters.append(
+            f"[{last}][e{idx}]overlay={ex}:{ey}[m{idx}]")
+        last = f"m{idx}"
+        n_video_inputs += 1
     # --- styled text as a faded overlay (PIL PNG, no drawtext) ---
     fade = max(0.0, float(getattr(card, "text_fade_seconds", 0.0)
                           or 0.0))
     text_png = output_path.with_name(
         output_path.stem + "_cardtext.png")
-    last = "bg"
     made_text = _render_text_overlay_png(
         card, width, height, text_png)
     if made_text:
@@ -1276,7 +1689,7 @@ def render_card_to_mp4(
                 f",fade=t=in:st=0:d={fade:.3f}:alpha=1"
                 f",fade=t=out:st={out_st:.3f}:d={fade:.3f}:alpha=1")
         filters.append(f"[{txt_idx}:v]{fchain}[txt]")
-        filters.append("[bg][txt]overlay=0:0[v]")
+        filters.append(f"[{last}][txt]overlay=0:0[v]")
         last = "v"
     filter_str = ";".join(filters)
     has_audio = bool(
@@ -1349,6 +1762,44 @@ def render_black_spacer(
                 "black spacer render failed:\n"
                 + (proc.stderr or "")[-300:])
     return (True, f"Black spacer ({dur:.2f}s) rendered.")
+
+
+def ordered_pages(deck: SlideDeckProject) -> List[SlidePage]:
+    """Pages in the deck's ACTUAL group / render order: walk
+    ``deck.groups`` in order, and within each group its member slides
+    sorted by timeline placement (placed first, by start time; then
+    tray slides by index); finally any orphan pages (no group, or a
+    group not in ``deck.groups``) in their existing order.
+
+    The slide list, the agent's slide numbering, and the render all
+    use this so "slide #N" means the same thing everywhere — the left
+    list matches the group order shown in the center."""
+    out: List[SlidePage] = []
+    seen: set = set()
+    group_ids = {g.id for g in (deck.groups or [])}
+    for g in (deck.groups or []):
+        members = [
+            p for p in deck.pages
+            if getattr(p, "group_id", None) == g.id]
+        members.sort(key=lambda p: (
+            getattr(p, "start_time_seconds_in_group", None) is None,
+            float(getattr(p, "start_time_seconds_in_group", 0.0)
+                  or 0.0),
+            int(getattr(p, "index", 0) or 0)))
+        for p in members:
+            out.append(p)
+            seen.add(p.id)
+    for p in deck.pages:
+        gid = getattr(p, "group_id", None)
+        if p.id not in seen and (not gid or gid not in group_ids):
+            out.append(p)
+            seen.add(p.id)
+    # Safety: include anything somehow missed (e.g. a page whose
+    # group_id points at a group not walked above) so nothing vanishes.
+    for p in deck.pages:
+        if p.id not in seen:
+            out.append(p)
+    return out
 
 
 def group_card_page(
