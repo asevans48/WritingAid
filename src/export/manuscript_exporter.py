@@ -1,11 +1,41 @@
 """Manuscript export functionality for various formats."""
 
+import zipfile
+from typing import List, Optional
+from xml.sax.saxutils import escape as _xml_escape
+
 from docx import Document
 from docx.shared import Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from ebooklib import epub
 
-from src.models.project import Manuscript
+from src.models.project import Chapter, Manuscript
+
+
+# Office / document formats offered to the writer, in menu order.
+# (key, label, extension). ``key`` is what ``export_document`` accepts.
+DOCUMENT_FORMATS = [
+    ("docx", "Word Document (.docx)", "docx"),
+    ("rtf", "Rich Text (.rtf)", "rtf"),
+    ("txt", "Plain Text (.txt)", "txt"),
+    ("odt", "OpenDocument Text (.odt)", "odt"),
+    ("ods", "OpenDocument Spreadsheet (.ods)", "ods"),
+]
+
+
+def _paragraphs(content: str) -> List[str]:
+    """Split a chapter's plain-text content into paragraphs (blank-
+    line separated), dropping empties. Falls back to line-splitting
+    when the writer used single newlines."""
+    text = (content or "").replace("\r\n", "\n").replace("\r", "\n")
+    if not text.strip():
+        return []
+    blocks = [b.strip() for b in text.split("\n\n")]
+    paras = [b for b in blocks if b]
+    if len(paras) <= 1 and "\n" in text:
+        # Single-newline prose — treat each non-empty line as a para.
+        paras = [ln.strip() for ln in text.split("\n") if ln.strip()]
+    return paras or [text.strip()]
 
 
 class ManuscriptExporter:
@@ -15,45 +45,255 @@ class ManuscriptExporter:
         """Initialize exporter with manuscript."""
         self.manuscript = manuscript
 
-    def export_to_docx(self, output_path: str) -> bool:
-        """Export manuscript as Word document."""
+    # ------------------------------------------------------------------
+    # Multi-format document export (Word / RTF / TXT / ODT / ODS)
+    # ------------------------------------------------------------------
+    def export_document(
+        self,
+        output_path: str,
+        fmt: str,
+        chapters: Optional[List[Chapter]] = None,
+        title_page: bool = True,
+    ) -> bool:
+        """Export ``chapters`` (default: the whole manuscript) to
+        ``output_path`` in ``fmt`` — one of ``docx``, ``rtf``,
+        ``txt``, ``odt``, ``ods``. ``title_page`` adds the book title +
+        author heading (used for whole-book exports, skipped for a
+        single chapter). Returns True on success.
+
+        Dependency-free: DOCX reuses python-docx (already a project
+        dep); RTF, TXT, ODT and ODS are written directly, so no
+        pandoc / LibreOffice / odfpy install is required."""
+        chapters = (self.manuscript.chapters
+                    if chapters is None else chapters)
+        fmt = (fmt or "").lower()
+        writers = {
+            "docx": self._write_docx,
+            "rtf": self._write_rtf,
+            "txt": self._write_txt,
+            "odt": self._write_odt,
+            "ods": self._write_ods,
+        }
+        writer = writers.get(fmt)
+        if writer is None:
+            print(f"[export] unknown document format: {fmt}")
+            return False
         try:
-            doc = Document()
+            return writer(output_path, chapters, title_page)
+        except Exception as e:
+            print(f"[export] {fmt} export failed: {e}")
+            return False
 
-            # Set up document styles
-            style = doc.styles['Normal']
-            font = style.font
-            font.name = 'Times New Roman'
-            font.size = Pt(12)
-
-            # Title page
+    def _write_docx(
+        self, output_path: str, chapters: List[Chapter],
+        title_page: bool,
+    ) -> bool:
+        doc = Document()
+        style = doc.styles['Normal']
+        style.font.name = 'Times New Roman'
+        style.font.size = Pt(12)
+        if title_page:
             title = doc.add_heading(self.manuscript.title, 0)
             title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-
             if self.manuscript.author:
-                author = doc.add_paragraph(f"by {self.manuscript.author}")
+                author = doc.add_paragraph(
+                    f"by {self.manuscript.author}")
                 author.alignment = WD_ALIGN_PARAGRAPH.CENTER
-
             doc.add_page_break()
-
-            # Add chapters
-            for chapter in self.manuscript.chapters:
-                # Chapter title
-                doc.add_heading(chapter.title, 1)
-
-                # Chapter content
-                if chapter.content:
-                    doc.add_paragraph(chapter.content)
-
+        for i, chapter in enumerate(chapters):
+            doc.add_heading(chapter.title or f"Chapter {i + 1}", 1)
+            for para in _paragraphs(chapter.content):
+                doc.add_paragraph(para)
+            if i < len(chapters) - 1:
                 doc.add_page_break()
+        doc.save(output_path)
+        return True
 
-            # Save document
-            doc.save(output_path)
-            return True
+    def _write_txt(
+        self, output_path: str, chapters: List[Chapter],
+        title_page: bool,
+    ) -> bool:
+        lines: List[str] = []
+        if title_page:
+            lines.append(self.manuscript.title or "Untitled")
+            if self.manuscript.author:
+                lines.append(f"by {self.manuscript.author}")
+            lines.append("")
+            lines.append("")
+        for i, chapter in enumerate(chapters):
+            lines.append(chapter.title or f"Chapter {i + 1}")
+            lines.append("")
+            for para in _paragraphs(chapter.content):
+                lines.append(para)
+                lines.append("")
+            lines.append("")
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines).rstrip() + "\n")
+        return True
 
-        except Exception as e:
-            print(f"Error exporting to DOCX: {e}")
-            return False
+    def _write_rtf(
+        self, output_path: str, chapters: List[Chapter],
+        title_page: bool,
+    ) -> bool:
+        def esc(s: str) -> str:
+            out = []
+            for ch in (s or ""):
+                o = ord(ch)
+                if ch in "\\{}":
+                    out.append("\\" + ch)
+                elif o > 127:
+                    # RTF signed 16-bit unicode escape + ASCII fallback.
+                    out.append(
+                        f"\\u{o if o < 32768 else o - 65536}?")
+                else:
+                    out.append(ch)
+            return "".join(out)
+
+        parts = [
+            r"{\rtf1\ansi\ansicpg1252\deff0",
+            r"{\fonttbl{\f0\froman Times New Roman;}}",
+            r"\f0\fs24",
+        ]
+        if title_page:
+            parts.append(
+                r"\qc\b\fs36 " + esc(self.manuscript.title or "")
+                + r"\b0\fs24\par")
+            if self.manuscript.author:
+                parts.append(
+                    r"\qc by " + esc(self.manuscript.author) + r"\par")
+            parts.append(r"\ql\par")
+        for i, chapter in enumerate(chapters):
+            parts.append(
+                r"\b\fs30 "
+                + esc(chapter.title or f"Chapter {i + 1}")
+                + r"\b0\fs24\par")
+            for para in _paragraphs(chapter.content):
+                parts.append(esc(para) + r"\par")
+            parts.append(r"\par")
+        parts.append("}")
+        with open(output_path, "w", encoding="ascii",
+                   errors="ignore") as f:
+            f.write("\n".join(parts))
+        return True
+
+    def _write_odt(
+        self, output_path: str, chapters: List[Chapter],
+        title_page: bool,
+    ) -> bool:
+        body: List[str] = []
+        if title_page:
+            body.append(
+                '<text:h text:outline-level="1">'
+                + _xml_escape(self.manuscript.title or "")
+                + '</text:h>')
+            if self.manuscript.author:
+                body.append(
+                    '<text:p>by '
+                    + _xml_escape(self.manuscript.author)
+                    + '</text:p>')
+        for i, chapter in enumerate(chapters):
+            body.append(
+                '<text:h text:outline-level="1">'
+                + _xml_escape(chapter.title or f"Chapter {i + 1}")
+                + '</text:h>')
+            for para in _paragraphs(chapter.content):
+                body.append(
+                    '<text:p>' + _xml_escape(para) + '</text:p>')
+        content = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<office:document-content '
+            'xmlns:office="urn:oasis:names:tc:opendocument:xmlns:'
+            'office:1.0" '
+            'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:'
+            'text:1.0" office:version="1.2">'
+            '<office:body><office:text>'
+            + "".join(body) +
+            '</office:text></office:body></office:document-content>')
+        self._write_odf_zip(
+            output_path,
+            "application/vnd.oasis.opendocument.text", content)
+        return True
+
+    def _write_ods(
+        self, output_path: str, chapters: List[Chapter],
+        title_page: bool,
+    ) -> bool:
+        def cell(value: str, numeric: bool = False) -> str:
+            if numeric:
+                return (
+                    '<table:table-cell office:value-type="float" '
+                    f'office:value="{value}"><text:p>{value}'
+                    '</text:p></table:table-cell>')
+            return (
+                '<table:table-cell office:value-type="string">'
+                '<text:p>' + _xml_escape(value)
+                + '</text:p></table:table-cell>')
+
+        def row(cells: List[str]) -> str:
+            return ('<table:table-row>' + "".join(cells)
+                    + '</table:table-row>')
+
+        rows = [row([cell("Chapter"), cell("Words"),
+                     cell("Content")])]
+        for i, ch in enumerate(chapters):
+            text = "\n\n".join(_paragraphs(ch.content))
+            words = str(len((ch.content or "").split()))
+            rows.append(row([
+                cell(ch.title or f"Chapter {i + 1}"),
+                cell(words, numeric=True),
+                cell(text)]))
+        content = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<office:document-content '
+            'xmlns:office="urn:oasis:names:tc:opendocument:xmlns:'
+            'office:1.0" '
+            'xmlns:table="urn:oasis:names:tc:opendocument:xmlns:'
+            'table:1.0" '
+            'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:'
+            'text:1.0" office:version="1.2">'
+            '<office:body><office:spreadsheet>'
+            '<table:table table:name="Manuscript">'
+            + "".join(rows) +
+            '</table:table>'
+            '</office:spreadsheet></office:body>'
+            '</office:document-content>')
+        self._write_odf_zip(
+            output_path,
+            "application/vnd.oasis.opendocument.spreadsheet",
+            content)
+        return True
+
+    @staticmethod
+    def _write_odf_zip(
+        output_path: str, mimetype: str, content_xml: str,
+    ) -> None:
+        """Write a minimal but valid OpenDocument package: the
+        ``mimetype`` entry MUST be first and stored uncompressed, then
+        the manifest and content."""
+        manifest = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<manifest:manifest '
+            'xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:'
+            'manifest:1.0" manifest:version="1.2">'
+            f'<manifest:file-entry manifest:full-path="/" '
+            f'manifest:media-type="{mimetype}"/>'
+            '<manifest:file-entry manifest:full-path="content.xml" '
+            'manifest:media-type="text/xml"/>'
+            '</manifest:manifest>')
+        with zipfile.ZipFile(
+                output_path, "w", zipfile.ZIP_DEFLATED) as z:
+            # mimetype first, STORED (uncompressed), no compression.
+            zi = zipfile.ZipInfo("mimetype")
+            zi.compress_type = zipfile.ZIP_STORED
+            z.writestr(zi, mimetype)
+            z.writestr("META-INF/manifest.xml", manifest)
+            z.writestr("content.xml", content_xml)
+
+    def export_to_docx(self, output_path: str) -> bool:
+        """Export the whole manuscript as a Word document. Thin
+        wrapper over the shared ``export_document`` writer so the
+        existing callers (Export menu) keep working."""
+        return self.export_document(output_path, "docx")
 
     def export_for_kindle(self, output_path: str) -> bool:
         """

@@ -3059,14 +3059,20 @@ class EnhancedTextEditor(QTextEdit):
             )
             return
 
-        # Don't start a new playback while one is running or paused
+        # One reading at a time. If audio is actively PLAYING, refuse —
+        # the caller must pause or stop first, so we never read over an
+        # ongoing reading. If it's PAUSED, a new reading is allowed:
+        # abandon the paused one first (stop() releases its thread /
+        # audio process) so the old action doesn't linger in memory.
         if self._tts_service.is_speaking:
-            state = "paused" if self._tts_service.is_paused else "playing"
-            QMessageBox.information(
-                self, "Already Reading",
-                f"Audio is currently {state}. "
-                f"Stop the current playback before starting a new one.")
-            return
+            if self._tts_service.is_paused:
+                self._tts_service.stop()
+            else:
+                QMessageBox.information(
+                    self, "Already Reading",
+                    "Audio is currently playing. Pause or stop it "
+                    "before starting a new reading.")
+                return
 
         # Re-apply settings so engine/voice changes take effect immediately
         self._apply_tts_settings()

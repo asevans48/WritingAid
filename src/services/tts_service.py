@@ -234,6 +234,10 @@ class TTSService:
         self._stop_requested = False
         self._speech_thread: Optional[threading.Thread] = None
         self._macos_say_proc = None  # subprocess.Popen for macOS 'say' command
+        # Serializes speak()/stop() so a new reading can't race with,
+        # or start on top of, an existing one. Re-entrant because
+        # speak() calls stop() internally to abandon a prior reading.
+        self._speak_lock = threading.RLock()
 
         # Playback settings
         self._rate = 150  # Words per minute (pyttsx3) - normal speaking pace
@@ -822,23 +826,30 @@ class TTSService:
         return False
 
     def speak(self, text: str):
-        """Speak text using the current engine (non-blocking)."""
-        # Always reset state first - this ensures we can start fresh
-        self._stop_requested = False
-        self._is_paused = False
+        """Speak text using the current engine (non-blocking).
 
-        # If still marked as speaking, force reset
-        if self._is_speaking:
-            self.stop()
-            # Wait briefly for previous speech to stop
-            import time
-            time.sleep(0.1)
-            # Force reset in case stop didn't fully complete
-            self._is_speaking = False
+        Only one reading runs at a time: if a previous reading is
+        still active (playing OR paused), it is fully abandoned via
+        ``stop()`` — which terminates its audio process / synthesizer,
+        joins (or detaches) its thread, and releases those references
+        — before the new reading starts. Serialized by ``_speak_lock``
+        so two callers can't start readings that overlap."""
+        with self._speak_lock:
+            # Abandon any prior reading (playing or paused) and release
+            # its resources before starting fresh — nothing plays over
+            # the top of another reading.
+            if self._is_speaking:
+                self.stop()
+
             self._stop_requested = False
+            self._is_paused = False
+            self._is_speaking = True
 
-        self._is_speaking = True
+            self._start_speech_thread(text)
 
+    def _start_speech_thread(self, text: str):
+        """Kick off the background speech thread. Caller holds
+        ``_speak_lock`` and has already set the speaking flags."""
         voice_name = self._voice_id or "default"
         print(f"[TTS] Read Aloud: engine={self._current_engine.value}, "
               f"voice={voice_name}, text={len(text)} chars")

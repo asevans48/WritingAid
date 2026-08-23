@@ -3382,6 +3382,17 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
+        # Export the current chapter or the whole book to an office
+        # format (Word / RTF / TXT / ODT / ODS). Reuses the shared
+        # ``ManuscriptExporter`` writers.
+        export_doc_action = QAction(
+            "&Export Chapter / Book...", self)
+        export_doc_action.setToolTip(
+            "Export the current chapter or the entire book as Word, "
+            "RTF, plain text, ODT, or ODS.")
+        export_doc_action.triggered.connect(self._export_document)
+        file_menu.addAction(export_doc_action)
+
         export_audio_action = QAction("Export &Audio Book...", self)
         export_audio_action.triggered.connect(self._export_audio_book)
         file_menu.addAction(export_audio_action)
@@ -13622,6 +13633,86 @@ class MainWindow(QMainWindow):
                 "Export Error",
                 f"An error occurred during export:\n{str(e)}"
             )
+
+    def _export_document(self):
+        """File → Export Chapter / Book: pick scope + office format
+        (Word / RTF / TXT / ODT / ODS) and write the file. Reuses the
+        shared ``ManuscriptExporter`` writers."""
+        if not self.current_project:
+            QMessageBox.warning(
+                self, "No Project",
+                "Open a project before exporting.")
+            return
+        # Fold the latest editor edits into the model first, otherwise
+        # the export would use the last-saved text, not what's on
+        # screen.
+        try:
+            self._collect_project_data()
+        except Exception as e:
+            print(f"[export] collect failed: {e}")
+        manuscript = self.current_project.manuscript
+        if not manuscript.chapters:
+            QMessageBox.warning(
+                self, "No Content",
+                "This project has no chapters to export.")
+            return
+        current_chapter = None
+        if hasattr(self.manuscript_editor, "get_current_chapter"):
+            current_chapter = self.manuscript_editor.get_current_chapter()
+
+        from src.ui.export_document_dialog import ExportDocumentDialog
+        dlg = ExportDocumentDialog(
+            has_current_chapter=current_chapter is not None,
+            parent=self)
+        if not dlg.exec():
+            return
+        scope = dlg.scope()
+        fmt = dlg.fmt()
+        ext = dlg.extension()
+
+        if scope == "chapter" and current_chapter is not None:
+            chapters = [current_chapter]
+            title_page = False
+            default_stem = current_chapter.title or "chapter"
+        else:
+            chapters = list(manuscript.chapters)
+            title_page = True
+            default_stem = manuscript.title or "manuscript"
+        # Sanitize the default filename.
+        safe = "".join(
+            c for c in default_stem
+            if c.isalnum() or c in " -_").strip() or "export"
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            f"Export {'Chapter' if scope == 'chapter' else 'Book'} "
+            f"- {dlg.format_label()}",
+            f"{safe}.{ext}",
+            f"{dlg.format_label()} (*.{ext});;All Files (*)")
+        if not file_path:
+            return
+        if not file_path.lower().endswith(f".{ext}"):
+            file_path += f".{ext}"
+
+        from src.export.manuscript_exporter import ManuscriptExporter
+        try:
+            ok = ManuscriptExporter(manuscript).export_document(
+                file_path, fmt, chapters=chapters,
+                title_page=title_page)
+        except Exception as e:
+            ok = False
+            print(f"[export] document export error: {e}")
+        if ok:
+            QMessageBox.information(
+                self, "Export Successful",
+                f"Exported {len(chapters)} "
+                f"chapter{'s' if len(chapters) != 1 else ''} to:\n"
+                f"{file_path}")
+        else:
+            QMessageBox.critical(
+                self, "Export Failed",
+                "Could not export the document. Check the console "
+                "for details.")
 
     def _export_manuscript(self, format_type: str):
         """Export manuscript in specified format."""

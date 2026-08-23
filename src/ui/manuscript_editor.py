@@ -3283,7 +3283,10 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
                     self._tts_poll_timer.start(400)
             return
 
-        # If currently speaking, pause instead
+        # If currently speaking, this click PAUSES — it must never
+        # start a second reading over the first. When the engine can't
+        # pause, stop cleanly and return; a fresh reading then requires
+        # a deliberate new click from the idle state.
         if self.editor.is_tts_speaking():
             if self.editor.pause_speaking():
                 self.tts_speak_btn.setText("▶ Resume")
@@ -3291,9 +3294,12 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
                 self.tts_speak_btn.setEnabled(True)
                 if hasattr(self, '_tts_poll_timer'):
                     self._tts_poll_timer.stop()
-                return
-            # pause() failed — fall through to stop+restart
-            self.editor.stop_speaking()
+            else:
+                self.editor.stop_speaking()
+                if hasattr(self, '_tts_poll_timer'):
+                    self._tts_poll_timer.stop()
+                self._reset_tts_buttons()
+            return
 
         # Fresh start: grab text and begin speaking
         cursor = self.editor.textCursor()
@@ -3306,7 +3312,23 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
             QMessageBox.information(self, "No Text", "No text to read aloud.")
             return
 
-        self.editor.speak_text(text)
+        # Guard against a rapid second click slipping a fresh reading
+        # in beside this one while the engine spins up. is_speaking is
+        # set synchronously by speak_text, so a re-click lands on the
+        # pause branch above; this flag is belt-and-suspenders for any
+        # engine that starts asynchronously.
+        if getattr(self, '_tts_starting', False):
+            return
+        self._tts_starting = True
+        try:
+            self.editor.speak_text(text)
+        finally:
+            self._tts_starting = False
+
+        # Only reflect "playing" if speech actually started — a refusal
+        # inside speak_text (already reading) leaves it unchanged.
+        if not self.editor.is_tts_speaking():
+            return
 
         self.tts_speak_btn.setText("⏸ Pause")
         self.tts_speak_btn.setEnabled(True)
