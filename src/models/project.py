@@ -7,7 +7,7 @@ from pathlib import Path
 import json
 import os
 
-from src.models.worldbuilding_objects import Faction, Myth, ClimatePreset, Flora, Fauna, Technology, Star, StarSystem, Place, Culture, Army, Economy, HistoricalEvent, PowerHierarchy, PoliticalSystem, WorldMap, MagicSystem
+from src.models.worldbuilding_objects import Faction, Myth, ClimatePreset, Flora, Fauna, Technology, Star, StarSystem, Place, Culture, Army, Economy, HistoricalEvent, PowerHierarchy, PoliticalSystem, WorldMap, MagicSystem, GovernmentSystem, JusticeSystem, ServiceSystem
 # VideoStudio is optional on the project — imported here for the
 # forward-ref string in WriterProject. Importing at module top is
 # safe: video_studio/models.py has no cycle with project.py.
@@ -55,6 +55,9 @@ class WorldBuilding(BaseModel):
     historical_events: List[HistoricalEvent] = Field(default_factory=list)  # Timeline events
     hierarchies: List[PowerHierarchy] = Field(default_factory=list)  # Power hierarchies
     political_systems: List[PoliticalSystem] = Field(default_factory=list)  # Political systems
+    government_systems: List[GovernmentSystem] = Field(default_factory=list)  # Systems of government
+    justice_systems: List[JusticeSystem] = Field(default_factory=list)  # Systems of justice / law
+    service_systems: List[ServiceSystem] = Field(default_factory=list)  # Public / civic services
     magic_systems: List['MagicSystem'] = Field(default_factory=list)  # Magic systems
 
     # User-created encyclopedia entries (project-specific additions to the base knowledge)

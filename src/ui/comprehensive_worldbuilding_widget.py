@@ -12,6 +12,9 @@ from src.ui.worldbuilding.military_builder import MilitaryBuilderWidget
 from src.ui.worldbuilding.economy_builder import EconomyBuilderWidget
 from src.ui.worldbuilding.hierarchy_builder import HierarchyBuilderWidget
 from src.ui.worldbuilding.politics_builder import PoliticsBuilderWidget
+from src.ui.worldbuilding.government_builder import GovernmentBuilderWidget
+from src.ui.worldbuilding.justice_builder import JusticeBuilderWidget
+from src.ui.worldbuilding.services_builder import ServicesBuilderWidget
 from src.ui.worldbuilding.mythology_builder import MythologyBuilderWidget
 from src.ui.worldbuilding.climate_preset_builder import ClimatePresetBuilderWidget
 from src.ui.worldbuilding.technology_builder import TechnologyBuilderWidget
@@ -98,6 +101,9 @@ class ComprehensiveWorldBuildingWidget(QWidget):
             ("Economy", "economy_widget", EconomyBuilderWidget),
             ("Power Hierarchies", "hierarchy_widget", HierarchyBuilderWidget),
             ("Politics", "politics_widget", PoliticsBuilderWidget),
+            ("Government", "government_widget", GovernmentBuilderWidget),
+            ("Justice", "justice_widget", JusticeBuilderWidget),
+            ("Services", "services_widget", ServicesBuilderWidget),
             ("Mythology", "mythology_widget", MythologyBuilderWidget),
             ("Technology", "technology_widget", TechnologyBuilderWidget),
             ("Magic Systems", "magic_system_widget", MagicSystemBuilderWidget),
@@ -131,6 +137,9 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         self.factions_widget.content_changed.connect(self._update_maps_factions)
         self.factions_widget.content_changed.connect(self._update_magic_system_factions)
         self.factions_widget.content_changed.connect(self._update_politics_factions)
+        self.factions_widget.content_changed.connect(self._update_government_factions)
+        self.factions_widget.content_changed.connect(self._update_justice_factions)
+        self.factions_widget.content_changed.connect(self._update_services_factions)
 
         # Connect flora/fauna/climate changes to update star systems
         self.flora_widget.content_changed.connect(self._update_star_system_flora)
@@ -206,6 +215,21 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         factions = self.factions_widget.get_factions()
         if hasattr(self.politics_widget, 'set_available_factions'):
             self.politics_widget.set_available_factions(factions)
+
+    def _update_government_factions(self):
+        """Update available factions in government widget."""
+        self.government_widget.set_available_factions(
+            self.factions_widget.get_factions())
+
+    def _update_justice_factions(self):
+        """Update available factions in justice widget."""
+        self.justice_widget.set_available_factions(
+            self.factions_widget.get_factions())
+
+    def _update_services_factions(self):
+        """Update available factions in services widget."""
+        self.services_widget.set_available_factions(
+            self.factions_widget.get_factions())
 
     def _update_military_factions(self):
         """Update available factions in military widget."""
@@ -366,6 +390,20 @@ class ComprehensiveWorldBuildingWidget(QWidget):
             self._update_politics_factions()
             self.politics_widget.load_political_systems(worldbuilding.political_systems)
 
+        # Load government / justice / service systems (faction-linked)
+        if hasattr(worldbuilding, 'government_systems'):
+            self._update_government_factions()
+            self.government_widget.load_government_systems(
+                worldbuilding.government_systems)
+        if hasattr(worldbuilding, 'justice_systems'):
+            self._update_justice_factions()
+            self.justice_widget.load_justice_systems(
+                worldbuilding.justice_systems)
+        if hasattr(worldbuilding, 'service_systems'):
+            self._update_services_factions()
+            self.services_widget.load_service_systems(
+                worldbuilding.service_systems)
+
         # Load encyclopedia custom entries
         if hasattr(worldbuilding, 'custom_encyclopedia'):
             self.encyclopedia_widget.load_custom_entries(worldbuilding.custom_encyclopedia)
@@ -393,6 +431,9 @@ class ComprehensiveWorldBuildingWidget(QWidget):
             historical_events=self.history_widget.get_events(),  # Timeline events
             hierarchies=self.hierarchy_widget.get_hierarchies(),  # Power hierarchies
             political_systems=self.politics_widget.get_political_systems(),  # Political systems
+            government_systems=self.government_widget.get_government_systems(),  # Systems of government
+            justice_systems=self.justice_widget.get_justice_systems(),  # Systems of justice
+            service_systems=self.services_widget.get_service_systems(),  # Public / civic services
             mythology_elements={},  # Deprecated - kept for backwards compatibility
             planets_elements={},  # Deprecated - planets now embedded in star_systems
             climate_elements={},  # Deprecated - climate now managed via presets

@@ -203,6 +203,12 @@ class LLMContextExporter:
             worldbuilding, flookup))
         content.extend(LLMContextExporter._export_political_systems(
             worldbuilding, flookup))
+        content.extend(LLMContextExporter._export_government_systems(
+            worldbuilding, flookup))
+        content.extend(LLMContextExporter._export_justice_systems(
+            worldbuilding, flookup))
+        content.extend(LLMContextExporter._export_service_systems(
+            worldbuilding, flookup))
         content.extend(LLMContextExporter._export_power_hierarchies(
             worldbuilding))
         content.extend(LLMContextExporter._export_armies(
@@ -490,6 +496,115 @@ class LLMContextExporter:
                     f"- **Branches** ({len(branches)}): "
                     f"{', '.join(names)}")
             desc = _str_or_join(_val(p, "description", ""))
+            if desc:
+                out.append(f"\n{desc}")
+            out.append("")
+        return out
+
+    @staticmethod
+    def _export_government_systems(worldbuilding, flookup: dict) -> list:
+        items = _val(worldbuilding, "government_systems", []) or []
+        if not items:
+            return []
+        out = ["## 🏛️ Government Systems\n"]
+        for g in items:
+            out.append(f"### {_val(g, 'id', '') or '(unnamed)'}")
+            fid = _val(g, "faction_id", "") or ""
+            if fid:
+                out.append(f"- **Faction**: {flookup.get(fid, fid)}")
+            for label, key in (
+                    ("Type", "government_type"),
+                    ("Structure", "structure"),
+                    ("Leadership", "leadership_selection"),
+                    ("Seat of power", "seat_of_power"),
+                    ("Citizenship", "citizenship")):
+                val = _str_or_join(_val(g, key, ""))
+                if val:
+                    out.append(f"- **{label}**: {val}")
+            levels = _str_or_join(_val(g, "levels", []))
+            if levels:
+                out.append(f"- **Tiers**: {levels}")
+            agencies = _val(g, "agencies", []) or []
+            if agencies:
+                names = [_val(a, "name", "(unnamed)") for a in agencies]
+                out.append(
+                    f"- **Agencies** ({len(agencies)}): "
+                    f"{', '.join(names)}")
+            desc = _str_or_join(_val(g, "description", ""))
+            if desc:
+                out.append(f"\n{desc}")
+            out.append("")
+        return out
+
+    @staticmethod
+    def _export_justice_systems(worldbuilding, flookup: dict) -> list:
+        items = _val(worldbuilding, "justice_systems", []) or []
+        if not items:
+            return []
+        out = ["## ⚖️ Justice Systems\n"]
+        for j in items:
+            out.append(f"### {_val(j, 'id', '') or '(unnamed)'}")
+            fid = _val(j, "faction_id", "") or ""
+            if fid:
+                out.append(f"- **Faction**: {flookup.get(fid, fid)}")
+            for label, key in (
+                    ("Type", "justice_type"),
+                    ("Legal code", "legal_code"),
+                    ("Enforcement", "enforcement")):
+                val = _str_or_join(_val(j, key, ""))
+                if val:
+                    out.append(f"- **{label}**: {val}")
+            laws = _val(j, "laws", []) or []
+            if laws:
+                names = [_val(x, "name", "(unnamed)") for x in laws]
+                out.append(
+                    f"- **Laws** ({len(laws)}): {', '.join(names)}")
+            courts = _val(j, "courts", []) or []
+            if courts:
+                names = [_val(x, "name", "(unnamed)") for x in courts]
+                out.append(
+                    f"- **Courts** ({len(courts)}): {', '.join(names)}")
+            for label, key in (
+                    ("Punishments", "punishments"),
+                    ("Rights", "rights")):
+                val = _str_or_join(_val(j, key, []))
+                if val:
+                    out.append(f"- **{label}**: {val}")
+            desc = _str_or_join(_val(j, "description", ""))
+            if desc:
+                out.append(f"\n{desc}")
+            out.append("")
+        return out
+
+    @staticmethod
+    def _export_service_systems(worldbuilding, flookup: dict) -> list:
+        items = _val(worldbuilding, "service_systems", []) or []
+        if not items:
+            return []
+        out = ["## 🚰 Public Services\n"]
+        for s in items:
+            out.append(f"### {_val(s, 'id', '') or '(unnamed)'}")
+            fid = _val(s, "faction_id", "") or ""
+            if fid:
+                out.append(f"- **Faction**: {flookup.get(fid, fid)}")
+            for label, key in (
+                    ("Infrastructure", "infrastructure"),
+                    ("Accessibility", "accessibility")):
+                val = _str_or_join(_val(s, key, ""))
+                if val:
+                    out.append(f"- **{label}**: {val}")
+            services = _val(s, "services", []) or []
+            for svc in services:
+                name = _val(svc, "name", "(unnamed)")
+                cat = _val(svc, "category", "")
+                prov = _val(svc, "provider", "")
+                cov = _val(svc, "coverage", "")
+                bits = ", ".join(
+                    b for b in (cat, prov, cov) if b)
+                out.append(
+                    f"- **{name}**"
+                    + (f" ({bits})" if bits else ""))
+            desc = _str_or_join(_val(s, "description", ""))
             if desc:
                 out.append(f"\n{desc}")
             out.append("")

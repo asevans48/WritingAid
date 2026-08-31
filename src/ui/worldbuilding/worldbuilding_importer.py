@@ -18,7 +18,8 @@ from src.models.worldbuilding_objects import (
     CompleteWorldBuilding, Faction, Planet, Star, StarSystem, HistoricalEvent,
     EnhancedCharacter, Army, Economy, Good, PowerHierarchy,
     PoliticalSystem, Myth, WorldMap, Place, Culture, Flora,
-    Fauna, Technology, ClimatePreset
+    Fauna, Technology, ClimatePreset,
+    GovernmentSystem, JusticeSystem, ServiceSystem
 )
 
 
@@ -35,6 +36,9 @@ WORLDBUILDING_SECTIONS = {
     "goods": ("Goods", Good),
     "power_hierarchies": ("Power Hierarchies", PowerHierarchy),
     "political_systems": ("Political Systems", PoliticalSystem),
+    "government_systems": ("Government Systems", GovernmentSystem),
+    "justice_systems": ("Justice Systems", JusticeSystem),
+    "service_systems": ("Service Systems", ServiceSystem),
     "myths": ("Myths", Myth),
     "places": ("Places", Place),
     "cultures": ("Cultures", Culture),

@@ -437,6 +437,95 @@ class PoliticalSystem(BaseModel):
     description: str = ""
 
 
+# ===== JUSTICE =====
+class Law(BaseModel):
+    """A single law or statute within a justice system."""
+    id: str
+    name: str
+    category: str = ""  # criminal, civil, property, trade, religious, etc.
+    description: str = ""
+    penalty: str = ""  # consequence for breaking it
+
+
+class Court(BaseModel):
+    """A court or judicial body."""
+    id: str
+    name: str
+    level: str = ""  # supreme, high, local, tribunal, magistrate, etc.
+    jurisdiction: str = ""  # what / whom it rules over
+    presiding: Optional[str] = None  # judge / official title or character
+    description: str = ""
+
+
+class JusticeSystem(BaseModel):
+    """A system of justice / law for a faction — the courts, the
+    laws, who enforces them, and how the accused are treated."""
+    id: str  # Name of the justice system (e.g., "The King's Law")
+    faction_id: str = ""  # Reference to associated faction
+    justice_type: str = ""  # adversarial, inquisitorial, restorative, trial-by-combat, theocratic, tribal
+    legal_code: str = ""  # overview of the body of law it rests on
+    laws: List[Law] = Field(default_factory=list)
+    courts: List[Court] = Field(default_factory=list)
+    enforcement: str = ""  # who enforces: guards, police, inquisitors...
+    punishments: List[str] = Field(default_factory=list)
+    rights: List[str] = Field(default_factory=list)  # rights of the accused / citizens
+    description: str = ""
+
+
+# ===== GOVERNMENT =====
+class GovernmentAgency(BaseModel):
+    """An agency, ministry, or department of government."""
+    id: str
+    name: str
+    purpose: str = ""  # what it administers
+    head: Optional[str] = None  # official title or character
+    description: str = ""
+
+
+class GovernmentSystem(BaseModel):
+    """A system of government / administration for a faction — how
+    power is organized, who runs it, and how leaders are chosen.
+
+    Complements ``PoliticalSystem`` (which models parties, branches,
+    and the constitution) by capturing the administrative machinery:
+    tiers of government, ministries/agencies, and succession."""
+    id: str  # Name of the government (e.g., "The Imperial Administration")
+    faction_id: str = ""  # Reference to associated faction
+    government_type: str = ""  # federal republic, absolute monarchy, council, technocracy, theocracy
+    structure: str = ""  # centralized / federal; how power is distributed
+    levels: List[str] = Field(default_factory=list)  # tiers, e.g., National, Provincial, City
+    agencies: List[GovernmentAgency] = Field(default_factory=list)
+    leadership_selection: str = ""  # succession, election, appointment, lottery
+    seat_of_power: str = ""  # capital / where governance sits
+    citizenship: str = ""  # who counts as a citizen and how
+    description: str = ""
+
+
+# ===== SERVICES =====
+class PublicService(BaseModel):
+    """A single public / civic service."""
+    id: str
+    name: str
+    category: str = ""  # healthcare, education, utilities, transport, sanitation, emergency, welfare, communication
+    provider: str = ""  # public, private, guild, religious, mixed
+    coverage: str = ""  # universal, urban-only, wealthy-only, rationed
+    quality: str = ""  # excellent, adequate, poor, failing
+    funding: str = ""  # taxes, tithes, tolls, patronage
+    description: str = ""
+
+
+class ServiceSystem(BaseModel):
+    """The public / civic services available to a faction's people —
+    healthcare, education, utilities, transport, sanitation, and the
+    infrastructure that carries them."""
+    id: str  # Name of the service system (e.g., "Crownlands Public Works")
+    faction_id: str = ""  # Reference to associated faction
+    services: List[PublicService] = Field(default_factory=list)
+    infrastructure: str = ""  # roads, aqueducts, grid, network overview
+    accessibility: str = ""  # how people reach / qualify for services
+    description: str = ""
+
+
 # ===== TECHNOLOGY =====
 class TechnologyType(str, Enum):
     """Technology type categories."""
@@ -1124,6 +1213,11 @@ class CompleteWorldBuilding(BaseModel):
     # Power & Politics
     power_hierarchies: List[PowerHierarchy] = Field(default_factory=list)
     political_systems: List[PoliticalSystem] = Field(default_factory=list)
+
+    # Governance, Justice & Services
+    government_systems: List[GovernmentSystem] = Field(default_factory=list)
+    justice_systems: List[JusticeSystem] = Field(default_factory=list)
+    service_systems: List[ServiceSystem] = Field(default_factory=list)
 
     # Mythology
     myths: List[Myth] = Field(default_factory=list)
