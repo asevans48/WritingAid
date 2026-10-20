@@ -3707,6 +3707,23 @@ class ManuscriptEditor(QWidget):
         self.new_subproject_btn.setStyleSheet("font-size: 11px; padding: 2px 6px;")
         self.new_subproject_btn.clicked.connect(self._create_subproject)
         tabs_row.addWidget(self.new_subproject_btn)
+        self.move_to_novella_btn = QToolButton()
+        self.move_to_novella_btn.setText("⇢ Move main chapters…")
+        self.move_to_novella_btn.setToolTip(
+            "Move every chapter (and draft) of the main manuscript into a\n"
+            "new novella or an existing one. The files are moved, not\n"
+            "copied — the main tab is empty afterwards.")
+        self.move_to_novella_btn.setStyleSheet("font-size: 11px; padding: 2px 6px;")
+        self.move_to_novella_btn.clicked.connect(self._move_main_chapters_clicked)
+        tabs_row.addWidget(self.move_to_novella_btn)
+        self.drop_novella_btn = QToolButton()
+        self.drop_novella_btn.setText("🗑 Drop novella")
+        self.drop_novella_btn.setToolTip(
+            "Drop a novella and its content from the project (archived or\n"
+            "erased permanently — you choose).")
+        self.drop_novella_btn.setStyleSheet("font-size: 11px; padding: 2px 6px;")
+        self.drop_novella_btn.clicked.connect(self._drop_novella_clicked)
+        tabs_row.addWidget(self.drop_novella_btn)
         tabs_row.addStretch()
         layout.addLayout(tabs_row)
 
@@ -4803,10 +4820,17 @@ class ManuscriptEditor(QWidget):
                 tabs.removeTab(0)
             if not self.project or not hasattr(self.project, 'subprojects'):
                 tabs.setVisible(False)
-                self.new_subproject_btn.setEnabled(False)
+                for b in (self.new_subproject_btn, self.move_to_novella_btn,
+                          self.drop_novella_btn):
+                    b.setEnabled(False)
                 return
             tabs.setVisible(True)
-            self.new_subproject_btn.setEnabled(True)
+            # Always enabled with a project open — the handlers explain
+            # when there's nothing to move / drop (chapter edits don't
+            # refresh this bar, so state-based disabling would go stale).
+            for b in (self.new_subproject_btn, self.move_to_novella_btn,
+                      self.drop_novella_btn):
+                b.setEnabled(True)
             main = self.project.get_main_manuscript()
             idx = tabs.addTab(f"📖 {main.title or 'Main Manuscript'}")
             tabs.setTabData(idx, "")
@@ -5016,6 +5040,7 @@ class ManuscriptEditor(QWidget):
             self, "Chapters Moved",
             f"Moved {moved} chapter(s) into '{sp.name}'. The main manuscript "
             f"tab is now empty.")
+        self._warn_cleanup_leftovers()
         return True
 
     def _turn_main_into_novella(self) -> bool:
@@ -5048,14 +5073,17 @@ class ManuscriptEditor(QWidget):
         """Move the main manuscript into an existing, still-empty novella."""
         sp = self.project.get_subproject(sp_id)
         main = self.project.get_main_manuscript()
-        if sp is None or sp.manuscript.chapters or not main.chapters:
+        if sp is None or not main.chapters:
             return
+        after = (f" They'll follow its {len(sp.manuscript.chapters)} existing "
+                 f"chapter(s)." if sp.manuscript.chapters else "")
         reply = QMessageBox.question(
             self, "Move chapters",
             f"Move the main manuscript's {len(main.chapters)} chapter(s) and "
             f"{len(self.project.drafts_for_scope(None))} draft(s) into "
-            f"'{sp.name}'?\n\nThe main tab will be empty afterwards. A copy of "
-            f"the project file is kept as a backup.",
+            f"'{sp.name}'?{after}\n\nThe files are moved, not copied — the main "
+            f"tab will be empty afterwards. A copy of the project file is kept "
+            f"as a backup.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No)
         if reply != QMessageBox.StandardButton.Yes:
@@ -5082,6 +5110,63 @@ class ManuscriptEditor(QWidget):
             self, "Chapters Moved",
             f"Moved {moved} chapter(s) into '{sp.name}'. The main manuscript "
             f"tab is now empty.")
+        self._warn_cleanup_leftovers()
+
+    def _move_main_chapters_clicked(self):
+        """Toolbar: move the main manuscript into a new or existing novella."""
+        if not self.project:
+            return
+        main = self.project.get_main_manuscript()
+        if not main.chapters:
+            QMessageBox.information(self, "Nothing to Move",
+                                    "The main manuscript has no chapters.")
+            return
+        if not self.project.subprojects:
+            self._turn_main_into_novella()
+            return
+        new_label = "＋ A new novella…"
+        labels = [new_label] + [
+            f"{sp.name} ({len(sp.manuscript.chapters)} chapter(s))"
+            for sp in self.project.subprojects]
+        choice, ok = QInputDialog.getItem(
+            self, "Move Main Chapters",
+            f"Move the main manuscript's {len(main.chapters)} chapter(s) into:",
+            labels, 0, False)
+        if not ok:
+            return
+        if choice == new_label:
+            self._turn_main_into_novella()
+        else:
+            sp = self.project.subprojects[labels.index(choice) - 1]
+            self._move_main_into_existing(sp.id)
+
+    def _drop_novella_clicked(self):
+        """Toolbar: drop the novella in focus, or pick one."""
+        if not self.project:
+            return
+        if not self.project.subprojects:
+            QMessageBox.information(self, "No Novellas",
+                                    "This project has no novellas to drop.")
+            return
+        sp_id = self.project.active_subproject_id
+        if sp_id is None:
+            labels = [sp.name for sp in self.project.subprojects]
+            choice, ok = QInputDialog.getItem(
+                self, "Drop Novella", "Drop which novella?", labels, 0, False)
+            if not ok:
+                return
+            sp_id = self.project.subprojects[labels.index(choice)].id
+        self._delete_subproject(sp_id)
+
+    def _warn_cleanup_leftovers(self):
+        """Tell the user about folders a move/drop couldn't delete."""
+        left = self.project.cleanup_leftovers if self.project else []
+        if left:
+            QMessageBox.warning(
+                self, "Some Files Remain",
+                "The operation completed, but these folders couldn't be "
+                "removed (they're no longer used by the project and can be "
+                "deleted by hand):\n\n" + "\n".join(left))
 
     def _release_main_editor(self):
         """Leave draft / split views and close the open chapter editor so
@@ -5133,7 +5218,7 @@ class ManuscriptEditor(QWidget):
             desc_action = menu.addAction("Edit description…")
             sp = self.project.get_subproject(sp_id)
             main = self.project.get_main_manuscript()
-            if sp is not None and not sp.manuscript.chapters and main.chapters:
+            if sp is not None and main.chapters:
                 move_action = menu.addAction(
                     f"Move main chapters into this novella ({len(main.chapters)})…")
             menu.addSeparator()
@@ -5228,6 +5313,7 @@ class ManuscriptEditor(QWidget):
         self._refresh_subproject_tabs()
         self._refresh_draft_selector()
         self.subprojects_changed.emit()
+        self._warn_cleanup_leftovers()
 
         # Back to no novellas: offer to make the current content one.
         main = self.project.get_main_manuscript()

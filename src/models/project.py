@@ -20,6 +20,46 @@ _SAFE_SUBPROJECT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 # older app version, which doesn't know about subprojects, re-saves.
 SUBPROJECT_SIDECAR = "subproject.json"
 
+# Finder / AppleDouble metadata. On exFAT, FAT and network drives macOS
+# stores each file's extended attributes in a visible "._<name>" file that
+# it creates and deletes along with the file. Copies skip these (macOS
+# regenerates them) and verification ignores them.
+_METADATA_PATTERNS = ("._*", ".DS_Store")
+
+
+def _is_metadata_file(path: Path) -> bool:
+    return path.name.startswith("._") or path.name == ".DS_Store"
+
+
+def _remove_tree(path: Path) -> bool:
+    """Delete a folder tree; True if it's gone afterwards.
+
+    Tolerates files vanishing mid-delete — on exFAT macOS removes a
+    file's "._" companion automatically, and a plain rmtree then fails
+    with "No such file or directory" half-way through the folder.
+    """
+    import shutil
+
+    def _ignore_missing(func, p, exc):
+        if isinstance(exc, FileNotFoundError):
+            return
+        raise exc
+    for _attempt in range(2):
+        if not path.exists():
+            break
+        try:
+            shutil.rmtree(path, onexc=_ignore_missing)
+        except OSError as e:
+            print(f"  Warning: could not fully remove {path}: {e}")
+    sidecar = path.with_name(f"._{path.name}")
+    if sidecar.is_file():
+        try:
+            sidecar.unlink()
+        except OSError:
+            pass
+    return not path.exists()
+
+
 # Project file format version.
 #   1 — everything before subprojects (files have no schema_version)
 #   2 — subprojects, per-chapter folder roots, draft scoping
@@ -1303,6 +1343,8 @@ class WriterProject(BaseModel):
     # has been written.
     _loaded_schema_version: Optional[int] = PrivateAttr(default=None)
     _upgrade_backup_done: bool = PrivateAttr(default=False)
+    # Folders a completed move/drop couldn't remove (shown to the user).
+    _cleanup_leftovers: List[str] = PrivateAttr(default_factory=list)
 
     def model_post_init(self, __context) -> None:
         # ``manuscript`` arrives as the main manuscript (canonical form);
@@ -1534,20 +1576,34 @@ class WriterProject(BaseModel):
                 if was_active:
                     self.activate_subproject(subproject_id)
                 raise
+        self._cleanup_leftovers = []
         if project_dir and _SAFE_SUBPROJECT_ID.match(subproject_id):
             import shutil
             src = Path(project_dir) / SUBPROJECTS_DIR / subproject_id
             if src.is_dir():
-                if permanently:
-                    shutil.rmtree(src)
-                else:
-                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    dest = Path(project_dir) / SUBPROJECTS_DIR / "_deleted" / f"{subproject_id}_{ts}"
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(src), str(dest))
-                apple_double = src.with_name(f"._{src.name}")  # macOS metadata
-                if apple_double.is_file():
+                # The drop is already saved; a file-system hiccup from here
+                # on is reported, not raised, so the UI never claims a
+                # completed drop failed.
+                try:
+                    if permanently:
+                        removed = _remove_tree(src)
+                    else:
+                        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        dest = Path(project_dir) / SUBPROJECTS_DIR / "_deleted" / f"{subproject_id}_{ts}"
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(src), str(dest))
+                        removed = not src.exists()
+                except OSError as e:
+                    print(f"  Warning: could not remove {src}: {e}")
+                    removed = False
+                if not removed:
+                    self._cleanup_leftovers.append(str(src))
+            apple_double = src.with_name(f"._{src.name}")  # macOS metadata
+            if apple_double.is_file():
+                try:
                     apple_double.unlink()
+                except OSError:
+                    pass
         return True
 
     def next_subproject_name(self, base: str = "Novella") -> str:
@@ -1559,10 +1615,16 @@ class WriterProject(BaseModel):
             n += 1
         return f"{base} {n}"
 
+    @property
+    def cleanup_leftovers(self) -> List[str]:
+        """Folders the last move/drop finished without being able to delete."""
+        return list(self._cleanup_leftovers)
+
     def move_main_content_to_subproject(self, subproject_id: str, *,
                                         project_file: Optional[str] = None) -> int:
-        """Move every main-manuscript chapter (and main's drafts) into an
-        empty subproject. Returns the number of chapters moved.
+        """Move every main-manuscript chapter (and main's drafts) into a
+        subproject, after any chapters it already has. Returns the number
+        of chapters moved.
 
         Transactional on disk:
           1. save the current state (so disk matches memory),
@@ -1578,12 +1640,13 @@ class WriterProject(BaseModel):
         sp = self.get_subproject(subproject_id)
         if sp is None:
             raise KeyError(f"No subproject with id {subproject_id!r}")
-        if sp.manuscript.chapters:
-            raise ValueError("Content can only be moved into an empty subproject.")
         main = self.get_main_manuscript()
         chapters = list(main.chapters)
+        self._cleanup_leftovers = []
         if not chapters:
             return 0
+        existing = list(sp.manuscript.chapters)
+        offset = len(existing)
         project_dir = Path(project_file).parent if project_file else None
 
         if project_file:
@@ -1593,9 +1656,14 @@ class WriterProject(BaseModel):
                     ch.load_content_from_file(project_dir)
 
         root = sp.chapters_root
-        plan = []  # (chapter, old_folder, new_folder)
-        for ch in chapters:
-            plan.append((ch, ch.folder_path, f"{root}/chapter_{ch.number:03d}"))
+        plan = []  # (chapter, old_folder, new_folder, new_number)
+        for i, ch in enumerate(chapters, 1):
+            num = offset + i
+            plan.append((ch, ch.folder_path, f"{root}/chapter_{num:03d}", num))
+        taken = {c.folder_path for c in existing if c.folder_path}
+        clash = [new for _c, _o, new, _n in plan if new in taken]
+        if clash:
+            raise RuntimeError(f"Target folder already used: {clash[0]}")
 
         # ── 2. copy + verify (no model changes yet) ──
         copied: List[Path] = []
@@ -1607,7 +1675,7 @@ class WriterProject(BaseModel):
 
         def _remove_copies():
             for d in copied:
-                shutil.rmtree(d, ignore_errors=True)
+                _remove_tree(d)
             if project_dir:
                 root_dir = project_dir / sp.chapters_root
                 try:
@@ -1618,17 +1686,18 @@ class WriterProject(BaseModel):
 
         if project_dir:
             try:
-                for _ch, old, new in plan:
+                for _ch, old, new, _num in plan:
                     dest = project_dir / new
                     if dest.exists():
                         raise RuntimeError(f"Target folder already exists: {new}")
                     if not old or not (project_dir / old).is_dir():
                         continue
                     src = project_dir / old
-                    shutil.copytree(src, dest)
                     copied.append(dest)
+                    shutil.copytree(src, dest, ignore=shutil.ignore_patterns(
+                        *_METADATA_PATTERNS))
                     for f in src.rglob("*"):
-                        if f.is_file():
+                        if f.is_file() and not _is_metadata_file(f):
                             g = dest / f.relative_to(src)
                             if not g.is_file() or _digest(f) != _digest(g):
                                 raise RuntimeError(f"Copy verification failed for {f}")
@@ -1638,22 +1707,24 @@ class WriterProject(BaseModel):
                 raise
 
         # ── 3. re-point the model (snapshot first for rollback) ──
-        snapshot = [(ch, ch.folder_path, ch.file_path, ch.plan_file_path,
+        snapshot = [(ch, ch.number, ch.folder_path, ch.file_path, ch.plan_file_path,
                      ch.folder_root, [(r, r.file_path) for r in ch.revisions])
                     for ch in chapters]
         moved_drafts = [d for d in self.drafts if d.subproject_id is None]
 
         def _rollback():
-            for ch, fp, flp, pfp, fr, revs in snapshot:
+            for ch, num, fp, flp, pfp, fr, revs in snapshot:
+                ch.number = num
                 ch.folder_path, ch.file_path, ch.plan_file_path, ch.folder_root = fp, flp, pfp, fr
                 for r, rfp in revs:
                     r.file_path = rfp
             main.chapters = chapters
-            sp.manuscript.chapters = []
+            sp.manuscript.chapters = existing
             for d in moved_drafts:
                 d.subproject_id = None
 
-        for ch, old, new in plan:
+        for ch, old, new, num in plan:
+            ch.number = num
             ch.folder_root = root
             if old:
                 ch.folder_path = new
@@ -1670,8 +1741,8 @@ class WriterProject(BaseModel):
                 for r in ch.revisions:
                     r.file_path = ""
             ch.plan_file_path = None
-        sp.manuscript.chapters = chapters
-        sp.manuscript.total_word_count = sum(c.word_count for c in chapters)
+        sp.manuscript.chapters = existing + chapters
+        sp.manuscript.total_word_count = sum(c.word_count for c in sp.manuscript.chapters)
         main.chapters = []
         main.total_word_count = 0
         for d in moved_drafts:
@@ -1692,18 +1763,9 @@ class WriterProject(BaseModel):
                 _remove_copies()
                 raise
             # ── 5. old folders are now unreferenced ──
-            for s in sources:
-                try:
-                    shutil.rmtree(s)
-                except OSError as e:
-                    print(f"  Warning: could not remove old chapter folder {s}: {e}")
-                # macOS AppleDouble metadata for the folder (FAT/exFAT drives).
-                sidecar = s.with_name(f"._{s.name}")
-                if sidecar.is_file():
-                    try:
-                        sidecar.unlink()
-                    except OSError:
-                        pass
+            for src_dir in sources:
+                if not _remove_tree(src_dir):
+                    self._cleanup_leftovers.append(str(src_dir))
         return len(chapters)
 
     def drafts_for_scope(self, subproject_id: Optional[str]) -> List['ManuscriptDraft']:

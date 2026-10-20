@@ -164,20 +164,80 @@ def test_unsaved_project_moves_in_memory_then_saves_under_novella():
     shutil.rmtree(d)
 
 
-def test_refuses_non_empty_target_and_unknown_id():
-    d, path, p = _saved_project(n=1, revisions=False)
+def test_moves_append_after_existing_chapters_and_refuse_unknown_id():
+    d, path, p = _saved_project(n=2)
     sp = p.create_subproject("N")
     p.activate_subproject(sp.id)
-    p.manuscript.chapters.append(Chapter(id="x", number=1, title="x"))
+    t = Chapter(id="t1", number=1, title="test", folder_root=p.manuscript.folder_root)
+    t.content = "Novella's own chapter."
+    p.manuscript.chapters.append(t)
     p.activate_subproject(None)
-    for bad in (sp.id, "nope"):
-        try:
-            p.move_main_content_to_subproject(bad, project_file=str(path))
-        except (ValueError, KeyError):
-            pass
-        else:
-            raise AssertionError("should refuse")
-    assert len(p.get_main_manuscript().chapters) == 1
+    p.save_project(str(path))
+    assert p.move_main_content_to_subproject(sp.id, project_file=str(path)) == 2
+    p2 = WriterProject.load_project(str(path))
+    chs = p2.get_subproject(sp.id).manuscript.chapters
+    assert [(c.number, c.title) for c in chs] == [(1, "test"), (2, "Ch 1"), (3, "Ch 2")]
+    assert [c.content for c in chs] == ["Novella's own chapter.",
+                                        "Second draft of chapter 1.", "Second draft of chapter 2."]
+    root = d / f"subprojects/{sp.id}/chapters"
+    assert sorted(x.name for x in root.iterdir()) == ["chapter_001", "chapter_002", "chapter_003"]
+    assert chs[-1].load_revision_content(d, 1) == "First draft of chapter 2."
+    assert p2.get_main_manuscript().chapters == []
+    try:
+        p2.move_main_content_to_subproject("nope", project_file=str(path))
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("should refuse unknown id")
+    shutil.rmtree(d)
+
+
+def _simulate_exfat(monkey_target):
+    """On exFAT macOS deletes "._name" along with "name"; plain rmtree then
+    hits FileNotFoundError on the companion. Reproduce that on any disk."""
+    import os as _os
+    real_unlink = _os.unlink
+
+    def unlink(path, *, dir_fd=None):
+        real_unlink(path, dir_fd=dir_fd)
+        name = _os.path.basename(_os.fsdecode(path))
+        if not name.startswith("._"):
+            companion = _os.path.join(_os.path.dirname(_os.fsdecode(path)), "._" + name)
+            try:
+                real_unlink(companion, dir_fd=dir_fd)
+            except FileNotFoundError:
+                pass
+    monkey_target.unlink = unlink
+    return real_unlink
+
+
+def test_move_and_drop_are_true_moves_on_exfat_style_volumes():
+    import os as _os
+    d, path, p = _saved_project(n=2)
+    # AppleDouble companions next to every chapter file, as on exFAT.
+    for f in list((d / "chapters").rglob("*.md")):
+        (f.parent / f"._{f.name}").write_bytes(b"\x00\x05\x16\x07metadata")
+    for folder in (d / "chapters").iterdir():
+        if folder.is_dir():
+            (folder.parent / f"._{folder.name}").write_bytes(b"meta")
+    real = _simulate_exfat(_os)
+    try:
+        sp = p.create_subproject("N")
+        p.move_main_content_to_subproject(sp.id, project_file=str(path))
+        assert p.cleanup_leftovers == []
+        assert sorted(x.name for x in (d / "chapters").iterdir()) == []  # moved, not copied
+        root = d / f"subprojects/{sp.id}/chapters"
+        assert not any(x.name.startswith("._") for x in root.rglob("*"))  # metadata not copied
+        p2 = WriterProject.load_project(str(path))
+        assert [c.content for c in p2.get_subproject(sp.id).manuscript.chapters] == [
+            "Second draft of chapter 1.", "Second draft of chapter 2."]
+        for f in root.rglob("*.md"):
+            (f.parent / f"._{f.name}").write_bytes(b"meta")
+        p2.delete_subproject(sp.id, permanently=True, project_file=str(path))
+        assert p2.cleanup_leftovers == []
+        assert not (d / "subprojects" / sp.id).exists()
+    finally:
+        _os.unlink = real
     shutil.rmtree(d)
 
 
