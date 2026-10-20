@@ -90,6 +90,8 @@ class TrainingPreset:
     lora_dropout: float = 0.05
     neftune: bool = False
     neftune_alpha: float = 5.0
+    preference_method: str = "auto"   # auto | dpo | kto | off
+    preference_beta: float = 0.1
 
     # Forward-compat sink — unknown keys land here on load and are
     # written back on save.

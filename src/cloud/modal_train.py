@@ -753,7 +753,9 @@ def _build_app():
             gradient_accumulation_steps=4,
             learning_rate=float(config.get("learning_rate", 2e-4)),
             weight_decay=float(config.get("weight_decay", 0.0)),
-            warmup_ratio=float(config.get("warmup_ratio", 0.0)),
+            warmup_steps=int(_math.ceil(
+                float(config.get("warmup_ratio", 0.0)) * steps_per_epoch
+                * int(config.get("epochs", 2)))),
             lr_scheduler_type=config.get("lr_scheduler", "linear"),
             logging_steps=1,
             save_strategy="epoch",

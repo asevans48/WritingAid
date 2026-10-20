@@ -82,8 +82,14 @@ class _TrainingWorker(QThread):
         neftune_alpha: float = 0.0,
         warmup_ratio: float = 0.0,
         lr_scheduler: str = "linear",
+        # Optional RL-from-feedback stage after SFT (DPO / KTO), see
+        # src.ai.preference_optim. None = SFT only.
+        preference_data: Optional[dict] = None,
+        preference_plan=None,
     ):
         super().__init__()
+        self.preference_data = preference_data
+        self.preference_plan = preference_plan
         self.eval_fraction = eval_fraction
         self.evals_per_epoch = max(1, int(evals_per_epoch))
         self.early_stopping_patience = max(0, int(early_stopping_patience))
@@ -215,11 +221,16 @@ class _TrainingWorker(QThread):
                             f"QLoRA setup failed ({e}); falling back "
                             f"to standard precision.")
 
-            model_kwargs = dict(
-                torch_dtype=torch.bfloat16 if torch.cuda.is_available()
-                or torch.backends.mps.is_available() else torch.float32,
-                device_map=device_map,
-            )
+            import transformers as _tf
+            # transformers ≥ 4.56 renamed torch_dtype → dtype.
+            _dtype_kw = ("dtype" if tuple(int(x) for x in
+                                          _tf.__version__.split(".")[:2]) >= (4, 56)
+                         else "torch_dtype")
+            model_kwargs = {
+                _dtype_kw: (torch.bfloat16 if torch.cuda.is_available()
+                            or torch.backends.mps.is_available() else torch.float32),
+                "device_map": device_map,
+            }
             if quant_config is not None:
                 model_kwargs["quantization_config"] = quant_config
             model = AutoModelForCausalLM.from_pretrained(
@@ -413,7 +424,9 @@ class _TrainingWorker(QThread):
                 gradient_accumulation_steps=grad_accum,
                 learning_rate=self.learning_rate,
                 weight_decay=self.weight_decay,
-                warmup_ratio=self.warmup_ratio,
+                # warmup_steps rather than the deprecated warmup_ratio.
+                warmup_steps=int(_math.ceil(
+                    self.warmup_ratio * steps_per_epoch * self.epochs)),
                 lr_scheduler_type=self.lr_scheduler,
                 logging_steps=1,
                 save_strategy="epoch",
@@ -528,6 +541,30 @@ class _TrainingWorker(QThread):
                           f"{len(ds)} examples…")
             trainer.train()
 
+            preference_result = None
+            plan = self.preference_plan
+            if plan is not None and getattr(plan, "method", "off") in ("dpo", "kto"):
+                self.log.emit(
+                    f"Preference optimization ({plan.method.upper()}) on top of "
+                    f"the SFT model — {plan.reason}")
+                try:
+                    from src.ai.preference_optim import run_preference_stage
+                    preference_result = run_preference_stage(
+                        trainer.model, tokenizer, self.preference_data or {},
+                        plan, max_length=self.max_length,
+                        log=self.log.emit,
+                        on_metrics=lambda m: self.metrics.emit(
+                            {"preference": True, **m}))
+                except Exception as e:
+                    import traceback as _tb
+                    _tb.print_exc()
+                    # The SFT result is still good — keep it.
+                    self.log.emit(
+                        f"  preference stage failed ({e}); saving the SFT "
+                        f"model without it")
+                    preference_result = {"method": plan.method,
+                                         "error": str(e), "history": []}
+
             self.log.emit(f"Saving model to {self.output_dir}…")
             trainer.save_model(str(self.output_dir))
             tokenizer.save_pretrained(str(self.output_dir))
@@ -542,6 +579,7 @@ class _TrainingWorker(QThread):
                     trainer.state, "best_model_checkpoint", None),
                 "n_train": len(ds),
                 "n_eval": len(eval_ds) if eval_ds is not None else 0,
+                "preference": preference_result,
             }
             try:
                 (self.output_dir / "training_history.json").write_text(
@@ -3492,6 +3530,8 @@ class TrainingToolWindow(QMainWindow):
             lora_dropout=float(_spin("lora_dropout_spin", 0.05)),
             neftune=_check("neftune_cb", False),
             neftune_alpha=float(_spin("neftune_alpha_spin", 5.0)),
+            preference_method=_combo_data("pref_method_combo", "auto"),
+            preference_beta=float(_spin("pref_beta_spin", 0.1)),
         )
 
     def _apply_preset(self, preset) -> None:
@@ -3583,6 +3623,8 @@ class TrainingToolWindow(QMainWindow):
         _set_spin("lora_dropout_spin", float(getattr(preset, "lora_dropout", 0.05)))
         _set_check("neftune_cb", getattr(preset, "neftune", False))
         _set_spin("neftune_alpha_spin", float(getattr(preset, "neftune_alpha", 5.0)))
+        _set_combo_data("pref_method_combo", getattr(preset, "preference_method", "auto"))
+        _set_spin("pref_beta_spin", float(getattr(preset, "preference_beta", 0.1)))
 
         # Refresh derived state (recommendation banner reads everything
         # we just set, so it'd be stale otherwise).
@@ -5229,6 +5271,7 @@ class TrainingToolWindow(QMainWindow):
 
         layout.addWidget(self._build_task_readiness_group())
         layout.addWidget(self._build_overfitting_group())
+        layout.addWidget(self._build_preference_group())
 
         btn_row = QHBoxLayout()
         self.start_btn = QPushButton("▶ Start Training")
@@ -5477,6 +5520,81 @@ class TrainingToolWindow(QMainWindow):
         form.addRow("", self._row_widget(rec_row))
         return box
 
+    def _build_preference_group(self) -> QGroupBox:
+        box = QGroupBox("🏆 Preference optimization (RL from your feedback)")
+        v = QVBoxLayout(box)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Method:"))
+        self.pref_method_combo = QComboBox()
+        self.pref_method_combo.addItem("Auto — use it when there's enough feedback", "auto")
+        self.pref_method_combo.addItem("DPO — preference pairs", "dpo")
+        self.pref_method_combo.addItem("KTO — thumbs up / down", "kto")
+        self.pref_method_combo.addItem("Off — supervised training only", "off")
+        self.pref_method_combo.setToolTip(
+            "After supervised training, optimize the model toward outputs you "
+            "rated up or kept, and away from ones you rated down or rewrote.\n\n"
+            "DPO uses pairs of answers to the same passage (👍 vs 👎, or your "
+            "edit vs the original suggestion). KTO uses unpaired 👍/👎. Both "
+            "are offline RLHF: they optimize the reward-maximizing, "
+            "KL-regularized objective directly from your feedback.\n\n"
+            "Auto picks DPO when there are enough pairs, otherwise KTO, "
+            "otherwise skips. Local training only.")
+        self.pref_method_combo.currentIndexChanged.connect(
+            lambda _i: self._refresh_preference_plan())
+        row.addWidget(self.pref_method_combo)
+        row.addWidget(QLabel("β"))
+        self.pref_beta_spin = QDoubleSpinBox()
+        self.pref_beta_spin.setRange(0.01, 1.0)
+        self.pref_beta_spin.setDecimals(2)
+        self.pref_beta_spin.setSingleStep(0.05)
+        self.pref_beta_spin.setValue(0.10)
+        self.pref_beta_spin.setToolTip(
+            "KL strength: how closely the model must stay to the supervised "
+            "model. Higher = more conservative. 0.1 is standard.")
+        row.addWidget(self.pref_beta_spin)
+        row.addStretch()
+        v.addLayout(row)
+        self.pref_label = QLabel(
+            "<span style='color:#6b7280'>Feedback availability is shown after "
+            "<b>Analyze dataset</b>.</span>")
+        self.pref_label.setWordWrap(True)
+        self.pref_label.setTextFormat(Qt.TextFormat.RichText)
+        v.addWidget(self.pref_label)
+        self._pref_data = None
+        self._pref_plan = None
+        return box
+
+    def _refresh_preference_plan(self, *, reload: bool = False):
+        """Collect feedback for the chosen sources and plan the RL stage."""
+        import html as _html
+        from src.ai.preference_optim import plan_preference_stage
+        if reload or self._pref_data is None:
+            try:
+                self._pref_data = RephraseDatabase(self.db_path).preference_examples(
+                    self._selected_source_types() or None)
+            except Exception as e:
+                self.pref_label.setText(
+                    f"<span style='color:#b91c1c'>Couldn't read feedback: "
+                    f"{_html.escape(str(e))}</span>")
+                self._pref_data, self._pref_plan = None, None
+                return None
+        plan = plan_preference_stage(
+            self._pref_data, requested=self.pref_method_combo.currentData(),
+            sft_learning_rate=self.lr_spin.value(), tasks=self._selected_tasks())
+        if plan.method != "off" and abs(self.pref_beta_spin.value() - 0.1) > 1e-9:
+            plan.beta = self.pref_beta_spin.value()  # user override
+        self._pref_plan = plan
+        color = "#15803d" if plan.method != "off" else "#6b7280"
+        verdict = (f"Will run <b>{plan.method.upper()}</b> after SFT"
+                   if plan.method != "off" else "Preference stage will be skipped")
+        self.pref_label.setText(
+            f"<b style='color:{color}'>{verdict}.</b> Feedback available for the "
+            f"selected sources: <b>{plan.n_pairs}</b> same-passage pairs "
+            f"({plan.n_edit_pairs} from your edits), <b>{plan.n_desirable}</b> liked "
+            f"and <b>{plan.n_undesirable}</b> disliked outputs.<br>"
+            f"<span style='color:#374151'>{_html.escape(plan.reason)}</span>")
+        return plan
+
     def _selected_tasks(self) -> list:
         tasks = [k for k, cb in getattr(self, "task_checkboxes", {}).items()
                  if cb.isChecked()]
@@ -5526,6 +5644,7 @@ class TrainingToolWindow(QMainWindow):
         self.readiness_label.setText(
             readiness_html(report, self._last_reg_plan))
         self.apply_reg_btn.setEnabled(True)
+        self._refresh_preference_plan(reload=True)
 
     def _on_readiness_failed(self, msg: str) -> None:
         self.analyze_dataset_btn.setEnabled(True)
@@ -5658,13 +5777,18 @@ class TrainingToolWindow(QMainWindow):
         """Assess the run, save training_report.json, show the report."""
         from src.ai.training_insights import assess_training, save_training_report
         from src.ui.training_insights_widgets import TrainingReportDialog
-        history = history or {}
+        history = dict(history or {})
+        pref_plan = getattr(self, "_run_pref_plan", None)
+        if history.get("preference") is None and pref_plan is not None \
+                and pref_plan.method == "off":
+            history["preference"] = {"method": "off", "reason": pref_plan.reason}
         assessment = assess_training(
             history.get("log_history") or [],
             report=getattr(self, "_last_readiness", None),
             planned_steps=history.get("planned_steps") or None,
             restored_best=bool(history.get("restored_best")),
-            n_eval=history.get("n_eval", history.get("rows_evaluated")))
+            n_eval=history.get("n_eval", history.get("rows_evaluated")),
+            preference=history.get("preference"))
         settings = dict(getattr(self, "_run_settings", {}) or {})
         dataset = getattr(self, "_last_readiness", None)
         try:
@@ -6491,6 +6615,13 @@ class TrainingToolWindow(QMainWindow):
                                   k: v for k, v in config.items()
                                   if k not in ("estimated_rows",)}}
         self._run_readiness_for_training(dataset_path)
+        self._run_pref_plan = None
+        if (hasattr(self, "pref_method_combo")
+                and self.pref_method_combo.currentData() != "off"):
+            self.train_log.appendPlainText(
+                "[preference] The RL-from-feedback stage runs on local training "
+                "only — this Modal run is supervised fine-tuning. Use 'Train "
+                "More on This Model' locally afterwards to add it.")
         self.loss_chart.clear()
 
         self.train_log.appendPlainText(
@@ -7316,6 +7447,12 @@ class TrainingToolWindow(QMainWindow):
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
 
+        pref_plan = self._refresh_preference_plan(reload=True)
+        if pref_plan is not None:
+            self.train_log.appendPlainText(
+                f"[preference] {pref_plan.method.upper() if pref_plan.method != 'off' else 'skipped'}: "
+                f"{pref_plan.reason}")
+        self._run_pref_plan = pref_plan
         reg = self._regularization_settings()
         self._run_settings = {
             "tasks": "+".join(self._selected_tasks()),
@@ -7337,8 +7474,16 @@ class TrainingToolWindow(QMainWindow):
             lora_r=self.lora_r_spin.value(),
             use_qlora=self.qlora_cb.isChecked(),
             adapter_path=adapter_path,
+            preference_data=self._pref_data if pref_plan else None,
+            preference_plan=pref_plan,
             **reg,
         )
+        if pref_plan is not None and pref_plan.method != "off":
+            self._run_settings.update({
+                "preference_method": pref_plan.method,
+                "preference_beta": pref_plan.beta,
+                "preference_lr": pref_plan.learning_rate,
+                "preference_epochs": pref_plan.epochs})
         self.worker.log.connect(self.train_log.appendPlainText)
         self.worker.progress.connect(self._on_progress)
         self._begin_live_chart()

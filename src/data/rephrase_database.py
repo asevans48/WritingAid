@@ -1159,6 +1159,88 @@ class RephraseDatabase:
                               "matched": "cross_source"})
         return pairs
 
+    def preference_examples(self,
+                            source_types: Optional[Iterable[str]] = None,
+                            max_pairs_per_prompt: int = 4,
+                            ) -> Dict[str, List[Dict[str, Any]]]:
+        """Preference data for the RL-from-feedback training stage.
+
+        Unlike :meth:`dpo_pairs`, pairs are only formed between outputs
+        for the SAME prompt (same source type + source text) — a
+        rejected answer to a different prompt teaches nothing about
+        preference. Returns:
+
+          * ``pairs`` — ``{"prompt": <formatted row>, "chosen", "rejected",
+            "kind"}`` where kind is ``explicit`` (👍/⭐ vs 👎 on the same
+            passage) or ``edit`` (the user's edited suggestion vs the
+            original it replaced).
+          * ``unpaired`` — ``{"prompt", "completion", "desirable"}`` for
+            every rated output, used by KTO (binary feedback).
+
+        ``prompt`` is the row rendered by the training formatter
+        (instruction / input / metadata), so preference training sees
+        exactly the prompts supervised training saw.
+        """
+        st_filter = set(source_types) if source_types else None
+        rows = self.all_rows(only_accepted=False)
+        groups: Dict[tuple, List[Dict[str, Any]]] = {}
+        for r in rows:
+            st = r.get("source_type") or SOURCE_REPHRASE
+            if st_filter is not None and st not in st_filter:
+                continue
+            src = (r.get("source_text") or "").strip()
+            if not src or not (r.get("output_text") or "").strip():
+                continue
+            groups.setdefault((st, src), []).append(r)
+
+        def prompt_of(row):
+            rec = RephraseDatabase._format_row(
+                row, "instruction", checked_types=st_filter)
+            if rec is None:
+                return None
+            return {"instruction": rec["instruction"], "input": rec["input"],
+                    "metadata": rec["metadata"]}
+
+        pairs: List[Dict[str, Any]] = []
+        unpaired: List[Dict[str, Any]] = []
+        for (_st, _src), grp in groups.items():
+            pos = [r for r in grp if r.get("accepted")
+                   and r.get("rating") in POSITIVE_RATINGS]
+            neg = [r for r in grp if r.get("rating") in NEGATIVE_RATINGS]
+            # Originals the user rewrote before accepting (logged
+            # unaccepted + neutral next to an "edited" positive).
+            originals = [r for r in grp if not r.get("accepted")
+                         and r.get("rating") == "neutral"]
+            seen_out = set()
+            for r in pos + neg:
+                text = r["output_text"].strip()
+                if text in seen_out:
+                    continue
+                seen_out.add(text)
+                p = prompt_of(r)
+                if p is not None:
+                    unpaired.append({"prompt": p, "completion": r["output_text"],
+                                     "desirable": r in pos})
+            n = 0
+            for p_row in sorted(pos, key=lambda r: r.get("rating") != "excellent"):
+                rejected = [(x, "explicit") for x in neg]
+                if "edited" in (p_row.get("style") or ""):
+                    rejected += [(x, "edit") for x in originals]
+                for r_row, kind in rejected:
+                    if n >= max_pairs_per_prompt:
+                        break
+                    if r_row["output_text"].strip() == p_row["output_text"].strip():
+                        continue
+                    prompt = prompt_of(p_row)
+                    if prompt is None:
+                        continue
+                    pairs.append({"prompt": prompt,
+                                  "chosen": p_row["output_text"],
+                                  "rejected": r_row["output_text"],
+                                  "kind": kind})
+                    n += 1
+        return {"pairs": pairs, "unpaired": unpaired}
+
     # ── Export ──
 
     # Source types that represent the *user's own writing voice*. When

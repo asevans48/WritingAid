@@ -69,6 +69,8 @@ class LossChartWidget(QWidget):
         self.update()
 
     def add_metrics(self, m: Dict[str, Any]) -> None:
+        if m.get("preference"):
+            return  # preference stage has its own scale and step counter
         step = int(m.get("step", 0))
         if _ok(m.get("loss")):
             self._train.append((step, float(m["loss"])))
@@ -157,8 +159,13 @@ class LossChartWidget(QWidget):
             p.setPen(dash)
             p.drawLine(QPointF(bp.x(), plot.top()), QPointF(bp.x(), plot.bottom()))
             p.setPen(QColor(EVAL_COLOR))
-            p.drawText(QRectF(bp.x() + 4, plot.top() + 2, 160, 14),
-                       Qt.AlignmentFlag.AlignLeft, f"best val {bv:.3f}")
+            # Flip the label to the left of the marker near the right edge.
+            if bp.x() + 164 > plot.right():
+                p.drawText(QRectF(bp.x() - 164, plot.top() + 2, 160, 14),
+                           Qt.AlignmentFlag.AlignRight, f"best val {bv:.3f}")
+            else:
+                p.drawText(QRectF(bp.x() + 4, plot.top() + 2, 160, 14),
+                           Qt.AlignmentFlag.AlignLeft, f"best val {bv:.3f}")
 
         # Legend
         p.setPen(QColor(TRAIN_COLOR))
@@ -298,6 +305,26 @@ def alerts_html(assessment: TrainingAssessment) -> str:
     return "".join(parts)
 
 
+def preference_summary_html(p: Dict[str, Any]) -> str:
+    method = (p.get("method") or "").upper()
+    if p.get("error"):
+        return (f"<b>Preference stage ({method})</b>: failed — "
+                f"{html.escape(str(p['error']))}. The SFT model was saved.")
+    if method in ("", "OFF"):
+        return (f"<b>Preference stage</b>: skipped — "
+                f"{html.escape(p.get('reason', ''))}")
+    acc = ""
+    if p.get("eval_accuracy_before") is not None:
+        acc = (f" Held-out preference accuracy {p['eval_accuracy_before']:.0%} → "
+               f"{p.get('eval_accuracy_best', 0):.0%}.")
+    kept = ("the SFT weights (no improvement)" if not p.get("best_epoch")
+            else f"preference epoch {p['best_epoch']}")
+    return (f"<b>Preference stage ({method}, RL from your feedback)</b>: "
+            f"{p.get('n_train', 0)} train / {p.get('n_eval', 0)} held-out "
+            f"examples; kept {kept}.{acc}<br><span style='color:#6b7280'>"
+            f"{html.escape(p.get('reason', ''))}</span>")
+
+
 def _fmt(v, fmt="{:.3f}", none="—"):
     return none if v is None else fmt.format(v)
 
@@ -375,6 +402,11 @@ class TrainingReportDialog(QDialog):
         chart.setMinimumHeight(220)
         chart.set_curves(a.train_curve, a.eval_curve)
         lay.addWidget(chart)
+
+        if a.preference:
+            pref = QLabel(preference_summary_html(a.preference))
+            pref.setWordWrap(True)
+            lay.addWidget(pref)
 
         lay.addWidget(QLabel("<b>Alerts</b>"))
         alerts = QLabel(alerts_html(a))

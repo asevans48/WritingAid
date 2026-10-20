@@ -529,6 +529,7 @@ class TrainingAssessment:
     total_steps: int = 0
     early_stopped: bool = False
     restored_best: bool = False
+    preference: Optional[Dict[str, Any]] = None   # RL-from-feedback stage summary
     alerts: List[TrainingAlert] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -557,7 +558,9 @@ def assess_training(log_history: Sequence[Dict[str, Any]], *,
                     report: Optional[DatasetReport] = None,
                     planned_steps: Optional[int] = None,
                     restored_best: bool = False,
-                    n_eval: Optional[int] = None) -> TrainingAssessment:
+                    n_eval: Optional[int] = None,
+                    preference: Optional[Dict[str, Any]] = None
+                    ) -> TrainingAssessment:
     """Turn a Hugging Face ``trainer.state.log_history`` into metrics + alerts.
 
     ``n_eval`` is the number of validation rows the trainer actually held
@@ -713,6 +716,27 @@ def assess_training(log_history: Sequence[Dict[str, Any]], *,
                 f"Quality score {report.quality_score:.2f}: "
                 + " ".join(report.quality_notes[:2]),
                 "Clean and re-rate the data before the next run."))
+
+    if preference:
+        from src.ai.preference_optim import assess_preference_stage
+        evals = [h for h in preference.get("history", []) if "eval_loss" in h]
+        a.preference = {
+            "method": preference.get("method"),
+            "reason": preference.get("reason", ""),
+            "error": preference.get("error"),
+            "best_epoch": preference.get("best_epoch"),
+            "n_train": preference.get("n_train"),
+            "n_eval": preference.get("n_eval"),
+            "eval_accuracy_before": evals[0].get("eval_accuracy") if evals else None,
+            "eval_accuracy_best": (min(evals, key=lambda h: h["eval_loss"])
+                                   .get("eval_accuracy") if evals else None),
+        }
+        if preference.get("error"):
+            alerts.append(TrainingAlert(
+                "warning", "Preference stage failed",
+                f"{preference['error']} — the SFT model was saved without it.", ""))
+        for al in assess_preference_stage(preference):
+            alerts.append(TrainingAlert(**al))
 
     levels = {al.level for al in alerts}
     if "critical" in levels:
