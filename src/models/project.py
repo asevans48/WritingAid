@@ -1,7 +1,7 @@
 """Project model - Root level encapsulating all writer work."""
 
 from typing import List, Dict, Optional, Tuple, Union
-from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 from datetime import datetime
 from pathlib import Path
 import json
@@ -15,6 +15,17 @@ MAIN_CHAPTERS_ROOT = "chapters"
 SUBPROJECTS_DIR = "subprojects"
 # Subproject ids become folder names — keep them path-safe.
 _SAFE_SUBPROJECT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+# Per-subproject sidecar (subprojects/<id>/subproject.json). Lets a
+# subproject be recovered if the project file loses it — e.g. after an
+# older app version, which doesn't know about subprojects, re-saves.
+SUBPROJECT_SIDECAR = "subproject.json"
+
+# Project file format version.
+#   1 — everything before subprojects (files have no schema_version)
+#   2 — subprojects, per-chapter folder roots, draft scoping
+# Files older than CURRENT are backed up once before the first save
+# rewrites them (see WriterProject._backup_before_upgrade).
+CURRENT_SCHEMA_VERSION = 2
 
 from src.models.worldbuilding_objects import Faction, Myth, ClimatePreset, Flora, Fauna, Technology, Star, StarSystem, Place, Culture, Army, Economy, HistoricalEvent, PowerHierarchy, PoliticalSystem, WorldMap, MagicSystem, GovernmentSystem, JusticeSystem, ServiceSystem
 # VideoStudio is optional on the project — imported here for the
@@ -1239,6 +1250,11 @@ class ProseProfile(BaseModel):
 
 class WriterProject(BaseModel):
     """Root project model encapsulating all writer work."""
+    # Keep top-level fields this version doesn't know (written by a newer
+    # version) so saving here doesn't delete them.
+    model_config = ConfigDict(extra="allow")
+
+    schema_version: int = CURRENT_SCHEMA_VERSION
     name: str
     description: str = ""
     project_path: Optional[str] = None
@@ -1282,6 +1298,11 @@ class WriterProject(BaseModel):
 
     # Always points at the main manuscript object, whichever is active.
     _main_manuscript: Optional[Manuscript] = PrivateAttr(default=None)
+    # Format version of the file this project was loaded from (None for
+    # projects created in memory) and whether its pre-upgrade backup
+    # has been written.
+    _loaded_schema_version: Optional[int] = PrivateAttr(default=None)
+    _upgrade_backup_done: bool = PrivateAttr(default=False)
 
     def model_post_init(self, __context) -> None:
         # ``manuscript`` arrives as the main manuscript (canonical form);
@@ -1659,6 +1680,10 @@ class WriterProject(BaseModel):
         self.updated_at = datetime.now()
         project_dir = Path(file_path).parent
 
+        # First save over an older-format file: keep the original first.
+        self._backup_before_upgrade(file_path)
+        self.schema_version = max(self.schema_version or 0, CURRENT_SCHEMA_VERSION)
+
         # Make sure every chapter (main and subprojects) points at its own
         # manuscript's folder root before anything touches disk.
         self._sync_active_manuscript()
@@ -1711,6 +1736,7 @@ class WriterProject(BaseModel):
                 except OSError:
                     pass
                 raise
+            self._write_subproject_sidecars(project_dir, project_dict)
         else:
             # Legacy: save everything in one file
             with open(file_path, 'w', encoding='utf-8') as f:
@@ -1718,11 +1744,110 @@ class WriterProject(BaseModel):
 
         self.project_path = file_path
 
+    def _backup_before_upgrade(self, file_path: str) -> None:
+        """Copy an older-format project file aside before rewriting it.
+
+        Runs once per loaded project, only when the file on disk predates
+        CURRENT_SCHEMA_VERSION. Existing backups are never overwritten.
+        """
+        if (self._upgrade_backup_done or self._loaded_schema_version is None
+                or self._loaded_schema_version >= CURRENT_SCHEMA_VERSION):
+            return
+        src = Path(file_path)
+        if src.exists():
+            import shutil
+            dest = src.with_name(
+                f"{src.name}.v{self._loaded_schema_version}-backup")
+            if dest.exists():
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                dest = src.with_name(
+                    f"{src.name}.v{self._loaded_schema_version}-backup-{ts}")
+            shutil.copy2(str(src), str(dest))
+            print(f"  Backed up pre-upgrade project file to {dest.name}")
+        self._upgrade_backup_done = True
+
+    def _write_subproject_sidecars(self, project_dir: Path,
+                                   project_dict: Dict) -> None:
+        """Write subprojects/<id>/subproject.json for each subproject.
+
+        Uses the already content-stripped dict from save_project. Failures
+        are non-fatal — the project file itself is already saved.
+        """
+        import tempfile
+        drafts_by_scope: Dict[str, List[str]] = {}
+        for d in self.drafts:
+            if d.subproject_id:
+                drafts_by_scope.setdefault(d.subproject_id, []).append(d.id)
+        for sp_dict in project_dict.get('subprojects', []):
+            sp_id = sp_dict.get('id', '')
+            if not _SAFE_SUBPROJECT_ID.match(sp_id or ''):
+                continue
+            folder = Path(project_dir) / SUBPROJECTS_DIR / sp_id
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+                payload = {"schema_version": CURRENT_SCHEMA_VERSION,
+                           "project_name": self.name,
+                           "subproject": sp_dict,
+                           "draft_ids": drafts_by_scope.get(sp_id, [])}
+                fd, tmp = tempfile.mkstemp(dir=str(folder), suffix='.json.tmp')
+                with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                    json.dump(payload, f, indent=2, default=str)
+                os.replace(tmp, folder / SUBPROJECT_SIDECAR)
+            except Exception as e:
+                print(f"  Warning: could not write sidecar for subproject "
+                      f"{sp_id}: {e}")
+
+    def _recover_orphan_subprojects(self, project_dir: Path) -> List[str]:
+        """Re-attach subprojects whose folder exists but the file lost them.
+
+        Happens when an app version without subproject support re-saves
+        the project. Archived subprojects (subprojects/_deleted) are never
+        resurrected. Returns the names of recovered subprojects.
+        """
+        root = Path(project_dir) / SUBPROJECTS_DIR
+        if not root.is_dir():
+            return []
+        known = {sp.id for sp in self.subprojects}
+        recovered: List[str] = []
+        for sidecar in sorted(root.glob(f"*/{SUBPROJECT_SIDECAR}")):
+            sp_id = sidecar.parent.name
+            if sp_id in known or not _SAFE_SUBPROJECT_ID.match(sp_id):
+                continue
+            try:
+                payload = json.loads(sidecar.read_text(encoding='utf-8'))
+                sp_data = dict(payload.get("subproject") or {})
+                sp_data["id"] = sp_id  # the folder is the source of truth
+                sp_data = self._repair_subprojects([sp_data])[0]
+                sp = Subproject(**sp_data)
+            except Exception as e:
+                print(f"  Warning: could not recover subproject from "
+                      f"{sidecar}: {e}")
+                continue
+            self.subprojects.append(sp)
+            known.add(sp_id)
+            # Drafts survive an older-app save but lose their scope.
+            for d in self.drafts:
+                if d.id in set(payload.get("draft_ids") or []) and d.subproject_id is None:
+                    d.subproject_id = sp_id
+            recovered.append(sp.name)
+        if recovered:
+            self._normalize_manuscript_roots()
+        return recovered
+
     @classmethod
     def load_project(cls, file_path: str) -> 'WriterProject':
         """Load project from JSON file with backwards compatibility and repair."""
         with open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("Project file is not a JSON object")
+
+        raw_version = data.get('schema_version', 1)
+        if not isinstance(raw_version, int) or raw_version < 1:
+            raw_version = 1
+        if raw_version > CURRENT_SCHEMA_VERSION:
+            print(f"  Note: project was saved by a newer version (format "
+                  f"{raw_version}); unknown fields will be preserved.")
 
         # Repair and migrate data before loading
         data = cls._repair_project_data(data, file_path)
@@ -1734,11 +1859,20 @@ class WriterProject(BaseModel):
             project = cls._recover_project_fields(data, file_path, e)
 
         project.project_path = file_path
+        # Set before any repair save below, so the original file is
+        # backed up before it is first rewritten.
+        project._loaded_schema_version = raw_version
+
+        project_dir = Path(file_path).parent
+        needs_save = False
+        recovered = project._recover_orphan_subprojects(project_dir)
+        if recovered:
+            print(f"  Recovered subproject(s) missing from the project file: "
+                  f"{', '.join(recovered)}")
+            needs_save = True
 
         # Load chapter content and migrate to folder-based format if needed,
         # for the main manuscript and every subproject.
-        project_dir = Path(file_path).parent
-        needs_save = False
         for _scope, ms in project.iter_manuscripts():
             if cls._load_manuscript_chapters(ms, project_dir):
                 needs_save = True
@@ -1867,6 +2001,10 @@ class WriterProject(BaseModel):
 
         # Repair agent contacts
         data['agent_contacts'] = cls._repair_agent_contacts(data.get('agent_contacts', []))
+
+        # Format version: 1 when absent (pre-subproject files).
+        if not isinstance(data.get('schema_version'), int):
+            data['schema_version'] = 1
 
         # Repair subprojects (absent in projects created before novellas)
         data['subprojects'] = cls._repair_subprojects(data.get('subprojects', []))
