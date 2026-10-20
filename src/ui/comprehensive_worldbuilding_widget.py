@@ -832,6 +832,10 @@ class _StrengthenWorker(QThread):
 
         Loads content from disk if not already in memory.
         """
+        # All manuscripts (main + novellas): worldbuilding and characters
+        # are shared across the universe, so analysis reads every book.
+        if hasattr(self.project, 'chapter_texts'):
+            return self.project.chapter_texts(all_manuscripts=True)
         if not hasattr(self.project, 'manuscript'):
             return {}
 

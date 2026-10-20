@@ -1398,6 +1398,55 @@ class WriterProject(BaseModel):
     def find_chapter(self, chapter_id: str) -> Optional[Chapter]:
         return self.find_chapter_with_scope(chapter_id)[1]
 
+    def scope_label(self, subproject_id: Optional[str]) -> str:
+        """Display name of a manuscript scope (None = main)."""
+        if subproject_id is None:
+            return self.get_main_manuscript().title or "Main manuscript"
+        sp = self.get_subproject(subproject_id)
+        return sp.name if sp else subproject_id
+
+    def all_chapters(self) -> List[Tuple[Optional[str], Chapter]]:
+        """Every chapter in every manuscript as (scope, chapter), main
+        first then subprojects in tab order — the project's reading order."""
+        return [(scope, ch) for scope, ms in self.iter_manuscripts()
+                for ch in ms.chapters]
+
+    def chapter_label(self, scope: Optional[str], chapter: Chapter) -> str:
+        """Chapter title, prefixed with its manuscript when the project has
+        subprojects (titles like "Chapter 1" repeat across novellas)."""
+        title = chapter.title or f"Chapter {chapter.number}"
+        if not self.subprojects:
+            return title
+        return f"{self.scope_label(scope)} › {title}"
+
+    def chapter_texts(self, *, all_manuscripts: bool = True) -> Dict[str, str]:
+        """Chapter prose keyed by a unique label, loading from disk when
+        not in memory.
+
+        ``all_manuscripts=True`` (worldbuilding / character analysis) spans
+        the main manuscript and every subproject; False uses only the
+        manuscript in focus. Keys are unique, so chapters sharing a title
+        never overwrite each other.
+        """
+        project_dir = Path(self.project_path).parent if self.project_path else None
+        pairs = (self.all_chapters() if all_manuscripts else
+                 [(self.active_subproject_id, ch) for ch in self.manuscript.chapters])
+        out: Dict[str, str] = {}
+        for scope, ch in pairs:
+            if not ch.content and project_dir and (ch.folder_path or ch.file_path):
+                try:
+                    ch.load_content_from_file(project_dir)
+                except Exception:
+                    pass
+            if not ch.content:
+                continue
+            label = self.chapter_label(scope, ch)
+            key, n = label, 2
+            while key in out:
+                key, n = f"{label} ({n})", n + 1
+            out[key] = ch.content
+        return out
+
     def activate_subproject(self, subproject_id: Optional[str]) -> bool:
         """Make a subproject (or main, with None) the active manuscript.
 
@@ -1474,6 +1523,153 @@ class WriterProject(BaseModel):
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(src), str(dest))
         return True
+
+    def move_main_content_to_subproject(self, subproject_id: str, *,
+                                        project_file: Optional[str] = None) -> int:
+        """Move every main-manuscript chapter (and main's drafts) into an
+        empty subproject. Returns the number of chapters moved.
+
+        Transactional on disk:
+          1. save the current state (so disk matches memory),
+          2. copy each chapter folder into the subproject and verify every
+             file's checksum — the model is untouched so far,
+          3. re-point chapters / drafts at the subproject,
+          4. back up the project file and save atomically,
+          5. only then delete the old chapter folders.
+        Any failure before the save removes the copies and restores the
+        model, so the project is left exactly as it was.
+        """
+        import shutil
+        sp = self.get_subproject(subproject_id)
+        if sp is None:
+            raise KeyError(f"No subproject with id {subproject_id!r}")
+        if sp.manuscript.chapters:
+            raise ValueError("Content can only be moved into an empty subproject.")
+        main = self.get_main_manuscript()
+        chapters = list(main.chapters)
+        if not chapters:
+            return 0
+        project_dir = Path(project_file).parent if project_file else None
+
+        if project_file:
+            self.save_project(project_file)
+            for ch in chapters:  # make sure prose is in memory, not just on disk
+                if not ch.content and (ch.folder_path or ch.file_path):
+                    ch.load_content_from_file(project_dir)
+
+        root = sp.chapters_root
+        plan = []  # (chapter, old_folder, new_folder)
+        for ch in chapters:
+            plan.append((ch, ch.folder_path, f"{root}/chapter_{ch.number:03d}"))
+
+        # ── 2. copy + verify (no model changes yet) ──
+        copied: List[Path] = []
+        sources: List[Path] = []
+
+        def _digest(path: Path) -> str:
+            import hashlib
+            return hashlib.sha1(path.read_bytes()).hexdigest()
+
+        def _remove_copies():
+            for d in copied:
+                shutil.rmtree(d, ignore_errors=True)
+            if project_dir:
+                root_dir = project_dir / sp.chapters_root
+                try:
+                    if root_dir.is_dir() and not any(root_dir.iterdir()):
+                        root_dir.rmdir()
+                except OSError:
+                    pass
+
+        if project_dir:
+            try:
+                for _ch, old, new in plan:
+                    dest = project_dir / new
+                    if dest.exists():
+                        raise RuntimeError(f"Target folder already exists: {new}")
+                    if not old or not (project_dir / old).is_dir():
+                        continue
+                    src = project_dir / old
+                    shutil.copytree(src, dest)
+                    copied.append(dest)
+                    for f in src.rglob("*"):
+                        if f.is_file():
+                            g = dest / f.relative_to(src)
+                            if not g.is_file() or _digest(f) != _digest(g):
+                                raise RuntimeError(f"Copy verification failed for {f}")
+                    sources.append(src)
+            except Exception:
+                _remove_copies()
+                raise
+
+        # ── 3. re-point the model (snapshot first for rollback) ──
+        snapshot = [(ch, ch.folder_path, ch.file_path, ch.plan_file_path,
+                     ch.folder_root, [(r, r.file_path) for r in ch.revisions])
+                    for ch in chapters]
+        moved_drafts = [d for d in self.drafts if d.subproject_id is None]
+
+        def _rollback():
+            for ch, fp, flp, pfp, fr, revs in snapshot:
+                ch.folder_path, ch.file_path, ch.plan_file_path, ch.folder_root = fp, flp, pfp, fr
+                for r, rfp in revs:
+                    r.file_path = rfp
+            main.chapters = chapters
+            sp.manuscript.chapters = []
+            for d in moved_drafts:
+                d.subproject_id = None
+
+        for ch, old, new in plan:
+            ch.folder_root = root
+            if old:
+                ch.folder_path = new
+                for r in ch.revisions:
+                    if r.file_path and r.file_path.startswith(old + "/"):
+                        r.file_path = new + r.file_path[len(old):]
+                if ch.file_path and ch.file_path.startswith(old + "/"):
+                    ch.file_path = new + ch.file_path[len(old):]
+            else:
+                # Never saved as a folder: content is in memory and will be
+                # written under the subproject root on the next save.
+                ch.folder_path = None
+                ch.file_path = None
+                for r in ch.revisions:
+                    r.file_path = ""
+            ch.plan_file_path = None
+        sp.manuscript.chapters = chapters
+        sp.manuscript.total_word_count = sum(c.word_count for c in chapters)
+        main.chapters = []
+        main.total_word_count = 0
+        for d in moved_drafts:
+            d.subproject_id = sp.id
+        sp.updated_at = datetime.now()
+        self._normalize_manuscript_roots()
+
+        # ── 4. save (rollback on failure) ──
+        if project_file:
+            try:
+                src = Path(project_file)
+                if src.exists():
+                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    shutil.copy2(str(src), str(src.with_name(f"{src.name}.pre-move-{ts}")))
+                self.save_project(project_file)
+            except Exception:
+                _rollback()
+                _remove_copies()
+                raise
+            # ── 5. old folders are now unreferenced ──
+            for s in sources:
+                try:
+                    shutil.rmtree(s)
+                except OSError as e:
+                    print(f"  Warning: could not remove old chapter folder {s}: {e}")
+                # macOS AppleDouble metadata for the folder (FAT/exFAT drives).
+                sidecar = s.with_name(f"._{s.name}")
+                if sidecar.is_file():
+                    try:
+                        sidecar.unlink()
+                    except OSError:
+                        pass
+        return len(chapters)
 
     def drafts_for_scope(self, subproject_id: Optional[str]) -> List['ManuscriptDraft']:
         return [d for d in self.drafts if d.subproject_id == subproject_id]

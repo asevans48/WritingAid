@@ -50,6 +50,14 @@ class EnhancedRAGSystem:
         self.search_engine = SemanticSearchEngine()
         self.knowledge_graph = KnowledgeGraph()
         self._indexed = False
+        # Projects with subprojects (novellas): chapters from every
+        # manuscript are indexed, tagged with their scope ("" = main).
+        # When ``chapter_scope_filter`` is a set of scopes, search drops
+        # chapter-derived results from other manuscripts — chat about
+        # the book in focus doesn't pull prose from a sibling novella.
+        # None = no filter (worldbuilding / character work sees all).
+        self.chapter_scope_filter: Optional[set] = None
+        self._chapter_scope_by_id: Dict[str, str] = {}
 
         # Set up embedding function if LLM client available
         if llm_client and hasattr(llm_client, 'get_embedding'):
@@ -72,6 +80,7 @@ class EnhancedRAGSystem:
         prevent the rest from being indexed.
         """
         self.search_engine.clear()
+        self._chapter_scope_by_id = {}
 
         indexers = [
             self._index_worldbuilding_text,
@@ -914,6 +923,30 @@ Related Characters: {', '.join(chars) if chars else 'All'}
             chunks.append(buf)
         return chunks
 
+    def _project_chapters(self):
+        """``(scope, display, chapter)`` for every manuscript's chapters.
+
+        Also refreshes the chapter-id → scope map used by the filter.
+        """
+        project = self.project
+        if hasattr(project, 'all_chapters'):
+            pairs = [(scope or "", ch) for scope, ch in project.all_chapters()]
+            multi = bool(getattr(project, 'subprojects', None))
+        else:
+            manuscript = getattr(project, 'manuscript', None)
+            pairs = [("", ch) for ch in (getattr(manuscript, 'chapters', None) or [])]
+            multi = False
+        out = []
+        for scope, ch in pairs:
+            number = getattr(ch, 'number', 0)
+            title = getattr(ch, 'title', '') or f"Chapter {number}"
+            display = f"Ch. {number}: {title}" if number else title
+            if multi:
+                display = f"{project.scope_label(scope or None)} › {display}"
+            self._chapter_scope_by_id[getattr(ch, 'id', '')] = scope
+            out.append((scope, display, ch))
+        return out
+
     def _index_chapter_content(self):
         """Index manuscript chapter prose so RAG can retrieve actual
         draft text — not just key points — when answering questions
@@ -924,18 +957,11 @@ Related Characters: {', '.join(chars) if chars else 'All'}
         downstream consumers can filter or weight differently from
         encyclopedia / planning entries if they want.
         """
-        manuscript = getattr(self.project, 'manuscript', None)
-        chapters = getattr(manuscript, 'chapters', None) if manuscript else None
-        if not chapters:
-            return
-
-        for ch in chapters:
+        for scope, display, ch in self._project_chapters():
             content = getattr(ch, 'content', '') or ''
             if not content.strip():
                 continue
             number = getattr(ch, 'number', 0)
-            title = getattr(ch, 'title', '') or f"Chapter {number}"
-            display = f"Ch. {number}: {title}" if number else title
             for i, chunk_text in enumerate(
                     self._split_chapter_for_index(content)):
                 chunk = self._make_chunk(
@@ -947,6 +973,7 @@ Related Characters: {', '.join(chars) if chars else 'All'}
                         "chapter_id": getattr(ch, 'id', ''),
                         "chapter_number": number,
                         "chunk_index": i,
+                        "scope": scope,
                     }
                 )
                 self.search_engine.index_document(chunk)
@@ -961,18 +988,11 @@ Related Characters: {', '.join(chars) if chars else 'All'}
         worldbuilding / plot agents should see when the user asks
         about elements that appear in or near a chapter.
         """
-        manuscript = getattr(self.project, 'manuscript', None)
-        chapters = getattr(manuscript, 'chapters', None) if manuscript else None
-        if not chapters:
-            return
-
-        for ch in chapters:
+        for scope, display, ch in self._project_chapters():
             planning = getattr(ch, 'planning', None)
             if not planning:
                 continue
             number = getattr(ch, 'number', 0)
-            title = getattr(ch, 'title', '') or f"Chapter {number}"
-            display = f"Ch. {number}: {title}" if number else title
 
             parts: List[str] = [f"Chapter Planning — {display}"]
 
@@ -1026,6 +1046,7 @@ Related Characters: {', '.join(chars) if chars else 'All'}
                     "chapter_id": getattr(ch, 'id', ''),
                     "chapter_number": number,
                     "pov_character": getattr(planning, 'pov_character', ''),
+                    "scope": scope,
                 }
             )
             self.search_engine.index_document(chunk)
@@ -1051,7 +1072,12 @@ Related Characters: {', '.join(chars) if chars else 'All'}
         if not self._indexed:
             self.rebuild_index()
 
-        results = self.search_engine.search(query, method, top_k, source_types)
+        scopes = self.chapter_scope_filter
+        fetch = top_k * 3 if scopes is not None else top_k
+        results = self.search_engine.search(query, method, fetch, source_types)
+        if scopes is not None:
+            results = [r for r in results
+                       if self._in_scope(r.chunk.metadata, scopes)][:top_k]
 
         return [
             ContextResult(
@@ -1066,6 +1092,14 @@ Related Characters: {', '.join(chars) if chars else 'All'}
             )
             for r in results
         ]
+
+    def _in_scope(self, metadata: Optional[Dict[str, Any]], scopes: set) -> bool:
+        """Chapter-derived chunks pass only if their manuscript is allowed;
+        everything else (worldbuilding, characters, plot…) always passes."""
+        chapter_id = (metadata or {}).get("chapter_id")
+        if not chapter_id or chapter_id not in self._chapter_scope_by_id:
+            return True
+        return self._chapter_scope_by_id[chapter_id] in scopes
 
     def search_with_neighbors(
         self,

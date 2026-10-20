@@ -165,6 +165,10 @@ class StrengthenElementWorker(QThread):
         return primary_map.get(self.element_type, "description")
 
     def _get_chapter_texts(self) -> dict:
+        # All manuscripts (main + novellas): worldbuilding and characters
+        # are shared across the universe, so analysis reads every book.
+        if hasattr(self.project, 'chapter_texts'):
+            return self.project.chapter_texts(all_manuscripts=True)
         if not self.project or not hasattr(self.project, 'manuscript'):
             return {}
         from pathlib import Path

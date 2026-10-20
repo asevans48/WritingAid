@@ -1626,6 +1626,10 @@ Cap at TWO ``<create_*>`` blocks per reply. Talk through your reasoning in prose
         # the chapter's own data, not competing with it.
         story_parts: list = []
 
+        # Which manuscript chats/edits target (only with novellas).
+        if self.context.get('manuscript_scope'):
+            story_parts.append(f"\n{self.context['manuscript_scope']}")
+
         # Existing element names — helps AI avoid creating duplicates
         if self.context.get('existing_elements'):
             story_parts.append(
@@ -4154,8 +4158,9 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"[subprojects] video studio refresh failed: {e}")
         self._sync_outline_panel_to_chapter()
-        # Chapter prose in the RAG index belongs to the previous novella.
-        self._rag_dirty = True
+        # Scope filter follows the newly focused manuscript.
+        self._rag_all_manuscripts = False
+        self._apply_rag_scope()
         sp = self.current_project.get_active_subproject()
         label = sp.name if sp else (
             self.current_project.get_main_manuscript().title or "Main manuscript")
@@ -7503,6 +7508,7 @@ class MainWindow(QMainWindow):
         """
         if not self._rag_initialized or not self._rag_system:
             return
+        self._apply_rag_scope()
         if not getattr(self, "_rag_dirty", False):
             return
         # Latest project state needs to be on the system before
@@ -7522,6 +7528,24 @@ class MainWindow(QMainWindow):
             self._rag_dirty = False
         except Exception as e:
             print(f"[rag] lazy rebuild failed: {e}")
+
+    def _apply_rag_scope(self) -> None:
+        """Restrict chapter-derived RAG hits to the manuscript in focus.
+
+        Chats and edits target the main manuscript or novella that's
+        open; Worldbuilding-mode chat (``_rag_all_manuscripts``) sees
+        every manuscript, since the world is shared. Projects without
+        novellas are unaffected (no filter).
+        """
+        rag = getattr(self, "_rag_system", None)
+        project = self.current_project
+        if rag is None or not hasattr(rag, "chapter_scope_filter"):
+            return
+        if (project is None or not getattr(project, "subprojects", None)
+                or getattr(self, "_rag_all_manuscripts", False)):
+            rag.chapter_scope_filter = None
+        else:
+            rag.chapter_scope_filter = {project.active_subproject_id or ""}
 
     def _get_rag_context(self, query: str, max_tokens: int = 2000,
                          project_only: bool = True,
@@ -8301,6 +8325,14 @@ class MainWindow(QMainWindow):
         self._pending_insert_mode = insert_mode if mode == "writer" else ""
         self._pending_mode = mode
         self._pending_chat_message = message
+        # The chapter (in the manuscript/novella in focus) the writer's
+        # prose is for. Checked when the response arrives so prose never
+        # lands in a chapter or novella the user switched to meanwhile.
+        _ce = getattr(getattr(self, 'manuscript_editor', None),
+                      'current_chapter_editor', None)
+        self._pending_target_chapter_id = (
+            _ce.chapter.id if mode == "writer" and _ce is not None
+            and getattr(_ce, 'chapter', None) is not None else None)
 
         # Auto-flip writer-mode ready state when the user's message
         # reads like a "proceed / go ahead" signal. Without this, the
@@ -9173,11 +9205,28 @@ class MainWindow(QMainWindow):
         """
         context = {}
         context['mode'] = mode
+        # Worldbuilding chat reads every manuscript; all other chat modes
+        # target the manuscript in focus (see _apply_rag_scope).
+        self._rag_all_manuscripts = (mode == "worldbuilding")
 
         if not self.current_project:
             return context
 
         project = self.current_project
+        if getattr(project, 'subprojects', None):
+            active = project.get_active_subproject()
+            focus = project.scope_label(project.active_subproject_id)
+            others = [project.scope_label(s) for s, _ms in project.iter_manuscripts()
+                      if s != project.active_subproject_id]
+            reach = ("Worldbuilding questions draw on ALL of these works."
+                     if mode == "worldbuilding" else
+                     f"Chapter references, edits and new text apply to "
+                     f"'{focus}' only.")
+            context['manuscript_scope'] = (
+                f"MANUSCRIPT IN FOCUS: '{focus}'"
+                f"{' (a novella in this universe)' if active else ' (main manuscript)'}. "
+                f"Other works sharing this world, characters and plot: "
+                f"{', '.join(repr(o) for o in others) or 'none'}. {reach}")
 
         # Basic project info
         context['project_name'] = project.name
@@ -9830,15 +9879,24 @@ class MainWindow(QMainWindow):
         # Not full content (too large), but enough to know what exists.
         index_parts = []
 
-        # Manuscript index: chapter titles + synopsis
-        if hasattr(project, 'manuscript') and project.manuscript.chapters:
+        # Manuscript index: chapter titles + synopsis. Worldbuilding chat
+        # spans every manuscript (labelled); other modes list the
+        # manuscript in focus.
+        if mode == "worldbuilding" and getattr(project, 'subprojects', None):
+            index_chapters = [(project.scope_label(s) + " › ", ch)
+                              for s, ch in project.all_chapters()][:40]
+        elif hasattr(project, 'manuscript') and project.manuscript.chapters:
+            index_chapters = [("", ch) for ch in project.manuscript.chapters[:25]]
+        else:
+            index_chapters = []
+        if index_chapters:
             ch_lines = []
-            for ch in project.manuscript.chapters[:25]:
+            for prefix, ch in index_chapters:
                 wc = len(ch.content.split()) if ch.content else 0
                 synopsis = ""
                 if hasattr(ch, 'planning') and ch.planning and ch.planning.description:
                     synopsis = f" — {ch.planning.description[:80]}"
-                ch_lines.append(f"  Ch{ch.number}. {ch.title} ({wc}w){synopsis}")
+                ch_lines.append(f"  {prefix}Ch{ch.number}. {ch.title} ({wc}w){synopsis}")
             index_parts.append("CHAPTERS:\n" + "\n".join(ch_lines))
 
         # Character index: name, type, key traits
@@ -10672,6 +10730,23 @@ class MainWindow(QMainWindow):
 
         editor = self.manuscript_editor.current_chapter_editor.editor
         chapter_id = self.manuscript_editor.current_chapter_editor.chapter.id
+        target_id = getattr(self, '_pending_target_chapter_id', None)
+        if target_id and target_id != chapter_id:
+            # The user moved to another chapter (or novella) while the
+            # model was writing. Never insert into the wrong place.
+            target = self._find_chapter_by_id(target_id)
+            where = "the chapter you asked about"
+            if target is not None and self.current_project is not None:
+                scope, _ = self.current_project.find_chapter_with_scope(target_id)
+                where = (f"'{self.current_project.chapter_label(scope, target)}'")
+            self.chat_widget.add_message(
+                "Assistant",
+                f"You switched away from {where} while I was writing, so I "
+                f"didn't insert this text. Open that chapter again and copy "
+                f"it in if you want it:\n\n{response}")
+            self._pending_target_chapter_id = None
+            self._pending_chat_message = ""
+            return
         # Run the project-element creation parser FIRST so the writer
         # can emit <create_character>/<create_place>/<create_faction>/
         # etc. mid-prose to add new project elements as it discovers

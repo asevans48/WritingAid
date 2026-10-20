@@ -1014,7 +1014,7 @@ class CharacterWidget(QWidget):
             QMessageBox.information(self, "No Chapters", "No chapters available.")
             return
 
-        items = [f"{ch.number}. {ch.title}" for ch in chapters]
+        items = [d for d, _ch in chapters]
         from PyQt6.QtWidgets import QInputDialog
         choice, ok = QInputDialog.getItem(
             self, "Select Chapter",
@@ -1025,15 +1025,15 @@ class CharacterWidget(QWidget):
             return
 
         idx = items.index(choice)
-        ch = chapters[idx]
+        ch = chapters[idx][1]
 
         snap = PersonalitySnapshot(
             chapter_id=ch.id,
             chapter_number=ch.number,
-            chapter_title=ch.title,
+            chapter_title=self._snapshot_title(ch),
         )
         self.character.personality_arc.append(snap)
-        self.character.personality_arc.sort(key=lambda s: s.chapter_number)
+        self.character.personality_arc.sort(key=self._arc_sort_key)
         self._refresh_arc_list()
         self.content_changed.emit()
 
@@ -1054,7 +1054,7 @@ class CharacterWidget(QWidget):
             QMessageBox.information(self, "No Chapters", "No chapters available.")
             return
 
-        items = [f"{ch.number}. {ch.title}" for ch in chapters]
+        items = [d for d, _ch in chapters]
         from PyQt6.QtWidgets import QInputDialog
         choice, ok = QInputDialog.getItem(
             self, "Assess from Chapter",
@@ -1065,9 +1065,15 @@ class CharacterWidget(QWidget):
             return
 
         idx = items.index(choice)
-        ch = chapters[idx]
+        ch = chapters[idx][1]
 
-        # Load chapter content
+        # Load chapter content (from disk if not in memory)
+        if not ch.content and getattr(self._project, 'project_path', None):
+            try:
+                from pathlib import Path as _P
+                ch.load_content_from_file(_P(self._project.project_path).parent)
+            except Exception:
+                pass
         content = ch.content
         if not content or not content.strip():
             QMessageBox.warning(
@@ -1126,7 +1132,7 @@ class CharacterWidget(QWidget):
                 'growth_notes': s.growth_notes,
             }
             for s in self.character.personality_arc
-            if s.chapter_number < ch.number
+            if self._arc_sort_key(s) < self._order_key(ch.id, ch.number)
         ]
 
         # Run assessment in a thread
@@ -1134,7 +1140,8 @@ class CharacterWidget(QWidget):
         self.assess_btn.setText("Analyzing...")
 
         self._assess_worker = _PersonalityAssessWorker(
-            self.character, content, ch.id, ch.number, ch.title, llm_client, prior
+            self.character, content, ch.id, ch.number, self._snapshot_title(ch),
+            llm_client, prior
         )
         self._assess_worker.finished.connect(self._on_assessment_complete)
         self._assess_worker.error.connect(self._on_assessment_error)
@@ -1151,7 +1158,7 @@ class CharacterWidget(QWidget):
             if s.chapter_id != snapshot.chapter_id
         ]
         self.character.personality_arc.append(snapshot)
-        self.character.personality_arc.sort(key=lambda s: s.chapter_number)
+        self.character.personality_arc.sort(key=self._arc_sort_key)
         self._refresh_arc_list()
 
         # Select the new snapshot
@@ -1169,10 +1176,43 @@ class CharacterWidget(QWidget):
         QMessageBox.warning(self, "Assessment Failed", f"AI assessment failed:\n\n{error_msg}")
 
     def _get_chapters(self):
-        """Get chapters from the project."""
-        if self._project and hasattr(self._project, 'manuscript'):
-            return self._project.manuscript.chapters
+        """``(display, chapter)`` for every chapter in every manuscript.
+
+        Characters are shared by the main manuscript and all novellas, so
+        their arc can reference any of them; with novellas the display is
+        prefixed by the manuscript name.
+        """
+        p = self._project
+        if p is None:
+            return []
+        if hasattr(p, 'all_chapters'):
+            out = []
+            for scope, ch in p.all_chapters():
+                prefix = f"{p.scope_label(scope)} › " if p.subprojects else ""
+                out.append((f"{prefix}{ch.number}. {ch.title}", ch))
+            return out
+        if hasattr(p, 'manuscript'):
+            return [(f"{ch.number}. {ch.title}", ch) for ch in p.manuscript.chapters]
         return []
+
+    def _snapshot_title(self, ch) -> str:
+        """Title stored on a snapshot (manuscript-qualified with novellas)."""
+        p = self._project
+        if p is not None and hasattr(p, 'find_chapter_with_scope') and p.subprojects:
+            scope, _ = p.find_chapter_with_scope(ch.id)
+            return p.chapter_label(scope, ch)
+        return ch.title
+
+    def _order_key(self, chapter_id: str, chapter_number: int):
+        """Reading order across all manuscripts (main, then novellas);
+        chapters no longer in the project fall back to their number."""
+        order = {ch.id: i for i, (_d, ch) in enumerate(self._get_chapters())}
+        if chapter_id in order:
+            return (0, order[chapter_id])
+        return (1, chapter_number)
+
+    def _arc_sort_key(self, snap):
+        return self._order_key(snap.chapter_id, snap.chapter_number)
 
 
 class _PersonalityAssessWorker(QThread):
@@ -1357,7 +1397,11 @@ class CharactersWidget(QWidget):
             QMessageBox.information(self, "No Project", "Open a project first.")
             return
 
-        if not hasattr(self._project, 'manuscript') or not self._project.manuscript.chapters:
+        has_chapters = (bool(self._project.all_chapters())
+                        if hasattr(self._project, 'all_chapters') else
+                        bool(getattr(getattr(self._project, 'manuscript', None),
+                                     'chapters', None)))
+        if not has_chapters:
             QMessageBox.information(self, "No Chapters", "Write some chapters first.")
             return
 
@@ -1694,6 +1738,10 @@ class _CharacterStrengthenWorker(QThread):
             self.error.emit(str(e))
 
     def _get_chapter_texts(self) -> dict:
+        # All manuscripts (main + novellas): worldbuilding and characters
+        # are shared across the universe, so analysis reads every book.
+        if hasattr(self.project, 'chapter_texts'):
+            return self.project.chapter_texts(all_manuscripts=True)
         if not hasattr(self.project, 'manuscript'):
             return {}
         from pathlib import Path
@@ -1743,9 +1791,11 @@ class _SingleCharacterWorker(QThread):
                 self.finished.emit("Character has no name.")
                 return
 
-            # Load chapter texts
+            # Load chapter texts — every manuscript (main + novellas).
             chapter_texts = {}
-            if hasattr(self.project, 'manuscript'):
+            if hasattr(self.project, 'chapter_texts'):
+                chapter_texts = self.project.chapter_texts(all_manuscripts=True)
+            elif hasattr(self.project, 'manuscript'):
                 from pathlib import Path
                 project_dir = None
                 if hasattr(self.project, 'project_path') and self.project.project_path:

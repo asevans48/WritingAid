@@ -4939,14 +4939,139 @@ class ManuscriptEditor(QWidget):
         if not ok:
             description = ""
 
+        # First novella in a project that already has chapters: offer to
+        # turn the existing manuscript into this novella.
+        main = self.project.get_main_manuscript()
+        move_content = False
+        if not self.project.subprojects and main.chapters:
+            n_drafts = len(self.project.drafts_for_scope(None))
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Question)
+            box.setWindowTitle("Move existing chapters?")
+            box.setText(
+                f"<b>Move the main manuscript's {len(main.chapters)} chapter(s) "
+                f"into '{name}'?</b>")
+            box.setInformativeText(
+                "Move: every chapter — prose, revisions, plans, notes and "
+                f"annotations — plus {n_drafts} draft(s) moves to the new "
+                "novella's tab, and the main tab starts empty.\n\n"
+                "Keep: the chapters stay in the main tab and the novella "
+                "starts empty.\n\nWorldbuilding, characters and plot planning "
+                "are shared either way.")
+            move_btn = box.addButton(f"Move into '{name}'",
+                                     QMessageBox.ButtonRole.AcceptRole)
+            keep_btn = box.addButton("Keep in main",
+                                     QMessageBox.ButtonRole.RejectRole)
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            box.setDefaultButton(keep_btn)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked is move_btn:
+                move_content = True
+            elif clicked is not keep_btn:
+                return  # cancelled — nothing created
+
         # Commit the open chapter before the project changes shape.
         self._flush_current_chapter()
         self._sync_active_draft_out()
+        if move_content:
+            self._release_main_editor()
         sp = self.project.create_subproject(name, description.strip())
-        # Persist the new (empty) subproject before switching to it.
+        if move_content:
+            try:
+                moved = self.project.move_main_content_to_subproject(
+                    sp.id, project_file=self.project.project_path or None)
+            except Exception as e:
+                self._discard_new_subproject(sp)
+                self.load_manuscript(self.project.manuscript)
+                QMessageBox.critical(
+                    self, "Move Failed",
+                    f"The chapters could not be moved, so nothing was "
+                    f"changed:\n{e}")
+                return
+            self.load_manuscript(self.project.manuscript)  # main, now empty
+        # Persist the new subproject before switching to it.
         self.subprojects_changed.emit()
         self._refresh_subproject_tabs()
         self.switch_subproject(sp.id)
+        if move_content:
+            QMessageBox.information(
+                self, "Chapters Moved",
+                f"Moved {moved} chapter(s) into '{sp.name}'. The main "
+                f"manuscript tab is now empty.")
+
+    def _move_main_into_existing(self, sp_id: str):
+        """Move the main manuscript into an existing, still-empty novella."""
+        sp = self.project.get_subproject(sp_id)
+        main = self.project.get_main_manuscript()
+        if sp is None or sp.manuscript.chapters or not main.chapters:
+            return
+        reply = QMessageBox.question(
+            self, "Move chapters",
+            f"Move the main manuscript's {len(main.chapters)} chapter(s) and "
+            f"{len(self.project.drafts_for_scope(None))} draft(s) into "
+            f"'{sp.name}'?\n\nThe main tab will be empty afterwards. A copy of "
+            f"the project file is kept as a backup.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        # The move happens from the main tab.
+        if self.project.active_subproject_id is not None:
+            self.switch_subproject(None)
+        self._flush_current_chapter()
+        self._sync_active_draft_out()
+        self._release_main_editor()
+        try:
+            moved = self.project.move_main_content_to_subproject(
+                sp.id, project_file=self.project.project_path or None)
+        except Exception as e:
+            self.load_manuscript(self.project.manuscript)
+            QMessageBox.critical(
+                self, "Move Failed",
+                f"The chapters could not be moved, so nothing was changed:\n{e}")
+            return
+        self.load_manuscript(self.project.manuscript)
+        self.subprojects_changed.emit()
+        self.switch_subproject(sp.id)
+        QMessageBox.information(
+            self, "Chapters Moved",
+            f"Moved {moved} chapter(s) into '{sp.name}'. The main manuscript "
+            f"tab is now empty.")
+
+    def _release_main_editor(self):
+        """Leave draft / split views and close the open chapter editor so
+        no widget is bound to chapters that are about to move."""
+        if self._active_draft is not None:
+            self._active_draft = None
+            self.manuscript = self.project.manuscript
+        if self._split_draft_panel is not None:
+            self.compare_drafts_btn.blockSignals(True)
+            self.compare_drafts_btn.setChecked(False)
+            self.compare_drafts_btn.blockSignals(False)
+            self._hide_split_panel()
+        # Let listeners (outline panel, autosave) flush while main is active.
+        self.subproject_about_to_switch.emit()
+        self.current_chapter_editor = None
+        self._current_chapter_id = None
+        self._clear_editor()
+        self._show_placeholder()
+
+    def _discard_new_subproject(self, sp):
+        """Undo create_subproject after a failed move (it's still empty)."""
+        self.project.subprojects = [s for s in self.project.subprojects
+                                    if s.id != sp.id]
+        project_dir = self._get_project_dir()
+        if project_dir:
+            folder = project_dir / "subprojects" / sp.id
+            # Only the empty sidecar can be there — copies were removed.
+            if folder.is_dir() and not any(
+                    p.is_file() and p.name != "subproject.json"
+                    for p in folder.rglob("*")):
+                import shutil
+                shutil.rmtree(folder, ignore_errors=True)
+        self.subprojects_changed.emit()
+        self._refresh_subproject_tabs()
 
     def _show_subproject_tab_menu(self, pos):
         if not self.project or not hasattr(self.project, 'subprojects'):
@@ -4957,9 +5082,14 @@ class ManuscriptEditor(QWidget):
         sp_id = self.subproject_tabs.tabData(index) or None
         menu = QMenu(self)
         rename_action = menu.addAction("Rename…")
-        desc_action = delete_action = None
+        desc_action = delete_action = move_action = None
         if sp_id is not None:
             desc_action = menu.addAction("Edit description…")
+            sp = self.project.get_subproject(sp_id)
+            main = self.project.get_main_manuscript()
+            if sp is not None and not sp.manuscript.chapters and main.chapters:
+                move_action = menu.addAction(
+                    f"Move main chapters into this novella ({len(main.chapters)})…")
             menu.addSeparator()
             delete_action = menu.addAction("Delete novella…")
         menu.addSeparator()
@@ -4973,6 +5103,8 @@ class ManuscriptEditor(QWidget):
             self._edit_subproject_description(sp_id)
         elif chosen is delete_action:
             self._delete_subproject(sp_id)
+        elif chosen is move_action:
+            self._move_main_into_existing(sp_id)
         elif chosen is new_action:
             self._create_subproject()
 
