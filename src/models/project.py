@@ -1500,29 +1500,64 @@ class WriterProject(BaseModel):
         return True
 
     def delete_subproject(self, subproject_id: str,
-                          project_dir: Optional[Path] = None) -> bool:
-        """Remove a subproject and its drafts.
+                          project_dir: Optional[Path] = None, *,
+                          permanently: bool = False,
+                          project_file: Optional[str] = None) -> bool:
+        """Drop a subproject, its chapters and its drafts.
 
-        Its chapter files are not erased: when ``project_dir`` is given
-        the subproject folder is moved to ``subprojects/_deleted/`` so it
-        can be recovered by hand.
+        By default its folder is moved to ``subprojects/_deleted/`` so it
+        can be recovered by hand; ``permanently=True`` erases it.
+
+        With ``project_file`` the project is saved *before* any folder is
+        touched, so a crash can never leave the project file pointing at
+        a subproject whose files are gone. (``project_dir`` defaults to
+        the project file's folder.)
         """
         sp = self.get_subproject(subproject_id)
         if sp is None:
             return False
-        if self.active_subproject_id == subproject_id:
+        if project_file and project_dir is None:
+            project_dir = Path(project_file).parent
+        was_active = self.active_subproject_id == subproject_id
+        before_subprojects, before_drafts = list(self.subprojects), list(self.drafts)
+        if was_active:
             self.activate_subproject(None)
         self.subprojects = [s for s in self.subprojects if s.id != subproject_id]
         self.drafts = [d for d in self.drafts if d.subproject_id != subproject_id]
+        if project_file:
+            try:
+                self.save_project(project_file)
+            except Exception:
+                # Nothing on disk changed — put the subproject back.
+                self.subprojects, self.drafts = before_subprojects, before_drafts
+                self._normalize_manuscript_roots()
+                if was_active:
+                    self.activate_subproject(subproject_id)
+                raise
         if project_dir and _SAFE_SUBPROJECT_ID.match(subproject_id):
             import shutil
             src = Path(project_dir) / SUBPROJECTS_DIR / subproject_id
-            if src.exists():
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                dest = Path(project_dir) / SUBPROJECTS_DIR / "_deleted" / f"{subproject_id}_{ts}"
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(src), str(dest))
+            if src.is_dir():
+                if permanently:
+                    shutil.rmtree(src)
+                else:
+                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    dest = Path(project_dir) / SUBPROJECTS_DIR / "_deleted" / f"{subproject_id}_{ts}"
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(src), str(dest))
+                apple_double = src.with_name(f"._{src.name}")  # macOS metadata
+                if apple_double.is_file():
+                    apple_double.unlink()
         return True
+
+    def next_subproject_name(self, base: str = "Novella") -> str:
+        """Lowest unused "Novella N" — numbering starts over as novellas
+        are dropped (and at 1 when none remain)."""
+        taken = {sp.name.strip().lower() for sp in self.subprojects}
+        n = 1
+        while f"{base} {n}".lower() in taken:
+            n += 1
+        return f"{base} {n}"
 
     def move_main_content_to_subproject(self, subproject_id: str, *,
                                         project_file: Optional[str] = None) -> int:

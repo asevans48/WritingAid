@@ -267,6 +267,110 @@ def test_moved_novella_survives_older_app_resave():
     shutil.rmtree(d)
 
 
+def test_drop_archives_by_default_and_erases_on_request():
+    d, path, p = _saved_project(n=2)
+    a = p.create_subproject("A")
+    p.move_main_content_to_subproject(a.id, project_file=str(path))
+    b = p.create_subproject("B")
+    p.activate_subproject(b.id)
+    c = Chapter(id="b1", number=1, title="B1", folder_root=p.manuscript.folder_root)
+    c.content = "B prose."
+    p.manuscript.chapters.append(c)
+    p.save_project(str(path))
+
+    assert p.delete_subproject(b.id, permanently=True, project_file=str(path))
+    assert not (d / "subprojects" / b.id).exists()
+    assert not any(x.name.startswith(b.id) for x in (d / "subprojects" / "_deleted").glob("*")) \
+        if (d / "subprojects" / "_deleted").exists() else True
+    assert p.delete_subproject(a.id, project_file=str(path))  # archive
+    archived = list((d / "subprojects" / "_deleted").glob(f"{a.id}_*"))
+    assert len(archived) == 1
+    assert (archived[0] / "chapters/chapter_001").is_dir()
+    p2 = WriterProject.load_project(str(path))
+    assert p2.subprojects == [] and p2.active_subproject_id is None
+    assert p2.drafts == []  # the moved main draft belonged to A
+    shutil.rmtree(d)
+
+
+def test_drop_saves_before_touching_files():
+    d, path, p = _saved_project(n=1)
+    a = p.create_subproject("A")
+    p.move_main_content_to_subproject(a.id, project_file=str(path))
+    orig = WriterProject.save_project
+
+    def failing(self, *a_, **k):
+        raise OSError("read-only volume")
+    WriterProject.save_project = failing
+    try:
+        try:
+            p.delete_subproject(a.id, permanently=True, project_file=str(path))
+        except OSError:
+            pass
+        else:
+            raise AssertionError("expected failure")
+    finally:
+        WriterProject.save_project = orig
+    # The save failed: the novella is restored in memory, the files are
+    # untouched, and the file on disk still loads it with its prose.
+    assert p.get_subproject(a.id) is not None and len(p.drafts) == 1
+    assert len(p.get_subproject(a.id).manuscript.chapters) == 1
+    assert (d / "subprojects" / a.id / "chapters").is_dir()
+    p2 = WriterProject.load_project(str(path))
+    assert [c.content for c in p2.get_subproject(a.id).manuscript.chapters] == [
+        "Second draft of chapter 1."]
+    shutil.rmtree(d)
+
+
+def test_name_counter_restarts():
+    p = WriterProject(name="U", manuscript=Manuscript(title="U"))
+    assert p.next_subproject_name() == "Novella 1"
+    s1 = p.create_subproject(p.next_subproject_name())
+    s2 = p.create_subproject(p.next_subproject_name())
+    s3 = p.create_subproject(p.next_subproject_name())
+    assert [s.name for s in (s1, s2, s3)] == ["Novella 1", "Novella 2", "Novella 3"]
+    p.delete_subproject(s2.id)
+    assert p.next_subproject_name() == "Novella 2"   # fills the gap
+    p.delete_subproject(s1.id)
+    p.delete_subproject(s3.id)
+    assert p.next_subproject_name() == "Novella 1"   # none left → starts over
+
+
+def test_drop_last_then_turn_main_into_novella():
+    d, path, p = _saved_project(n=2)
+    a = p.create_subproject("A")
+    p.save_project(str(path))
+    p.delete_subproject(a.id, project_file=str(path))
+    assert p.subprojects == [] and len(p.get_main_manuscript().chapters) == 2
+    n = p.create_subproject(p.next_subproject_name())
+    assert n.name == "Novella 1"
+    p.move_main_content_to_subproject(n.id, project_file=str(path))
+    p2 = WriterProject.load_project(str(path))
+    assert p2.get_main_manuscript().chapters == []
+    assert [c.content for c in p2.get_subproject(n.id).manuscript.chapters] == [
+        "Second draft of chapter 1.", "Second draft of chapter 2."]
+    # A's archived folder is never resurrected.
+    assert [s.id for s in p2.subprojects] == [n.id]
+    shutil.rmtree(d)
+
+
+def test_turn_main_into_novella_when_novellas_exist():
+    d, path, p = _saved_project(n=2)
+    other = p.create_subproject("Other")
+    p.activate_subproject(other.id)
+    oc = Chapter(id="o1", number=1, title="O1", folder_root=p.manuscript.folder_root)
+    oc.content = "Other prose."
+    p.manuscript.chapters.append(oc)
+    p.activate_subproject(None)
+    p.save_project(str(path))
+    new = p.create_subproject("From Main")
+    p.move_main_content_to_subproject(new.id, project_file=str(path))
+    p2 = WriterProject.load_project(str(path))
+    assert [c.content for c in p2.get_subproject(other.id).manuscript.chapters] == ["Other prose."]
+    assert len(p2.get_subproject(new.id).manuscript.chapters) == 2
+    assert p2.get_main_manuscript().chapters == []
+    shutil.rmtree(d)
+
+
 def _run_all() -> int:
     tests = [v for k, v in globals().items() if k.startswith("test_") and callable(v)]
     failed = 0

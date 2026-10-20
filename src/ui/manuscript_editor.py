@@ -4917,32 +4917,14 @@ class ManuscriptEditor(QWidget):
             QMessageBox.warning(self, "No Project",
                                 "Please create or load a project first.")
             return
-        existing = {sp.name.lower() for sp in self.project.subprojects}
-        existing.add((self.project.get_main_manuscript().title or "").lower())
-        name = f"Novella {len(self.project.subprojects) + 1}"
-        while True:
-            name, ok = QInputDialog.getText(
-                self, "New Novella",
-                "Name the novella. It gets its own chapters; worldbuilding,\n"
-                "characters and plot planning are shared with the project.",
-                text=name)
-            if not ok or not name.strip():
-                return
-            name = name.strip()
-            if name.lower() not in existing:
-                break
-            QMessageBox.information(
-                self, "Name In Use",
-                f"'{name}' is already used in this project. Pick another name.")
-        description, ok = QInputDialog.getMultiLineText(
-            self, "New Novella", f"Short description of '{name}' (optional):", "")
-        if not ok:
-            description = ""
+        named = self._ask_novella_name_and_description("New Novella")
+        if named is None:
+            return
+        name, description = named
 
         # First novella in a project that already has chapters: offer to
         # turn the existing manuscript into this novella.
         main = self.project.get_main_manuscript()
-        move_content = False
         if not self.project.subprojects and main.chapters:
             n_drafts = len(self.project.drafts_for_scope(None))
             box = QMessageBox(self)
@@ -4967,38 +4949,100 @@ class ManuscriptEditor(QWidget):
             box.exec()
             clicked = box.clickedButton()
             if clicked is move_btn:
-                move_content = True
-            elif clicked is not keep_btn:
+                self._create_novella_from_main(name, description)
+                return
+            if clicked is not keep_btn:
                 return  # cancelled — nothing created
 
         # Commit the open chapter before the project changes shape.
         self._flush_current_chapter()
         self._sync_active_draft_out()
-        if move_content:
-            self._release_main_editor()
-        sp = self.project.create_subproject(name, description.strip())
-        if move_content:
-            try:
-                moved = self.project.move_main_content_to_subproject(
-                    sp.id, project_file=self.project.project_path or None)
-            except Exception as e:
-                self._discard_new_subproject(sp)
-                self.load_manuscript(self.project.manuscript)
-                QMessageBox.critical(
-                    self, "Move Failed",
-                    f"The chapters could not be moved, so nothing was "
-                    f"changed:\n{e}")
-                return
-            self.load_manuscript(self.project.manuscript)  # main, now empty
+        sp = self.project.create_subproject(name, description)
         # Persist the new subproject before switching to it.
         self.subprojects_changed.emit()
         self._refresh_subproject_tabs()
         self.switch_subproject(sp.id)
-        if move_content:
+
+    def _ask_novella_name_and_description(self, title: str,
+                                          default: Optional[str] = None):
+        """Ask for a unique novella name + optional description.
+        Returns ``(name, description)`` or None if cancelled."""
+        existing = {sp.name.lower() for sp in self.project.subprojects}
+        existing.add((self.project.get_main_manuscript().title or "").lower())
+        name = default or self.project.next_subproject_name()
+        while True:
+            name, ok = QInputDialog.getText(
+                self, title,
+                "Name the novella. It gets its own chapters; worldbuilding,\n"
+                "characters and plot planning are shared with the project.",
+                text=name)
+            if not ok or not name.strip():
+                return None
+            name = name.strip()
+            if name.lower() not in existing:
+                break
             QMessageBox.information(
-                self, "Chapters Moved",
-                f"Moved {moved} chapter(s) into '{sp.name}'. The main "
-                f"manuscript tab is now empty.")
+                self, "Name In Use",
+                f"'{name}' is already used in this project. Pick another name.")
+        description, ok = QInputDialog.getMultiLineText(
+            self, title, f"Short description of '{name}' (optional):", "")
+        return name, (description.strip() if ok else "")
+
+    def _create_novella_from_main(self, name: str, description: str = "") -> bool:
+        """Create a novella and move the main manuscript's chapters and
+        drafts into it (transactional — see
+        WriterProject.move_main_content_to_subproject). Ends on the new tab."""
+        if self.project.active_subproject_id is not None:
+            self.switch_subproject(None)
+        self._flush_current_chapter()
+        self._sync_active_draft_out()
+        self._release_main_editor()
+        sp = self.project.create_subproject(name, description)
+        try:
+            moved = self.project.move_main_content_to_subproject(
+                sp.id, project_file=self.project.project_path or None)
+        except Exception as e:
+            self._discard_new_subproject(sp)
+            self.load_manuscript(self.project.manuscript)
+            QMessageBox.critical(
+                self, "Move Failed",
+                f"The chapters could not be moved, so nothing was changed:\n{e}")
+            return False
+        self.load_manuscript(self.project.manuscript)  # main, now empty
+        self.subprojects_changed.emit()
+        self._refresh_subproject_tabs()
+        self.switch_subproject(sp.id)
+        QMessageBox.information(
+            self, "Chapters Moved",
+            f"Moved {moved} chapter(s) into '{sp.name}'. The main manuscript "
+            f"tab is now empty.")
+        return True
+
+    def _turn_main_into_novella(self) -> bool:
+        """Turn the main manuscript's current content into a new novella."""
+        if not self.project:
+            return False
+        main = self.project.get_main_manuscript()
+        if not main.chapters:
+            QMessageBox.information(self, "Nothing to Move",
+                                    "The main manuscript has no chapters.")
+            return False
+        named = self._ask_novella_name_and_description(
+            "Turn Main Manuscript into a Novella")
+        if named is None:
+            return False
+        name, description = named
+        reply = QMessageBox.question(
+            self, "Turn into novella",
+            f"Move the main manuscript's {len(main.chapters)} chapter(s) and "
+            f"{len(self.project.drafts_for_scope(None))} draft(s) into a new "
+            f"novella '{name}'?\n\nThe main tab will be empty afterwards. A copy "
+            f"of the project file is kept as a backup.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return False
+        return self._create_novella_from_main(name, description)
 
     def _move_main_into_existing(self, sp_id: str):
         """Move the main manuscript into an existing, still-empty novella."""
@@ -5082,7 +5126,9 @@ class ManuscriptEditor(QWidget):
         sp_id = self.subproject_tabs.tabData(index) or None
         menu = QMenu(self)
         rename_action = menu.addAction("Rename…")
-        desc_action = delete_action = move_action = None
+        desc_action = delete_action = move_action = turn_action = None
+        if sp_id is None and self.project.get_main_manuscript().chapters:
+            turn_action = menu.addAction("Turn main manuscript into a novella…")
         if sp_id is not None:
             desc_action = menu.addAction("Edit description…")
             sp = self.project.get_subproject(sp_id)
@@ -5091,7 +5137,7 @@ class ManuscriptEditor(QWidget):
                 move_action = menu.addAction(
                     f"Move main chapters into this novella ({len(main.chapters)})…")
             menu.addSeparator()
-            delete_action = menu.addAction("Delete novella…")
+            delete_action = menu.addAction("Drop novella and its content…")
         menu.addSeparator()
         new_action = menu.addAction("＋ New novella…")
         chosen = menu.exec(self.subproject_tabs.mapToGlobal(pos))
@@ -5105,6 +5151,8 @@ class ManuscriptEditor(QWidget):
             self._delete_subproject(sp_id)
         elif chosen is move_action:
             self._move_main_into_existing(sp_id)
+        elif chosen is turn_action:
+            self._turn_main_into_novella()
         elif chosen is new_action:
             self._create_subproject()
 
@@ -5137,36 +5185,64 @@ class ManuscriptEditor(QWidget):
             self.subprojects_changed.emit()
 
     def _delete_subproject(self, sp_id: str):
+        """Drop a novella and its content (archived or erased)."""
         sp = self.project.get_subproject(sp_id)
         if sp is None:
             return
         n_ch = len(sp.manuscript.chapters)
         n_drafts = len(self.project.drafts_for_scope(sp_id))
-        reply = QMessageBox.warning(
-            self, "Delete Novella",
-            f"Delete the novella '{sp.name}' ({n_ch} chapter(s), "
-            f"{n_drafts} draft(s)) from this project?\n\n"
-            "Its chapter files are not erased: they are moved to\n"
-            "subprojects/_deleted/ in the project folder so they can be\n"
-            "recovered by hand. Shared worldbuilding, characters and plot\n"
-            "are not affected.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No)
-        if reply != QMessageBox.StandardButton.Yes:
+        from PyQt6.QtWidgets import QDialogButtonBox
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Drop Novella")
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel(
+            f"<b>Drop the novella '{sp.name}' and its content?</b><br><br>"
+            f"This removes its {n_ch} chapter(s) and {n_drafts} draft(s) from "
+            f"the project. Shared worldbuilding, characters and plot planning "
+            f"are not affected.<br><br>By default its files are moved to "
+            f"<code>subprojects/_deleted/</code> in the project folder so they "
+            f"can be recovered by hand."))
+        erase_cb = QCheckBox("Erase its files permanently (cannot be undone)")
+        v.addWidget(erase_cb)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                              | QDialogButtonBox.StandardButton.Cancel)
+        bb.button(QDialogButtonBox.StandardButton.Ok).setText("Drop Novella")
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        v.addWidget(bb)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         if self.project.active_subproject_id == sp_id:
             # Leave the tab through the normal path so everything is flushed.
             self.switch_subproject(None)
         try:
-            self.project.delete_subproject(sp_id, project_dir=self._get_project_dir())
+            self.project.delete_subproject(
+                sp_id, project_dir=self._get_project_dir(),
+                permanently=erase_cb.isChecked(),
+                project_file=self.project.project_path or None)
         except Exception as e:
-            QMessageBox.critical(self, "Delete Failed",
-                                 f"Could not archive the novella's files:\n{e}")
+            QMessageBox.critical(self, "Drop Failed",
+                                 f"Could not remove the novella's files:\n{e}")
             return
         self._last_chapter_by_scope.pop(sp_id, None)
         self._refresh_subproject_tabs()
         self._refresh_draft_selector()
         self.subprojects_changed.emit()
+
+        # Back to no novellas: offer to make the current content one.
+        main = self.project.get_main_manuscript()
+        if not self.project.subprojects and main.chapters:
+            reply = QMessageBox.question(
+                self, "Turn into novella?",
+                f"There are no novellas now. Turn the main manuscript's "
+                f"{len(main.chapters)} chapter(s) into a novella?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if reply == QMessageBox.StandardButton.Yes:
+                named = self._ask_novella_name_and_description(
+                    "Turn Main Manuscript into a Novella")
+                if named is not None:
+                    self._create_novella_from_main(*named)
 
     # ── Draft switching ──────────────────────────────────────────
 
