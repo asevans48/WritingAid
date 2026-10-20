@@ -296,65 +296,11 @@ class _TrainingWorker(QThread):
                 f"(chat_template={'present' if has_chat_template else 'absent — using Alpaca'}; "
                 f"loss masks prompt for instruction rows)")
 
-            def _build_messages(rec):
-                """Render a record as chat-template messages.
-
-                Pulls metadata.system_prompt when set, otherwise uses a
-                neutral default. The user turn folds instruction +
-                input together; the assistant turn is the output.
-                """
-                meta = rec.get("metadata") or {}
-                instr = rec.get("instruction", "") or ""
-                inp = rec.get("input", "") or ""
-                out = rec.get("output", "") or ""
-                if "messages" in rec:
-                    # Already a chat-format row (e.g. ShareGPT export)
-                    return rec["messages"]
-                user_msg = (f"{instr}\n\n{inp}".strip()
-                            if inp else instr)
-                msgs = []
-                system = meta.get("system_prompt", "")
-                if system:
-                    msgs.append({"role": "system", "content": system})
-                msgs.append({"role": "user", "content": user_msg})
-                msgs.append({"role": "assistant", "content": out})
-                return msgs
-
-            def render_full(rec):
-                """Full sequence (prompt + response) — what the model
-                will see during the forward pass."""
-                if has_chat_template:
-                    return tokenizer.apply_chat_template(
-                        _build_messages(rec), tokenize=False)
-                # Alpaca fallback for bases without a chat template
-                instr = rec.get("instruction", "")
-                inp = rec.get("input", "")
-                out = rec.get("output", "")
-                if inp:
-                    return (f"### Instruction:\n{instr}\n\n"
-                            f"### Input:\n{inp}\n\n"
-                            f"### Response:\n{out}")
-                return (f"### Instruction:\n{instr}\n\n"
-                        f"### Response:\n{out}")
-
-            def render_prompt(rec):
-                """Just the prompt portion (no assistant content) so we
-                can compute the token boundary for loss masking."""
-                if has_chat_template:
-                    msgs = _build_messages(rec)[:-1]  # drop assistant
-                    return tokenizer.apply_chat_template(
-                        msgs, tokenize=False, add_generation_prompt=True)
-                instr = rec.get("instruction", "")
-                inp = rec.get("input", "")
-                if inp:
-                    return (f"### Instruction:\n{instr}\n\n"
-                            f"### Input:\n{inp}\n\n"
-                            f"### Response:\n")
-                return f"### Instruction:\n{instr}\n\n### Response:\n"
-
-            def _format_type(rec) -> str:
-                meta = rec.get("metadata") or {}
-                return (meta.get("format_type") or "instruction").lower()
+            # Rendering + prompt masking live in src.ai.sft_format so
+            # post-training evaluation (drift checks) scores rows exactly
+            # the way training did.
+            from src.ai import sft_format as _sft
+            _format_type = _sft.format_type
 
             # Streaming render + tokenize in a single .map() pass. Each
             # batch arrives as a dict-of-column-lists; we reconstruct
@@ -364,45 +310,13 @@ class _TrainingWorker(QThread):
             # Python objects, so memory stays bounded regardless of
             # the JSONL's size.
             def render_and_tokenize(batch):
-                # Reconstruct row dicts from columnar batch.
                 keys = list(batch.keys())
                 n_in_batch = len(batch[keys[0]]) if keys else 0
                 rows = [{k: batch[k][i] for k in keys}
                         for i in range(n_in_batch)]
-
-                full_texts = [render_full(r) for r in rows]
-                prompt_texts = [render_prompt(r) for r in rows]
-                format_types = [_format_type(r) for r in rows]
-
-                # Tokenize full sequences (prompt + assistant response)
-                # and the prompt-only portion. Same special-token policy
-                # so prompts form a clean prefix of full sequences.
-                tokens = tokenizer(
-                    full_texts, truncation=True,
-                    max_length=self.max_length, padding=False)
-                prompt_tokens = tokenizer(
-                    prompt_texts, truncation=True,
-                    max_length=self.max_length)
-
-                labels = []
-                for full_ids, prompt_ids, ftype in zip(
-                        tokens["input_ids"],
-                        prompt_tokens["input_ids"],
-                        format_types):
-                    lab = list(full_ids)
-                    if ftype == "instruction":
-                        # Mask prompt — model only learns to predict
-                        # the assistant's response. ``min`` guards
-                        # against the (rare) case where prompt
-                        # tokenization truncated longer than full.
-                        boundary = min(len(prompt_ids), len(lab))
-                        for i in range(boundary):
-                            lab[i] = -100
-                    # continuation rows: no masking — model learns
-                    # the whole passage to imitate voice.
-                    labels.append(lab)
-                tokens["labels"] = labels
-                return tokens
+                return _sft.tokenize_rows(
+                    tokenizer, rows, max_length=self.max_length,
+                    has_chat_template=has_chat_template)
 
             # Validation split BEFORE tokenizing, grouped by row
             # content. User-voice rows are oversampled by repetition, so
@@ -5686,7 +5600,34 @@ class TrainingToolWindow(QMainWindow):
             self.apply_reg_btn.setEnabled(True)
         except Exception:
             pass
+        # Fingerprint of exactly what this run trains on — saved with
+        # the model so later drift checks have a baseline.
+        self._run_fingerprint = None
+        try:
+            from src.ai.model_drift import compute_fingerprint
+            self._run_fingerprint = compute_fingerprint(
+                jsonl_path, tasks=self._selected_tasks(),
+                recipe=self._current_recipe_snapshot())
+        except Exception as e:
+            self.train_log.appendPlainText(f"[drift] fingerprint failed: {e}")
         return rep
+
+    def _current_recipe_snapshot(self) -> dict:
+        """The data recipe chosen on Steps 1-3 (compared by drift checks)."""
+        recipe = getattr(self, '_current_recipe', None)
+        return {
+            "sources": self._selected_source_types(),
+            "tasks": self._selected_tasks(),
+            "min_rating": self.train_min_rating.currentData(),
+            "genres": sorted(self.selected_genres()),
+            "collections": (sorted(self._selected_collection_keys)
+                            if self._selected_collection_keys is not None else None),
+            "expand_corpus_windows": self.expand_corpus_cb.isChecked(),
+            "enforce_purpose_fit": self.purpose_fit_cb.isChecked(),
+            "user_voice_oversample": max(1, int(getattr(
+                recipe, "user_voice_oversample", 1) or 1)) if recipe else 1,
+            "base_model": self.base_model_combo.currentText().strip(),
+        }
 
     def _confirm_insufficient_data(self, report) -> bool:
         """Warn before training a task that's below its minimum."""
@@ -5731,6 +5672,14 @@ class TrainingToolWindow(QMainWindow):
                                  dataset=dataset, settings=settings)
         except Exception as e:
             self.train_log.appendPlainText(f"[report] could not save: {e}")
+        fp = getattr(self, "_run_fingerprint", None)
+        if fp is not None:
+            try:
+                from src.ai.model_drift import save_fingerprint
+                save_fingerprint(Path(output_path), fp)
+            except Exception as e:
+                self.train_log.appendPlainText(
+                    f"[drift] could not save fingerprint: {e}")
         self.loss_chart.set_curves(assessment.train_curve, assessment.eval_curve)
         self.loss_chart.setVisible(self.loss_chart.has_data())
         self._last_report = (assessment,
@@ -5753,6 +5702,74 @@ class TrainingToolWindow(QMainWindow):
         from src.ui.training_insights_widgets import TrainingReportDialog
         TrainingReportDialog(last[0], dataset=last[1], settings=last[2],
                              parent=self).exec()
+
+    def _check_selected_model_drift(self) -> None:
+        path = self.test_model_combo.currentData() if hasattr(
+            self, "test_model_combo") else ""
+        if not path:
+            QMessageBox.information(self, "No model selected",
+                                    "Pick a trained model first.")
+            return
+        from src.ai.model_drift import load_fingerprint
+        baseline = load_fingerprint(Path(path))
+        if baseline is None:
+            QMessageBox.information(
+                self, "No training fingerprint",
+                "This model was trained before drift tracking was added, so "
+                "there's no record of the exact data it learned from.\n\n"
+                "Retrain it (or train more on it) once — later drift checks "
+                "will compare against that run.")
+            return
+        prep = self._prepare_training_dataset()
+        if prep is None:
+            return
+        entry = next((m for m in load_trained_models()
+                      if m.get("path") == path), {}) or {}
+        baseline_loss = None
+        try:
+            from src.ai.training_insights import load_training_report
+            rep = load_training_report(Path(path))
+            if rep is not None:
+                a = rep["assessment"]
+                baseline_loss = a.best_eval_loss if a.restored_best else a.final_eval_loss
+        except Exception:
+            pass
+        from src.ui.model_drift_dialog import ModelDriftDialog
+        ModelDriftDialog(
+            model_name=entry.get("name") or Path(path).name,
+            model_dir=Path(path),
+            base_model=(entry.get("base_model")
+                        or baseline.recipe.get("base_model", "")),
+            baseline=baseline,
+            current_jsonl=prep[0],
+            current_tasks=self._selected_tasks(),
+            current_recipe=self._current_recipe_snapshot(),
+            baseline_loss=baseline_loss,
+            on_continue=self._train_more_on_selected,
+            on_retrain=self._retrain_from_base,
+            parent=self).exec()
+
+    def _retrain_from_base(self, baseline) -> None:
+        """Fresh fine-tune of the drifted model's base on the current mix."""
+        path = self.test_model_combo.currentData()
+        entry = next((m for m in load_trained_models()
+                      if m.get("path") == path), {}) or {}
+        base = entry.get("base_model") or baseline.recipe.get("base_model", "")
+        if base:
+            idx = self.base_model_combo.findText(base)
+            if idx >= 0:
+                self.base_model_combo.setCurrentIndex(idx)
+            else:
+                self.base_model_combo.setEditText(base)
+        self._refresh_continue_combo()
+        self.continue_combo.setCurrentIndex(0)  # "(none — start from base)"
+        prior = entry.get("name") or Path(path or "model").name
+        self.name_edit.setText(self._next_version_name(prior))
+        self.train_log.appendPlainText(
+            f"[drift] Retraining '{prior}' from base {base} on the current mix. "
+            f"Review the settings, then Start Training.")
+        self.stack.setCurrentIndex(2)
+        self._update_nav()
 
     def _show_selected_model_report(self) -> None:
         path = self.test_model_combo.currentData() if hasattr(
@@ -7576,6 +7593,16 @@ class TrainingToolWindow(QMainWindow):
             "alerts recorded when the selected model was trained.")
         self.model_report_btn.clicked.connect(self._show_selected_model_report)
         action_row.addWidget(self.model_report_btn)
+
+        self.drift_btn = QPushButton("🧭 Check drift")
+        self.drift_btn.setToolTip(
+            "Compare the data the selected model was trained on with the "
+            "corpora mix currently chosen on Steps 1-3: unseen and dropped "
+            "examples, shifts in source / task / genre / vocabulary / length "
+            "mix, recipe changes, and optionally loss on unseen data. "
+            "Recommends whether to continue training or retrain.")
+        self.drift_btn.clicked.connect(self._check_selected_model_drift)
+        action_row.addWidget(self.drift_btn)
 
         action_row.addStretch()
 
