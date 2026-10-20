@@ -409,6 +409,9 @@ class ChapterMemoryManager:
         """Find chapter by ID in project."""
         if not self.project:
             return None
+        finder = getattr(self.project, 'find_chapter', None)
+        if finder is not None:
+            return finder(chapter_id)
         return next(
             (c for c in self.project.manuscript.chapters if c.id == chapter_id),
             None

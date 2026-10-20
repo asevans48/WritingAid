@@ -3774,6 +3774,13 @@ class MainWindow(QMainWindow):
         # outline panel for that chapter.
         self.manuscript_editor.events_cleared.connect(
             self._handle_chapter_events_cleared)
+        # Novella (subproject) tabs inside the Manuscript tab.
+        self.manuscript_editor.subproject_about_to_switch.connect(
+            self._on_subproject_about_to_switch)
+        self.manuscript_editor.subproject_switched.connect(
+            self._on_subproject_switched)
+        self.manuscript_editor.subprojects_changed.connect(
+            self._on_subprojects_changed)
         # Auto-sync new beats from the outline panel into
         # chapter.planning.events whenever the panel changes — this
         # is what "slots a user-created beat into the plan" means.
@@ -4104,6 +4111,62 @@ class MainWindow(QMainWindow):
                 self._autosave_pending = False
                 from PyQt6.QtCore import QTimer as _QT
                 _QT.singleShot(0, self._auto_save_project)
+
+    def _find_chapter_by_id(self, chapter_id):
+        """Find a chapter by id in the main manuscript or any novella."""
+        if not chapter_id or not self.current_project:
+            return None
+        finder = getattr(self.current_project, 'find_chapter', None)
+        if finder is not None:
+            return finder(chapter_id)
+        manuscript = getattr(self.current_project, 'manuscript', None)
+        return next((ch for ch in (getattr(manuscript, 'chapters', None) or [])
+                     if getattr(ch, 'id', None) == chapter_id), None)
+
+    def _on_subproject_about_to_switch(self) -> None:
+        """Flush and persist the outgoing novella before the swap.
+
+        The manuscript editor has already written the open chapter into
+        its model. Unbinding the outline panel flushes any pending outline
+        edit to that chapter while it is still active; then the whole
+        project is saved so the outgoing tab is on disk.
+        """
+        panel = getattr(self.chat_widget, 'outline_panel', None)
+        if panel is not None:
+            try:
+                panel.load_chapter(None, None, None)
+            except Exception as e:
+                print(f"[subprojects] outline flush failed: {e}")
+        self._auto_save_project()
+
+    def _on_subproject_switched(self) -> None:
+        """Point manuscript-dependent widgets at the newly active novella."""
+        if not self.current_project:
+            return
+        try:
+            self.attributions_tab.set_manuscript(self.current_project.manuscript)
+        except Exception as e:
+            print(f"[subprojects] attributions refresh failed: {e}")
+        try:
+            populate = getattr(self.video_studio_widget, '_populate_chapter_combo', None)
+            if populate is not None:
+                populate()
+        except Exception as e:
+            print(f"[subprojects] video studio refresh failed: {e}")
+        self._sync_outline_panel_to_chapter()
+        # Chapter prose in the RAG index belongs to the previous novella.
+        self._rag_dirty = True
+        sp = self.current_project.get_active_subproject()
+        label = sp.name if sp else (
+            self.current_project.get_main_manuscript().title or "Main manuscript")
+        self.statusBar().showMessage(f"Now editing: {label}", 4000)
+        # Persist which tab is active so the project reopens on it.
+        self._auto_save_project()
+
+    def _on_subprojects_changed(self) -> None:
+        """A novella was created, renamed or deleted — persist it."""
+        self._on_content_changed()
+        self._auto_save_project()
 
     def _sync_outline_panel_to_chapter(self) -> None:
         """Bind the AI Assistant's outline panel to the current chapter.
@@ -6066,13 +6129,7 @@ class MainWindow(QMainWindow):
         # user explicitly asked the AI to develop this beat, so the
         # description should reflect the new body.
         try:
-            manuscript = getattr(
-                self.current_project, "manuscript", None)
-            chapters = (
-                getattr(manuscript, "chapters", None) or [])
-            chapter = next(
-                (c for c in chapters
-                 if getattr(c, "id", None) == chapter_id), None)
+            chapter = self._find_chapter_by_id(chapter_id)
             if (chapter is not None
                     and getattr(chapter, "planning", None)
                     is not None):
@@ -6610,13 +6667,7 @@ class MainWindow(QMainWindow):
         """
         if not self.current_project:
             return ""
-        manuscript = getattr(
-            self.current_project, "manuscript", None)
-        chapters = getattr(manuscript, "chapters", None) or []
-        chapter = next(
-            (c for c in chapters
-             if getattr(c, "id", None) == chapter_id),
-            None)
+        chapter = self._find_chapter_by_id(chapter_id)
         if chapter is None:
             return ""
         events = list(
@@ -6879,12 +6930,7 @@ class MainWindow(QMainWindow):
         target_id = panel.current_chapter_id()
         if not target_id or not self.current_project:
             return
-        chapter = None
-        manuscript = getattr(self.current_project, 'manuscript', None)
-        for ch in (getattr(manuscript, 'chapters', None) or []):
-            if getattr(ch, 'id', None) == target_id:
-                chapter = ch
-                break
+        chapter = self._find_chapter_by_id(target_id)
         if chapter is None:
             return
         if (not hasattr(chapter, 'planning')
@@ -7053,13 +7099,7 @@ class MainWindow(QMainWindow):
         """
         if not chapter_id or not self.current_project:
             return
-        manuscript = getattr(
-            self.current_project, 'manuscript', None)
-        chapters = getattr(manuscript, 'chapters', None) or []
-        target = next(
-            (ch for ch in chapters
-             if getattr(ch, 'id', None) == chapter_id),
-            None)
+        target = self._find_chapter_by_id(chapter_id)
         if target is None:
             return
         if not hasattr(target, 'planning') or target.planning is None:
@@ -7117,14 +7157,9 @@ class MainWindow(QMainWindow):
         live_id = (getattr(ce.chapter, 'id', None)
                    if ce and getattr(ce, 'chapter', None) else None)
         # Find the chapter on the project (either current OR by id —
-        # we always trust the panel's bound id).
-        target = None
-        manuscript = getattr(self.current_project, 'manuscript', None)
-        chapters = getattr(manuscript, 'chapters', None) or []
-        for ch in chapters:
-            if getattr(ch, 'id', None) == target_id:
-                target = ch
-                break
+        # we always trust the panel's bound id). Searches every novella,
+        # so a flush that lands after a tab switch still hits its chapter.
+        target = self._find_chapter_by_id(target_id)
         if target is None:
             return
         if not hasattr(target, 'planning') or target.planning is None:
@@ -7701,7 +7736,18 @@ class MainWindow(QMainWindow):
         self.current_project.worldbuilding = self.worldbuilding_widget.get_data()
         self.current_project.characters = self.characters_widget.get_data()
         self.current_project.story_planning = self.story_planning_widget.get_data()
-        self.current_project.manuscript = self.manuscript_editor.get_manuscript()
+        # get_manuscript() also flushes the open chapter into its model.
+        # Only adopt the returned object if it is the active manuscript or
+        # a brand-new one — never another novella's (that would make two
+        # tabs share one chapter list).
+        editor_ms = self.manuscript_editor.get_manuscript()
+        if editor_ms is not None and editor_ms is not self.current_project.manuscript:
+            known = [ms for _, ms in self.current_project.iter_manuscripts()]
+            if any(editor_ms is ms for ms in known):
+                print("[subprojects] Editor holds a different manuscript than "
+                      "the active one; not adopting it.")
+            else:
+                self.current_project.manuscript = editor_ms
         self.current_project.generated_images = self.image_generator.get_data()
         self.current_project.agent_contacts = self.agent_manager.get_data()
         self.current_project.prose_profile = self.prose_profile_widget.get_data()
@@ -12707,6 +12753,7 @@ class MainWindow(QMainWindow):
             content=data.get('content', ''),
             html_content=data.get('content', ''),  # Set same as content initially
             planning=planning,
+            folder_root=self.current_project.manuscript.folder_root,
         )
 
         self.current_project.manuscript.chapters.append(chapter)

@@ -41,7 +41,7 @@ from src.data.rephrase_database import (
     RephraseDatabase, DEFAULT_DB_PATH,
     SOURCE_REPHRASE, SOURCE_CHAT_WRITING, SOURCE_CHAT_GENERAL,
     SOURCE_CORPUS, SOURCE_AGENT,
-    SOURCE_WORLDBUILDING, SOURCE_CHARACTER, SOURCE_PLOT,
+    SOURCE_WORLDBUILDING, SOURCE_CHARACTER, SOURCE_PLOT, SOURCE_CRITIQUE,
 )
 
 
@@ -55,6 +55,12 @@ class _TrainingWorker(QThread):
 
     log = pyqtSignal(str)
     progress = pyqtSignal(int, int)  # step, total
+    # One dict per trainer log event: {"step", "epoch", "loss"} or
+    # {"step", "epoch", "eval_loss"} — drives the live loss chart.
+    metrics = pyqtSignal(dict)
+    # Emitted once before finished_ok with {"log_history", "planned_steps",
+    # "restored_best", "n_train", "n_eval"} for the post-run assessment.
+    history_ready = pyqtSignal(dict)
     finished_ok = pyqtSignal(str)  # output_path
     failed = pyqtSignal(str)
 
@@ -66,8 +72,25 @@ class _TrainingWorker(QThread):
         lora_dropout: float = 0.05,
         use_qlora: bool = False,
         adapter_path: str = "",
+        # Overfitting protection. Defaults reproduce the original
+        # behaviour (15% holdout, one eval per epoch, no early stop,
+        # no weight decay, no NEFTune).
+        eval_fraction: float = 0.15,
+        evals_per_epoch: int = 1,
+        early_stopping_patience: int = 0,
+        weight_decay: float = 0.0,
+        neftune_alpha: float = 0.0,
+        warmup_ratio: float = 0.0,
+        lr_scheduler: str = "linear",
     ):
         super().__init__()
+        self.eval_fraction = eval_fraction
+        self.evals_per_epoch = max(1, int(evals_per_epoch))
+        self.early_stopping_patience = max(0, int(early_stopping_patience))
+        self.weight_decay = weight_decay
+        self.neftune_alpha = neftune_alpha
+        self.warmup_ratio = warmup_ratio
+        self.lr_scheduler = lr_scheduler
         self.jsonl_path = jsonl_path
         self.base_model = base_model
         self.output_dir = output_dir
@@ -105,7 +128,7 @@ class _TrainingWorker(QThread):
                 import torch
                 from transformers import (
                     AutoTokenizer, AutoModelForCausalLM,
-                    TrainingArguments, Trainer, DataCollatorForLanguageModeling,
+                    TrainingArguments, Trainer, DataCollatorForSeq2Seq,
                     TrainerCallback,
                 )
                 from datasets import Dataset, load_dataset
@@ -381,11 +404,43 @@ class _TrainingWorker(QThread):
                 tokens["labels"] = labels
                 return tokens
 
+            # Validation split BEFORE tokenizing, grouped by row
+            # content. User-voice rows are oversampled by repetition, so
+            # a plain random split puts copies of the same example on
+            # both sides and validation loss stops measuring
+            # generalization. Grouping keeps each example's copies on
+            # one side (eval keeps a single copy).
+            from src.ai.training_insights import (
+                grouped_split_indices, row_content_key)
+            keys = []
+            for batch in ds_full.iter(batch_size=512):
+                cols = list(batch.keys())
+                for i in range(len(batch[cols[0]]) if cols else 0):
+                    keys.append(row_content_key(
+                        {k: batch[k][i] for k in cols}))
+            n_groups = len(set(keys))
+            min_groups_for_eval = 20
+            train_idx, eval_idx = (list(range(len(keys))), [])
+            if n_groups >= min_groups_for_eval:
+                train_idx, eval_idx = grouped_split_indices(
+                    keys, self.eval_fraction, seed=42, min_eval=3)
+            raw_train = ds_full.select(train_idx)
+            raw_eval = ds_full.select(eval_idx) if eval_idx else None
+            if raw_eval is not None:
+                self.log.emit(
+                    f"  eval split: {len(raw_train)} train / "
+                    f"{len(raw_eval)} eval ({self.eval_fraction:.0%} of "
+                    f"{n_groups} unique examples held out; duplicates "
+                    f"kept on one side so validation can't leak)")
+            else:
+                self.log.emit(
+                    f"  eval split: skipped (only {n_groups} unique rows; "
+                    f"need ≥{min_groups_for_eval} for a meaningful holdout)")
+
             self.log.emit(
                 "  tokenizing into memory-mapped cache "
                 "(this is the streaming pass; you'll see batch logs)…")
-            ds = ds_full.map(
-                render_and_tokenize,
+            map_kwargs = dict(
                 batched=True,
                 batch_size=64,
                 # Drop the original JSONL columns from the cached
@@ -393,6 +448,9 @@ class _TrainingWorker(QThread):
                 # at training time. Cuts cache size and IO.
                 remove_columns=ds_full.column_names,
                 desc="Tokenizing")
+            ds = raw_train.map(render_and_tokenize, **map_kwargs)
+            eval_ds = (raw_eval.map(render_and_tokenize, **map_kwargs)
+                       if raw_eval is not None else None)
 
             # Quick post-pass count of format types so the user sees
             # what mix of prompt-masked vs full-text training they
@@ -421,34 +479,28 @@ class _TrainingWorker(QThread):
                 f"(prompt-masked), {n_cont} continuation "
                 f"(full-text learn){sample_note}")
 
-            # Eval-split for overfitting protection. We hold out 15% of
-            # the data when we have enough rows to make the split
-            # meaningful — below 20 rows, the eval slice would be too
-            # small to track anything useful, so we train on everything
-            # and skip eval. With eval enabled, save_total_limit=2 keeps
-            # the best + last checkpoints and load_best_model_at_end
-            # restores the best one before saving the final model.
-            eval_ds = None
-            min_for_eval = 20
-            if len(ds) >= min_for_eval:
-                split = ds.train_test_split(test_size=0.15, seed=42)
-                ds = split["train"]
-                eval_ds = split["test"]
-                self.log.emit(
-                    f"  eval split: {len(ds)} train / {len(eval_ds)} eval "
-                    f"(15% holdout for overfitting check)")
-            else:
-                self.log.emit(
-                    f"  eval split: skipped (only {len(ds)} rows; need "
-                    f"≥{min_for_eval} for a meaningful holdout)")
-
+            # With eval enabled, evaluation (and checkpointing, which
+            # load_best_model_at_end requires to match) runs
+            # ``evals_per_epoch`` times per epoch so the validation
+            # curve has resolution and early stopping can react
+            # mid-epoch; save_total_limit=2 keeps the best + latest
+            # checkpoints and the best one is restored before saving.
+            import inspect as _ins
+            import math as _math
+            ta_params = _ins.signature(TrainingArguments).parameters
+            grad_accum = 4
+            steps_per_epoch = max(1, _math.ceil(
+                len(ds) / (max(1, self.batch_size) * grad_accum)))
             self.output_dir.mkdir(parents=True, exist_ok=True)
             args_kwargs = dict(
                 output_dir=str(self.output_dir / "checkpoints"),
                 num_train_epochs=self.epochs,
                 per_device_train_batch_size=self.batch_size,
-                gradient_accumulation_steps=4,
+                gradient_accumulation_steps=grad_accum,
                 learning_rate=self.learning_rate,
+                weight_decay=self.weight_decay,
+                warmup_ratio=self.warmup_ratio,
+                lr_scheduler_type=self.lr_scheduler,
                 logging_steps=1,
                 save_strategy="epoch",
                 save_total_limit=2 if eval_ds is not None else 1,
@@ -457,60 +509,93 @@ class _TrainingWorker(QThread):
                 remove_unused_columns=False,
             )
             if eval_ds is not None:
+                eval_steps = max(1, steps_per_epoch // self.evals_per_epoch)
                 # eval_strategy is the modern name; older transformers
-                # used evaluation_strategy. Set both via inspect-guarded
-                # passthrough so the Trainer accepts our args either way.
-                import inspect as _ins
-                ta_params = _ins.signature(TrainingArguments).parameters
-                if "eval_strategy" in ta_params:
-                    args_kwargs["eval_strategy"] = "epoch"
-                else:
-                    args_kwargs["evaluation_strategy"] = "epoch"
+                # used evaluation_strategy.
+                strategy_key = ("eval_strategy" if "eval_strategy" in ta_params
+                                else "evaluation_strategy")
+                args_kwargs[strategy_key] = "steps"
+                args_kwargs["eval_steps"] = eval_steps
+                args_kwargs["save_strategy"] = "steps"
+                args_kwargs["save_steps"] = eval_steps
                 args_kwargs["load_best_model_at_end"] = True
                 args_kwargs["metric_for_best_model"] = "eval_loss"
                 args_kwargs["greater_is_better"] = False
+                self.log.emit(
+                    f"  validating every {eval_steps} step(s) "
+                    f"(~{self.evals_per_epoch}× per epoch)")
+            if self.neftune_alpha > 0:
+                if "neftune_noise_alpha" in ta_params:
+                    args_kwargs["neftune_noise_alpha"] = self.neftune_alpha
+                    self.log.emit(
+                        f"  NEFTune embedding noise on (α={self.neftune_alpha:g})")
+                else:
+                    self.log.emit(
+                        "  NEFTune requested but this transformers version "
+                        "doesn't support it — skipped")
+            self.log.emit(
+                f"  regularization: weight decay {self.weight_decay:g}, "
+                f"LoRA dropout {self.lora_dropout:g}, warmup "
+                f"{self.warmup_ratio:.0%}, {self.lr_scheduler} schedule")
             args = TrainingArguments(**args_kwargs)
 
-            collator = DataCollatorForLanguageModeling(
-                tokenizer=tokenizer, mlm=False)
+            # Seq2Seq collator pads ``labels`` with -100 and keeps them as
+            # computed. The language-modeling collator (mlm=False) rebuilt
+            # labels from input_ids — discarding the prompt mask, masking
+            # EOS (pad == eos) and crashing on batch_size > 1.
+            collator = DataCollatorForSeq2Seq(
+                tokenizer=tokenizer, padding=True, label_pad_token_id=-100)
 
-            class _Reporter:
-                def __init__(self_, worker, total):
-                    self_.worker = worker
-                    self_.total = total
-                    self_.step = 0
-                def on_step(self_):
-                    self_.step += 1
-                    self_.worker.progress.emit(self_.step, self_.total)
-
-            reporter = _Reporter(self,
-                                 max(1, len(ds) // max(1, self.batch_size))
-                                 * self.epochs)
+            planned = {"steps": 0}
 
             # Inherit from transformers' base class so we get a no-op
             # default for *every* hook the Trainer might call (including
             # ones added in future versions like on_substep_end,
             # on_optimizer_step, on_pre_optimizer_step, etc.). We only
-            # override the two we actually care about.
+            # override the ones we actually care about.
             class _ProgressCallback(TrainerCallback):
+                def on_train_begin(self_, args, state, control, **kw):
+                    planned["steps"] = int(state.max_steps or 0)
                 def on_step_end(self_, args, state, control, **kw):
-                    reporter.on_step()
+                    self.progress.emit(int(state.global_step),
+                                       int(state.max_steps or 0))
                 def on_log(self_, args, state, control, logs=None, **kw):
-                    if logs and 'loss' in logs:
+                    if not logs:
+                        return
+                    base = {"step": int(state.global_step),
+                            "epoch": float(state.epoch or 0)}
+                    if 'loss' in logs:
                         self.log.emit(
                             f"step {state.global_step}: "
                             f"loss={logs['loss']:.4f}")
+                        self.metrics.emit({**base, "loss": float(logs['loss'])})
+                    if 'eval_loss' in logs:
+                        self.log.emit(
+                            f"step {state.global_step}: "
+                            f"eval_loss={logs['eval_loss']:.4f} "
+                            f"(validation)")
+                        self.metrics.emit(
+                            {**base, "eval_loss": float(logs['eval_loss'])})
 
             # transformers 4.46 deprecated the ``tokenizer`` keyword and
             # renamed it to ``processing_class``; 5.0+ removed the old
             # name entirely. Use processing_class on modern installs and
             # fall back to tokenizer for older ones.
+            callbacks = [_ProgressCallback()]
+            if eval_ds is not None and self.early_stopping_patience > 0:
+                from transformers import EarlyStoppingCallback
+                callbacks.append(EarlyStoppingCallback(
+                    early_stopping_patience=self.early_stopping_patience))
+                self.log.emit(
+                    f"  early stopping: halt after "
+                    f"{self.early_stopping_patience} validation(s) without "
+                    f"improvement")
             trainer_kwargs = dict(
                 model=model,
                 args=args,
                 train_dataset=ds,
                 data_collator=collator,
-                callbacks=[_ProgressCallback()],
+                callbacks=callbacks,
             )
             if eval_ds is not None:
                 trainer_kwargs["eval_dataset"] = eval_ds
@@ -532,6 +617,25 @@ class _TrainingWorker(QThread):
             self.log.emit(f"Saving model to {self.output_dir}…")
             trainer.save_model(str(self.output_dir))
             tokenizer.save_pretrained(str(self.output_dir))
+
+            # Raw loss history next to the model, so the run can be
+            # re-assessed later even if the UI goes away.
+            history = {
+                "log_history": list(trainer.state.log_history),
+                "planned_steps": planned["steps"],
+                "restored_best": eval_ds is not None,
+                "best_checkpoint": getattr(
+                    trainer.state, "best_model_checkpoint", None),
+                "n_train": len(ds),
+                "n_eval": len(eval_ds) if eval_ds is not None else 0,
+            }
+            try:
+                (self.output_dir / "training_history.json").write_text(
+                    json.dumps(history, indent=2, default=str),
+                    encoding="utf-8")
+            except Exception as e:
+                self.log.emit(f"  could not write training history: {e}")
+            self.history_ready.emit(history)
             self.finished_ok.emit(str(self.output_dir))
 
         except Exception as e:
@@ -3098,6 +3202,12 @@ class TrainingToolWindow(QMainWindow):
         self.src_plot_cb = QCheckBox("Plot / outline generations")
         self.src_plot_cb.setChecked(False)
         layout.addWidget(self.src_plot_cb)
+        self.src_critique_cb = QCheckBox("Critiques (rated critique reports)")
+        self.src_critique_cb.setToolTip(
+            "Rated outputs of the Critique tab. Needed to train a "
+            "critiquing model.")
+        self.src_critique_cb.setChecked(False)
+        layout.addWidget(self.src_critique_cb)
 
         # ── Voice / genre tagging for the next corpus upload ──
         # Anything uploaded after these are filled in is tagged with this
@@ -3391,6 +3501,7 @@ class TrainingToolWindow(QMainWindow):
         if self.src_worldbuilding_cb.isChecked():  out.append(SOURCE_WORLDBUILDING)
         if self.src_character_cb.isChecked():      out.append(SOURCE_CHARACTER)
         if self.src_plot_cb.isChecked():           out.append(SOURCE_PLOT)
+        if self.src_critique_cb.isChecked():       out.append(SOURCE_CRITIQUE)
         return out
 
     # ── Preset capture / apply ──
@@ -3440,6 +3551,7 @@ class TrainingToolWindow(QMainWindow):
             src_worldbuilding=_check("src_worldbuilding_cb", False),
             src_character=_check("src_character_cb", False),
             src_plot=_check("src_plot_cb", False),
+            src_critique=_check("src_critique_cb", False),
             upload_voice=_txt("upload_voice_edit"),
             upload_genre=_txt("upload_genre_edit"),
             export_format=_combo_data("format_combo", "instruction"),
@@ -3456,6 +3568,16 @@ class TrainingToolWindow(QMainWindow):
             train_min_rating=_combo_data("train_min_rating", "good"),
             expand_corpus_windows=_check("expand_corpus_cb", False),
             enforce_purpose_fit=_check("purpose_fit_cb", False),
+            tasks=self._selected_tasks() if hasattr(self, "task_checkboxes")
+            else ["rephrase"],
+            eval_fraction=_spin("val_split_spin", 15) / 100.0,
+            evals_per_epoch=int(_spin("evals_per_epoch_spin", 2)),
+            early_stopping=_check("early_stop_cb", True),
+            early_stopping_patience=int(_spin("patience_spin", 3)),
+            weight_decay=float(_spin("weight_decay_spin", 0.01)),
+            lora_dropout=float(_spin("lora_dropout_spin", 0.05)),
+            neftune=_check("neftune_cb", False),
+            neftune_alpha=float(_spin("neftune_alpha_spin", 5.0)),
         )
 
     def _apply_preset(self, preset) -> None:
@@ -3514,6 +3636,7 @@ class TrainingToolWindow(QMainWindow):
         _set_check("src_worldbuilding_cb", preset.src_worldbuilding)
         _set_check("src_character_cb", preset.src_character)
         _set_check("src_plot_cb", preset.src_plot)
+        _set_check("src_critique_cb", getattr(preset, "src_critique", False))
         _set_text("upload_voice_edit", preset.upload_voice)
         _set_text("upload_genre_edit", preset.upload_genre)
         _set_combo_data("format_combo", preset.export_format)
@@ -3533,6 +3656,19 @@ class TrainingToolWindow(QMainWindow):
         _set_check("purpose_fit_cb",
                    bool(getattr(preset, "enforce_purpose_fit", False)))
         _set_combo_data("train_min_rating", preset.train_min_rating)
+        # Task + overfitting protection (absent in presets saved before
+        # these controls existed → dataclass defaults apply).
+        for key, cb in getattr(self, "task_checkboxes", {}).items():
+            cb.setChecked(key in (getattr(preset, "tasks", None) or ["rephrase"]))
+        _set_spin("val_split_spin", int(round(
+            float(getattr(preset, "eval_fraction", 0.15)) * 100)))
+        _set_spin("evals_per_epoch_spin", int(getattr(preset, "evals_per_epoch", 2)))
+        _set_check("early_stop_cb", getattr(preset, "early_stopping", True))
+        _set_spin("patience_spin", int(getattr(preset, "early_stopping_patience", 3)))
+        _set_spin("weight_decay_spin", float(getattr(preset, "weight_decay", 0.01)))
+        _set_spin("lora_dropout_spin", float(getattr(preset, "lora_dropout", 0.05)))
+        _set_check("neftune_cb", getattr(preset, "neftune", False))
+        _set_spin("neftune_alpha_spin", float(getattr(preset, "neftune_alpha", 5.0)))
 
         # Refresh derived state (recommendation banner reads everything
         # we just set, so it'd be stale otherwise).
@@ -3757,6 +3893,7 @@ class TrainingToolWindow(QMainWindow):
         if self.src_worldbuilding_cb.isChecked():  sources_text.append("worldbuilding")
         if self.src_character_cb.isChecked():      sources_text.append("character")
         if self.src_plot_cb.isChecked():           sources_text.append("plot")
+        if self.src_critique_cb.isChecked():       sources_text.append("critique")
 
         self.recommendation_label.setVisible(True)
         self.recommendation_label.setText(
@@ -4089,6 +4226,7 @@ class TrainingToolWindow(QMainWindow):
         self.src_worldbuilding_cb.setChecked(SOURCE_WORLDBUILDING in rec.source_types)
         self.src_character_cb.setChecked(SOURCE_CHARACTER in rec.source_types)
         self.src_plot_cb.setChecked(SOURCE_PLOT in rec.source_types)
+        self.src_critique_cb.setChecked(SOURCE_CRITIQUE in rec.source_types)
         # Base model + hyperparams
         self.base_model_combo.setEditText(rec.base_model)
         self.epochs_spin.setValue(int(rec.epochs))
@@ -5175,6 +5313,9 @@ class TrainingToolWindow(QMainWindow):
         # Apply simple-mode default (advanced rows hidden).
         self._on_simple_mode_toggled(self.simple_mode_cb.isChecked())
 
+        layout.addWidget(self._build_task_readiness_group())
+        layout.addWidget(self._build_overfitting_group())
+
         btn_row = QHBoxLayout()
         self.start_btn = QPushButton("▶ Start Training")
         self.start_btn.setStyleSheet(
@@ -5273,6 +5414,22 @@ class TrainingToolWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         layout.addWidget(self.progress_bar)
 
+        # Live fit vs. validation loss while training runs.
+        from src.ui.training_insights_widgets import LossChartWidget
+        chart_row = QHBoxLayout()
+        self.loss_chart = LossChartWidget()
+        self.loss_chart.setVisible(False)
+        chart_row.addWidget(self.loss_chart, 1)
+        self.view_report_btn = QPushButton("📈 Last training report")
+        self.view_report_btn.setToolTip(
+            "Re-open the metrics, loss curves and quality alerts from "
+            "the most recent training run.")
+        self.view_report_btn.setEnabled(False)
+        self.view_report_btn.setMaximumWidth(200)
+        self.view_report_btn.clicked.connect(self._show_last_training_report)
+        chart_row.addWidget(self.view_report_btn, 0, Qt.AlignmentFlag.AlignTop)
+        layout.addLayout(chart_row)
+
         self.train_log = QPlainTextEdit()
         self.train_log.setReadOnly(True)
         self.train_log.setStyleSheet(
@@ -5280,6 +5437,343 @@ class TrainingToolWindow(QMainWindow):
             "background-color: #111827; color: #d1d5db;")
         layout.addWidget(self.train_log, 1)
         return page
+
+    # ── Task, dataset readiness and overfitting protection ──
+
+    def _build_task_readiness_group(self) -> QGroupBox:
+        from src.ai.training_insights import TASKS, TASK_ORDER
+        box = QGroupBox("🎯 Training task && dataset readiness")
+        v = QVBoxLayout(box)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Train for:"))
+        self.task_checkboxes = {}
+        for key in TASK_ORDER:
+            spec = TASKS[key]
+            cb = QCheckBox(spec.label)
+            cb.setToolTip(
+                f"{spec.description}\n\nEffective examples needed: "
+                f"minimum {spec.minimum:,}, recommended {spec.recommended:,}, "
+                f"strong {spec.strong:,}.")
+            cb.setChecked(key == "rephrase")
+            cb.toggled.connect(self._on_tasks_changed)
+            self.task_checkboxes[key] = cb
+            row.addWidget(cb)
+        row.addStretch()
+        self.analyze_dataset_btn = QPushButton("📊 Analyze dataset")
+        self.analyze_dataset_btn.setToolTip(
+            "Export the data selected on Step 1 and measure its size and "
+            "quality against the chosen task(s): unique examples, "
+            "duplicates, defects, ratings, per-task coverage vs. the "
+            "examples needed, and recommended overfitting protection.")
+        self.analyze_dataset_btn.clicked.connect(self._analyze_dataset_clicked)
+        row.addWidget(self.analyze_dataset_btn)
+        v.addLayout(row)
+        self.readiness_label = QLabel(
+            "<span style='color:#6b7280'>Pick the task(s) and click "
+            "<b>Analyze dataset</b> to see how many examples you have vs. "
+            "how many the task needs. Training also runs this check.</span>")
+        self.readiness_label.setWordWrap(True)
+        self.readiness_label.setTextFormat(Qt.TextFormat.RichText)
+        self.readiness_label.setStyleSheet(
+            "padding: 6px 8px; background: #f9fafb; border-radius: 4px;")
+        v.addWidget(self.readiness_label)
+        self._last_readiness = None
+        self._last_reg_plan = None
+        return box
+
+    def _build_overfitting_group(self) -> QGroupBox:
+        box = QGroupBox("🛡 Overfitting protection")
+        form = QFormLayout(box)
+        self.val_split_spin = QSpinBox()
+        self.val_split_spin.setRange(5, 30)
+        self.val_split_spin.setSuffix(" %")
+        self.val_split_spin.setValue(15)
+        self.val_split_spin.setToolTip(
+            "Share of unique examples held out to measure validation loss. "
+            "Copies of an example always stay on one side of the split.")
+        form.addRow("Validation split:", self.val_split_spin)
+        self.evals_per_epoch_spin = QSpinBox()
+        self.evals_per_epoch_spin.setRange(1, 10)
+        self.evals_per_epoch_spin.setValue(2)
+        self.evals_per_epoch_spin.setSuffix(" × per epoch")
+        self.evals_per_epoch_spin.setToolTip(
+            "How often validation loss is measured (and a checkpoint "
+            "saved). More often = finer curve and faster early stopping.")
+        form.addRow("Evaluate:", self.evals_per_epoch_spin)
+        es_row = QHBoxLayout()
+        self.early_stop_cb = QCheckBox("Stop when validation stops improving")
+        self.early_stop_cb.setChecked(True)
+        es_row.addWidget(self.early_stop_cb)
+        es_row.addWidget(QLabel("patience"))
+        self.patience_spin = QSpinBox()
+        self.patience_spin.setRange(1, 10)
+        self.patience_spin.setValue(3)
+        self.patience_spin.setToolTip(
+            "Number of evaluations without improvement before stopping. "
+            "The best checkpoint is always the one that's saved.")
+        es_row.addWidget(self.patience_spin)
+        es_row.addStretch()
+        self.early_stop_cb.toggled.connect(self.patience_spin.setEnabled)
+        form.addRow("Early stopping:", self._row_widget(es_row))
+        self.weight_decay_spin = QDoubleSpinBox()
+        self.weight_decay_spin.setRange(0.0, 0.3)
+        self.weight_decay_spin.setDecimals(3)
+        self.weight_decay_spin.setSingleStep(0.01)
+        self.weight_decay_spin.setValue(0.01)
+        self.weight_decay_spin.setToolTip(
+            "AdamW weight decay on the adapter — pulls weights toward zero "
+            "so the model can't fit noise as easily.")
+        form.addRow("Weight decay:", self.weight_decay_spin)
+        self.lora_dropout_spin = QDoubleSpinBox()
+        self.lora_dropout_spin.setRange(0.0, 0.5)
+        self.lora_dropout_spin.setDecimals(2)
+        self.lora_dropout_spin.setSingleStep(0.05)
+        self.lora_dropout_spin.setValue(0.05)
+        self.lora_dropout_spin.setToolTip(
+            "Dropout inside the LoRA adapter. 0.1 helps on small datasets.")
+        form.addRow("LoRA dropout:", self.lora_dropout_spin)
+        nef_row = QHBoxLayout()
+        self.neftune_cb = QCheckBox("NEFTune embedding noise")
+        self.neftune_cb.setToolTip(
+            "Adds noise to input embeddings during training — reduces "
+            "memorization on small instruction datasets. Leave off for "
+            "copyediting, which needs exact wording.")
+        nef_row.addWidget(self.neftune_cb)
+        nef_row.addWidget(QLabel("α"))
+        self.neftune_alpha_spin = QDoubleSpinBox()
+        self.neftune_alpha_spin.setRange(1.0, 15.0)
+        self.neftune_alpha_spin.setValue(5.0)
+        self.neftune_alpha_spin.setEnabled(False)
+        self.neftune_cb.toggled.connect(self.neftune_alpha_spin.setEnabled)
+        nef_row.addWidget(self.neftune_alpha_spin)
+        nef_row.addStretch()
+        form.addRow("Noise:", self._row_widget(nef_row))
+        for spin in (self.val_split_spin, self.evals_per_epoch_spin,
+                     self.weight_decay_spin, self.lora_dropout_spin):
+            spin.setMaximumWidth(150)
+        rec_row = QHBoxLayout()
+        self.apply_reg_btn = QPushButton("💡 Apply recommended")
+        self.apply_reg_btn.setToolTip(
+            "Fill these settings (and cap LoRA rank / set epochs) from the "
+            "last dataset analysis.")
+        self.apply_reg_btn.setEnabled(False)
+        self.apply_reg_btn.clicked.connect(self._apply_recommended_regularization)
+        rec_row.addWidget(self.apply_reg_btn)
+        rec_row.addStretch()
+        form.addRow("", self._row_widget(rec_row))
+        return box
+
+    def _selected_tasks(self) -> list:
+        tasks = [k for k, cb in getattr(self, "task_checkboxes", {}).items()
+                 if cb.isChecked()]
+        return tasks or ["rephrase"]
+
+    def _on_tasks_changed(self, _checked: bool = False) -> None:
+        # A previous analysis no longer matches the selection.
+        if getattr(self, "_last_readiness", None) is not None:
+            self.readiness_label.setText(
+                "<span style='color:#b45309'>Task selection changed — click "
+                "<b>Analyze dataset</b> again for updated numbers.</span>")
+            self._last_readiness = None
+            self._last_reg_plan = None
+            self.apply_reg_btn.setEnabled(False)
+        # Critique data lives in its own source bucket.
+        if (_checked and self.task_checkboxes.get("critique")
+                and self.task_checkboxes["critique"].isChecked()
+                and not self.src_critique_cb.isChecked()):
+            self.src_critique_cb.setChecked(True)
+        if (_checked and self.task_checkboxes.get("worldbuilding")
+                and self.task_checkboxes["worldbuilding"].isChecked()
+                and not self.src_worldbuilding_cb.isChecked()):
+            self.src_worldbuilding_cb.setChecked(True)
+
+    def _analyze_dataset_clicked(self) -> None:
+        prep = self._prepare_training_dataset()
+        if prep is None:
+            return
+        dataset_path = prep[0]
+        from src.ui.training_insights_widgets import ReadinessWorker
+        self.analyze_dataset_btn.setEnabled(False)
+        self.readiness_label.setText(
+            "<span style='color:#6b7280'>Analyzing dataset…</span>")
+        self._readiness_worker = ReadinessWorker(
+            dataset_path, self._selected_tasks(),
+            eval_fraction=self.val_split_spin.value() / 100.0, parent=self)
+        self._readiness_worker.finished_ok.connect(self._on_readiness_ready)
+        self._readiness_worker.failed.connect(self._on_readiness_failed)
+        self._readiness_worker.start()
+
+    def _on_readiness_ready(self, report) -> None:
+        from src.ai.training_insights import recommend_regularization
+        from src.ui.training_insights_widgets import readiness_html
+        self.analyze_dataset_btn.setEnabled(True)
+        self._last_readiness = report
+        self._last_reg_plan = recommend_regularization(report)
+        self.readiness_label.setText(
+            readiness_html(report, self._last_reg_plan))
+        self.apply_reg_btn.setEnabled(True)
+
+    def _on_readiness_failed(self, msg: str) -> None:
+        self.analyze_dataset_btn.setEnabled(True)
+        self.readiness_label.setText(
+            f"<span style='color:#b91c1c'>Analysis failed: {msg}</span>")
+
+    def _apply_recommended_regularization(self) -> None:
+        plan = getattr(self, "_last_reg_plan", None)
+        if plan is None:
+            return
+        self.val_split_spin.setValue(int(round(plan.eval_fraction * 100)))
+        self.evals_per_epoch_spin.setValue(plan.evals_per_epoch)
+        self.early_stop_cb.setChecked(plan.early_stopping_patience > 0)
+        if plan.early_stopping_patience:
+            self.patience_spin.setValue(plan.early_stopping_patience)
+        self.weight_decay_spin.setValue(plan.weight_decay)
+        self.lora_dropout_spin.setValue(plan.lora_dropout)
+        self.neftune_cb.setChecked(plan.neftune_alpha > 0)
+        if plan.neftune_alpha:
+            self.neftune_alpha_spin.setValue(plan.neftune_alpha)
+        if self.lora_r_spin.value() > plan.max_lora_r:
+            self.lora_r_spin.setValue(plan.max_lora_r)
+        # With early stopping on, epochs is an upper bound.
+        self.epochs_spin.setValue(plan.epochs)
+        self.train_log.appendPlainText(
+            f"[setup] Applied recommended overfitting protection: "
+            f"{plan.eval_fraction:.0%} validation, {plan.evals_per_epoch}× "
+            f"eval/epoch, patience {plan.early_stopping_patience}, weight decay "
+            f"{plan.weight_decay:g}, dropout {plan.lora_dropout:g}, NEFTune "
+            f"{'α=%g' % plan.neftune_alpha if plan.neftune_alpha else 'off'}, "
+            f"LoRA r ≤ {plan.max_lora_r}, up to {plan.epochs} epochs.")
+
+    def _regularization_settings(self) -> dict:
+        """Current overfitting-protection settings (worker / Modal kwargs)."""
+        return {
+            "eval_fraction": self.val_split_spin.value() / 100.0,
+            "evals_per_epoch": self.evals_per_epoch_spin.value(),
+            "early_stopping_patience": (self.patience_spin.value()
+                                        if self.early_stop_cb.isChecked() else 0),
+            "weight_decay": self.weight_decay_spin.value(),
+            "lora_dropout": self.lora_dropout_spin.value(),
+            "neftune_alpha": (self.neftune_alpha_spin.value()
+                              if self.neftune_cb.isChecked() else 0.0),
+            "warmup_ratio": 0.05,
+            "lr_scheduler": "cosine",
+        }
+
+    def _run_readiness_for_training(self, jsonl_path: Path):
+        """Synchronous readiness check at training start; logs a summary."""
+        from src.ai.training_insights import analyze_dataset, tasks_label
+        try:
+            rep = analyze_dataset(
+                jsonl_path, self._selected_tasks(),
+                eval_fraction=self.val_split_spin.value() / 100.0)
+        except Exception as e:
+            self.train_log.appendPlainText(f"[readiness] analysis failed: {e}")
+            return None
+        self._last_readiness = rep
+        self.train_log.appendPlainText(
+            f"[readiness] {tasks_label(rep.tasks)}: {rep.n_unique:,} unique of "
+            f"{rep.n_rows:,} rows, quality {rep.quality_score:.2f}, overall "
+            f"'{rep.readiness}'.")
+        for c in rep.coverage:
+            self.train_log.appendPlainText(
+                f"            {c.label:<14} {c.rows:>6,} rows  ~{c.effective:>7,.0f} "
+                f"effective  (min {c.minimum:,} / rec {c.recommended:,})  {c.status}")
+        try:
+            from src.ai.training_insights import recommend_regularization
+            from src.ui.training_insights_widgets import readiness_html
+            self._last_reg_plan = recommend_regularization(rep)
+            self.readiness_label.setText(readiness_html(rep, self._last_reg_plan))
+            self.apply_reg_btn.setEnabled(True)
+        except Exception:
+            pass
+        return rep
+
+    def _confirm_insufficient_data(self, report) -> bool:
+        """Warn before training a task that's below its minimum."""
+        if report is None:
+            return True
+        short = [c for c in report.coverage if c.status == "insufficient"]
+        if not short:
+            return True
+        lines = "\n".join(
+            f"• {c.label}: ~{c.effective:,.0f} effective examples "
+            f"(minimum {c.minimum:,}, recommended {c.recommended:,})"
+            for c in short)
+        reply = QMessageBox.warning(
+            self, "Not enough training data",
+            f"These tasks are below the minimum number of examples:\n\n{lines}"
+            f"\n\nThe model will likely memorize rather than learn them. "
+            f"Train anyway?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        return reply == QMessageBox.StandardButton.Yes
+
+    def _begin_live_chart(self) -> None:
+        self.loss_chart.clear()
+        self.loss_chart.setVisible(True)
+
+    def _finish_training_report(self, *, output_path: str, history: dict,
+                                header_html: str) -> None:
+        """Assess the run, save training_report.json, show the report."""
+        from src.ai.training_insights import assess_training, save_training_report
+        from src.ui.training_insights_widgets import TrainingReportDialog
+        history = history or {}
+        assessment = assess_training(
+            history.get("log_history") or [],
+            report=getattr(self, "_last_readiness", None),
+            planned_steps=history.get("planned_steps") or None,
+            restored_best=bool(history.get("restored_best")),
+            n_eval=history.get("n_eval", history.get("rows_evaluated")))
+        settings = dict(getattr(self, "_run_settings", {}) or {})
+        dataset = getattr(self, "_last_readiness", None)
+        try:
+            save_training_report(Path(output_path), assessment=assessment,
+                                 dataset=dataset, settings=settings)
+        except Exception as e:
+            self.train_log.appendPlainText(f"[report] could not save: {e}")
+        self.loss_chart.set_curves(assessment.train_curve, assessment.eval_curve)
+        self.loss_chart.setVisible(self.loss_chart.has_data())
+        self._last_report = (assessment,
+                             dataset.to_dict() if dataset else None, settings)
+        self.view_report_btn.setEnabled(True)
+        n_alert = sum(a.level in ("critical", "warning") for a in assessment.alerts)
+        self.train_log.appendPlainText(
+            f"[report] verdict '{assessment.verdict}', best validation loss "
+            f"{assessment.best_eval_loss}, {n_alert} alert(s). Saved to "
+            f"{Path(output_path) / 'training_report.json'}")
+        TrainingReportDialog(
+            assessment, dataset=self._last_report[1], settings=settings,
+            title="Training complete — report", header_html=header_html,
+            parent=self).exec()
+
+    def _show_last_training_report(self) -> None:
+        last = getattr(self, "_last_report", None)
+        if not last:
+            return
+        from src.ui.training_insights_widgets import TrainingReportDialog
+        TrainingReportDialog(last[0], dataset=last[1], settings=last[2],
+                             parent=self).exec()
+
+    def _show_selected_model_report(self) -> None:
+        path = self.test_model_combo.currentData() if hasattr(
+            self, "test_model_combo") else ""
+        if not path:
+            QMessageBox.information(self, "No model selected",
+                                    "Pick a trained model first.")
+            return
+        from src.ai.training_insights import load_training_report
+        from src.ui.training_insights_widgets import TrainingReportDialog
+        loaded = load_training_report(Path(path))
+        if loaded is None:
+            QMessageBox.information(
+                self, "No training report",
+                "This model has no training report — it was trained before "
+                "reports were recorded, or on another machine.")
+            return
+        TrainingReportDialog(
+            loaded["assessment"], dataset=loaded["dataset"],
+            settings=loaded["settings"],
+            title=f"Training report — {Path(path).name}", parent=self).exec()
 
     def _check_memory_before_training(
             self, base_model: str, *, use_qlora: bool) -> bool:
@@ -5973,7 +6467,14 @@ class TrainingToolWindow(QMainWindow):
             "max_length": 512,
             "estimated_rows": n_rows,
             "base_model_size_b": base_size_b,
+            **self._regularization_settings(),
         }
+        self._run_settings = {"tasks": "+".join(self._selected_tasks()),
+                              "where": "modal", **{
+                                  k: v for k, v in config.items()
+                                  if k not in ("estimated_rows",)}}
+        self._run_readiness_for_training(dataset_path)
+        self.loss_chart.clear()
 
         self.train_log.appendPlainText(
             f"[modal] Submitting '{name}' to Modal "
@@ -6467,6 +6968,10 @@ class TrainingToolWindow(QMainWindow):
         except Exception:
             pass
 
+        if not intent:
+            intent = "+".join(self._selected_tasks())
+        db_count = (int(result_meta.get("rows_trained", 0))
+                    + int(result_meta.get("rows_evaluated", 0))) or db_count
         from src.config.creativeos_config import register_trained_model
         entry = register_trained_model(
             name=self.name_edit.text().strip() or "modal-run",
@@ -6482,11 +6987,18 @@ class TrainingToolWindow(QMainWindow):
         )
         self.train_log.appendPlainText(
             f"[modal] ✓ Saved to {output_path} as '{entry['name']}'.")
-        QMessageBox.information(
-            self, "Modal Training Complete",
-            f"Model saved at:\n{output_path}\n\n"
-            f"Registered as '{entry['name']}'. Available now in the "
-            f"Local Models Hub and any per-task pickers.")
+        import html as _html
+        if result_meta.get("log_history") is not None:
+            self.loss_chart.setVisible(True)
+        self._finish_training_report(
+            output_path=output_path,
+            history=result_meta if result_meta.get("log_history") is not None
+            else {},
+            header_html=(
+                f"<b>Modal training complete.</b> Model saved at "
+                f"<code>{_html.escape(output_path)}</code>, registered as "
+                f"<b>{_html.escape(entry['name'])}</b>. Available now in the "
+                f"Local Models Hub and any per-task pickers."))
         self._refresh_continue_combo()
         self._refresh_trained_models()
         self.stack.setCurrentIndex(3)
@@ -6711,6 +7223,13 @@ class TrainingToolWindow(QMainWindow):
         if not self._gate_corpus_quality(tmp):
             return
 
+        # Size/quality vs. the chosen task(s); feeds the post-run report.
+        readiness = self._run_readiness_for_training(tmp)
+        if not self._confirm_insufficient_data(readiness):
+            self.train_log.appendPlainText(
+                "[readiness] Training cancelled — not enough data.")
+            return
+
         name = self.name_edit.text().strip() or "untitled"
         # Always train into a NEW directory so a previous model with the
         # same name is never destroyed. We auto-suffix with a counter.
@@ -6780,6 +7299,17 @@ class TrainingToolWindow(QMainWindow):
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
 
+        reg = self._regularization_settings()
+        self._run_settings = {
+            "tasks": "+".join(self._selected_tasks()),
+            "base_model": base_to_train,
+            "epochs": self.epochs_spin.value(),
+            "learning_rate": self.lr_spin.value(),
+            "batch_size": self.batch_spin.value(),
+            "lora_r": self.lora_r_spin.value(),
+            **reg,
+        }
+        self._last_history = None
         self.worker = _TrainingWorker(
             jsonl_path=self.dataset_jsonl,
             base_model=base_to_train,
@@ -6790,9 +7320,14 @@ class TrainingToolWindow(QMainWindow):
             lora_r=self.lora_r_spin.value(),
             use_qlora=self.qlora_cb.isChecked(),
             adapter_path=adapter_path,
+            **reg,
         )
         self.worker.log.connect(self.train_log.appendPlainText)
         self.worker.progress.connect(self._on_progress)
+        self._begin_live_chart()
+        self.worker.metrics.connect(self.loss_chart.add_metrics)
+        self.worker.history_ready.connect(
+            lambda h: setattr(self, "_last_history", h))
         self.worker.finished_ok.connect(self._on_training_done)
         self.worker.failed.connect(self._on_training_failed)
         self.worker.start()
@@ -6835,6 +7370,8 @@ class TrainingToolWindow(QMainWindow):
             if recipe is not None:
                 intent = getattr(recipe, "intent", "") or ""
                 genres = list(getattr(recipe, "detected_genres", []) or [])
+            if not intent:
+                intent = "+".join(self._selected_tasks())
             if hasattr(self, 'selected_tones'):
                 tones = list(self.selected_tones())
             cont = (self.continue_combo.currentData()
@@ -6848,6 +7385,10 @@ class TrainingToolWindow(QMainWindow):
                     continued_from = prior.get("name", "")
         except Exception:
             pass
+        history = getattr(self, "_last_history", None) or {}
+        if history.get("n_train") is not None:
+            # Rows actually trained on (+ held out), not the whole DB.
+            db_count = int(history.get("n_train", 0)) + int(history.get("n_eval", 0))
         entry = register_trained_model(
             name=self.name_edit.text().strip() or "untitled",
             path=output_path,
@@ -6860,11 +7401,14 @@ class TrainingToolWindow(QMainWindow):
         )
         self.train_log.appendPlainText(
             f"[done] Saved to {output_path}. Registered as '{entry['name']}'.")
-        QMessageBox.information(
-            self, "Training Complete",
-            f"Model saved at:\n{output_path}\n\n"
-            f"It's registered under '{entry['name']}'. The Writing Tool's "
-            f"Local Models tab will list it next time you open Settings.")
+        import html as _html
+        self._finish_training_report(
+            output_path=output_path, history=history,
+            header_html=(
+                f"<b>Model saved</b> at <code>{_html.escape(output_path)}</code> "
+                f"and registered as <b>{_html.escape(entry['name'])}</b>. The "
+                f"Writing Tool's Local Models tab will list it next time you "
+                f"open Settings."))
         # Refresh the picker so the new model is available for the next run
         self._refresh_continue_combo()
         self._refresh_trained_models()
@@ -6884,6 +7428,9 @@ class TrainingToolWindow(QMainWindow):
         self.start_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
         QMessageBox.warning(self, "Training Failed", msg)
+        if self.loss_chart.has_data():
+            self.train_log.appendPlainText(
+                "[report] Partial loss curves are shown above the log.")
 
     # ── Step 4: model management ──
 
@@ -7023,6 +7570,13 @@ class TrainingToolWindow(QMainWindow):
         self._refresh_convert_mlx_button()
         action_row.addWidget(self.convert_mlx_btn)
 
+        self.model_report_btn = QPushButton("📈 Training report")
+        self.model_report_btn.setToolTip(
+            "Fit vs. validation loss, overfitting metrics and quality "
+            "alerts recorded when the selected model was trained.")
+        self.model_report_btn.clicked.connect(self._show_selected_model_report)
+        action_row.addWidget(self.model_report_btn)
+
         action_row.addStretch()
 
         self.done_btn = QPushButton("✓ Done — Save & Close")
@@ -7067,7 +7621,7 @@ class TrainingToolWindow(QMainWindow):
 
         # Display order: the canonical training intents first, then
         # whatever else exists, with uncategorized last.
-        intent_order = ["voice", "rephrase", "plot",
+        intent_order = ["voice", "rephrase", "copyedit", "critique", "plot",
                         "worldbuilding", "character", "chat"]
         seen = set()
         ordered_keys = []
@@ -7083,6 +7637,8 @@ class TrainingToolWindow(QMainWindow):
         intent_labels = {
             "voice": "✍️  Voice / style continuation",
             "rephrase": "🔀  Rephrase",
+            "copyedit": "✏️  Copyediting",
+            "critique": "🧐  Critiquing",
             "plot": "📐  Plot / outline",
             "worldbuilding": "🗺️  Worldbuilding",
             "character": "👥  Character",

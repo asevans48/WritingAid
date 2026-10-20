@@ -572,7 +572,7 @@ def _build_app():
         from transformers import (
             AutoTokenizer, AutoModelForCausalLM,
             TrainingArguments, Trainer,
-            DataCollatorForLanguageModeling,
+            DataCollatorForSeq2Seq,
         )
         from peft import (
             LoraConfig, get_peft_model,
@@ -618,7 +618,7 @@ def _build_app():
         lora_cfg = LoraConfig(
             r=lora_r,
             lora_alpha=lora_r * 2,
-            lora_dropout=0.05,
+            lora_dropout=float(config.get("lora_dropout", 0.05)),
             bias="none",
             task_type="CAUSAL_LM",
             target_modules=config.get("target_modules") or "all-linear",
@@ -703,24 +703,58 @@ def _build_app():
             tokens["labels"] = labels
             return tokens
 
-        ds = ds_full.map(
-            render_and_tokenize,
-            batched=True, batch_size=64,
-            remove_columns=ds_full.column_names,
-            desc="Tokenizing")
+        # Grouped validation split — inlined copy of
+        # src.ai.training_insights.grouped_split_indices (project modules
+        # aren't importable in the container). Oversampled copies of a
+        # row stay on one side so validation loss can't leak.
+        import hashlib
+        import math as _math
+        import random as _random
 
-        eval_ds = None
-        if len(ds) >= 20:
-            split = ds.train_test_split(test_size=0.15, seed=42)
-            ds = split["train"]
-            eval_ds = split["test"]
+        def _content_key(rec):
+            if "messages" in rec:
+                parts = [m.get("content", "") for m in rec["messages"] or []]
+            else:
+                parts = [rec.get("instruction", "") or "",
+                         rec.get("input", "") or "",
+                         rec.get("output", "") or ""]
+            norm = "\x1f".join(" ".join(x.split()).lower() for x in parts)
+            return hashlib.sha1(norm.encode("utf-8")).hexdigest()
 
+        groups = {}
+        for i, rec in enumerate(ds_full):
+            groups.setdefault(_content_key(rec), []).append(i)
+        eval_fraction = float(config.get("eval_fraction", 0.15))
+        order = list(groups)
+        n_eval_groups = int(round(len(order) * eval_fraction))
+        train_idx, eval_idx = list(range(len(ds_full))), []
+        if len(order) >= 20 and n_eval_groups >= 3:
+            _random.Random(42).shuffle(order)
+            eval_keys = set(order[:n_eval_groups])
+            train_idx = sorted(i for k in groups if k not in eval_keys
+                               for i in groups[k])
+            eval_idx = sorted(groups[k][0] for k in eval_keys)
+
+        map_kwargs = dict(batched=True, batch_size=64,
+                          remove_columns=ds_full.column_names,
+                          desc="Tokenizing")
+        ds = ds_full.select(train_idx).map(render_and_tokenize, **map_kwargs)
+        eval_ds = (ds_full.select(eval_idx).map(render_and_tokenize, **map_kwargs)
+                   if eval_idx else None)
+
+        import inspect
+        ta_params = inspect.signature(TrainingArguments).parameters
+        batch_size = int(config.get("batch_size", 1))
+        steps_per_epoch = max(1, _math.ceil(len(ds) / (batch_size * 4)))
         args_kwargs = dict(
             output_dir=str(adapter_dir / "checkpoints"),
             num_train_epochs=int(config.get("epochs", 2)),
-            per_device_train_batch_size=int(config.get("batch_size", 1)),
+            per_device_train_batch_size=batch_size,
             gradient_accumulation_steps=4,
             learning_rate=float(config.get("learning_rate", 2e-4)),
+            weight_decay=float(config.get("weight_decay", 0.0)),
+            warmup_ratio=float(config.get("warmup_ratio", 0.0)),
+            lr_scheduler_type=config.get("lr_scheduler", "linear"),
             logging_steps=1,
             save_strategy="epoch",
             save_total_limit=2 if eval_ds is not None else 1,
@@ -729,19 +763,28 @@ def _build_app():
             remove_unused_columns=False,
         )
         if eval_ds is not None:
-            import inspect
-            ta_params = inspect.signature(TrainingArguments).parameters
-            if "eval_strategy" in ta_params:
-                args_kwargs["eval_strategy"] = "epoch"
-            else:
-                args_kwargs["evaluation_strategy"] = "epoch"
+            eval_steps = max(1, steps_per_epoch
+                             // max(1, int(config.get("evals_per_epoch", 1))))
+            strategy_key = ("eval_strategy" if "eval_strategy" in ta_params
+                            else "evaluation_strategy")
+            args_kwargs[strategy_key] = "steps"
+            args_kwargs["eval_steps"] = eval_steps
+            args_kwargs["save_strategy"] = "steps"
+            args_kwargs["save_steps"] = eval_steps
             args_kwargs["load_best_model_at_end"] = True
             args_kwargs["metric_for_best_model"] = "eval_loss"
             args_kwargs["greater_is_better"] = False
+        neftune_alpha = float(config.get("neftune_alpha", 0.0))
+        if neftune_alpha > 0 and "neftune_noise_alpha" in ta_params:
+            args_kwargs["neftune_noise_alpha"] = neftune_alpha
         targs = TrainingArguments(**args_kwargs)
 
-        collator = DataCollatorForLanguageModeling(
-            tokenizer=tokenizer, mlm=False)
+        # Seq2Seq collator pads ``labels`` with -100 and keeps them as
+        # computed. The language-modeling collator (mlm=False) rebuilt
+        # labels from input_ids — discarding the prompt mask, masking
+        # EOS (pad == eos) and crashing on batch_size > 1.
+        collator = DataCollatorForSeq2Seq(
+            tokenizer=tokenizer, padding=True, label_pad_token_id=-100)
         trainer_kwargs = dict(
             model=model,
             args=targs,
@@ -750,6 +793,11 @@ def _build_app():
         )
         if eval_ds is not None:
             trainer_kwargs["eval_dataset"] = eval_ds
+            patience = int(config.get("early_stopping_patience", 0))
+            if patience > 0:
+                from transformers import EarlyStoppingCallback
+                trainer_kwargs["callbacks"] = [
+                    EarlyStoppingCallback(early_stopping_patience=patience)]
         try:
             import inspect
             if "processing_class" in inspect.signature(
@@ -774,10 +822,17 @@ def _build_app():
         }))
         adapters.commit()
 
+        # Loss history goes back with the result so the studio can show
+        # fit vs. validation curves and run the post-training checks.
+        log_history = json.loads(json.dumps(
+            trainer.state.log_history, default=float))
         return {"adapter_name": adapter_name,
                 "base_model": base_model,
                 "rows_trained": len(ds),
-                "rows_evaluated": len(eval_ds) if eval_ds else 0}
+                "rows_evaluated": len(eval_ds) if eval_ds else 0,
+                "log_history": log_history,
+                "planned_steps": int(trainer.state.max_steps or 0),
+                "restored_best": eval_ds is not None}
 
     return app, train_remote, hf_cache, adapters
 

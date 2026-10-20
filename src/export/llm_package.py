@@ -1072,7 +1072,11 @@ def _apply_chapter(
     new_planning_raw = data.get("planning") or {}
     new_planning = ChapterPlanning.model_validate(new_planning_raw)
 
-    for ch in chapters:
+    # A chapter with this id may live in another novella (subproject);
+    # update it there rather than creating a duplicate in the active one.
+    finder = getattr(project, "find_chapter", None)
+    existing = finder(chap_id) if finder is not None else None
+    for ch in ([existing] if existing is not None else chapters):
         if getattr(ch, "id", None) == chap_id:
             # PROTECTED FIELDS: do NOT touch any of these.
             # content / html_content / revisions / annotations /
@@ -1097,6 +1101,7 @@ def _apply_chapter(
         title=new_title or f"Chapter {len(chapters) + 1}",
         content="",
         planning=new_planning,
+        folder_root=getattr(manuscript, "folder_root", "chapters"),
     )
     chapters.append(new_chapter)
     result.chapters_created += 1

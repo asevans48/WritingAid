@@ -56,6 +56,7 @@ class TrainingPreset:
     src_worldbuilding: bool = False
     src_character: bool = False
     src_plot: bool = False
+    src_critique: bool = False
 
     upload_voice: str = ""        # voice tag for any future corpus uploads
     upload_genre: str = ""        # genre tag
@@ -78,6 +79,17 @@ class TrainingPreset:
     expand_corpus_windows: bool = False  # opt-in: slice long corpus rows
     enforce_purpose_fit: bool = False    # opt-in: drop craft from voice +
                                           # extend genre filter cross-bucket
+
+    # ── Step 3: task + overfitting protection ──
+    tasks: List[str] = field(default_factory=lambda: ["rephrase"])
+    eval_fraction: float = 0.15
+    evals_per_epoch: int = 2
+    early_stopping: bool = True
+    early_stopping_patience: int = 3
+    weight_decay: float = 0.01
+    lora_dropout: float = 0.05
+    neftune: bool = False
+    neftune_alpha: float = 5.0
 
     # Forward-compat sink — unknown keys land here on load and are
     # written back on save.

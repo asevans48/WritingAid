@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QInputDialog, QGroupBox, QSplitter, QFileDialog,
     QDialog, QMenu, QCheckBox, QLineEdit, QScrollArea, QFrame,
     QProgressBar, QRadioButton, QButtonGroup, QTabWidget,
-    QApplication, QToolButton
+    QApplication, QToolButton, QTabBar
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QSize, QTimer
 from PyQt6.QtGui import QFont, QTextCursor, QAction, QTextCharFormat, QColor, QPainter, QTextDocument, QPixmap, QPen, QIcon
@@ -3623,6 +3623,13 @@ class ManuscriptEditor(QWidget):
     # MainWindow handler can target the right chapter even if the
     # user has since clicked away.
     events_cleared = pyqtSignal(str)
+    # Subproject (novella) tabs. about_to_switch fires while the OUTGOING
+    # manuscript is still active (editor already flushed) so listeners can
+    # flush their own state and persist; switched fires once the incoming
+    # manuscript is loaded. subprojects_changed = created/renamed/deleted.
+    subproject_about_to_switch = pyqtSignal()
+    subproject_switched = pyqtSignal()
+    subprojects_changed = pyqtSignal()
 
     def __init__(self, project=None):
         """Initialize manuscript editor."""
@@ -3636,6 +3643,11 @@ class ManuscriptEditor(QWidget):
         # ManuscriptDraft currently being edited (its chapters are shown
         # inside a Manuscript wrapper held by self.manuscript).
         self._active_draft = None
+
+        # Subproject switching: re-entrancy guard + the chapter last open
+        # in each scope (None = main) so returning to a tab restores it.
+        self._switching_subproject = False
+        self._last_chapter_by_scope = {}
 
         # Initialize memory manager for chapter caching and key points
         self.memory_manager = ChapterMemoryManager(
@@ -3659,6 +3671,10 @@ class ManuscriptEditor(QWidget):
 
     def set_project(self, project):
         """Set the project for context lookup."""
+        if project is not self.project:
+            # Draft / tab state belongs to the previous project.
+            self._active_draft = None
+            self._last_chapter_by_scope = {}
         self.project = project
         self.memory_manager.set_project(project)
 
@@ -3667,6 +3683,32 @@ class ManuscriptEditor(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+
+        # Subproject tabs — the main manuscript plus one tab per novella
+        # sharing this project's worldbuilding, characters and plot.
+        tabs_row = QHBoxLayout()
+        tabs_row.setContentsMargins(12, 6, 12, 0)
+        tabs_row.setSpacing(4)
+        self.subproject_tabs = QTabBar()
+        self.subproject_tabs.setExpanding(False)
+        self.subproject_tabs.setDocumentMode(True)
+        self.subproject_tabs.setElideMode(Qt.TextElideMode.ElideRight)
+        self.subproject_tabs.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.subproject_tabs.customContextMenuRequested.connect(
+            self._show_subproject_tab_menu)
+        self.subproject_tabs.currentChanged.connect(self._on_subproject_tab_changed)
+        tabs_row.addWidget(self.subproject_tabs)
+        self.new_subproject_btn = QToolButton()
+        self.new_subproject_btn.setText("＋ Novella")
+        self.new_subproject_btn.setToolTip(
+            "Start a new novella in this project's universe.\n"
+            "It gets its own chapters; worldbuilding, characters and\n"
+            "plot planning are shared with the rest of the project.")
+        self.new_subproject_btn.setStyleSheet("font-size: 11px; padding: 2px 6px;")
+        self.new_subproject_btn.clicked.connect(self._create_subproject)
+        tabs_row.addWidget(self.new_subproject_btn)
+        tabs_row.addStretch()
+        layout.addLayout(tabs_row)
 
         # Minimal header - compact
         header_layout = QHBoxLayout()
@@ -3943,7 +3985,7 @@ class ManuscriptEditor(QWidget):
 
     def _get_project_dir(self):
         """Get the project directory path."""
-        if hasattr(self, 'project') and self.project and hasattr(self.project, 'project_path'):
+        if hasattr(self, 'project') and self.project and getattr(self.project, 'project_path', None):
             return Path(self.project.project_path).parent
         # Fallback: try to find from any chapter's file_path
         for ch in self.manuscript.chapters:
@@ -4079,7 +4121,8 @@ class ManuscriptEditor(QWidget):
             chapter = Chapter(
                 id=str(uuid.uuid4()),
                 number=chapter_num,
-                title=title
+                title=title,
+                folder_root=self.manuscript.folder_root
             )
             self.manuscript.chapters.append(chapter)
 
@@ -4121,7 +4164,8 @@ class ManuscriptEditor(QWidget):
             chapter = Chapter(
                 id=str(uuid.uuid4()),
                 number=chapter_num,
-                title=title
+                title=title,
+                folder_root=self.manuscript.folder_root
             )
             self.manuscript.chapters.insert(current_row, chapter)
 
@@ -4493,6 +4537,10 @@ class ManuscriptEditor(QWidget):
         must be updated on disk. This handles the swap through temp directories
         to avoid two chapters overwriting each other's folders.
         """
+        # Folderless chapters must get THIS manuscript's root before they
+        # are numbered, or a novella chapter could claim a main folder.
+        self.manuscript.adopt_chapters()
+
         project_dir = None
         if self.project and hasattr(self.project, 'project_path') and self.project.project_path:
             project_dir = Path(self.project.project_path).parent
@@ -4709,6 +4757,7 @@ class ManuscriptEditor(QWidget):
         self._update_nav_buttons()
         # Refresh the draft selector to reflect current state
         self._refresh_draft_selector()
+        self._refresh_subproject_tabs()
 
     def get_manuscript(self) -> Manuscript:
         """Get manuscript data.
@@ -4733,6 +4782,260 @@ class ManuscriptEditor(QWidget):
             return self.project.manuscript
         return self.manuscript
 
+    # ── Subprojects (novella tabs) ───────────────────────────────
+
+    def _scoped_drafts(self) -> list:
+        """Drafts belonging to the active manuscript (main or a novella)."""
+        if not self.project:
+            return []
+        if hasattr(self.project, 'drafts_for_active'):
+            return self.project.drafts_for_active()
+        return list(getattr(self.project, 'drafts', []))
+
+    def _refresh_subproject_tabs(self):
+        """Rebuild the tab bar: main manuscript + one tab per subproject."""
+        if not hasattr(self, 'subproject_tabs'):
+            return
+        tabs = self.subproject_tabs
+        tabs.blockSignals(True)
+        try:
+            while tabs.count():
+                tabs.removeTab(0)
+            if not self.project or not hasattr(self.project, 'subprojects'):
+                tabs.setVisible(False)
+                self.new_subproject_btn.setEnabled(False)
+                return
+            tabs.setVisible(True)
+            self.new_subproject_btn.setEnabled(True)
+            main = self.project.get_main_manuscript()
+            idx = tabs.addTab(f"📖 {main.title or 'Main Manuscript'}")
+            tabs.setTabData(idx, "")
+            tabs.setTabToolTip(
+                idx, f"Main manuscript — {len(main.chapters)} chapter(s)\n"
+                     "Right-click to rename.")
+            current = 0
+            for sp in self.project.subprojects:
+                idx = tabs.addTab(f"📘 {sp.name}")
+                tabs.setTabData(idx, sp.id)
+                tip = f"{sp.kind.capitalize()} — {len(sp.manuscript.chapters)} chapter(s)"
+                if sp.description:
+                    tip += f"\n\n{sp.description}"
+                tabs.setTabToolTip(idx, tip + "\n\nRight-click to rename or delete.")
+                if sp.id == self.project.active_subproject_id:
+                    current = idx
+            tabs.setCurrentIndex(current)
+        finally:
+            tabs.blockSignals(False)
+
+    def _on_subproject_tab_changed(self, index: int):
+        if index < 0 or self._switching_subproject:
+            return
+        sp_id = self.subproject_tabs.tabData(index) or None
+        self.switch_subproject(sp_id)
+
+    def _flush_current_chapter(self):
+        """Write the open chapter's editor state into its own model."""
+        if self.current_chapter_editor:
+            try:
+                self.current_chapter_editor.save_to_model()
+            except Exception as e:
+                print(f"[subprojects] save_to_model failed: {e}")
+            if self._current_chapter_id:
+                try:
+                    self.memory_manager.on_chapter_exit(
+                        self._current_chapter_id, save_content=True)
+                except Exception:
+                    pass
+
+    def switch_subproject(self, subproject_id: Optional[str]) -> bool:
+        """Switch the editor to another manuscript (None = main).
+
+        Order matters for data safety:
+          1. flush the open chapter + any active draft into their models,
+          2. let listeners flush/persist while the OLD manuscript is active,
+          3. swap the project's active manuscript (pointer swap, no copy),
+          4. load the NEW manuscript into the editor.
+        """
+        if not self.project or not hasattr(self.project, 'activate_subproject'):
+            return False
+        if self._switching_subproject:
+            return False
+        if subproject_id == self.project.active_subproject_id:
+            self._refresh_subproject_tabs()
+            return False
+        if subproject_id is not None and self.project.get_subproject(subproject_id) is None:
+            self._refresh_subproject_tabs()
+            return False
+
+        self._switching_subproject = True
+        try:
+            outgoing = self.project.active_subproject_id
+            self._flush_current_chapter()
+            self._sync_active_draft_out()
+            self._last_chapter_by_scope[outgoing] = (
+                None if self._active_draft else self._current_chapter_id)
+            if self._active_draft is not None:
+                # Leave the draft wrapper so nothing can hand it back as
+                # if it were the real manuscript.
+                self._active_draft = None
+                self.manuscript = self.project.manuscript
+            if self._split_draft_panel is not None:
+                self.compare_drafts_btn.blockSignals(True)
+                self.compare_drafts_btn.setChecked(False)
+                self.compare_drafts_btn.blockSignals(False)
+                self._hide_split_panel()
+
+            self.subproject_about_to_switch.emit()
+
+            self.project.activate_subproject(subproject_id)
+
+            self.current_chapter_editor = None
+            self._current_chapter_id = None
+            self._clear_editor()
+            self._show_placeholder()
+            self.load_manuscript(self.project.manuscript)
+        finally:
+            self._switching_subproject = False
+
+        # Re-open the chapter last used in this tab (or the first one).
+        # Selecting fires chapter_switched, which autosaves + rebinds the
+        # AI outline panel to the new chapter.
+        remembered = self._last_chapter_by_scope.get(subproject_id)
+        row = 0
+        for i in range(self.chapter_list.count()):
+            if self.chapter_list.item(i).data(Qt.ItemDataRole.UserRole) == remembered:
+                row = i
+                break
+        if self.chapter_list.count() > 0:
+            self.chapter_list.setCurrentRow(row)
+        self.subproject_switched.emit()
+        return True
+
+    def _create_subproject(self):
+        """Create a new novella tab and switch to it."""
+        if not self.project or not hasattr(self.project, 'create_subproject'):
+            QMessageBox.warning(self, "No Project",
+                                "Please create or load a project first.")
+            return
+        existing = {sp.name.lower() for sp in self.project.subprojects}
+        existing.add((self.project.get_main_manuscript().title or "").lower())
+        name = f"Novella {len(self.project.subprojects) + 1}"
+        while True:
+            name, ok = QInputDialog.getText(
+                self, "New Novella",
+                "Name the novella. It gets its own chapters; worldbuilding,\n"
+                "characters and plot planning are shared with the project.",
+                text=name)
+            if not ok or not name.strip():
+                return
+            name = name.strip()
+            if name.lower() not in existing:
+                break
+            QMessageBox.information(
+                self, "Name In Use",
+                f"'{name}' is already used in this project. Pick another name.")
+        description, ok = QInputDialog.getMultiLineText(
+            self, "New Novella", f"Short description of '{name}' (optional):", "")
+        if not ok:
+            description = ""
+
+        # Commit the open chapter before the project changes shape.
+        self._flush_current_chapter()
+        self._sync_active_draft_out()
+        sp = self.project.create_subproject(name, description.strip())
+        # Persist the new (empty) subproject before switching to it.
+        self.subprojects_changed.emit()
+        self._refresh_subproject_tabs()
+        self.switch_subproject(sp.id)
+
+    def _show_subproject_tab_menu(self, pos):
+        if not self.project or not hasattr(self.project, 'subprojects'):
+            return
+        index = self.subproject_tabs.tabAt(pos)
+        if index < 0:
+            return
+        sp_id = self.subproject_tabs.tabData(index) or None
+        menu = QMenu(self)
+        rename_action = menu.addAction("Rename…")
+        desc_action = delete_action = None
+        if sp_id is not None:
+            desc_action = menu.addAction("Edit description…")
+            menu.addSeparator()
+            delete_action = menu.addAction("Delete novella…")
+        menu.addSeparator()
+        new_action = menu.addAction("＋ New novella…")
+        chosen = menu.exec(self.subproject_tabs.mapToGlobal(pos))
+        if chosen is None:
+            return
+        if chosen is rename_action:
+            self._rename_subproject(sp_id)
+        elif chosen is desc_action:
+            self._edit_subproject_description(sp_id)
+        elif chosen is delete_action:
+            self._delete_subproject(sp_id)
+        elif chosen is new_action:
+            self._create_subproject()
+
+    def _rename_subproject(self, sp_id: Optional[str]):
+        if sp_id is None:
+            current = self.project.get_main_manuscript().title
+        else:
+            sp = self.project.get_subproject(sp_id)
+            if sp is None:
+                return
+            current = sp.name
+        name, ok = QInputDialog.getText(self, "Rename", "New name:", text=current)
+        if not ok or not name.strip() or name.strip() == current:
+            return
+        if self.project.rename_subproject(sp_id, name):
+            self._refresh_subproject_tabs()
+            self._refresh_draft_selector()
+            self.subprojects_changed.emit()
+
+    def _edit_subproject_description(self, sp_id: str):
+        sp = self.project.get_subproject(sp_id)
+        if sp is None:
+            return
+        text, ok = QInputDialog.getMultiLineText(
+            self, "Novella Description", f"Description of '{sp.name}':",
+            sp.description)
+        if ok and text.strip() != sp.description:
+            sp.description = text.strip()
+            self._refresh_subproject_tabs()
+            self.subprojects_changed.emit()
+
+    def _delete_subproject(self, sp_id: str):
+        sp = self.project.get_subproject(sp_id)
+        if sp is None:
+            return
+        n_ch = len(sp.manuscript.chapters)
+        n_drafts = len(self.project.drafts_for_scope(sp_id))
+        reply = QMessageBox.warning(
+            self, "Delete Novella",
+            f"Delete the novella '{sp.name}' ({n_ch} chapter(s), "
+            f"{n_drafts} draft(s)) from this project?\n\n"
+            "Its chapter files are not erased: they are moved to\n"
+            "subprojects/_deleted/ in the project folder so they can be\n"
+            "recovered by hand. Shared worldbuilding, characters and plot\n"
+            "are not affected.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        if self.project.active_subproject_id == sp_id:
+            # Leave the tab through the normal path so everything is flushed.
+            self.switch_subproject(None)
+        try:
+            self.project.delete_subproject(sp_id, project_dir=self._get_project_dir())
+        except Exception as e:
+            QMessageBox.critical(self, "Delete Failed",
+                                 f"Could not archive the novella's files:\n{e}")
+            return
+        self._last_chapter_by_scope.pop(sp_id, None)
+        self._refresh_subproject_tabs()
+        self._refresh_draft_selector()
+        self.subprojects_changed.emit()
+
     # ── Draft switching ──────────────────────────────────────────
 
     def _refresh_draft_selector(self):
@@ -4742,8 +5045,12 @@ class ManuscriptEditor(QWidget):
         self.draft_selector.blockSignals(True)
         try:
             self.draft_selector.clear()
-            self.draft_selector.addItem("Main Manuscript", "")
-            drafts = getattr(self.project, 'drafts', []) if self.project else []
+            sp = (self.project.get_active_subproject()
+                  if self.project and hasattr(self.project, 'get_active_subproject')
+                  else None)
+            self.draft_selector.addItem(
+                f"{sp.name} (working copy)" if sp else "Main Manuscript", "")
+            drafts = self._scoped_drafts()
             for d in drafts:
                 self.draft_selector.addItem(f"📝 {d.name}", d.id)
             # Set the current selection based on _active_draft
@@ -4979,7 +5286,7 @@ class ManuscriptEditor(QWidget):
 
         if checked:
             # Need at least one draft to show in the side panel
-            if not self.project.drafts:
+            if not self._scoped_drafts():
                 QMessageBox.information(
                     self, "No Drafts",
                     "Create a draft first (＋ button) so there's something "
@@ -4997,10 +5304,11 @@ class ManuscriptEditor(QWidget):
         from src.ui.draft_editor_window import DraftEditorPanel
 
         # Prefer a draft DIFFERENT from the currently active one
-        candidates = self.project.drafts
+        scoped = self._scoped_drafts()
+        candidates = scoped
         if self._active_draft:
             candidates = [d for d in candidates
-                          if d.id != self._active_draft.id] or self.project.drafts
+                          if d.id != self._active_draft.id] or scoped
         initial = candidates[0].id if candidates else ""
 
         panel = DraftEditorPanel(self.project, initial_draft_id=initial,
@@ -5039,7 +5347,7 @@ class ManuscriptEditor(QWidget):
         from PyQt6.QtWidgets import QInputDialog, QMessageBox
         if not self.project:
             return
-        drafts = self.project.drafts
+        drafts = self._scoped_drafts()
         if not drafts:
             QMessageBox.information(
                 self, "No Drafts",

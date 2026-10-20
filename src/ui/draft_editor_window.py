@@ -298,11 +298,24 @@ class DraftEditorPanel(QWidget):
             self.draft_combo.clear()
             main_count = len(self.project.manuscript.chapters) if \
                 self.project and self.project.manuscript else 0
+            # "Main" is the active manuscript — with novellas, name it.
+            active_sp = (self.project.get_active_subproject()
+                         if hasattr(self.project, 'get_active_subproject')
+                         else None)
+            main_label = (f"{active_sp.name} (working copy)"
+                          if active_sp else "Main Manuscript")
             self.draft_combo.addItem(
-                f"📖 Main Manuscript  ({main_count} chapters)",
+                f"📖 {main_label}  ({main_count} chapters)",
                 self.MAIN_SOURCE_ID)
+            active_scope = getattr(self.project, 'active_subproject_id', None)
             for d in self.project.drafts:
                 label = f"📝 {d.name}  ({len(d.chapters)} chapters)"
+                scope = getattr(d, 'subproject_id', None)
+                if scope != active_scope:
+                    sp = (self.project.get_subproject(scope)
+                          if scope and hasattr(self.project, 'get_subproject')
+                          else None)
+                    label += f"  [{sp.name if sp else 'Main manuscript'}]"
                 self.draft_combo.addItem(label, d.id)
         finally:
             self.draft_combo.blockSignals(False)

@@ -1,11 +1,20 @@
 """Project model - Root level encapsulating all writer work."""
 
-from typing import List, Dict, Optional, Union
-from pydantic import BaseModel, Field, field_validator, model_validator
+from typing import List, Dict, Optional, Tuple, Union
+from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
 from datetime import datetime
 from pathlib import Path
 import json
 import os
+import re
+
+# Folder (relative to the project dir) holding the main manuscript's
+# chapter folders. Subprojects get their own root under SUBPROJECTS_DIR
+# so their chapter_NNN folders can never collide with the main ones.
+MAIN_CHAPTERS_ROOT = "chapters"
+SUBPROJECTS_DIR = "subprojects"
+# Subproject ids become folder names — keep them path-safe.
+_SAFE_SUBPROJECT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 from src.models.worldbuilding_objects import Faction, Myth, ClimatePreset, Flora, Fauna, Technology, Star, StarSystem, Place, Culture, Army, Economy, HistoricalEvent, PowerHierarchy, PoliticalSystem, WorldMap, MagicSystem, GovernmentSystem, JusticeSystem, ServiceSystem
 # VideoStudio is optional on the project — imported here for the
@@ -467,14 +476,25 @@ class Chapter(BaseModel):
     annotations: List[Annotation] = Field(default_factory=list)
     notes: str = ""  # Legacy notes field
     word_count: int = 0
+    # Folder that holds this chapter's chapter_NNN folder. "chapters" for
+    # the main manuscript; "subprojects/<id>/chapters" for a subproject.
+    # Only consulted until the chapter has a folder_path — after that the
+    # root is derived from folder_path so a chapter never changes roots.
+    folder_root: str = MAIN_CHAPTERS_ROOT
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 
     # --- Folder management ---
 
+    def _chapter_root(self) -> str:
+        """Folder containing this chapter's chapter_NNN folder."""
+        if self.folder_path and "/" in self.folder_path:
+            return self.folder_path.rsplit("/", 1)[0]
+        return self.folder_root or MAIN_CHAPTERS_ROOT
+
     def _folder_name(self) -> str:
         """Get folder name based on chapter number."""
-        return f"chapters/chapter_{self.number:03d}"
+        return f"{self._chapter_root()}/chapter_{self.number:03d}"
 
     def ensure_folder(self, project_dir: Path):
         """Create the chapter folder if it doesn't exist.
@@ -523,7 +543,7 @@ class Chapter(BaseModel):
             # If the target already exists (e.g. two chapters swapping),
             # move to a temporary name first to avoid collisions.
             if new_path.exists():
-                tmp_path = project_dir / f"chapters/_tmp_relocate_{self.id[:8]}"
+                tmp_path = project_dir / f"{self._chapter_root()}/_tmp_relocate_{self.id[:8]}"
                 try:
                     shutil.move(str(old_path), str(tmp_path))
                 except Exception:
@@ -938,7 +958,7 @@ class Chapter(BaseModel):
             return True
 
         # Legacy fallback
-        self.plan_file_path = f"chapters/plans/chapter_{self.number:03d}_plan.md"
+        self.plan_file_path = f"{self._chapter_root()}/plans/chapter_{self.number:03d}_plan.md"
         full_path = project_dir / self.plan_file_path
         full_path.parent.mkdir(parents=True, exist_ok=True)
         full_path.write_text(self.plan, encoding='utf-8')
@@ -1093,8 +1113,44 @@ class Manuscript(BaseModel):
     author: str = ""
     chapters: List[Chapter] = Field(default_factory=list)
     total_word_count: int = 0
+    # Where this manuscript's chapter folders live (see MAIN_CHAPTERS_ROOT).
+    folder_root: str = MAIN_CHAPTERS_ROOT
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
+
+    def adopt_chapters(self) -> None:
+        """Point chapters at this manuscript's folder root.
+
+        Chapters that already have a folder keep the root of that folder
+        (moving it would risk clobbering another manuscript's files);
+        folderless chapters — e.g. ones just created by the UI — take
+        this manuscript's root so their first save lands in the right place.
+        """
+        for ch in self.chapters:
+            if ch.folder_path:
+                ch.folder_root = ch._chapter_root()
+            else:
+                ch.folder_root = self.folder_root
+
+
+class Subproject(BaseModel):
+    """A novella (or other sub-work) set in the project's shared universe.
+
+    Worldbuilding, characters, plot planning and the rest stay on the
+    WriterProject and are shared; each subproject owns only its own
+    manuscript (chapters, revisions, chapter planning).
+    """
+    id: str
+    name: str
+    description: str = ""
+    kind: str = "novella"
+    manuscript: Manuscript = Field(default_factory=Manuscript)
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
+
+    @property
+    def chapters_root(self) -> str:
+        return f"{SUBPROJECTS_DIR}/{self.id}/chapters"
 
 
 class ManuscriptDraft(BaseModel):
@@ -1113,6 +1169,9 @@ class ManuscriptDraft(BaseModel):
     description: str = ""
     chapters: List[Chapter] = Field(default_factory=list)
     parent_draft_id: Optional[str] = None  # forked from this draft, if any
+    # Which manuscript this draft belongs to: None = main, otherwise a
+    # Subproject id. Older drafts have no value and belong to main.
+    subproject_id: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 
@@ -1209,9 +1268,228 @@ class WriterProject(BaseModel):
     # load cleanly; created on first use by the studio widget.
     video_studio: Optional["VideoStudio"] = None
 
+    # Subprojects — novellas sharing this project's worldbuilding,
+    # characters and planning. ``manuscript`` above always holds the
+    # ACTIVE manuscript (main or a subproject's) so existing code edits
+    # whatever the writer has open; on disk ``manuscript`` is always
+    # the main one, keeping old files and old app versions compatible.
+    subprojects: List[Subproject] = Field(default_factory=list)
+    active_subproject_id: Optional[str] = None  # None = main manuscript
+
     # Metadata
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
+
+    # Always points at the main manuscript object, whichever is active.
+    _main_manuscript: Optional[Manuscript] = PrivateAttr(default=None)
+
+    def model_post_init(self, __context) -> None:
+        # ``manuscript`` arrives as the main manuscript (canonical form);
+        # re-apply the saved active subproject, if it still exists.
+        self._main_manuscript = self.manuscript
+        target = self.active_subproject_id
+        self.active_subproject_id = None
+        self._normalize_manuscript_roots()
+        if target and self.get_subproject(target) is not None:
+            self.activate_subproject(target)
+
+    # --- Subprojects ---
+
+    def get_subproject(self, subproject_id: Optional[str]) -> Optional[Subproject]:
+        if not subproject_id:
+            return None
+        return next((sp for sp in self.subprojects if sp.id == subproject_id), None)
+
+    def get_active_subproject(self) -> Optional[Subproject]:
+        return self.get_subproject(self.active_subproject_id)
+
+    def _sync_active_manuscript(self) -> None:
+        """Re-establish the active-manuscript invariants.
+
+        Callers may assign ``project.manuscript`` directly (legacy code,
+        imports). A brand-new Manuscript object is adopted as the active
+        one. An object belonging to a DIFFERENT scope is refused, since
+        adopting it would make two scopes share one chapter list.
+        """
+        if self._main_manuscript is None:
+            self._main_manuscript = self.manuscript
+        sp = self.get_active_subproject()
+        if self.active_subproject_id is not None and sp is None:
+            # Active subproject vanished from the list — fall back to main.
+            self.manuscript = self._main_manuscript
+            self.active_subproject_id = None
+            return
+        expected = sp.manuscript if sp else self._main_manuscript
+        if self.manuscript is expected:
+            return
+        others = [self._main_manuscript] + [s.manuscript for s in self.subprojects]
+        if any(self.manuscript is m for m in others):
+            print("[subprojects] Refusing cross-scope manuscript assignment; "
+                  "restoring the active manuscript.")
+            self.manuscript = expected
+        elif sp is not None:
+            sp.manuscript = self.manuscript
+        else:
+            self._main_manuscript = self.manuscript
+
+    def _normalize_manuscript_roots(self) -> None:
+        main = self._main_manuscript if self._main_manuscript is not None else self.manuscript
+        main.folder_root = MAIN_CHAPTERS_ROOT
+        main.adopt_chapters()
+        for sp in self.subprojects:
+            sp.manuscript.folder_root = sp.chapters_root
+            sp.manuscript.adopt_chapters()
+
+    def get_main_manuscript(self) -> Manuscript:
+        self._sync_active_manuscript()
+        return self._main_manuscript
+
+    def get_manuscript_for(self, subproject_id: Optional[str]) -> Optional[Manuscript]:
+        """Manuscript for a scope: None = main, else a subproject id."""
+        if subproject_id is None:
+            return self.get_main_manuscript()
+        sp = self.get_subproject(subproject_id)
+        return sp.manuscript if sp else None
+
+    def iter_manuscripts(self) -> List[Tuple[Optional[str], Manuscript]]:
+        """All manuscripts as (scope, manuscript) — main first."""
+        self._sync_active_manuscript()
+        return ([(None, self._main_manuscript)]
+                + [(sp.id, sp.manuscript) for sp in self.subprojects])
+
+    def find_chapter_with_scope(self, chapter_id: str) -> Tuple[Optional[str], Optional[Chapter]]:
+        """Find a chapter by id in ANY manuscript (active one first).
+
+        Lets late-arriving edits (AI results, outline-panel flushes) land
+        on the chapter they were made for even after the writer switched
+        to another subproject.
+        """
+        if not chapter_id:
+            return None, None
+        ordered = sorted(self.iter_manuscripts(),
+                         key=lambda sm: sm[1] is not self.manuscript)
+        for scope, ms in ordered:
+            for ch in ms.chapters:
+                if ch.id == chapter_id:
+                    return scope, ch
+        return None, None
+
+    def find_chapter(self, chapter_id: str) -> Optional[Chapter]:
+        return self.find_chapter_with_scope(chapter_id)[1]
+
+    def activate_subproject(self, subproject_id: Optional[str]) -> bool:
+        """Make a subproject (or main, with None) the active manuscript.
+
+        Only object pointers move; no chapter data is copied, so nothing
+        can be overwritten. Returns True if the active scope changed.
+        """
+        self._sync_active_manuscript()
+        if subproject_id == self.active_subproject_id:
+            return False
+        if subproject_id is None:
+            self.manuscript = self._main_manuscript
+        else:
+            sp = self.get_subproject(subproject_id)
+            if sp is None:
+                raise KeyError(f"No subproject with id {subproject_id!r}")
+            self.manuscript = sp.manuscript
+        self.active_subproject_id = subproject_id
+        self._normalize_manuscript_roots()
+        return True
+
+    def create_subproject(self, name: str, description: str = "",
+                          kind: str = "novella") -> Subproject:
+        """Add a new, empty subproject. Does not activate it."""
+        import uuid as _uuid
+        self._sync_active_manuscript()
+        existing = {sp.id for sp in self.subprojects}
+        sp_id = _uuid.uuid4().hex[:8]
+        while sp_id in existing:
+            sp_id = _uuid.uuid4().hex[:8]
+        sp = Subproject(id=sp_id, name=name, description=description, kind=kind)
+        sp.manuscript = Manuscript(title=name,
+                                   author=self._main_manuscript.author,
+                                   folder_root=sp.chapters_root)
+        self.subprojects.append(sp)
+        return sp
+
+    def rename_subproject(self, subproject_id: Optional[str], name: str) -> bool:
+        """Rename a subproject (None renames the main manuscript)."""
+        name = (name or "").strip()
+        if not name:
+            return False
+        if subproject_id is None:
+            self.get_main_manuscript().title = name
+            return True
+        sp = self.get_subproject(subproject_id)
+        if sp is None:
+            return False
+        sp.name = name
+        sp.manuscript.title = name
+        sp.updated_at = datetime.now()
+        return True
+
+    def delete_subproject(self, subproject_id: str,
+                          project_dir: Optional[Path] = None) -> bool:
+        """Remove a subproject and its drafts.
+
+        Its chapter files are not erased: when ``project_dir`` is given
+        the subproject folder is moved to ``subprojects/_deleted/`` so it
+        can be recovered by hand.
+        """
+        sp = self.get_subproject(subproject_id)
+        if sp is None:
+            return False
+        if self.active_subproject_id == subproject_id:
+            self.activate_subproject(None)
+        self.subprojects = [s for s in self.subprojects if s.id != subproject_id]
+        self.drafts = [d for d in self.drafts if d.subproject_id != subproject_id]
+        if project_dir and _SAFE_SUBPROJECT_ID.match(subproject_id):
+            import shutil
+            src = Path(project_dir) / SUBPROJECTS_DIR / subproject_id
+            if src.exists():
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                dest = Path(project_dir) / SUBPROJECTS_DIR / "_deleted" / f"{subproject_id}_{ts}"
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src), str(dest))
+        return True
+
+    def drafts_for_scope(self, subproject_id: Optional[str]) -> List['ManuscriptDraft']:
+        return [d for d in self.drafts if d.subproject_id == subproject_id]
+
+    def drafts_for_active(self) -> List['ManuscriptDraft']:
+        return self.drafts_for_scope(self.active_subproject_id)
+
+    def model_dump(self, **kwargs):
+        """Dump in canonical form: ``manuscript`` is always the main one."""
+        data = super().model_dump(**kwargs)
+        main = self.get_main_manuscript()
+        if main is not self.manuscript and isinstance(data, dict) and 'manuscript' in data:
+            passthrough = {k: v for k, v in kwargs.items()
+                           if k in ('mode', 'by_alias', 'exclude_unset', 'exclude_defaults',
+                                    'exclude_none', 'round_trip', 'warnings')}
+            data['manuscript'] = main.model_dump(**passthrough)
+        return data
+
+    def model_dump_json(self, *, indent: Optional[int] = None, **kwargs) -> str:
+        kwargs['mode'] = 'json'
+        return json.dumps(self.model_dump(**kwargs), indent=indent, default=str)
+
+    def _check_folder_conflicts(self) -> None:
+        """Refuse to save if chapters in different manuscripts share a folder.
+
+        Saving would make one chapter's prose overwrite the other's.
+        """
+        owners: Dict[str, Optional[str]] = {}
+        for scope, ms in self.iter_manuscripts():
+            for ch in ms.chapters:
+                if not ch.folder_path:
+                    continue
+                if ch.folder_path in owners and owners[ch.folder_path] != scope:
+                    raise RuntimeError(
+                        f"Refusing to save: chapter '{ch.title}' shares folder "
+                        f"'{ch.folder_path}' with a chapter in another manuscript.")
+                owners[ch.folder_path] = scope
 
     def create_draft_from_current(self, name: str, description: str = "",
                                   source: Optional[object] = None,
@@ -1242,7 +1520,7 @@ class WriterProject(BaseModel):
         # If the source is the main manuscript, pre-load chapter content
         # from disk so empty-content chapters (lazy-loaded) snapshot
         # with their real content.
-        if source is self.manuscript:
+        if any(source is ms for _, ms in self.iter_manuscripts()):
             project_dir = Path(self.project_path).parent if self.project_path else None
             if project_dir:
                 for ch in source.chapters:
@@ -1270,12 +1548,20 @@ class WriterProject(BaseModel):
         if parent_draft_id is None and isinstance(source, ManuscriptDraft):
             parent_draft_id = source.id
 
+        # The draft belongs to the same manuscript scope as its source.
+        if isinstance(source, ManuscriptDraft):
+            scope = source.subproject_id
+        else:
+            scope = next((s for s, ms in self.iter_manuscripts() if ms is source),
+                         self.active_subproject_id)
+
         draft = ManuscriptDraft(
             id=str(_uuid.uuid4())[:8],
             name=name,
             description=description,
             chapters=cloned_chapters,
             parent_draft_id=parent_draft_id,
+            subproject_id=scope,
         )
         self.drafts.append(draft)
         return draft
@@ -1307,15 +1593,19 @@ class WriterProject(BaseModel):
         if preserve_chapter_revisions:
             from copy import deepcopy
             from datetime import datetime as _dt
+            # Merge into the manuscript the draft was made from, never
+            # into whichever subproject happens to be active.
+            owner = (self.get_manuscript_for(draft.subproject_id)
+                     or self.get_main_manuscript())
             for draft_ch in draft.chapters:
                 # Match by chapter number first, fall back to title
                 target = next(
-                    (c for c in self.manuscript.chapters
+                    (c for c in owner.chapters
                      if c.number == draft_ch.number),
                     None)
                 if target is None:
                     target = next(
-                        (c for c in self.manuscript.chapters
+                        (c for c in owner.chapters
                          if c.title == draft_ch.title),
                         None)
                 if target is None:
@@ -1369,28 +1659,40 @@ class WriterProject(BaseModel):
         self.updated_at = datetime.now()
         project_dir = Path(file_path).parent
 
+        # Make sure every chapter (main and subprojects) points at its own
+        # manuscript's folder root before anything touches disk.
+        self._sync_active_manuscript()
+        self._normalize_manuscript_roots()
+
         # Save chapters to separate files if enabled
         if save_chapters_separately:
-            # Save all chapter content/revisions to disk.
+            self._check_folder_conflicts()
+            # Save all chapter content/revisions to disk, for the main
+            # manuscript AND every subproject (all are kept in memory).
             # Every chapter with a folder or revisions gets saved — the
             # protection against accidental blanking happens in save_to_model,
             # not here. By the time we reach disk write, content is authoritative.
-            for chapter in self.manuscript.chapters:
-                # Skip only brand-new chapters that have never been initialized
-                if not chapter.folder_path and not chapter.revisions and not chapter.content:
-                    continue
-                chapter.save_content_to_file(project_dir)
+            for _scope, ms in self.iter_manuscripts():
+                for chapter in ms.chapters:
+                    # Skip only brand-new chapters that have never been initialized
+                    if not chapter.folder_path and not chapter.revisions and not chapter.content:
+                        continue
+                    chapter.save_content_to_file(project_dir)
 
             # Build JSON without content fields to save space.
             # Instead of mutating in-memory state (dangerous if interrupted),
             # serialize to dict first, then strip content from the dict.
+            # model_dump is canonical: 'manuscript' is always the main one.
             project_dict = self.model_dump(mode='json')
-            for ch_dict in project_dict.get('manuscript', {}).get('chapters', []):
-                ch_dict['content'] = ""
-                ch_dict['html_content'] = ""
-                for rev_dict in ch_dict.get('revisions', []):
-                    rev_dict['content'] = ""
-                    rev_dict['html_content'] = ""
+            ms_dicts = [project_dict.get('manuscript', {})] + [
+                sp.get('manuscript', {}) for sp in project_dict.get('subprojects', [])]
+            for ms_dict in ms_dicts:
+                for ch_dict in ms_dict.get('chapters', []):
+                    ch_dict['content'] = ""
+                    ch_dict['html_content'] = ""
+                    for rev_dict in ch_dict.get('revisions', []):
+                        rev_dict['content'] = ""
+                        rev_dict['html_content'] = ""
 
             # Write to temp file first, then atomically replace
             import tempfile
@@ -1433,11 +1735,33 @@ class WriterProject(BaseModel):
 
         project.project_path = file_path
 
-        # Load chapter content and migrate to folder-based format if needed
+        # Load chapter content and migrate to folder-based format if needed,
+        # for the main manuscript and every subproject.
         project_dir = Path(file_path).parent
         needs_save = False
+        for _scope, ms in project.iter_manuscripts():
+            if cls._load_manuscript_chapters(ms, project_dir):
+                needs_save = True
 
-        for chapter in project.manuscript.chapters:
+        # If we migrated or repaired, save the updated project metadata
+        if needs_save:
+            try:
+                print("  Saving repaired project metadata...")
+                project.save_project(file_path)
+                print("  Repair complete.")
+            except Exception as e:
+                print(f"  Warning: Could not save repair: {e}")
+
+        return project
+
+    @staticmethod
+    def _load_manuscript_chapters(manuscript: 'Manuscript', project_dir: Path) -> bool:
+        """Load one manuscript's chapter files, migrating/repairing as needed.
+
+        Returns True if anything was migrated or repaired (caller re-saves).
+        """
+        needs_save = False
+        for chapter in manuscript.chapters:
             # Check if migration to folder-based format is needed
             if not chapter.folder_path and chapter.file_path:
                 print(f"  Migrating chapter {chapter.number} '{chapter.title}' to folder format...")
@@ -1467,7 +1791,7 @@ class WriterProject(BaseModel):
         # Verify chapter numbering and folder_path consistency.
         # After a crash during a move operation, chapter.number or folder_path
         # in the JSON may not match the actual folder layout on disk.
-        for i, chapter in enumerate(project.manuscript.chapters, 1):
+        for i, chapter in enumerate(manuscript.chapters, 1):
             if chapter.number != i:
                 print(f"  Fixing chapter numbering: '{chapter.title}' was {chapter.number}, now {i}")
                 chapter.number = i
@@ -1494,17 +1818,7 @@ class WriterProject(BaseModel):
                 if chapter.file_path and old_folder in chapter.file_path:
                     chapter.file_path = chapter.file_path.replace(old_folder, expected_folder)
                 needs_save = True
-
-        # If we migrated or repaired, save the updated project metadata
-        if needs_save:
-            try:
-                print("  Saving repaired project metadata...")
-                project.save_project(file_path)
-                print("  Repair complete.")
-            except Exception as e:
-                print(f"  Warning: Could not save repair: {e}")
-
-        return project
+        return needs_save
 
     @classmethod
     def _repair_project_data(cls, data: dict, file_path: str) -> dict:
@@ -1554,7 +1868,41 @@ class WriterProject(BaseModel):
         # Repair agent contacts
         data['agent_contacts'] = cls._repair_agent_contacts(data.get('agent_contacts', []))
 
+        # Repair subprojects (absent in projects created before novellas)
+        data['subprojects'] = cls._repair_subprojects(data.get('subprojects', []))
+        active = data.get('active_subproject_id')
+        if not isinstance(active, str) or active not in {sp['id'] for sp in data['subprojects']}:
+            data['active_subproject_id'] = None
+
         return data
+
+    @classmethod
+    def _repair_subprojects(cls, sp_data: list) -> list:
+        """Repair subprojects list: path-safe unique ids, names, manuscripts."""
+        if not isinstance(sp_data, list):
+            return []
+        import uuid as _uuid
+        repaired = []
+        seen = set()
+        for i, sp in enumerate(sp_data):
+            if not isinstance(sp, dict):
+                continue
+            sp_id = sp.get('id')
+            if not isinstance(sp_id, str) or not _SAFE_SUBPROJECT_ID.match(sp_id) or sp_id in seen:
+                sp_id = _uuid.uuid4().hex[:8]
+                while sp_id in seen:
+                    sp_id = _uuid.uuid4().hex[:8]
+                sp['id'] = sp_id
+            seen.add(sp_id)
+            if not isinstance(sp.get('name'), str) or not sp['name'].strip():
+                sp['name'] = f"Novella {i + 1}"
+            if not isinstance(sp.get('description'), str):
+                sp['description'] = ''
+            if not isinstance(sp.get('kind'), str):
+                sp['kind'] = 'novella'
+            sp['manuscript'] = cls._repair_manuscript(sp.get('manuscript', {}))
+            repaired.append(sp)
+        return repaired
 
     @classmethod
     def _repair_worldbuilding(cls, wb_data: dict) -> dict:
@@ -1786,5 +2134,18 @@ class WriterProject(BaseModel):
             project.agent_contacts = [AgentContact(**a) for a in agents]
         except Exception as e:
             print(f"Could not recover agent contacts: {e}")
+
+        # Recover each subproject independently so one bad novella
+        # doesn't take the others down with it.
+        for sp in cls._repair_subprojects(data.get('subprojects', [])):
+            try:
+                project.subprojects.append(Subproject(**sp))
+            except Exception as e:
+                print(f"Could not recover subproject '{sp.get('name')}': {e}")
+        project._sync_active_manuscript()
+        project._normalize_manuscript_roots()
+        active = data.get('active_subproject_id')
+        if active and project.get_subproject(active) is not None:
+            project.activate_subproject(active)
 
         return project
