@@ -268,3 +268,99 @@ def test_checks_menu_show_highlights_toggle(app, monkeypatch):
     assert not ed.editor.highlights_visible() and ed.checks_btn.text().startswith("✓ Checks · hidden")
     act.setChecked(True)
     assert ed.editor.highlights_visible() and ed.checks_btn.text().startswith("✓ Checks · 3")
+
+
+# ── Clickable suggestion card ─────────────────────────────────────
+
+def _hover(e, word, occurrence=0):
+    """Show the card for ``word`` as a hover would."""
+    from PyQt6.QtGui import QTextCursor
+    text = e.toPlainText()
+    pos = -1
+    for _ in range(occurrence + 1):
+        pos = text.index(word, pos + 1)
+    cur = QTextCursor(e.document())
+    cur.setPosition(pos + 1)
+    vp = e.cursorRect(cur).center()
+    return e._show_error_tooltip(e.viewport().mapToGlobal(vp), vp)
+
+
+def _card_buttons(e):
+    from PyQt6.QtWidgets import QPushButton
+    return {b.text(): b for b in e.error_card.findChildren(QPushButton) if b.isVisibleTo(e.error_card)}
+
+
+def test_card_suggestion_click_replaces_word(app, monkeypatch):
+    e = _editor(app, "She will leave tommorow at dawn.", monkeypatch=monkeypatch)
+    e.show()
+    assert _hover(e, "tommorow")
+    card = e.error_card
+    assert card.isVisible() and card.error.word == "tommorow"
+    buttons = _card_buttons(e)
+    assert "tomorrow" in buttons and "Add to dictionary" in buttons and "Ignore" in buttons
+    buttons["tomorrow"].click()
+    assert e.toPlainText() == "She will leave tomorrow at dawn."
+    assert not card.isVisible()
+    assert not [m for m in _marks(e) if m[2] == "S"]
+
+
+def test_card_multiword_grammar_fix_and_case(app, monkeypatch):
+    e = _editor(app, "Tommorow we sail. I could of gone.", monkeypatch=monkeypatch)
+    e.show()
+    assert _hover(e, "Tommorow")
+    _card_buttons(e)["Tomorrow"].click()                       # keeps sentence case
+    assert e.toPlainText().startswith("Tomorrow we sail.")
+    assert _hover(e, "could of")
+    _card_buttons(e)["could have"].click()
+    assert e.toPlainText() == "Tomorrow we sail. I could have gone."
+
+
+def test_card_style_delete_and_ignore(app, monkeypatch):
+    from src.ui.enhanced_text_editor import CheckMode
+    e = _editor(app, "It was very cold. It was very dark.", monkeypatch=monkeypatch)
+    e.show()
+    e.set_style_mode(CheckMode.ON_DEMAND)
+    assert _hover(e, "very")
+    buttons = _card_buttons(e)
+    assert "✨ Rewrite with AI" in buttons
+    buttons["Delete “very”"].click()
+    assert e.toPlainText() == "It was cold. It was very dark."
+    assert _hover(e, "very")
+    _card_buttons(e)["Ignore"].click()
+    assert not _hover(e, "very")                               # ignored → no card
+
+
+def test_card_add_to_dictionary_and_stale_guard(app, monkeypatch):
+    from PyQt6.QtGui import QTextCursor
+    e = _editor(app, "The zorbling sang. Then tommorow came.", monkeypatch=monkeypatch)
+    e.show()
+    assert _hover(e, "zorbling")
+    _card_buttons(e)["Add to dictionary"].click()
+    assert not _hover(e, "zorbling")
+    assert _hover(e, "tommorow")
+    card = e.error_card
+    # The text under the card changes without a keystroke reaching the card.
+    card.blockSignals(True)
+    cur = QTextCursor(e.document())
+    cur.setPosition(e.toPlainText().index("tommorow"))
+    cur.setPosition(e.toPlainText().index("tommorow") + 3, QTextCursor.MoveMode.KeepAnchor)
+    e.textChanged.disconnect(card.hide)
+    cur.insertText("XYZ")
+    card._apply("tomorrow")
+    assert "XYZmorow" in e.toPlainText()                      # stale fix not applied
+
+
+def test_card_hides_when_mouse_leaves_or_typing(app, monkeypatch):
+    e = _editor(app, "She left tommorow.", monkeypatch=monkeypatch)
+    e.show()
+    assert _hover(e, "tommorow")
+    card = e.error_card
+    from PyQt6.QtGui import QCursor
+    QCursor.setPos(card.geometry().bottomRight() + card.geometry().topLeft() * 0 + __import__(
+        "PyQt6.QtCore", fromlist=["QPoint"]).QPoint(400, 400))
+    card.schedule_hide()
+    card._maybe_hide()
+    assert not card.isVisible()
+    assert _hover(e, "tommorow") and card.isVisible()
+    e.textCursor().insertText("x")
+    assert not card.isVisible()

@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QTextEdit, QMenu, QDialog, QVBoxLayout, QLabel,
     QListWidget, QPushButton, QTextBrowser, QHBoxLayout,
     QMessageBox, QComboBox, QToolTip, QWidgetAction, QSlider,
-    QGroupBox
+    QGroupBox, QWidget
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QTimer, QPoint, QEvent, QThread
 from PyQt6.QtGui import (
@@ -397,7 +397,7 @@ class SpellChecker:
         }
         return common_words
 
-    _MISSPELLED = "Possible misspelling — right-click for suggestions."
+    _MISSPELLED = "Possible misspelling."
 
     def set_project_words(self, words) -> None:
         """Project vocabulary (character / place / faction names, the
@@ -2383,6 +2383,217 @@ class QuickReferenceDialog(QDialog):
             self.accept()
 
 
+class ErrorCard(QWidget):
+    """Hover card for a highlighted issue: what's wrong, plus clickable
+    fixes. Replaces the old read-only tooltip.
+
+    Shown below the word; stays open while the mouse is on the word or the
+    card, closes when the mouse leaves, on typing, or on a click elsewhere.
+    """
+
+    COLORS = {"spelling": "#dc2626", "grammar": "#16a34a", "overuse": "#2563eb",
+              "overused_phrase": "#7c3aed", "style": "#d97706"}
+    NAMES = {"spelling": "Spelling", "grammar": "Grammar", "overuse": "Overused word",
+             "overused_phrase": "Repeated phrase", "style": "Style"}
+
+    def __init__(self, editor: "EnhancedTextEditor"):
+        super().__init__(None, Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
+        self.editor = editor
+        self.error = None
+        self.span: Tuple[int, int] = (0, 0)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)   # paint border + background
+        self.setStyleSheet(
+            "ErrorCard { background: #ffffff; border: 1px solid #d1d5db; border-radius: 6px; }"
+            "QLabel { background: transparent; }"
+            "QPushButton#fix { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe;"
+            " border-radius: 4px; padding: 3px 8px; font-weight: bold; }"
+            "QPushButton#fix:hover { background: #dbeafe; }"
+            "QPushButton#act { background: transparent; color: #4b5563; border: none;"
+            " padding: 2px 4px; text-decoration: underline; }")
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(10, 8, 10, 8)
+        self._layout.setSpacing(6)
+        self._hide_timer = QTimer(self)
+        self._hide_timer.setSingleShot(True)
+        self._hide_timer.setInterval(350)
+        self._hide_timer.timeout.connect(self._maybe_hide)
+
+    # ── content ────────────────────────────────────────────────────
+
+    def _clear(self) -> None:
+        while self._layout.count():
+            item = self._layout.takeAt(0)
+            w = item.widget()
+            lay = item.layout()
+            if w is not None:
+                w.deleteLater()
+            elif lay is not None:
+                while lay.count():
+                    sub = lay.takeAt(0).widget()
+                    if sub is not None:
+                        sub.deleteLater()
+
+    def show_for(self, error, block, global_pos: QPoint) -> None:
+        key = (block.position() + error.start, block.position() + error.end, error.reason)
+        if self.isVisible() and self.error is not None and key == getattr(self, "_key", None):
+            self._hide_timer.stop()
+            return
+        self._key = key
+        self.error = error
+        self.block_number = block.blockNumber()
+        self.span = (block.position() + error.start, block.position() + error.end)
+        self._clear()
+        kind = error.error_type.value
+        color = self.COLORS.get(kind, "#374151")
+        head = QLabel(f"<span style='color:{color}; font-weight:bold'>"
+                      f"{self.NAMES.get(kind, 'Issue')}</span> · <b>{_html(error.word[:60])}</b>")
+        self._layout.addWidget(head)
+        reason = error.reason.split(": ", 1)[-1] if kind == "style" else error.reason
+        why = QLabel(_html(reason))
+        why.setWordWrap(True)
+        why.setMaximumWidth(340)
+        why.setStyleSheet("color: #4b5563;")
+        self._layout.addWidget(why)
+
+        suggestions = [s for s in (error.suggestions or [])][:5]
+        if suggestions:
+            row = QHBoxLayout()
+            row.setSpacing(4)
+            for sug in suggestions:
+                btn = QPushButton(sug if sug else f"Delete “{error.word[:20]}”")
+                btn.setObjectName("fix")
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn.setToolTip(f"Replace “{error.word}” with “{sug}”" if sug else "Delete it")
+                btn.clicked.connect(lambda _=False, s_=sug: self._apply(s_))
+                row.addWidget(btn)
+            row.addStretch()
+            self._layout.addLayout(row)
+        elif kind == "spelling":
+            none = QLabel("<i>No suggestions.</i>")
+            none.setStyleSheet("color: #6b7280;")
+            self._layout.addWidget(none)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(2)
+        if kind == "style":
+            self._action(actions, "✨ Rewrite with AI", self._rewrite)
+        if kind == "spelling":
+            self._action(actions, "Add to dictionary", self._add_word)
+        self._action(actions, "Ignore", self._ignore)
+        actions.addStretch()
+        self._layout.addLayout(actions)
+        self.adjustSize()
+        self._place(global_pos)
+        self.show()
+        self.raise_()
+
+    def _action(self, row, text, slot) -> None:
+        btn = QPushButton(text)
+        btn.setObjectName("act")
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.clicked.connect(slot)
+        row.addWidget(btn)
+
+    def _place(self, global_pos: QPoint) -> None:
+        cur = QTextCursor(self.editor.document())
+        cur.setPosition(self.span[0])
+        rect = self.editor.cursorRect(cur)
+        anchor = self.editor.viewport().mapToGlobal(rect.bottomLeft()) + QPoint(0, 4)
+        screen = self.editor.screen().availableGeometry() if self.editor.screen() else None
+        x, y = anchor.x(), anchor.y()
+        if screen is not None:
+            x = max(screen.left(), min(x, screen.right() - self.width()))
+            if y + self.height() > screen.bottom():
+                y = self.editor.viewport().mapToGlobal(rect.topLeft()).y() - self.height() - 4
+        self.move(x, y)
+
+    # ── actions ────────────────────────────────────────────────────
+
+    def _span_text(self) -> str:
+        cur = QTextCursor(self.editor.document())
+        cur.setPosition(self.span[0])
+        cur.setPosition(self.span[1], QTextCursor.MoveMode.KeepAnchor)
+        return cur.selectedText()
+
+    def _apply(self, suggestion: str) -> None:
+        error = self.error
+        if error is None:
+            return
+        if self._span_text() != error.word:   # text changed since the card opened
+            self.hide()
+            return
+        cur = QTextCursor(self.editor.document())
+        cur.setPosition(self.span[0])
+        cur.setPosition(self.span[1], QTextCursor.MoveMode.KeepAnchor)
+        if suggestion and error.error_type == ErrorType.SPELLING:
+            suggestion = _match_word_case(error.word, suggestion)
+        self.hide()
+        self.editor._replace_word(cur, suggestion)
+        self.editor.setFocus()
+
+    def _add_word(self) -> None:
+        if self.error is not None:
+            word = self.error.word
+            self.hide()
+            self.editor._add_to_dictionary(word)
+
+    def _ignore(self) -> None:
+        error = self.error
+        if error is None:
+            return
+        self.hide()
+        if error.error_type == ErrorType.STYLE:
+            self.editor.writing_highlighter.ignore_style_issue(
+                getattr(error, "style_kind", ""), error.word)
+        else:
+            self.editor._ignore_error(self.block_number, error.start, error.word, error.error_type)
+
+    def _rewrite(self) -> None:
+        error = self.error
+        if error is None:
+            return
+        self.hide()
+        block = self.editor.document().findBlockByNumber(self.block_number)
+        if block.isValid():
+            self.editor._request_style_rewrite(block, error)
+
+    # ── visibility ─────────────────────────────────────────────────
+
+    def schedule_hide(self) -> None:
+        if self.isVisible():
+            self._hide_timer.start()
+
+    def _maybe_hide(self) -> None:
+        from PyQt6.QtGui import QCursor
+        if self.isVisible() and not self.geometry().contains(QCursor.pos()):
+            self.hide()
+
+    def enterEvent(self, event):
+        self._hide_timer.stop()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.schedule_hide()
+        super().leaveEvent(event)
+
+    def hideEvent(self, event):
+        self._hide_timer.stop()
+        super().hideEvent(event)
+
+
+def _html(text: str) -> str:
+    return (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _match_word_case(original: str, replacement: str) -> str:
+    if original.isupper() and len(original) > 1:
+        return replacement.upper()
+    if original[:1].isupper():
+        return replacement[:1].upper() + replacement[1:]
+    return replacement
+
+
 class EnhancedTextEditor(QTextEdit):
     """Enhanced text editor with context menu, headers, spell/grammar/overuse check, Word support, and TTS."""
 
@@ -2590,15 +2801,41 @@ class EnhancedTextEditor(QTextEdit):
         """Get current overuse detection mode."""
         return self.writing_highlighter.get_overuse_mode()
 
-    def _show_error_tooltip(self, global_pos: QPoint, viewport_pos: QPoint) -> bool:
-        """Show tooltip for error at position. Returns True if tooltip was shown."""
+    def _error_at_viewport_pos(self, viewport_pos: QPoint):
         cursor = self.cursorForPosition(viewport_pos)
         block = cursor.block()
-        block_number = block.blockNumber()
-        position_in_block = cursor.positionInBlock()
+        # cursorForPosition snaps to the nearest gap; only count it as "on"
+        # the word when the mouse is actually over text.
+        rect = self.cursorRect(cursor)
+        if abs(rect.center().y() - viewport_pos.y()) > rect.height():
+            return None, block
+        return (self.writing_highlighter.get_error_at(block.blockNumber(),
+                                                      cursor.positionInBlock()), block)
 
-        # Check for any error at this position
-        error = self.writing_highlighter.get_error_at(block_number, position_in_block)
+    @property
+    def error_card(self) -> ErrorCard:
+        card = getattr(self, "_error_card", None)
+        if card is None:
+            card = self._error_card = ErrorCard(self)
+            self.textChanged.connect(card.hide)
+            self.destroyed.connect(card.deleteLater)
+        return card
+
+    def _show_error_tooltip(self, global_pos: QPoint, viewport_pos: QPoint) -> bool:
+        """Show the clickable issue card for the error under the mouse.
+        Returns True when a card was shown."""
+        error, block = self._error_at_viewport_pos(viewport_pos)
+        if error is not None:
+            QToolTip.hideText()
+            self.error_card.show_for(error, block, global_pos)
+            return True
+        if getattr(self, "_error_card", None) is not None:
+            self._error_card.schedule_hide()
+        return False
+
+    def _legacy_error_tooltip(self, global_pos: QPoint, viewport_pos: QPoint) -> bool:
+        """Old read-only tooltip (kept for reference / fallback)."""
+        error, block = self._error_at_viewport_pos(viewport_pos)
         if error:
             # Color-coded error type indicator
             color_map = {
@@ -2625,6 +2862,20 @@ class EnhancedTextEditor(QTextEdit):
         else:
             QToolTip.hideText()
         return False
+
+    def keyPressEvent(self, event):
+        card = getattr(self, "_error_card", None)
+        if card is not None and card.isVisible():
+            card.hide()
+        super().keyPressEvent(event)
+
+    def focusOutEvent(self, event):
+        card = getattr(self, "_error_card", None)
+        if card is not None and card.isVisible():
+            from PyQt6.QtGui import QCursor
+            if not card.geometry().contains(QCursor.pos()):
+                card.hide()
+        super().focusOutEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent):
         """Handle mouse press - Shift+click extends existing selection."""
@@ -2674,6 +2925,24 @@ class EnhancedTextEditor(QTextEdit):
             global_pos = event.globalPos()
             if self._show_error_tooltip(global_pos, pos):
                 return True
+        elif event.type() == QEvent.Type.MouseMove:
+            card = getattr(self, "_error_card", None)
+            if card is not None and card.isVisible():
+                error, block = self._error_at_viewport_pos(event.position().toPoint())
+                same = (error is not None and
+                        (block.position() + error.start, block.position() + error.end) == card.span)
+                if same:
+                    card._hide_timer.stop()
+                else:
+                    card.schedule_hide()
+        elif event.type() in (QEvent.Type.Leave, QEvent.Type.Wheel,
+                              QEvent.Type.MouseButtonPress):
+            card = getattr(self, "_error_card", None)
+            if card is not None and card.isVisible():
+                if event.type() == QEvent.Type.Leave:
+                    card.schedule_hide()
+                else:
+                    card.hide()
 
         return super().viewportEvent(event)
 
