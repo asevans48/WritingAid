@@ -56,7 +56,8 @@ CREATE TABLE IF NOT EXISTS rephrases (
     accepted INTEGER DEFAULT 1,
     rating TEXT DEFAULT 'neutral',
     project_path TEXT DEFAULT '',
-    notes TEXT DEFAULT ''
+    notes TEXT DEFAULT '',
+    system_prompt TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_rephrases_created_at ON rephrases(created_at);
 CREATE INDEX IF NOT EXISTS idx_rephrases_source_type ON rephrases(source_type);
@@ -141,6 +142,13 @@ class RephraseDatabase:
                 # explicitly so the trainer can condition on it
                 c.execute(
                     "ALTER TABLE rephrases ADD COLUMN voice TEXT DEFAULT ''")
+            if "system_prompt" not in cols:
+                # The exact system prompt the model saw when it produced
+                # ``output_text`` (critique analyzers each use their own).
+                # Exported in place of the generic per-source system
+                # prompt so fine-tuning matches inference.
+                c.execute("ALTER TABLE rephrases ADD COLUMN system_prompt "
+                          "TEXT DEFAULT ''")
 
             # Backfill: pacing-synth rows used to bake "Rewrite the
             # following passage to match X pacing… Keep the meaning
@@ -235,6 +243,7 @@ class RephraseDatabase:
         rating: str = "neutral",
         project_path: str = "",
         notes: str = "",
+        system_prompt: str = "",
     ) -> int:
         """Insert one row tagged with ``source_type``.
 
@@ -257,13 +266,13 @@ class RephraseDatabase:
                   (created_at, source_text, output_text, source_type, style,
                    voice, surrounding_before, surrounding_after,
                    character_name, genre, accepted, rating,
-                   project_path, notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   project_path, notes, system_prompt)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (ts, source_text, output_text, source_type, style,
                  voice, surrounding_before, surrounding_after,
                  character_name, genre, 1 if accepted else 0, rating,
-                 project_path, notes),
+                 project_path, notes, system_prompt or ""),
             )
             return cur.lastrowid or 0
 
@@ -1904,7 +1913,10 @@ class RephraseDatabase:
             # to behave like the report engine.
             instruction = src
             input_block = ""
-            system = (
+            # Prefer the exact system prompt the analyzer used (each
+            # report type has its own); older rows fall back to the
+            # generic critique system prompt.
+            system = (row.get("system_prompt") or "").strip() or (
                 "You are a developmental editor producing a "
                 "report-driven critique. Use the metrics provided as "
                 "ground truth; quote ≤15 word phrases; do not rewrite "

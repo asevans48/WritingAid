@@ -322,8 +322,26 @@ class CritiqueWorker(QThread):
         story_planning: Optional[Any] = None,
         rag_provider: Optional[Any] = None,
         force_dashboard: bool = False,
+        project: Optional[Any] = None,
+        model_spec: str = "",
+        include_promise_check: bool = False,
+        manuscript_override: Optional[Any] = None,
+        include_continuity: bool = False,
+        scope_label: str = "",
     ):
         super().__init__()
+        self.manuscript_override = manuscript_override
+        self.include_continuity = include_continuity
+        self.scope_label = scope_label
+        # Also run the promise / character-consistency check per chapter
+        # (the overall critique requested from the AI chat does).
+        self.include_promise_check = include_promise_check
+        # Spec picked in the Critique tab's "Analysis model" combo
+        # (empty → Settings' Critique & analysis task → default model).
+        self.model_spec = model_spec
+        # Full project — the Character and Worldbuilding reports compare
+        # the page against its character and world records.
+        self.project = project
         self.chapters = chapters
         self.report_types = report_types
         self.genre_key = genre_key
@@ -341,65 +359,32 @@ class CritiqueWorker(QThread):
         configured — the orchestrator interprets ``None`` as
         dashboard mode (no narrative).
         """
-        from src.ai.llm_client import LLMClient, LLMProvider, HuggingFaceConfig
-        ai_config = get_ai_config()
-        settings = ai_config.get_settings()
-        if ai_config.is_ai_disabled():
-            return None
-        prefer_local = settings.get("prefer_local_model", False)
-        enable_local = settings.get("enable_local_models", False)
-        local_model_id = settings.get("local_model_id", "")
-        if prefer_local and enable_local and local_model_id:
-            is_mlx_model = "mlx" in local_model_id.lower()
-            hf_config = HuggingFaceConfig(
-                model_id=local_model_id,
-                use_local=True,
-                device=settings.get("local_model_device", "auto"),
-                quantization=settings.get(
-                    "local_model_quantization", "none")
-                if settings.get("local_model_quantization") != "none"
-                else None,
-                trust_remote_code=settings.get(
-                    "local_model_trust_remote_code", False),
-            )
-            provider = (LLMProvider.MLX_LOCAL if is_mlx_model
-                        else LLMProvider.HUGGINGFACE_LOCAL)
-            return LLMClient(provider=provider, hf_config=hf_config)
-        default_provider = settings.get("default_llm", "claude")
-        api_key = ai_config.get_api_key(default_provider)
-        if not api_key:
-            return None
-        provider_map = {
-            "claude": LLMProvider.CLAUDE,
-            "chatgpt": LLMProvider.CHATGPT,
-            "openai": LLMProvider.CHATGPT,
-            "gemini": LLMProvider.GEMINI,
-        }
-        return LLMClient(
-            provider=provider_map.get(default_provider, LLMProvider.CLAUDE))
+        from src.ai.task_llm import build_default_llm
+        return build_default_llm()
 
     def run(self):
         """Drive the orchestrator on the worker thread."""
         try:
             self.progress.emit("Initializing critique…")
             llm = None
-            if not self.force_dashboard:
-                llm = self._build_llm()
-                if llm is None:
+            if not self.force_dashboard and not get_ai_config().is_ai_disabled():
+                # Analysis model: the Critique tab's picker → the
+                # "Critique & analysis" task setting → (legacy) the plot
+                # task model → the global default model.
+                try:
+                    from src.ai.task_llm import build_critique_llm
+                    llm = build_critique_llm(self.model_spec)
+                except Exception as e:
+                    print(f"[critique] analysis model unavailable: {e}")
+                    llm = None
+                if llm is not None:
                     self.progress.emit(
-                        "No LLM configured — running dashboard mode.")
+                        f"Using {self._describe_llm(llm)} for analysis…")
                 else:
-                    # Honour the per-task model override the same way the
-                    # chat path does; critique is plot/structural analysis.
-                    try:
-                        from src.ai.task_llm import build_task_llm_override
-                        override = build_task_llm_override("plot")
-                        if override is not None:
-                            self.progress.emit(
-                                "Using your plot-task model for critique…")
-                            llm = override
-                    except Exception:
-                        pass
+                    llm = self._build_llm()
+            if llm is None and not self.force_dashboard:
+                self.progress.emit(
+                    "No LLM configured — running dashboard mode.")
             orchestrator = CritiqueOrchestrator(
                 primary_llm=llm,
                 project=self._project_proxy(),
@@ -410,21 +395,86 @@ class CritiqueWorker(QThread):
             def progress_cb(msg: str):
                 self.progress.emit(msg)
 
-            report = orchestrator.run(
-                chapters=self.chapters,
-                report_types=self.report_types,
-                genre_key_or_text=self.genre_key,
-                manuscript_context=self.manuscript_context,
-                critique_context=self.critique_context,
-                progress_cb=progress_cb,
-            )
+            orchestrator.manuscript_override = self.manuscript_override
+            if self.chapters:
+                report = orchestrator.run(
+                    chapters=self.chapters,
+                    report_types=self.report_types,
+                    genre_key_or_text=self.genre_key,
+                    manuscript_context=self.manuscript_context,
+                    critique_context=self.critique_context,
+                    progress_cb=progress_cb,
+                )
+            else:
+                report = CritiqueReport(
+                    chapters=[], genre=resolve_genre_profile(self.genre_key),
+                    has_llm=llm is not None)
+            report.scope_label = self.scope_label
+            # Instant style-check counts per chapter (tracked across runs).
+            try:
+                from src.utils.style_checks import analyze_document, summarize
+                report.style_stats = {
+                    ch["title"]: summarize(analyze_document(ch.get("text", "")),
+                                           len(ch.get("text", "").split()))
+                    for ch in self.chapters}
+            except Exception as e:
+                print(f"[critique] style stats failed: {e}")
+                report.style_stats = {}
+            if self.include_continuity and self.project is not None:
+                progress_cb("Checking continuity across the novellas…")
+                from src.ai.continuity_analysis import ContinuityAnalyzer
+                section = ContinuityAnalyzer(self.project, llm, progress_cb).run()
+                words = sum(len((ch.content or "").split())
+                            for _, ms in self.project.iter_manuscripts() for ch in ms.chapters)
+                report.chapters.append(ChapterReport(
+                    chapter_title="Across novellas", chapter_index=-1,
+                    word_count=words, sections=[section]))
+                report.overall_summary = (
+                    (report.overall_summary.strip() + "\n\n" if self.chapters
+                     and report.overall_summary else "")
+                    + f"**Continuity across novellas:** {section.summary}")
+            report.promise_results = []
+            if self.include_promise_check and llm is not None and self.project is not None:
+                report.promise_results = self._run_promise_checks(llm, progress_cb)
             self.progress.emit("Complete.")
             self.finished.emit(report)
         except Exception as e:  # pragma: no cover — defensive
             self.error.emit(str(e))
 
+    MAX_PROMISE_CHECK_CHAPTERS = 5
+
+    def _run_promise_checks(self, llm, progress_cb) -> list:
+        """Promise / character-consistency check per chapter."""
+        from src.ai.chapter_analysis_agent import PromiseChecker
+        from src.ai.chat_actions import promise_check_inputs
+        promises, characters, plot = promise_check_inputs(self.project)
+        if not promises and not characters:
+            return []
+        checker = PromiseChecker(llm)
+        results = []
+        for ch in self.chapters[:self.MAX_PROMISE_CHECK_CHAPTERS]:
+            progress_cb(f"  {ch.get('title')}: promise & consistency check…")
+            try:
+                results.append(checker.check_chapter(
+                    chapter_content=ch.get("text", ""),
+                    chapter_title=ch.get("title", ""),
+                    promises=promises, characters=characters,
+                    plot_outline=plot))
+            except Exception as e:
+                print(f"[critique] promise check failed for {ch.get('title')}: {e}")
+        return results
+
+    @staticmethod
+    def _describe_llm(llm) -> str:
+        hf = getattr(llm, "hf_config", None)
+        name = (getattr(hf, "model_id", "") if hf else "") or getattr(llm, "model", "")
+        return name or "the selected model"
+
     def _project_proxy(self):
-        """Lightweight stand-in passed to PlotAnalyzer for promises lookup."""
+        """Project handed to the orchestrator: the real one when available,
+        else a stand-in carrying story_planning for promises lookup."""
+        if self.project is not None:
+            return self.project
         if self.story_planning is None:
             return None
 
@@ -564,6 +614,28 @@ class GraderWidget(QWidget):
         genre_row.addWidget(self.force_dashboard_check)
         reports_outer.addLayout(genre_row)
 
+        # Analysis model — any trained (e.g. a critique model from the
+        # Training Studio), local or cloud model. Stored as the
+        # "Critique & analysis" task model so Settings stays in sync.
+        model_row = QHBoxLayout()
+        model_row.addWidget(QLabel("Analysis model:"))
+        self.analysis_model_combo = QComboBox()
+        self.analysis_model_combo.setToolTip(
+            "Model used to write the reports. Pick a critique model you "
+            "trained in the Training Studio, any local MLX / HuggingFace "
+            "model, or a cloud provider. Local models (e.g. Gemma) get "
+            "compact, focused prompts automatically. Saved as the "
+            "'Critique & analysis' task model in Settings.")
+        self._analysis_model_state = None
+        self._populate_analysis_model_combo()
+        model_row.addWidget(self.analysis_model_combo, 1)
+        refresh_models_btn = QPushButton("↻")
+        refresh_models_btn.setToolTip("Reload the model list (e.g. after training a new model)")
+        refresh_models_btn.setMaximumWidth(32)
+        refresh_models_btn.clicked.connect(self._populate_analysis_model_combo)
+        model_row.addWidget(refresh_models_btn)
+        reports_outer.addLayout(model_row)
+
         # Report-type checkbox grid
         reports_grid = QGridLayout()
         self.report_checkboxes: Dict[ReportType, QCheckBox] = {}
@@ -579,6 +651,13 @@ class GraderWidget(QWidget):
              "worldbuilding, and what canon elements it could draw on but doesn't."),
             (ReportType.GRAMMAR, "Grammar & Readability",
              "Spelling, grammar (LanguageTool), and hard-to-read paragraphs."),
+            (ReportType.CHARACTER, "Character Analysis",
+             "Compares each character's portrayal with their profile and arc: "
+             "what's on track, what drifts, recommendations to stay on course, "
+             "and profile updates to consider."),
+            (ReportType.WORLDBUILDING, "Worldbuilding Analysis",
+             "Finds new elements not in the Worldbuilding section, where the "
+             "chapter matches canon, and where it differs."),
         ]
         for i, (rt, label, tooltip) in enumerate(report_items):
             cb = QCheckBox(label)
@@ -1007,6 +1086,154 @@ class GraderWidget(QWidget):
         if is_multi or is_manu:
             self._populate_chapter_list()
 
+    # Reports for a manuscript-wide critique from the chat: the
+    # structural ones (every report × every chapter would be very slow).
+    CHAT_MANUSCRIPT_REPORTS = ("pacing", "tension", "plot", "character", "worldbuilding")
+
+    def run_critique_for_chat(self, scope: str, on_done, on_progress=None) -> Optional[str]:
+        """Run an overall critique on behalf of the AI chat.
+
+        ``scope`` is "chapter" (current chapter, every report) or
+        "manuscript" (all chapters, structural reports). Runs the promise
+        / character-consistency check too. The finished report is shown
+        in this tab as usual (so it can be rated) and handed to
+        ``on_done(report, error)``. Returns an error string instead of
+        starting when there's nothing to critique or a run is in progress.
+        """
+        if getattr(self, "_worker", None) is not None and self._worker.isRunning():
+            return "A critique is already running — wait for it to finish."
+        if scope in ("manuscript", "continuity"):
+            from src.ai.continuity_analysis import has_cross_manuscript_content
+            active = getattr(self.project, "active_subproject_id", None)
+            continuity = (scope == "continuity" or active is None) and \
+                has_cross_manuscript_content(self.project)
+            if scope == "continuity" and not continuity:
+                return ("Continuity across novellas needs at least two manuscripts "
+                        "(the main one or novellas) with text.")
+            types = ([] if scope == "continuity" else
+                     [rt for rt in self.report_checkboxes
+                      if rt.value in self.CHAT_MANUSCRIPT_REPORTS])
+            return self.run_manuscript_critique(
+                active, include_continuity=continuity, report_types=types,
+                confirm=False, on_done=on_done, on_progress=on_progress)
+        else:
+            self.scope_single_radio.setChecked(True)
+            wanted = set(self.report_checkboxes)
+        chapters = self._get_chapters_for_run()
+        if not chapters:
+            return ("There's no chapter text to critique yet." if scope != "manuscript"
+                    else "The manuscript has no chapter text to critique yet.")
+        report_types = [rt for rt in self.report_checkboxes if rt in wanted]
+        self._start_critique(chapters, report_types, include_promise_check=True,
+                             on_done=on_done, on_progress=on_progress)
+        return None
+
+    def run_manuscript_critique(self, scope: Optional[str], include_continuity: bool = False,
+                                report_types=None, confirm: bool = True,
+                                on_done=None, on_progress=None) -> Optional[str]:
+        """Critique a whole manuscript — the main one (``scope=None``) or a
+        novella (its subproject id) — optionally with the cross-novella
+        continuity analysis. ``report_types`` defaults to the reports
+        ticked in this tab. Returns an error string instead of starting."""
+        if not self.project:
+            return "Open a project first."
+        if getattr(self, "_worker", None) is not None and self._worker.isRunning():
+            return "A critique is already running — wait for it to finish."
+        ms = self.project.get_manuscript_for(scope)
+        if ms is None:
+            return "That manuscript no longer exists."
+        label = self.project.scope_label(scope)
+        chapters = []
+        for idx, ch in enumerate(ms.chapters):
+            content = ch.content or ""
+            if not content and self._project_path:
+                try:
+                    from pathlib import Path
+                    ch.load_content_from_file(Path(self._project_path).parent)
+                    content = ch.content or ""
+                except Exception:
+                    pass
+            if content.strip():
+                chapters.append({"title": ch.title or f"Chapter {ch.number}",
+                                 "text": content, "index": idx})
+        if report_types is None:
+            report_types = [rt for rt, cb in self.report_checkboxes.items() if cb.isChecked()]
+            if not report_types and not include_continuity:
+                return "Select at least one report in the Critique tab."
+        if not chapters or not report_types:
+            # No text, or a continuity-only run (report_types=[]).
+            report_types, chapters = [], []
+        if not chapters and not include_continuity:
+            return f"“{label}” has no chapter text to critique yet."
+        if confirm:
+            calls = len(chapters) * len(report_types)
+            what = (f"{len(chapters)} chapter(s) × {len(report_types)} report(s) "
+                    f"(about {calls} model calls)" if chapters else "")
+            if include_continuity:
+                what += (" plus " if what else "") + "continuity across the novellas"
+            reply = QMessageBox.question(
+                self, "Critique manuscript",
+                f"Critique “{label}”: {what}.\n\nThis can take a while, especially with "
+                f"a local model. The reports to run are the ones ticked in the Critique "
+                f"tab. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes)
+            if reply != QMessageBox.StandardButton.Yes:
+                return ""
+        self._start_critique(chapters, report_types, include_promise_check=bool(chapters),
+                             on_done=on_done, on_progress=on_progress,
+                             manuscript_override=ms, include_continuity=include_continuity,
+                             scope_label=label + (" + continuity across novellas"
+                                                  if include_continuity and chapters else
+                                                  "" if chapters else
+                                                  " — continuity across novellas"))
+        return None
+
+    def _populate_analysis_model_combo(self) -> None:
+        combo = self.analysis_model_combo
+        try:
+            from src.config.creativeos_config import get_creativeos_config
+            from src.ui.per_task_model_picker import (
+                populate_task_combo, attach_custom_handler,
+            )
+            combo.blockSignals(True)
+            try:
+                combo.currentIndexChanged.disconnect()
+            except TypeError:
+                pass
+            current = get_creativeos_config().get("model_for_critique", "") or ""
+            self._analysis_model_state = populate_task_combo(combo, current)
+            combo.setMinimumWidth(240)
+            combo.currentIndexChanged.connect(
+                attach_custom_handler(self._analysis_model_state, self))
+            combo.currentIndexChanged.connect(self._on_analysis_model_changed)
+        except Exception as e:
+            print(f"[critique] model picker unavailable: {e}")
+            self._analysis_model_state = None
+            combo.clear()
+            combo.addItem("(default — use global model)", "")
+        finally:
+            combo.blockSignals(False)
+
+    def _analysis_model_spec(self) -> str:
+        if not self._analysis_model_state:
+            return ""
+        from src.ui.per_task_model_picker import read_task_combo_spec
+        return read_task_combo_spec(self._analysis_model_state)
+
+    def _on_analysis_model_changed(self, _idx: int = 0) -> None:
+        spec = self._analysis_model_spec()
+        if spec == "__custom__":
+            return
+        try:
+            from src.config.creativeos_config import get_creativeos_config
+            cfg = get_creativeos_config()
+            if (cfg.get("model_for_critique", "") or "") != spec:
+                cfg.set("model_for_critique", spec)
+                cfg.save()
+        except Exception as e:
+            print(f"[critique] could not save analysis model: {e}")
+
     def _select_all_reports(self):
         for cb in self.report_checkboxes.values():
             cb.setChecked(True)
@@ -1181,6 +1408,12 @@ class GraderWidget(QWidget):
                 self, "No reports selected",
                 "Select at least one report to run.")
             return
+        self._start_critique(chapters, report_types)
+
+    def _start_critique(self, chapters, report_types, include_promise_check: bool = False,
+                        on_done=None, on_progress=None, manuscript_override=None,
+                        include_continuity: bool = False, scope_label: str = "") -> None:
+        """Start the critique worker (shared by the button and the chat)."""
         critique_context = self._collect_critique_context()
         ms_context, _ = self._build_manuscript_context()
         chapter_synopses = self._build_chapter_synopses()
@@ -1208,10 +1441,34 @@ class GraderWidget(QWidget):
             story_planning=story_planning,
             rag_provider=rag_provider,
             force_dashboard=self.force_dashboard_check.isChecked(),
+            project=self.project,
+            model_spec=self._analysis_model_spec(),
+            include_promise_check=include_promise_check,
+            manuscript_override=manuscript_override,
+            include_continuity=include_continuity,
+            scope_label=scope_label,
         )
         self._worker.finished.connect(self._on_critique_finished)
         self._worker.error.connect(self._on_critique_error)
         self._worker.progress.connect(self._on_critique_progress)
+        self._chat_run = on_done is not None
+        if on_done is not None:
+            def _safe(report, err):
+                # An exception escaping a Qt slot aborts the process
+                # (PyQt6) — report it instead.
+                try:
+                    on_done(report, err)
+                except Exception as e:
+                    import traceback
+                    traceback.print_exc()
+                    try:
+                        on_done(None, f"internal error while presenting results: {e}")
+                    except Exception:
+                        pass
+            self._worker.finished.connect(lambda report: _safe(report, None))
+            self._worker.error.connect(lambda err: _safe(None, err))
+        if on_progress is not None:
+            self._worker.progress.connect(on_progress)
         self._worker.start()
 
     def _on_critique_progress(self, message: str):
@@ -1229,6 +1486,14 @@ class GraderWidget(QWidget):
                 "Unexpected result shape from critique worker.")
             return
         self._last_report = result
+        # Compare with the previous critique of the same scope.
+        result.progress = None
+        if self.project is not None:
+            try:
+                from src.data.critique_history import record
+                result.progress = record(self.project, result)
+            except Exception as e:
+                print(f"[critique-history] {e}")
         self._render_critique_report(result)
         self.save_critique_btn.setEnabled(True)
         self.export_btn.setEnabled(True)
@@ -1239,6 +1504,8 @@ class GraderWidget(QWidget):
         self.progress_bar.setVisible(False)
         self.status_label.setVisible(False)
         self.critique_btn.setEnabled(True)
+        if getattr(self, "_chat_run", False):
+            return  # the AI chat reports the error itself
         QMessageBox.critical(
             self, "Critique Failed",
             f"Failed to generate critique:\n\n{error}")
@@ -1254,6 +1521,9 @@ class GraderWidget(QWidget):
         ReportType.STYLE: "Style",
         ReportType.CANON: "Canon",
         ReportType.GRAMMAR: "Grammar",
+        ReportType.CHARACTER: "Characters",
+        ReportType.WORLDBUILDING: "Worldbuilding",
+        ReportType.CONTINUITY: "Continuity",
     }
 
     REPORT_STYLE_BLOCK = """
@@ -1303,6 +1573,13 @@ class GraderWidget(QWidget):
         narrative is independently rateable.
         """
         self._clear_report_tabs()
+        # Rating state for the links inside the report tabs.
+        self._section_uids: Dict[str, ReportSection] = {}
+        self._section_uid_of: Dict[int, str] = {}
+        self._report_tabs: Dict[ReportType, tuple] = {}
+        self._item_ratings: Dict[str, Dict[str, str]] = {}
+        self._part_ratings: Dict[str, Dict[str, str]] = {}
+        self._section_ratings: Dict[str, str] = {}
         # Summary tab — rebuild it as a Widget so we can attach a
         # rating bar at the bottom alongside the existing browser.
         self._refresh_summary_tab(report)
@@ -1319,6 +1596,11 @@ class GraderWidget(QWidget):
             tab_layout.setContentsMargins(0, 0, 0, 0)
             tab_layout.setSpacing(4)
 
+            for i, sec in enumerate(sections):
+                uid = f"{rt.value}-{i}"
+                self._section_uids[uid] = sec
+                self._section_uid_of[id(sec)] = uid
+
             browser = QTextBrowser()
             browser.setOpenExternalLinks(False)
             browser.setOpenLinks(False)
@@ -1329,14 +1611,20 @@ class GraderWidget(QWidget):
             # Per-report rating bar — captures the user's judgment of
             # this analysis specifically (so e.g. a great pacing report
             # but a weak voice report can be rated independently).
+            # Chapters, parts and individual findings are rated with the
+            # links inside the report.
             rating_bar = RatingBar(
                 label=f"Rate this {self.REPORT_TAB_LABELS[rt]} report:",
                 compact=False)
+            # Bind the bar as a default arg — a plain closure would see
+            # the loop's last bar and report status on the wrong tab.
             rating_bar.rated.connect(
-                lambda value, rt=rt, sections=sections, report=report:
+                lambda value, rt=rt, sections=sections, report=report,
+                rb=rating_bar:
                     self._persist_critique_rating(
-                        rating_bar, value, rt, sections, report))
+                        rb, value, rt, sections, report))
             tab_layout.addWidget(rating_bar)
+            self._report_tabs[rt] = (browser, sections, report, rating_bar)
 
             self.results_tabs.addTab(tab, self.REPORT_TAB_LABELS[rt])
 
@@ -1422,7 +1710,10 @@ class GraderWidget(QWidget):
                 # rollup is. Tagged ``critique_kind=overall`` and
                 # ``prompt_kind=synthesised`` so the trainer can
                 # down-weight or skip if it only wants real prompts.
-                if report.has_llm:
+                if report.has_llm and getattr(report, "overall_prompt", ""):
+                    source_text = report.overall_prompt
+                    prompt_kind = "real"
+                elif report.has_llm:
                     source_text = (
                         f"Write a manuscript-level rollup of per-chapter "
                         f"critiques. Genre profile: {report.genre.name} — "
@@ -1456,65 +1747,23 @@ class GraderWidget(QWidget):
                         notes=notes,
                         project_path=self._project_path,
                         genre=report.genre.key,
+                        system_prompt=getattr(report, "overall_system", ""),
                     )
                     saved = 1
             else:
-                # Per-report tab — one row per chapter section. Each
-                # row is a real (prompt, output) pair when the LLM
-                # narrative ran, or a (synthesised_instruction,
-                # findings) pair when in dashboard mode.
+                # Per-report tab — every chapter section, one row per
+                # model call that produced it (exact system + prompt +
+                # output), with findings the author rated poor/bad
+                # removed from positive examples.
+                from src.data.critique_training import section_rows, save_rows
                 for s in sections:
-                    output_pieces = []
-                    if s.narrative:
-                        output_pieces.append(s.narrative)
-                    if s.findings:
-                        output_pieces.append(
-                            "Findings:\n"
-                            + "\n".join(f"- {f}" for f in s.findings))
-                    if s.suggestions:
-                        output_pieces.append(
-                            "Suggested actions:\n"
-                            + "\n".join(f"- {x}" for x in s.suggestions))
-                    output_text = "\n\n".join(p for p in output_pieces if p)
-                    if not output_text.strip():
-                        continue
-
-                    # Prefer the captured LLM prompt; fall back to a
-                    # synthesised instruction when no LLM was used.
-                    if s.prompt and s.prompt.strip():
-                        source_text = s.prompt
-                        prompt_kind = "real"
-                    else:
-                        source_text = (
-                            f"Produce a {rt.value} critique of this "
-                            f"chapter for the {report.genre.name} genre. "
-                            f"Use the metrics provided as ground truth, "
-                            f"name specific issues with quoted phrases, "
-                            f"and end with concrete next-revision "
-                            f"actions.\n\n"
-                            f"Chapter: {s.chapter_title}\n"
-                            f"Metrics:\n"
-                            + "\n".join(f"- {k}: {v}"
-                                        for k, v in s.metrics.items()))
-                        prompt_kind = "dashboard_synthesised"
-                    notes = (
-                        f"critique_kind={rt.value} "
-                        f"genre={report.genre.key} "
-                        f"chapter_title={s.chapter_title} "
-                        f"chapters={len(report.chapters)} "
-                        f"has_llm={report.has_llm} "
-                        f"prompt_kind={prompt_kind}")
-                    db.log(
-                        source_text=source_text,
-                        output_text=output_text,
-                        source_type=SOURCE_CRITIQUE,
-                        rating=value,
-                        accepted=value in ("excellent", "good"),
-                        notes=notes,
-                        project_path=self._project_path,
-                        genre=report.genre.key,
-                    )
-                    saved += 1
+                    uid = getattr(self, "_section_uid_of", {}).get(id(s), "")
+                    rows = section_rows(
+                        s, self._section_meta(s, report), value,
+                        getattr(self, "_item_ratings", {}).get(uid, {}))
+                    saved += save_rows(rows, db, SOURCE_CRITIQUE)
+                    if uid:
+                        self._section_ratings[uid] = value
             label = (f"{rt.value} critique" if rt
                      else "overall critique")
             rating_bar.set_status(
@@ -1543,6 +1792,8 @@ class GraderWidget(QWidget):
             f"{n_chapters} chapter{'s' if n_chapters != 1 else ''}, "
             f"{total_words:,} words</span></p>"
         )
+        if getattr(report, "scope_label", ""):
+            lines.append(f"<p><b>Scope:</b> {self._escape_html(report.scope_label)}</p>")
         lines.append(
             f"<p style='color:#4b5563;'>"
             f"<em>{report.genre.notes}</em></p>")
@@ -1551,19 +1802,48 @@ class GraderWidget(QWidget):
                 f"<h3>Overall</h3>"
                 f"<div class='narrative'>"
                 f"{self._render_markdown(report.overall_summary)}</div>")
+        from src.data.critique_history import format_progress_markdown
+        progress_md = format_progress_markdown(getattr(report, "progress", None))
+        if progress_md:
+            lines.append(f"<div class='narrative' style='border-left-color:#059669;'>"
+                         f"{self._render_markdown(progress_md)}</div>")
+        elif getattr(report, "style_stats", None):
+            lines.append("<p style='color:#6b7280; font-size:11px;'>First critique of this "
+                         "scope — the next run will show what changed.</p>")
         # Per-chapter rollup
         for c in report.chapters:
             lines.append(
                 f"<div class='chapter-block'>"
                 f"<div class='chapter-title'>{self._escape_html(c.chapter_title)}</div>"
                 f"<div class='chapter-meta'>{c.word_count:,} words · "
-                f"{len(c.sections)} report section(s)</div>")
+                f"{len(c.sections)} report section(s)"
+                + (lambda st: f" · {st['total']} style issue(s), {st['per_1000']}/1,000 words"
+                   if st else "")((getattr(report, 'style_stats', None) or {}).get(c.chapter_title))
+                + "</div>")
             for s in c.sections:
                 lines.append(
                     f"<div style='margin-top:6px;'>"
                     f"<strong>{self.REPORT_TAB_LABELS.get(s.report_type, s.report_type.value)}:</strong> "
                     f"{self._escape_html(s.summary or '(no summary)')}</div>")
             lines.append("</div>")
+        for res in getattr(report, "promise_results", None) or []:
+            lines.append(
+                f"<div class='chapter-block'><div class='chapter-title'>Promise &amp; "
+                f"consistency check — {self._escape_html(res.chapter_title)}</div>"
+                f"<div class='summary'><b>{self._escape_html(res.overall_adherence.replace('_', ' '))}</b>"
+                f" — {self._escape_html(res.summary)}</div><ul class='findings'>")
+            for v in res.promise_violations:
+                lines.append(
+                    f"<li>{self._escape_html(v.promise_title)} ({self._escape_html(v.severity)}): "
+                    f"{self._escape_html(v.violation_description)}"
+                    + (f" — <i>{self._escape_html(v.suggestion)}</i>" if v.suggestion else "")
+                    + "</li>")
+            for ci in res.character_inconsistencies:
+                lines.append(
+                    f"<li>{self._escape_html(ci.character_name)}: {self._escape_html(ci.description)}"
+                    + (f" — <i>{self._escape_html(ci.suggestion)}</i>" if ci.suggestion else "")
+                    + "</li>")
+            lines.append("</ul></div>")
         return "\n".join(lines)
 
     def _format_report_tab_html(
@@ -1583,12 +1863,49 @@ class GraderWidget(QWidget):
             lines.append(self._format_section_html(s))
         return "\n".join(lines)
 
+    _RATE_LABELS = (("excellent", "★ excellent"), ("good", "good"),
+                    ("poor", "poor"), ("bad", "bad"))
+
+    def _rate_links(self, href_prefix: str, current: str = "") -> str:
+        bits = []
+        for value, label in self._RATE_LABELS:
+            if value == current:
+                bits.append(f"<b>{label} ✓</b>")
+            else:
+                bits.append(f"<a href='{href_prefix}:{value}'>{label}</a>")
+        return " · ".join(bits)
+
+    def _item_links(self, uid: str, list_idx: int, item_idx: int, item: str) -> str:
+        current = self._item_ratings.get(uid, {}).get(item, "")
+        if current:
+            return (f" <span style='color:#6b7280;font-size:11px'>"
+                    f"[rated {current}]</span>")
+        base = f"rate-item:{uid}:{list_idx}:{item_idx}"
+        return (f" <a href='{base}:good' title='Good finding — save for training'>👍</a>"
+                f" <a href='{base}:bad' title='Wrong or unhelpful — save as a negative "
+                f"example'>👎</a>")
+
     def _format_section_html(self, section: ReportSection) -> str:
         """Render one ReportSection as a chapter-block HTML."""
+        uid = getattr(self, "_section_uid_of", {}).get(id(section), "")
+        from src.data.critique_training import section_lists, iter_parts
+        list_keys = list(section_lists(section).keys())
+
+        def li(list_name: str, idx: int, text: str) -> str:
+            links = ""
+            if uid and list_name in list_keys:
+                links = self._item_links(uid, list_keys.index(list_name), idx, text)
+            return f"<li>{self._escape_html(text)}{links}</li>"
+
         parts = [
             f"<div class='chapter-block'>"
             f"<div class='chapter-title'>{self._escape_html(section.chapter_title)}</div>"
         ]
+        if uid:
+            parts.append(
+                "<div class='chapter-meta'>Rate this chapter's report: "
+                + self._rate_links(f"rate-section:{uid}",
+                                   self._section_ratings.get(uid, "")) + "</div>")
         if section.summary:
             parts.append(
                 f"<div class='summary'>{self._escape_html(section.summary)}</div>")
@@ -1597,6 +1914,16 @@ class GraderWidget(QWidget):
                 f"<h4>Narrative</h4>"
                 f"<div class='narrative'>"
                 f"{self._render_markdown(section.narrative)}</div>")
+        report_parts = iter_parts(section) if uid else []
+        if len(report_parts) > 1:
+            parts.append("<h4>Rate individual parts</h4><table class='metric-table'>")
+            for i, part in enumerate(report_parts):
+                current = self._part_ratings.get(uid, {}).get(part.id, "")
+                parts.append(
+                    f"<tr><td>{self._escape_html(part.label)}</td><td>"
+                    + self._rate_links(f"rate-part:{uid}:{i}", current)
+                    + "</td></tr>")
+            parts.append("</table>")
         # Strengths surface first — writers should see what's working
         # before the issue backlog. Falls back gracefully on
         # analyzers that haven't populated section.strengths (and
@@ -1609,27 +1936,33 @@ class GraderWidget(QWidget):
                 "<h4 class='strengths-heading'>"
                 f"Strengths ({len(strengths)})</h4>"
                 "<ul class='findings strengths'>")
-            for s in strengths:
-                parts.append(
-                    f"<li>{self._escape_html(s)}</li>")
+            for i, s in enumerate(strengths):
+                parts.append(li("strengths", i, s))
             parts.append("</ul>")
         if major:
             parts.append(
                 "<h4 class='major-heading'>"
                 f"Major issues ({len(major)})</h4>"
                 "<ul class='findings major'>")
-            for f in major:
-                parts.append(
-                    f"<li>{self._escape_html(f)}</li>")
+            for i, f in enumerate(major):
+                parts.append(li("major_issues", i, f))
             parts.append("</ul>")
         if minor:
             parts.append(
                 "<h4 class='minor-heading'>"
                 f"Minor issues ({len(minor)})</h4>"
                 "<ul class='findings minor'>")
-            for f in minor:
-                parts.append(
-                    f"<li>{self._escape_html(f)}</li>")
+            for i, f in enumerate(minor):
+                parts.append(li("minor_issues", i, f))
+            parts.append("</ul>")
+        for heading, items in (getattr(section, "extra_lists", None) or {}).items():
+            if not items:
+                continue
+            parts.append(
+                f"<h4>{self._escape_html(heading)} ({len(items)})</h4>"
+                "<ul class='suggestions extra'>")
+            for i, item in enumerate(items):
+                parts.append(li(heading, i, item))
             parts.append("</ul>")
         # Only show the legacy Findings block when there's
         # something that didn't make it into strengths / major / minor
@@ -1652,8 +1985,8 @@ class GraderWidget(QWidget):
                 parts.append("</ul>")
         if section.suggestions:
             parts.append("<h4>Suggested actions</h4><ul class='suggestions'>")
-            for s in section.suggestions:
-                parts.append(f"<li>{self._escape_html(s)}</li>")
+            for i, s in enumerate(section.suggestions):
+                parts.append(li("suggestions", i, s))
             parts.append("</ul>")
         if section.metrics:
             parts.append("<h4>Metrics</h4><table class='metric-table'>")
@@ -1819,6 +2152,8 @@ class GraderWidget(QWidget):
             "genre_key": report.genre.key,
             "has_llm": report.has_llm,
             "overall_summary": report.overall_summary,
+            "overall_prompt": getattr(report, "overall_prompt", ""),
+            "overall_system": getattr(report, "overall_system", ""),
             "estimated_cost": report.estimated_cost,
             "chapters": [
                 {
@@ -1833,6 +2168,14 @@ class GraderWidget(QWidget):
                             "metrics": s.metrics,
                             "findings": s.findings,
                             "suggestions": s.suggestions,
+                            "strengths": s.strengths,
+                            "major_issues": s.major_issues,
+                            "minor_issues": s.minor_issues,
+                            "extra_lists": s.extra_lists,
+                            "prompt": s.prompt,
+                            "system_prompt": s.system_prompt,
+                            "calls": s.calls,
+                            "item_sources": s.item_sources,
                         }
                         for s in c.sections
                     ],
@@ -1863,6 +2206,14 @@ class GraderWidget(QWidget):
                     metrics=s.get("metrics", {}) or {},
                     findings=s.get("findings", []) or [],
                     suggestions=s.get("suggestions", []) or [],
+                    strengths=s.get("strengths", []) or [],
+                    major_issues=s.get("major_issues", []) or [],
+                    minor_issues=s.get("minor_issues", []) or [],
+                    extra_lists=s.get("extra_lists", {}) or {},
+                    prompt=s.get("prompt", "") or "",
+                    system_prompt=s.get("system_prompt", "") or "",
+                    calls=s.get("calls", []) or [],
+                    item_sources=s.get("item_sources", {}) or {},
                 ))
             chapters.append(ChapterReport(
                 chapter_title=c.get("chapter_title", ""),
@@ -1874,6 +2225,8 @@ class GraderWidget(QWidget):
             chapters=chapters,
             genre=genre,
             overall_summary=data.get("overall_summary", ""),
+            overall_prompt=data.get("overall_prompt", "") or "",
+            overall_system=data.get("overall_system", "") or "",
             has_llm=data.get("has_llm", False),
             estimated_cost=data.get("estimated_cost", 0.0),
         )
@@ -1928,7 +2281,15 @@ class GraderWidget(QWidget):
                     out.append(s.summary + "\n")
                 if s.narrative:
                     out.append(s.narrative + "\n")
-                if s.findings:
+                tiered = [("Strengths", s.strengths), ("Major issues", s.major_issues),
+                          ("Minor issues", s.minor_issues)]
+                if any(items for _, items in tiered):
+                    for heading, items in tiered:
+                        if items:
+                            out.append(f"**{heading}:**\n")
+                            out.extend([f"- {f}" for f in items])
+                            out.append("")
+                elif s.findings:
                     out.append("**Findings:**\n")
                     out.extend([f"- {f}" for f in s.findings])
                     out.append("")
@@ -1936,6 +2297,11 @@ class GraderWidget(QWidget):
                     out.append("**Suggested actions:**\n")
                     out.extend([f"- {x}" for x in s.suggestions])
                     out.append("")
+                for heading, items in (s.extra_lists or {}).items():
+                    if items:
+                        out.append(f"**{heading}:**\n")
+                        out.extend([f"- {x}" for x in items])
+                        out.append("")
                 if s.metrics:
                     out.append("**Metrics:**\n")
                     for k, v in s.metrics.items():
@@ -2262,6 +2628,9 @@ class GraderWidget(QWidget):
             except ValueError:
                 pass
 
+        elif url_str.startswith(("rate-item:", "rate-part:", "rate-section:")):
+            self._handle_rating_link(url_str)
+
         # Handle crafttip:TYPE links — show educational dialog
         elif url_str.startswith("crafttip:"):
             type_val = url_str.split(":", 1)[1]
@@ -2282,6 +2651,84 @@ class GraderWidget(QWidget):
         # were removed when the old line-by-line flow was replaced
         # with the report-driven critique. The current report HTML
         # doesn't emit those links.
+
+    # ── Rating chapters / parts / findings for training ─────────────
+
+    def _section_meta(self, section: ReportSection, report: CritiqueReport) -> Dict[str, Any]:
+        return {
+            "report_type": section.report_type.value,
+            "genre": report.genre.key,
+            "genre_name": report.genre.name,
+            "chapter_title": section.chapter_title,
+            "project_path": self._project_path,
+            "has_llm": report.has_llm,
+        }
+
+    def _handle_rating_link(self, url_str: str) -> None:
+        """``rate-section:<uid>:<r>``, ``rate-part:<uid>:<i>:<r>`` and
+        ``rate-item:<uid>:<list>:<i>:<r>`` links inside a report tab."""
+        from src.data.critique_training import (
+            section_lists, iter_parts, section_rows, part_rows, item_rows,
+        )
+        bits = url_str.split(":")
+        kind, uid, rating = bits[0], bits[1], bits[-1]
+        section = self._section_uids.get(uid)
+        if section is None:
+            return
+        tab = self._report_tabs.get(section.report_type)
+        if tab is None:
+            return
+        browser, sections, report, rating_bar = tab
+        meta = self._section_meta(section, report)
+        item_ratings = self._item_ratings.get(uid, {})
+        try:
+            if kind == "rate-section":
+                rows = section_rows(section, meta, rating, item_ratings)
+                what = f"{section.chapter_title} report"
+                self._section_ratings[uid] = rating
+            elif kind == "rate-part":
+                part = iter_parts(section)[int(bits[2])]
+                rows = part_rows(section, part, meta, rating, item_ratings)
+                what = f"part “{part.label}”"
+                self._part_ratings.setdefault(uid, {})[part.id] = rating
+            else:
+                lists = section_lists(section)
+                list_name = list(lists.keys())[int(bits[2])]
+                item = lists[list_name][int(bits[3])]
+                rows = item_rows(section, list_name, item, meta, rating)
+                what = "finding"
+                self._item_ratings.setdefault(uid, {})[item] = rating
+        except (IndexError, ValueError):
+            return
+        saved = self._save_training_rows(rows, rating_bar)
+        if saved is not None:
+            rating_bar.set_status(
+                f"Rated {what} {rating} — saved {saved} training row(s)", ok=True)
+        # Re-render with the new state, keeping the reader's place.
+        pos = browser.verticalScrollBar().value()
+        browser.setHtml(self._format_report_tab_html(section.report_type, sections, report))
+        browser.verticalScrollBar().setValue(pos)
+
+    def _save_training_rows(self, rows: List[Dict[str, Any]],
+                            rating_bar: RatingBar) -> Optional[int]:
+        """Write rows to the training DB; None when saving is off."""
+        from src.data.rephrase_database import (
+            get_rephrase_database, is_collection_enabled, SOURCE_CRITIQUE,
+        )
+        from src.data.critique_training import save_rows
+        if not rating_bar.is_save_enabled():
+            rating_bar.set_status("Rated (saving is switched off on this bar)", ok=True)
+            return None
+        if not is_collection_enabled():
+            rating_bar.set_status(
+                "Rated. Enable data collection in Creative OS settings to "
+                "save for training.", ok=False)
+            return None
+        try:
+            return save_rows(rows, get_rephrase_database(), SOURCE_CRITIQUE)
+        except Exception as e:
+            rating_bar.set_status(f"Save failed: {e}", ok=False)
+            return None
 
     def load_data(self, data):
         """Load grader data (placeholder for future use)."""

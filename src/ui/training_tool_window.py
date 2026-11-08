@@ -2977,6 +2977,7 @@ class TrainingToolWindow(QMainWindow):
                              ("Voice + plot", "both"),
                              ("Worldbuilding generator", "worldbuilding"),
                              ("Character generator", "character"),
+                             ("Critique / analysis model", "critique"),
                              ("Q&A / chat assistant", "qa")):
             self.goal_combo.addItem(label, value)
         self.goal_combo.currentIndexChanged.connect(self._refresh_recommendation)
@@ -4183,6 +4184,13 @@ class TrainingToolWindow(QMainWindow):
         self.src_character_cb.setChecked(SOURCE_CHARACTER in rec.source_types)
         self.src_plot_cb.setChecked(SOURCE_PLOT in rec.source_types)
         self.src_critique_cb.setChecked(SOURCE_CRITIQUE in rec.source_types)
+        # A critique recipe trains the Critiquing task (readiness check +
+        # the intent the finished model is registered under).
+        if (getattr(rec, "intent", "") == "critique"
+                and getattr(self, "task_checkboxes", None)
+                and "critique" in self.task_checkboxes):
+            for key, cb in self.task_checkboxes.items():
+                cb.setChecked(key == "critique")
         # Base model + hyperparams
         self.base_model_combo.setEditText(rec.base_model)
         self.epochs_spin.setValue(int(rec.epochs))
@@ -4966,6 +4974,9 @@ class TrainingToolWindow(QMainWindow):
             if any(k in text for k in ("character", "protagonist",
                                        "love interest", "backstory")):
                 return "character"
+            if any(k in text for k in ("critique", "analysis", "analyst",
+                                       "feedback", "editor", "review")):
+                return "critique"
             if any(k in text for k in ("chat", "assistant", "answer")):
                 return "qa"
         return "voice"
@@ -6476,6 +6487,25 @@ class TrainingToolWindow(QMainWindow):
         self.train_log.appendPlainText(
             f"[mlx] ✓ Conversion complete. Registered "
             f"'{source_name}-mlx' and '{source_name}-fused'.")
+        # Tasks routed to the source adapter (e.g. Critique & analysis,
+        # assigned right after training) move to the MLX build — the
+        # native fast path on Apple Silicon.
+        try:
+            from src.config.creativeos_config import (
+                get_creativeos_config, TASK_MODEL_KEYS, TASK_MODEL_LABELS,
+            )
+            cfg = get_creativeos_config()
+            moved = []
+            for key in TASK_MODEL_KEYS:
+                if (cfg.get(key, "") or "").strip() in (source_name, f"trained:{source_name}"):
+                    cfg.set(key, f"trained:{source_name}-mlx")
+                    moved.append(TASK_MODEL_LABELS.get(key, key))
+            if moved:
+                cfg.save()
+                self.train_log.appendPlainText(
+                    f"[mlx] {', '.join(moved)} now use '{source_name}-mlx'.")
+        except Exception as e:
+            self.train_log.appendPlainText(f"[warn] task re-point failed: {e}")
         QMessageBox.information(
             self, "Conversion complete",
             f"MLX-format model registered as "
@@ -7158,11 +7188,53 @@ class TrainingToolWindow(QMainWindow):
         # local Mac (MLX) for inference. The original PyTorch
         # adapter stays as a non-MLX fallback so a conversion
         # failure isn't a dead-end.
+        self._maybe_offer_task_assignment(entry, intent)
         self._maybe_offer_mlx_conversion(
             adapter_dir=Path(output_path),
             base_model=self.base_model_combo.currentText().strip(),
             adapter_name=entry["name"],
             source_label="Modal training")
+
+    # Training intent → the writing-tool task it can serve.
+    _INTENT_TASK_KEYS = {
+        "critique": "model_for_critique",
+        "worldbuilding": "model_for_worldbuilding",
+        "character": "model_for_character",
+        "plot": "model_for_plot",
+        "rephrase": "model_for_rephrase",
+        "voice": "model_for_rephrase",
+    }
+
+    def _maybe_offer_task_assignment(self, entry: dict, intent: str) -> None:
+        """After training, offer to route the matching writing-tool task
+        (e.g. Critique & analysis) to the new model."""
+        intents = [i for i in (intent or "").lower().split("+") if i]
+        task_key = next((self._INTENT_TASK_KEYS[i] for i in intents
+                         if i in self._INTENT_TASK_KEYS), None)
+        if not task_key or not entry or not entry.get("name"):
+            return
+        try:
+            from src.config.creativeos_config import (
+                get_creativeos_config, TASK_MODEL_LABELS, format_task_model_spec,
+            )
+            label = TASK_MODEL_LABELS.get(task_key, task_key)
+            answer = QMessageBox.question(
+                self, "Use the new model?",
+                f"Use <b>{entry['name']}</b> for <b>{label}</b> in the "
+                f"Writing Tool?<br><br>You can change this any time in "
+                f"Settings or, for analyses, from the Critique tab's "
+                f"Analysis model picker.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes)
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            cfg = get_creativeos_config()
+            cfg.set(task_key, format_task_model_spec("trained", name=entry["name"]))
+            cfg.save()
+            self.train_log.appendPlainText(
+                f"[done] {label} now uses '{entry['name']}'.")
+        except Exception as e:
+            self.train_log.appendPlainText(f"[warn] could not assign model: {e}")
 
     def _maybe_offer_mlx_conversion(self, *,
                                      adapter_dir: Path,
@@ -7580,6 +7652,7 @@ class TrainingToolWindow(QMainWindow):
         # Offer MLX conversion when running on Apple Silicon. Same
         # flow as the Modal post-training prompt — non-Apple-Silicon
         # users see no prompt at all.
+        self._maybe_offer_task_assignment(entry, intent)
         self._maybe_offer_mlx_conversion(
             adapter_dir=Path(output_path),
             base_model=self.base_model_combo.currentText().strip(),

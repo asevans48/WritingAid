@@ -5,6 +5,7 @@ without rewriting content. Uses cost-effective hybrid approach.
 """
 
 import re
+from collections import Counter
 from typing import List, Dict, Any, Optional, Tuple, TYPE_CHECKING
 from dataclasses import dataclass
 from enum import Enum
@@ -892,6 +893,15 @@ class ReportType(Enum):
     # mechanical errors and readability cliffs that the other
     # analyzers (which judge *craft*) typically don't flag.
     GRAMMAR = "grammar"
+    # Per-character portrayal vs. the character's profile + arc:
+    # what's on track, what drifts, and how to stay on course.
+    CHARACTER = "character"
+    # Worldbuilding fidelity: elements on the page that the project has
+    # no record of, elements that match canon, and elements that differ.
+    WORLDBUILDING = "worldbuilding"
+    # Cross-manuscript continuity (main project + its novellas): shared
+    # characters / world elements and the story timeline across books.
+    CONTINUITY = "continuity"
 
 
 @dataclass
@@ -1106,8 +1116,24 @@ class ReportSection:
     # (prompt, narrative) pair as training data instead of a stub.
     prompt: str = ""               # user prompt the LLM saw
     system_prompt: str = ""        # system prompt the LLM saw
+    # Report-specific headed lists rendered after the standard ones,
+    # e.g. {"New elements": [...], "Recommendations": [...]}.
+    extra_lists: Dict[str, List[str]] = None
+    # Every model call that produced this section, in order — the exact
+    # (system, prompt, output) triples, so rated sections, parts and
+    # items can be saved as training rows that match inference 1:1.
+    # Each: {"id", "label", "kind", "system", "prompt", "output"}.
+    calls: List[Dict[str, str]] = None
+    # Which call each list item came from (item text → call id).
+    item_sources: Dict[str, str] = None
 
     def __post_init__(self):
+        if self.extra_lists is None:
+            self.extra_lists = {}
+        if self.calls is None:
+            self.calls = []
+        if self.item_sources is None:
+            self.item_sources = {}
         if self.metrics is None:
             self.metrics = {}
         if self.major_issues is None:
@@ -1150,6 +1176,9 @@ class CritiqueReport:
     overall_summary: str = ""
     has_llm: bool = False
     estimated_cost: float = 0.0
+    # The exact call behind ``overall_summary`` (for training rows).
+    overall_prompt: str = ""
+    overall_system: str = ""
 
 
 # ── Analyzers ────────────────────────────────────────────────────────
@@ -1180,6 +1209,25 @@ def _truncate(text: str, max_chars: int) -> str:
     return text[:max_chars].rstrip() + "…"
 
 
+_LOCAL_PROVIDERS = {"mlx_local", "huggingface_local"}
+
+
+def is_local_llm(llm: Any) -> bool:
+    """True for on-device models (MLX, local Hugging Face).
+
+    These are typically small (Gemma, Llama 3B/8B, Phi, Qwen) with tight
+    context windows and weaker format-following, so the critique gives
+    them shorter, focused prompts. A client can force either behaviour
+    with a ``compact_prompts`` attribute.
+    """
+    forced = getattr(llm, "compact_prompts", None)
+    if isinstance(forced, bool):
+        return forced
+    provider = getattr(llm, "provider", None)
+    value = getattr(provider, "value", provider)
+    return isinstance(value, str) and value.lower() in _LOCAL_PROVIDERS
+
+
 class _BaseAnalyzer:
     """Common machinery for report analyzers.
 
@@ -1191,14 +1239,19 @@ class _BaseAnalyzer:
     """
 
     report_type: ReportType = None  # overridden by subclasses
+    max_tokens: int = 900           # narrative budget; heavier reports raise it
 
     def __init__(
         self,
         primary_llm: Optional['LLMClient'] = None,
         story_planning: Optional[Any] = None,
         manuscript: Optional[Any] = None,
+        project: Optional[Any] = None,
     ):
         self.primary_llm = primary_llm
+        # Full project (characters, worldbuilding) for analyzers that
+        # compare the page against canon records directly.
+        self.project = project
         # Story planning + manuscript are surfaced to every analyzer
         # (not just PlotAnalyzer) so the shared context block can
         # include the dramatic arc the chapter sits in AND the
@@ -1316,26 +1369,107 @@ class _BaseAnalyzer:
                 and not section.strengths):
             self._auto_classify_findings(section)
         if llm is not None:
+            self.compact = is_local_llm(llm)
+            self._llm = llm
+            self._section = section
             try:
-                prompt, system_prompt = self._build_prompt(
-                    text, section, genre, manuscript_context,
-                    rag_context, critique_context,
-                )
-                # Capture prompts on the section so rated rows can
-                # save the real (prompt, narrative) pair for training.
-                section.prompt = prompt
-                section.system_prompt = system_prompt
-                response = llm.generate_text(
-                    prompt,
-                    system_prompt,
-                    max_tokens=900,
-                    temperature=0.5,
-                )
-                section.narrative = (response or "").strip()
+                self._narrate(text, section, genre, manuscript_context,
+                              rag_context, critique_context, llm)
             except Exception as e:  # pragma: no cover — model errors
                 section.narrative = ""
                 section.findings.append(f"(narrative skipped: {e})")
+            else:
+                try:
+                    self._post_process(section)
+                except Exception as e:  # pragma: no cover — defensive
+                    print(f"[critique] post-process failed: {e}")
+                _attribute_items(section)
         return section
+
+    def _record_call(self, label: str, kind: str, system: str,
+                     prompt: str, output: str) -> str:
+        """Remember a model call on the current section; returns its id."""
+        section = getattr(self, "_section", None)
+        if section is None or not (output or "").strip():
+            return ""
+        call_id = f"c{len(section.calls) + 1}"
+        section.calls.append({"id": call_id, "label": label, "kind": kind,
+                              "system": system or "", "prompt": prompt,
+                              "output": output})
+        return call_id
+
+    # ── LLM plumbing (shared by all analyzers) ───────────────────────
+
+    compact: bool = False  # True for local models → smaller, focused prompts
+
+    def _narrate(self, text, section, genre, manuscript_context,
+                 rag_context, critique_context, llm) -> None:
+        """Default narrative: one prompt built by ``_build_prompt``.
+        Analyzers with a better strategy for small models override this."""
+        prompt, system_prompt = self._build_prompt(
+            text, section, genre, manuscript_context,
+            rag_context, critique_context,
+        )
+        # Capture prompts on the section so rated rows can
+        # save the real (prompt, narrative) pair for training.
+        section.prompt = prompt
+        section.system_prompt = system_prompt
+        section.narrative = self._generate(llm, prompt, system_prompt,
+                                           self.max_tokens)
+        self._record_call("Full report", "report", system_prompt, prompt,
+                          section.narrative)
+
+    def _generate(self, llm, prompt: str, system_prompt: str,
+                  max_tokens: int, temperature: Optional[float] = None,
+                  allow_continuation: bool = True) -> str:
+        """Call the model with settings suited to its size.
+
+        Local models analyse more reliably at a lower temperature and
+        often stop at their token budget mid-thought, so prose answers
+        get auto-continuation. Structured line-format answers opt out
+        (``allow_continuation=False``): their lines don't end in
+        punctuation, so the truncation heuristic misfires and the model
+        just repeats the format. ``LLMClient`` reports failures as an
+        ``"Error generating text: …"`` string rather than raising; that
+        is turned back into an exception so it never lands in a report
+        as if it were the model's analysis.
+        """
+        if temperature is None:
+            temperature = 0.3 if self.compact else 0.5
+        try:
+            response = llm.generate_text(
+                prompt, system_prompt, max_tokens=max_tokens,
+                temperature=temperature,
+                continue_if_truncated=self.compact and allow_continuation)
+        except TypeError:
+            # Duck-typed clients without the continuation kwarg.
+            response = llm.generate_text(
+                prompt, system_prompt, max_tokens=max_tokens,
+                temperature=temperature)
+        response = (response or "").strip()
+        if response.startswith("Error generating text:"):
+            raise RuntimeError(response[len("Error generating text:"):].strip())
+        return response
+
+    def _excerpt(self, text: str, words: int = 2500) -> str:
+        """Chapter excerpt sized for the model's context window."""
+        limit = min(words, 1200) if self.compact else words
+        tokens = text.split()
+        clipped = " ".join(tokens[:limit])
+        if len(tokens) > limit:
+            clipped += f"\n[… excerpt ends; chapter continues for {len(tokens) - limit} more words]"
+        return clipped
+
+    def _post_process(self, section: ReportSection) -> None:
+        """Hook run after the narrative arrives (e.g. parse tagged lines)."""
+        return None
+
+    def _find_chapter(self, chapter_title: str):
+        """The manuscript Chapter object for this title, or None."""
+        for ch in getattr(self.manuscript, "chapters", None) or []:
+            if getattr(ch, "title", "") == chapter_title:
+                return ch
+        return None
 
     def _compute(
         self,
@@ -1424,13 +1558,14 @@ class _BaseAnalyzer:
         if surround_block:
             parts.append(surround_block)
 
+        ms_cap, rag_cap = (500, 800) if self.compact else (1200, 1500)
         if manuscript_context:
             parts.append(
-                "MANUSCRIPT CONTEXT:\n" + _truncate(manuscript_context, 1200))
+                "MANUSCRIPT CONTEXT:\n" + _truncate(manuscript_context, ms_cap))
         if rag_context:
             parts.append(
                 "RELEVANT BACKGROUND (from RAG):\n"
-                + _truncate(rag_context, 1500))
+                + _truncate(rag_context, rag_cap))
         return "\n\n".join(parts)
 
     def _format_plot_anchor_block(self, chapter_index: int) -> str:
@@ -1716,7 +1851,7 @@ DETERMINISTIC FINDINGS:
 {ctx}
 
 CHAPTER TEXT (first 2500 words):
-{' '.join(text.split()[:2500])}
+{self._excerpt(text, 2500)}
 
 Write a pacing report with these sections:
 1. RHYTHM SNAPSHOT — 2-3 sentences on overall cadence vs. genre.
@@ -1842,7 +1977,7 @@ DETERMINISTIC FINDINGS:
 {ctx}
 
 CHAPTER TEXT (first 2500 words):
-{' '.join(text.split()[:2500])}
+{self._excerpt(text, 2500)}
 
 Write a writer's-voice report with these sections:
 1. VOICE FINGERPRINT — 2-3 sentences naming the distinctive
@@ -1984,7 +2119,7 @@ DETERMINISTIC FINDINGS:
 {ctx}
 
 CHAPTER TEXT (first 2500 words):
-{' '.join(text.split()[:2500])}
+{self._excerpt(text, 2500)}
 
 Write a tension report with these sections:
 1. STAKES ON THE PAGE — 2-3 sentences on what the reader feels
@@ -2136,7 +2271,7 @@ DETERMINISTIC FINDINGS:
 {ctx}
 
 CHAPTER TEXT (first 2500 words):
-{' '.join(text.split()[:2500])}
+{self._excerpt(text, 2500)}
 
 Write a plot report with these sections:
 1. WHAT THE CHAPTER DOES — in plot mechanics terms: what changes
@@ -2277,7 +2412,7 @@ DETERMINISTIC FINDINGS:
 {ctx}
 
 CHAPTER TEXT (first 2500 words):
-{' '.join(text.split()[:2500])}
+{self._excerpt(text, 2500)}
 
 Write a dialog report with these sections:
 1. WHO SOUNDS LIKE WHO — voice differentiation: do speakers
@@ -2400,7 +2535,7 @@ DETERMINISTIC FINDINGS:
 {ctx}
 
 CHAPTER TEXT (first 2500 words):
-{' '.join(text.split()[:2500])}
+{self._excerpt(text, 2500)}
 
 Write a style report with these sections:
 1. PROSE FINGERPRINT — 2-3 sentences naming style strengths.
@@ -2543,7 +2678,7 @@ DETERMINISTIC FINDINGS:
 {ctx}
 
 CHAPTER TEXT (first 2500 words):
-{' '.join(text.split()[:2500])}
+{self._excerpt(text, 2500)}
 
 Write a canon report with these sections:
 1. CANON FIDELITY — for each project character or world element
@@ -2897,7 +3032,7 @@ DETERMINISTIC FINDINGS (treat as ground truth):
 {ctx}
 
 CHAPTER TEXT (first 2500 words):
-{' '.join(text.split()[:2500])}
+{self._excerpt(text, 2500)}
 
 Write a grammar & readability report with these sections:
 1. SPELLING — for the misspellings flagged above (if any), say
@@ -2940,6 +3075,779 @@ Keep under 700 words.
 
 # Map ReportType → analyzer factory. Orchestrator uses this so adding
 # a new report type is a one-line registration.
+_TAGGED_MARKER = "=== TAGGED SUMMARY ==="
+_SPEECH_VERBS = (r"said|asked|replied|whispered|shouted|muttered|called|"
+                 r"answered|snapped|murmured|yelled|cried|told")
+
+
+def _chapter_number(chapter, chapter_index: int) -> int:
+    n = getattr(chapter, "number", 0) if chapter is not None else 0
+    return n or (chapter_index + 1)
+
+
+def _bullets(items: List[str], empty: str = "- (none)") -> str:
+    return "\n".join(f"- {i}" for i in items) if items else empty
+
+
+def _md_list(label: str, items: List[str]) -> str:
+    if not items:
+        return ""
+    return f"**{label}:**\n" + "\n".join(f"- {i}" for i in items) + "\n"
+
+
+class _CanonAnalyzerMixin:
+    """Shared LLM strategy for the Character and Worldbuilding reports.
+
+    * Cloud models get one rich prompt; if they forget the tagged
+      summary, a short repair call extracts it from their prose.
+    * Local models (Gemma, Llama, Phi…) get several small focused
+      prompts — one per character / small batch of world elements —
+      each carrying only the passages that matter, a fixed answer
+      format and a worked example. Small models do far better on many
+      narrow questions than on one sprawling one, and the evidence
+      comes from the whole chapter instead of just its opening.
+    """
+    TAG_FORMAT = ""        # the tagged-line spec, used by the repair pass
+    EXPECTED_TAGS = ()     # at least one must be present to skip repair
+
+    def _narrate(self, text, section, genre, manuscript_context,
+                 rag_context, critique_context, llm):
+        self._focused_done = False
+        if self.compact:
+            prompts = self._narrate_focused(text, section, llm)
+            section.prompt = "\n\n---\n\n".join(prompts)
+            self._focused_done = True
+            return
+        super()._narrate(text, section, genre, manuscript_context,
+                         rag_context, critique_context, llm)
+        self._repair_tags_if_missing(section, llm)
+
+    def _repair_tags_if_missing(self, section, llm) -> None:
+        from src.ai.canon_index import parse_tag_block
+        tags = parse_tag_block(section.narrative, _TAGGED_MARKER)
+        if not section.narrative or any(t in tags for t in self.EXPECTED_TAGS):
+            return
+        prompt = (
+            "Below is an editor's report. Extract its findings as lines in "
+            "exactly this format, one per line, nothing else:\n"
+            f"{self.TAG_FORMAT}\n\nREPORT:\n{section.narrative[:6000]}")
+        repair_system = ("You convert reports into structured lines. "
+                         "Output only the lines.")
+        try:
+            fixed = self._generate(llm, prompt, repair_system,
+                                   500, temperature=0.1)
+        except Exception as e:
+            print(f"[critique] tag repair failed: {e}")
+            return
+        self._record_call("Extract findings", "repair", repair_system,
+                          prompt, fixed)
+        section.narrative = f"{section.narrative}\n\n{_TAGGED_MARKER}\n{fixed}"
+
+    def _ask(self, llm, prompt: str, system: str, max_tokens: int,
+             failures: List[str], what: str, block_start: str = "") -> str:
+        """One focused, structured call. Returns the cleaned reply."""
+        try:
+            reply = self._generate(llm, prompt, system, max_tokens,
+                                   allow_continuation=False)
+        except Exception as e:
+            failures.append(f"{what}: {e}")
+            return ""
+        reply = _first_answer(reply, block_start)
+        self._record_call(what, "focused", system, prompt, reply)
+        return reply
+
+
+def _attribute_items(section: "ReportSection") -> None:
+    """Map each list item to the model call whose output contains it,
+    so an item rating can be saved against the prompt that produced it.
+    Items no call contains (deterministic findings) stay unmapped."""
+    if not section.calls:
+        return
+    lists = [section.strengths, section.major_issues, section.minor_issues,
+             section.suggestions] + list(section.extra_lists.values())
+    for items in lists:
+        for item in items:
+            if item in section.item_sources:
+                continue
+            probes = [item]
+            parts = re.split(r"\s+[—–]\s+", item, maxsplit=1)
+            if len(parts) == 2:
+                probes.append(parts[1])           # drop "Name — " prefix
+            for call in section.calls:
+                out = call.get("output", "")
+                if any(len(p) >= 12 and p[:60] in out for p in probes):
+                    section.item_sources[item] = call["id"]
+                    break
+
+
+_BLEED_RX = re.compile(
+    r"\s+(?:ELEMENT\s+\d+\s*:|NAME\s*:|PORTRAYAL\s*:|EXAMPLE\b|PASSAGES\s*:|RECORD\s*:).*$")
+_NONE_RX = re.compile(r"^(?:none|n/?a|nothing(?: notable)?|no (?:drift|issues?))\b[.!]?$",
+                      re.IGNORECASE)
+
+
+def _first_answer(reply: str, block_start: str = "") -> str:
+    """Keep only the model's first answer.
+
+    Small models often restate the whole format (or carry on into the
+    next imaginary item) after answering; anything from a second
+    ``block_start`` header onward is dropped.
+    """
+    reply = (reply or "").strip()
+    if block_start:
+        first = reply.find(block_start)
+        second = reply.find(block_start, first + len(block_start)) if first >= 0 else -1
+        if second > 0:
+            reply = reply[:second].rstrip()
+    return reply
+
+
+def _clean_items(items: List[str]) -> List[str]:
+    """Drop bled-in prompt fragments, "none" items and duplicates."""
+    out = []
+    for it in items:
+        it = _BLEED_RX.sub("", it).strip()
+        tail = re.split(r"\s+[—–-]\s+|:\s+", it, maxsplit=1)
+        if not it or _NONE_RX.match(it) or (len(tail) == 2 and _NONE_RX.match(tail[1].strip())):
+            continue
+        if it not in out:
+            out.append(it)
+    return out
+
+
+def _item_name(item: str) -> str:
+    return re.split(r"\s*(?:\||[—–]|\s-\s|:)\s*", item, maxsplit=1)[0].strip().strip("*\"'")
+
+
+def _keep_named(items: List[str], allowed: List[str]) -> List[str]:
+    """Keep items whose leading name is one we asked about (guards
+    against small models inventing extra entries)."""
+    allowed_l = {a.lower() for a in allowed}
+    out = []
+    for it in items:
+        name = _item_name(it).lower()
+        if name in allowed_l or any(name.startswith(a) or a.startswith(name)
+                                    for a in allowed_l if name):
+            out.append(it)
+    return out
+
+
+class CharacterAnalyzer(_CanonAnalyzerMixin, _BaseAnalyzer):
+    """Character portrayal vs. the project's character records.
+
+    For every project character who appears in the chapter, compares
+    what the page shows (actions, dialog, interiority) with their
+    profile — personality, traits, speaking style, motivations, fears,
+    want/need, lie, worldview — and with where their personality arc
+    says they should be at this chapter. Reports what's on track, what
+    drifts, and concrete recommendations to stay on course (or to
+    update the profile when the drift is an intentional discovery).
+
+    Deterministic side: who appears and how often, planned-but-absent
+    characters, their actual dialog lines, thin profiles that limit
+    the comparison, and named speakers with no character record.
+    """
+    report_type = ReportType.CHARACTER
+    max_tokens = 1600
+    MAX_CHARACTERS = 6
+    LOCAL_MAX_CHARACTERS = 4
+    EXPECTED_TAGS = ("ON TRACK", "DRIFT", "RECOMMEND")
+    TAG_FORMAT = (
+        "- [ON TRACK] <Name> — <what aligns with the record>\n"
+        "- [DRIFT] <Name> — <record field>: <how the page differs>\n"
+        "- [RECOMMEND] <Name> — <concrete action>\n"
+        "- [PROFILE UPDATE] <Name> — <field>: <suggested value>")
+
+    _FOCUSED_SYSTEM = (
+        "You are a developmental editor checking one fictional character "
+        "against the author's record of them. Be specific and brief. Quote "
+        "the chapter. Follow the answer format exactly.")
+    _FOCUSED_EXAMPLE = (
+        "FORMAT EXAMPLE (made-up character, not from this book):\n"
+        "PORTRAYAL: Pell Quorry hesitates before every choice and lets his sister decide.\n"
+        "[ON TRACK] Fears (failure) — \"He let Ysolde decide, again.\"\n"
+        "[DRIFT] Fears (heights) — climbs the bell tower without a pause; record says he dreads heights\n"
+        "[DRIFT] Speaking style (formal) — swears casually at the guard; the scene doesn't set it up\n"
+        "[VOICE] Mostly fits: \"I would not presume, my lady.\" matches his formal register\n"
+        "[ARC] Behind: the checkpoint says he starts asserting himself by now\n"
+        "[RECOMMEND] In the gate scene, let Pell overrule Ysolde once so the arc moves")
+
+    def _narrate_focused(self, text, section, llm) -> List[str]:
+        from src.ai.canon_index import (
+            _name_variants, format_character_profile, passages_mentioning,
+            parse_tagged_lines,
+        )
+        prompts, failures, blocks = [], [], []
+        arc_notes: List[str] = []
+        for c in self._appearing[:self.LOCAL_MAX_CHARACTERS]:
+            lines = self._dialog.get(c.name) or []
+            evidence = passages_mentioning(text, _name_variants(c.name), 450)
+            from src.ai.canon_index import CHARACTER_PROFILE_FIELDS
+            checklist = [label for attr, label in CHARACTER_PROFILE_FIELDS
+                         if (getattr(c, attr, "") or "").strip()]
+            if getattr(c, "personality_traits", None):
+                checklist.insert(0, "Key traits")
+            prompt = (
+                "CHARACTER RECORD (the author's intent):\n"
+                f"{format_character_profile(c, self._chapter_number, max_field=160)}\n\n"
+                + ("HOW THEY TALK IN THIS CHAPTER:\n"
+                   + "\n".join(f'» "{l}"' for l in lines) + "\n\n" if lines else "")
+                + f"PASSAGES FROM THE CHAPTER WHERE {c.name.upper()} APPEARS:\n{evidence}\n\n"
+                f"Compare the passages with the record. Reply with ONLY these lines, in this order:\n"
+                f"PORTRAYAL: <2-3 sentences: what the chapter shows of {c.name}>\n"
+                "[ON TRACK] <record item> — <short quote showing it>\n"
+                "[DRIFT] <record field> — <what the page does instead; say if it is earned growth>\n"
+                "[VOICE] <does their dialog fit their speaking style? quote a line>\n"
+                "[ARC] <on course / ahead / behind the arc checkpoint, and why>\n"
+                "[RECOMMEND] <one concrete change to a named passage, or a record field to update>\n"
+                "Repeat [ON TRACK], [DRIFT] and [RECOMMEND] lines as needed. "
+                "Write \"[DRIFT] none\" if nothing drifts.\n\n"
+                f"{self._FOCUSED_EXAMPLE}\n\n"
+                + (f"Check EACH of these record fields against what {c.name} does and says: "
+                   + ", ".join(checklist) + ". An action that goes against a listed fear, "
+                   "want or moral code is a [DRIFT] unless the passage shows why.\n"
+                   if checklist else "")
+                + f"Now answer for {c.name} only:")
+            prompts.append(prompt)
+            reply = self._ask(llm, prompt, self._FOCUSED_SYSTEM, 550,
+                              failures, c.name, block_start="PORTRAYAL:")
+            if not reply:
+                continue
+            tags = {k: _clean_items(v) for k, v in parse_tagged_lines(reply).items()}
+            tags = {k: (v[:1] if k in ("PORTRAYAL", "VOICE", "ARC") else v)
+                    for k, v in tags.items() if v}
+            if not tags:
+                blocks.append(f"## {c.name}\n{reply}\n")
+                continue
+            section.strengths.extend(f"{c.name} — {x}" for x in tags.get("ON TRACK", []))
+            section.major_issues.extend(f"{c.name} — {x}" for x in tags.get("DRIFT", []))
+            section.suggestions.extend(f"{c.name} — {x}" for x in tags.get("RECOMMEND", []))
+            arc_notes.extend(f"{c.name}: {x}" for x in tags.get("ARC", []))
+            blocks.append("\n".join(b for b in (
+                f"## {c.name}",
+                " ".join(tags.get("PORTRAYAL", [])),
+                _md_list("On track", tags.get("ON TRACK", [])),
+                _md_list("Drift", tags.get("DRIFT", [])),
+                _md_list("Voice", tags.get("VOICE", [])),
+                _md_list("Arc position", tags.get("ARC", [])),
+                _md_list("Recommendations", tags.get("RECOMMEND", [])),
+            ) if b))
+        if arc_notes:
+            section.extra_lists["Arc position"] = arc_notes
+
+        # Unprofiled speakers: who are they, and do they need a record?
+        if self._unprofiled:
+            items = []
+            for name, _, _ in self._unprofiled[:5]:
+                ev = passages_mentioning(text, [name], 120)
+                items.append(f"NAME: {name}\nPASSAGES:\n{ev}")
+            prompt = (
+                "These people speak in the chapter but have no character record.\n"
+                "For each, reply with ONLY one line:\n"
+                "[NEW CHARACTER] <Name> — <who they are and their role here, 1 sentence>; "
+                "<needs a record: yes/no>\n\n"
+                "FORMAT EXAMPLE (made-up name, not from this book):\n"
+                "[NEW CHARACTER] Old Vashti Brom — ferrywoman who warns the heroes off "
+                "the river; needs a record: yes\n\n" + "\n\n".join(items)
+                + "\n\nAnswer for these names only: "
+                + ", ".join(n for n, _, _ in self._unprofiled[:5]))
+            prompts.append(prompt)
+            reply = self._ask(llm, prompt, self._FOCUSED_SYSTEM, 300,
+                              failures, "unprofiled speakers")
+            new_chars = _keep_named(
+                _clean_items(parse_tagged_lines(reply).get("NEW CHARACTER", [])),
+                [n for n, _, _ in self._unprofiled[:5]])
+            if new_chars:
+                section.extra_lists["Profile updates to consider"] = [
+                    f"New character: {x}" for x in new_chars]
+                blocks.append(_md_list("New or unprofiled characters", new_chars))
+
+        skipped = self._appearing[self.LOCAL_MAX_CHARACTERS:]
+        if skipped:
+            section.minor_issues.append(
+                "Local-model mode analysed the "
+                f"{self.LOCAL_MAX_CHARACTERS} most-present characters; not covered: "
+                + ", ".join(c.name for c in skipped) + ".")
+        for f in failures:
+            section.findings.append(f"(model call failed — {f})")
+        section.narrative = "\n\n".join(blocks)
+        return prompts
+
+    def _compute(self, text, section, genre, critique_context):
+        from src.ai.canon_index import (
+            CHARACTER_PROFILE_FIELDS, arc_checkpoint, character_name_variants,
+            collect_world_entities, find_mentions, find_unknown_proper_nouns,
+        )
+        from src.ai.writer_voice import character_dialog_samples
+
+        characters = list(getattr(self.project, "characters", None) or [])
+        chapter = self._find_chapter(section.chapter_title)
+        self._chapter_number = _chapter_number(chapter, section.chapter_index)
+        mentions = find_mentions(text, character_name_variants(characters))
+        by_name = {c.name: c for c in characters}
+        appearing = sorted(mentions, key=lambda n: -mentions[n]["count"])
+        self._appearing = [by_name[n] for n in appearing[:self.MAX_CHARACTERS]]
+        self._mentions = mentions
+        all_names = [c.name for c in characters]
+        self._dialog = {
+            c.name: character_dialog_samples(text, c.name, max_lines=5,
+                                             other_names=all_names)
+            for c in self._appearing}
+
+        planned_raw = list(getattr(getattr(chapter, "planning", None),
+                                   "characters_featured", None) or [])
+        by_id = {getattr(c, "id", ""): c.name for c in characters}
+        planned = [by_id.get(p, p) for p in planned_raw if p]
+        missing_planned = [p for p in planned if p not in mentions]
+
+        thin = []
+        for c in self._appearing:
+            filled = sum(bool((getattr(c, a, "") or "").strip())
+                         for a, _ in CHARACTER_PROFILE_FIELDS)
+            filled += bool(getattr(c, "personality_traits", None))
+            if filled < 3:
+                thin.append((c.name, filled))
+        with_arc = [c.name for c in self._appearing
+                    if any(arc_checkpoint(c, self._chapter_number))]
+
+        world_names = [e.name for e in collect_world_entities(
+            getattr(self.project, "worldbuilding", None))]
+        unknown = find_unknown_proper_nouns(text, all_names + world_names)
+        speech_rx = lambda n: re.compile(
+            rf"(\b{re.escape(n)}\s+(?:{_SPEECH_VERBS})\b)|"
+            rf"(\b(?:{_SPEECH_VERBS})\s+{re.escape(n)}\b)")
+        self._unprofiled = [(n, k, ex) for n, k, ex in unknown
+                            if speech_rx(n).search(text)]
+
+        section.metrics = {
+            "characters_in_project": len(characters),
+            "characters_appearing": len(mentions),
+            "analyzed": len(self._appearing),
+            "planned_featured": len(planned),
+            "planned_missing": len(missing_planned),
+            "with_arc_checkpoint": len(with_arc),
+            "unprofiled_speakers": len(self._unprofiled),
+        }
+
+        if not characters:
+            section.major_issues.append(
+                "The project has no character records, so portrayal can't be "
+                "checked against profiles. Add characters to enable this report.")
+        elif not mentions:
+            section.minor_issues.append(
+                "No project character is named in this chapter.")
+        if self._appearing:
+            section.strengths.append(
+                "Appearing: " + ", ".join(
+                    f"{c.name} ({mentions[c.name]['count']}×, "
+                    f"{len(self._dialog[c.name])} line(s) of dialog)"
+                    for c in self._appearing))
+        landed = [p for p in planned if p in mentions]
+        if landed:
+            section.strengths.append(
+                f"Planned characters on the page: {', '.join(landed)}.")
+        if missing_planned:
+            section.major_issues.append(
+                "Planned for this chapter but missing from the prose: "
+                + ", ".join(missing_planned) + ".")
+        for name, filled in thin:
+            section.minor_issues.append(
+                f"{name}'s profile is thin ({filled} voice/trait field(s) filled) — "
+                "the comparison can only be as specific as the profile.")
+        if self._unprofiled:
+            section.extra_lists["Speakers with no character record"] = [
+                f"{n} ({k}×) — e.g. \"{ex}\"" for n, k, ex in self._unprofiled]
+        section.findings = (section.strengths + section.major_issues
+                            + section.minor_issues)
+        section.summary = (
+            f"Characters: {len(mentions)} of {len(characters)} project characters "
+            f"appear; {len(missing_planned)} planned character(s) missing; "
+            f"{len(self._unprofiled)} speaker(s) without a profile.")
+
+    def _build_prompt(self, text, section, genre, manuscript_context,
+                      rag_context, critique_context):
+        from src.ai.canon_index import format_character_profile
+        system_prompt = (
+            "You are a developmental editor who tracks characters across a "
+            "novel. Compare how each character is portrayed ON THE PAGE with "
+            "their CHARACTER RECORD (profile + arc checkpoints). The record is "
+            "the author's stated intent. Judge alignment trait by trait, "
+            "quote ≤20-word passages as evidence, and distinguish a real "
+            "drift (character acts against their record without the story "
+            "earning it) from earned growth (the change is motivated on the "
+            "page and fits the arc). Recommendations must be concrete: name "
+            "the passage and what to change, or name the profile field the "
+            "author should update if the drift is a deliberate discovery. "
+            "Do not rewrite the chapter.")
+        profiles = []
+        for c in self._appearing:
+            block = format_character_profile(c, self._chapter_number)
+            lines = self._dialog.get(c.name) or []
+            if lines:
+                block += "\nLines they speak in this chapter:\n" + "\n".join(
+                    f'  » "{l}"' for l in lines)
+            ex = self._mentions[c.name]["examples"]
+            if ex:
+                block += "\nWhere they appear (examples):\n" + "\n".join(
+                    f"  · {e}" for e in ex)
+            profiles.append(block)
+        unprofiled = section.extra_lists.get("Speakers with no character record", [])
+        ctx = self._format_context_block(
+            manuscript_context, rag_context, critique_context,
+            chapter_title=section.chapter_title,
+            chapter_index=section.chapter_index)
+        prompt = f"""
+Chapter: {section.chapter_title} (chapter {self._chapter_number})
+Genre: {genre.name}
+
+DETERMINISTIC FINDINGS:
+{_bullets(section.findings)}
+
+CHARACTER RECORDS (author's intent) for characters appearing in this chapter:
+{chr(10).join(profiles) if profiles else '(no project characters appear)'}
+
+SPEAKERS WITH NO CHARACTER RECORD:
+{_bullets(unprofiled)}
+
+{ctx}
+
+CHAPTER TEXT (first 3000 words):
+{self._excerpt(text, 3000)}
+
+Write a character report:
+
+For EACH character in CHARACTER RECORDS, a "## <Name>" section with:
+  - Portrayal: what the chapter shows of them (action, choice, interiority), with a quote.
+  - On track: which record items are visibly honoured (trait, fear, want, worldview…), with evidence.
+  - Drift: anything that contradicts the record or arc checkpoint. Quote the passage, name the
+    record field it conflicts with, and say whether it reads as drift or as earned growth.
+  - Voice: does their dialog match their speaking style and quirks? Quote a line.
+  - Arc position: given the arc checkpoint (and the next planned one, if any), are they where the
+    story needs them? Too far ahead, behind, or on course?
+
+Then:
+## Ensemble
+  How the characters play off each other here; is anyone flattened or redundant?
+## New or unprofiled characters
+  For each speaker with no record (and any other new named person), what the chapter
+  establishes about them and whether they deserve a character record.
+## Recommendations to stay on track
+  3-6 prioritized items. Each names the character, the passage or beat, and the change — or
+  the profile field to update if the page has outgrown the record.
+
+Finish with this machine-readable block, one item per line, no other text after it:
+{_TAGGED_MARKER}
+- [ON TRACK] <Name> — <what aligns with the record>
+- [DRIFT] <Name> — <record field>: <how the page differs, ≤30 words>
+- [RECOMMEND] <Name> — <concrete action>
+- [PROFILE UPDATE] <Name> — <field>: <suggested value the record should gain>
+"""
+        return prompt.strip(), system_prompt
+
+    def _post_process(self, section):
+        from src.ai.canon_index import parse_tag_block, strip_tagged_block
+        if getattr(self, "_focused_done", False):
+            return
+        tags = parse_tag_block(section.narrative, _TAGGED_MARKER)
+        section.strengths.extend(tags.get("ON TRACK", []))
+        section.major_issues.extend(tags.get("DRIFT", []))
+        section.suggestions.extend(tags.get("RECOMMEND", []))
+        if tags.get("PROFILE UPDATE"):
+            section.extra_lists["Profile updates to consider"] = tags["PROFILE UPDATE"]
+        section.narrative = strip_tagged_block(section.narrative, _TAGGED_MARKER)
+
+
+class WorldbuildingAnalyzer(_CanonAnalyzerMixin, _BaseAnalyzer):
+    """Worldbuilding fidelity against the project's world records.
+
+    Three outputs:
+      * **New elements** — names (places, factions, technologies,
+        customs, creatures…) the chapter introduces that have no entry
+        in the Worldbuilding section, with a suggested category and a
+        draft entry so the author can add them.
+      * **On track** — established elements the chapter uses in line
+        with their records.
+      * **Differences** — places where the prose contradicts what the
+        records say (a faction's allegiance, a technology's limits, a
+        place's geography), with which side probably needs to change.
+
+    Deterministic side: which world elements are referenced (by
+    category), planned locations missing from the prose, and unknown
+    proper nouns that are candidates for new elements.
+    """
+    report_type = ReportType.WORLDBUILDING
+    max_tokens = 1600
+    MAX_REFERENCED = 14
+    LOCAL_MAX_REFERENCED = 9     # three batches of three
+    LOCAL_MAX_CANDIDATES = 10    # two batches of five
+    EXPECTED_TAGS = ("NEW", "ON TRACK", "DIFFERS", "RECOMMEND")
+    TAG_FORMAT = (
+        "- [NEW] <Name> | <category> | <draft entry>\n"
+        "- [ON TRACK] <Element> — <how the page honours the record>\n"
+        "- [DIFFERS] <Element> — page: <what the prose says>; record: <what canon says>\n"
+        "- [RECOMMEND] <concrete action>")
+    _CATEGORIES = ("Place, Faction, Culture, Technology, Magic system, Creature, "
+                   "Plant, Historical event, Myth, Institution, Custom, Object, Other")
+    _FOCUSED_SYSTEM = (
+        "You are a continuity editor for a novel's invented world. The author's "
+        "records are canon. Be specific and brief. Follow the answer format exactly.")
+
+    def _narrate_focused(self, text, section, llm) -> List[str]:
+        from src.ai.canon_index import passages_mentioning, parse_tagged_lines
+        prompts, failures = [], []
+        on_track, differs, new_items = [], [], []
+
+        refs = self._referenced[:self.LOCAL_MAX_REFERENCED]
+        for i in range(0, len(refs), 3):
+            batch = refs[i:i + 3]
+            parts = []
+            for n, e in enumerate(batch, 1):
+                ev = passages_mentioning(text, [e.name], 180)
+                parts.append(f"ELEMENT {n}: {e.label}\n"
+                             f"RECORD: {e.summary or '(no description)'}\n"
+                             f"CHAPTER PASSAGES:\n{ev}")
+            prompt = (
+                "For each world element below, compare what the chapter says with "
+                "the author's record. Reply with ONLY one line per element:\n"
+                "[ON TRACK] <Element> — <how the chapter matches the record, with a short quote>\n"
+                "or\n"
+                "[DIFFERS] <Element> — page: <what the chapter says>; record: <what the "
+                "record says>; <minor stretch / real contradiction>\n\n"
+                "FORMAT EXAMPLE (made-up elements, not from this book):\n"
+                "[ON TRACK] Quillon Compact — taxes the docks (\"the Compact's tithe-men\"), as the record's \"controls trade\" says\n"
+                "[DIFFERS] Vorrel Span — page: \"collapsed years ago\"; record: still standing and guarded; real contradiction\n\n"
+                + "\n\n".join(parts)
+                + "\n\nAnswer for these elements only: "
+                + ", ".join(e.name for e in batch))
+            prompts.append(prompt)
+            tags = parse_tagged_lines(self._ask(
+                llm, prompt, self._FOCUSED_SYSTEM, 400, failures,
+                "elements " + ", ".join(e.name for e in batch)))
+            names = [e.name for e in batch]
+            on_track += _keep_named(_clean_items(tags.get("ON TRACK", [])), names)
+            differs += _keep_named(_clean_items(tags.get("DIFFERS", [])), names)
+
+        cands = self._new_candidates[:self.LOCAL_MAX_CANDIDATES]
+        for i in range(0, len(cands), 5):
+            batch = cands[i:i + 5]
+            parts = [f"NAME: {name}\nPASSAGES:\n{passages_mentioning(text, [name], 120)}"
+                     for name, _, _ in batch]
+            prompt = (
+                "These names appear in the chapter but have no worldbuilding record. "
+                "For each, reply with ONLY one line:\n"
+                "[NEW] <Name> | <category> | <draft entry from what the chapter "
+                "establishes, ≤25 words>\n"
+                "or\n"
+                "[SKIP] <Name> — <why: ordinary word, a person (belongs in Characters), or too vague>\n"
+                f"Categories: {self._CATEGORIES}.\n\n"
+                "FORMAT EXAMPLE (made-up names, not from this book):\n"
+                "[NEW] Thessaly Wharf | Place | Brine-soaked market quarter by the harbor where "
+                "smugglers trade after dark\n"
+                "[SKIP] Tuesday — ordinary word\n\n" + "\n\n".join(parts)
+                + "\n\nAnswer for these names only, one line each: "
+                + ", ".join(n for n, _, _ in batch))
+            prompts.append(prompt)
+            tags = parse_tagged_lines(self._ask(
+                llm, prompt, self._FOCUSED_SYSTEM, 400, failures, "new elements"))
+            for item in _keep_named(_clean_items(tags.get("NEW", [])),
+                                    [n for n, _, _ in batch]):
+                bits = [b.strip() for b in item.split("|")]
+                # People belong to the Character report.
+                if len(bits) >= 2 and bits[1].lower() in {"character", "person", "people"}:
+                    continue
+                new_items.append(item)
+
+        if new_items:
+            section.extra_lists["New elements (not in worldbuilding)"] = [
+                " — ".join(p.strip() for p in x.split("|") if p.strip())
+                for x in new_items]
+        section.strengths.extend(on_track)
+        section.major_issues.extend(differs)
+        # Recommendations follow directly from the findings — reliable
+        # without asking a small model to synthesise them.
+        for d in differs:
+            element = re.split(r"\s+[—–-]\s+", d, maxsplit=1)[0]
+            section.suggestions.append(
+                f"Reconcile {element}: change the passage or update its record ({d}).")
+        for x in new_items:
+            bits = [p.strip() for p in x.split("|")]
+            if len(bits) >= 2:
+                section.suggestions.append(
+                    f"Add {bits[0]} to Worldbuilding ({bits[1]}).")
+        skipped = (len(self._referenced) - len(refs), len(self._new_candidates) - len(cands))
+        if any(skipped):
+            section.minor_issues.append(
+                f"Local-model mode checked the {len(refs)} most-referenced elements and "
+                f"{len(cands)} most frequent new names; {skipped[0]} element(s) and "
+                f"{skipped[1]} name(s) not checked.")
+        for f in failures:
+            section.findings.append(f"(model call failed — {f})")
+        section.narrative = "\n".join(b for b in (
+            _md_list("New elements", section.extra_lists.get(
+                "New elements (not in worldbuilding)", [])),
+            _md_list("On track", on_track),
+            _md_list("Differences", differs),
+            _md_list("Recommendations", section.suggestions),
+        ) if b)
+        return prompts
+
+    def _compute(self, text, section, genre, critique_context):
+        from src.ai.canon_index import (
+            collect_world_entities, find_mentions, find_unknown_proper_nouns,
+            world_name_variants,
+        )
+        entities = collect_world_entities(getattr(self.project, "worldbuilding", None))
+        characters = list(getattr(self.project, "characters", None) or [])
+        mentions = find_mentions(text, world_name_variants(entities))
+        by_name: Dict[str, Any] = {}
+        for e in entities:
+            by_name.setdefault(e.name, e)
+        referenced = sorted(mentions, key=lambda n: -mentions[n]["count"])
+        self._referenced = [by_name[n] for n in referenced[:self.MAX_REFERENCED]]
+        self._mentions = mentions
+
+        known = [e.name for e in entities] + [c.name for c in characters]
+        unknown = find_unknown_proper_nouns(text, known, limit=15)
+        speech_rx = re.compile(rf"\b(?:{_SPEECH_VERBS})\b")
+        # Names that only ever act as speakers are people — those belong
+        # to the Character report, not here.
+        self._new_candidates = []
+        for name, n, ex in unknown:
+            if re.search(rf"\b{re.escape(name)}\s+(?:{_SPEECH_VERBS})\b", text) \
+                    or re.search(rf"\b(?:{_SPEECH_VERBS})\s+{re.escape(name)}\b", text):
+                continue
+            self._new_candidates.append((name, n, ex))
+
+        chapter = self._find_chapter(section.chapter_title)
+        planned_locs = list(getattr(getattr(chapter, "planning", None),
+                                    "locations", None) or [])
+        lower = text.lower()
+        missing_locs = [l for l in planned_locs if l and l.lower() not in lower]
+
+        cats = Counter(by_name[n].category for n in mentions)
+        section.metrics = {
+            "world_elements_in_project": len(entities),
+            "elements_referenced": len(mentions),
+            "categories_referenced": ", ".join(f"{k} ({v})" for k, v in cats.most_common()),
+            "new_element_candidates": len(self._new_candidates),
+            "planned_locations_missing": len(missing_locs),
+        }
+
+        if not entities:
+            section.major_issues.append(
+                "The Worldbuilding section is empty, so the chapter can't be "
+                "checked against world records — every named element is new.")
+        if self._referenced:
+            section.strengths.append(
+                "Draws on established worldbuilding: " + ", ".join(
+                    f"{e.name} [{e.category}]" for e in self._referenced[:8])
+                + (f" (+{len(mentions) - 8} more)" if len(mentions) > 8 else "") + ".")
+        elif entities:
+            section.minor_issues.append(
+                "No established world element is named in this chapter.")
+        if missing_locs:
+            section.major_issues.append(
+                "Planned location(s) not on the page: " + ", ".join(missing_locs) + ".")
+        if self._new_candidates:
+            section.extra_lists["New elements (not in worldbuilding)"] = [
+                f"{n} ({k}×) — e.g. \"{ex}\"" for n, k, ex in self._new_candidates]
+        section.findings = (section.strengths + section.major_issues
+                            + section.minor_issues)
+        section.summary = (
+            f"Worldbuilding: {len(mentions)} established element(s) referenced; "
+            f"{len(self._new_candidates)} candidate new element(s) not in the "
+            f"Worldbuilding section.")
+
+    def _build_prompt(self, text, section, genre, manuscript_context,
+                      rag_context, critique_context):
+        system_prompt = (
+            "You are a continuity editor for a novel's world. The WORLD RECORDS "
+            "are the author's canon. Compare the chapter against them: identify "
+            "elements the chapter introduces that have no record, confirm where "
+            "the chapter honours the records, and flag where it contradicts them. "
+            "Quote ≤20-word passages from the chapter and cite the record you are "
+            "comparing against. When prose and record disagree, say which one "
+            "likely needs to change and why. Do not rewrite the chapter.")
+        records = []
+        for e in self._referenced:
+            ex = self._mentions[e.name]["examples"][:2]
+            line = f"- {e.label}: {e.summary or '(no description in record)'}"
+            if ex:
+                line += "\n    on the page: " + " / ".join(f'"{x}"' for x in ex)
+            records.append(line)
+        candidates = section.extra_lists.get("New elements (not in worldbuilding)", [])
+        ctx = self._format_context_block(
+            manuscript_context, rag_context, critique_context,
+            chapter_title=section.chapter_title,
+            chapter_index=section.chapter_index)
+        prompt = f"""
+Chapter: {section.chapter_title}
+Genre: {genre.name}
+
+DETERMINISTIC FINDINGS:
+{_bullets(section.findings)}
+
+WORLD RECORDS for elements this chapter references:
+{chr(10).join(records) if records else '(none referenced)'}
+
+CANDIDATE NEW ELEMENTS (proper nouns with no world or character record):
+{_bullets(candidates)}
+
+{ctx}
+
+CHAPTER TEXT (first 3000 words):
+{self._excerpt(text, 3000)}
+
+Write a worldbuilding report:
+
+## New elements
+Everything the chapter introduces that the Worldbuilding section doesn't record — the
+candidates above (drop any that are clearly ordinary words or people) plus unnamed but
+specific additions (a new custom, rule of magic/technology, creature, landmark, institution).
+For each: what it appears to be, the category it belongs in, a one-or-two-sentence draft
+entry from what the page establishes, and whether it fits or strains existing canon.
+
+## On track
+Established elements the chapter uses consistently with their records. Quote the passage.
+
+## Differences
+Where the prose contradicts or stretches a record (geography, allegiance, history, rules,
+capabilities, culture). Quote the passage, cite the record, rate it (minor stretch / real
+contradiction), and say whether the prose or the record should change.
+
+## Underused canon
+1-3 established elements relevant to this chapter's events that could add texture, and where.
+
+## Recommendations
+3-6 prioritized actions: fix a contradiction, add a record, or deepen an element.
+
+Finish with this machine-readable block, one item per line, no other text after it:
+{_TAGGED_MARKER}
+- [NEW] <Name> | <category> | <draft entry, ≤30 words>
+- [ON TRACK] <Element> — <how the page honours the record>
+- [DIFFERS] <Element> — page: <what the prose says>; record: <what canon says>
+- [RECOMMEND] <concrete action>
+"""
+        return prompt.strip(), system_prompt
+
+    def _post_process(self, section):
+        from src.ai.canon_index import parse_tag_block, strip_tagged_block
+        if getattr(self, "_focused_done", False):
+            return
+        tags = parse_tag_block(section.narrative, _TAGGED_MARKER)
+        new = tags.get("NEW", [])
+        if new:
+            # The model's list is classified and drafted — prefer it over
+            # the raw proper-noun candidates.
+            section.extra_lists["New elements (not in worldbuilding)"] = [
+                " — ".join(p.strip() for p in item.split("|") if p.strip())
+                for item in new]
+        section.strengths.extend(tags.get("ON TRACK", []))
+        section.major_issues.extend(tags.get("DIFFERS", []))
+        section.suggestions.extend(tags.get("RECOMMEND", []))
+        section.narrative = strip_tagged_block(section.narrative, _TAGGED_MARKER)
+
+
 _ANALYZER_REGISTRY: Dict[ReportType, Any] = {
     ReportType.PACING: PacingAnalyzer,
     ReportType.VOICE: VoiceAnalyzer,
@@ -2949,6 +3857,8 @@ _ANALYZER_REGISTRY: Dict[ReportType, Any] = {
     ReportType.STYLE: StyleAnalyzer,
     ReportType.CANON: CanonAnalyzer,
     ReportType.GRAMMAR: GrammarAnalyzer,
+    ReportType.CHARACTER: CharacterAnalyzer,
+    ReportType.WORLDBUILDING: WorldbuildingAnalyzer,
 }
 
 
@@ -2977,6 +3887,9 @@ class CritiqueOrchestrator:
         # rag_provider(query: str, source_types: list, hops=1) -> str
         self.rag_provider = rag_provider
         self.chapter_synopses = chapter_synopses or {}
+        # Manuscript the chapters belong to, when it isn't the project's
+        # active one (critiquing a novella from another tab).
+        self.manuscript_override = None
         self.total_cost = 0.0
         # RAG memoization within a single critique run. Two reports
         # that resolve to identical (query, source_types, hops) hit
@@ -3038,8 +3951,8 @@ class CritiqueOrchestrator:
         # are optional — analyzers gracefully omit them when missing.
         sp = (getattr(self.project, "story_planning", None)
               if self.project else None)
-        ms = (getattr(self.project, "manuscript", None)
-              if self.project else None)
+        ms = self.manuscript_override or (getattr(self.project, "manuscript", None)
+                                          if self.project else None)
         if cls is PlotAnalyzer:
             synopsis = self.chapter_synopses.get(chapter_title, "")
             return cls(
@@ -3052,6 +3965,7 @@ class CritiqueOrchestrator:
             primary_llm=self.primary_llm,
             story_planning=sp,
             manuscript=ms,
+            project=self.project,
         )
 
     def _gather_rag(
@@ -3093,11 +4007,19 @@ class CritiqueOrchestrator:
             # is wired separately via _format_surrounding_chapters_block
             # for the CONTINUITY section.
             ReportType.GRAMMAR: ["chapter"],
+            ReportType.CHARACTER: ["character", "chapter_content", "subplot"],
+            ReportType.WORLDBUILDING: [
+                "faction", "place", "culture", "technology",
+                "historical_event", "myth", "flora", "fauna", "star_system",
+                "military", "economy", "political_system", "encyclopedia",
+                "worldbuilding",
+            ],
         }
         hops_by_report: Dict[ReportType, int] = {
             ReportType.PLOT:    2,
             ReportType.TENSION: 2,
             ReportType.CANON:   2,
+            ReportType.WORLDBUILDING: 2,
         }
         source_types = source_types_by_report.get(
             report_type, ["chapter", "character", "subplot"])
@@ -3232,6 +4154,8 @@ class CritiqueOrchestrator:
             if progress_cb:
                 progress_cb("Composing overall summary…")
             report.overall_summary = self._build_overall_summary(report)
+            report.overall_prompt = getattr(self, "_overall_prompt", "")
+            report.overall_system = getattr(self, "_overall_system", "")
         else:
             report.overall_summary = self._dashboard_summary(report)
         return report
@@ -3252,6 +4176,8 @@ class CritiqueOrchestrator:
         for rt in [
             ReportType.PACING, ReportType.VOICE, ReportType.TENSION,
             ReportType.PLOT, ReportType.DIALOG, ReportType.STYLE,
+            ReportType.CANON, ReportType.CHARACTER, ReportType.WORLDBUILDING,
+            ReportType.GRAMMAR,
         ]:
             sections = [
                 s for c in report.chapters for s in c.sections
@@ -3275,6 +4201,8 @@ class CritiqueOrchestrator:
                 if summary:
                     sec_lines.append(
                         f"  - [{s.report_type.value}] {summary}")
+                for issue in (s.major_issues or [])[:2]:
+                    sec_lines.append(f"      ! {_truncate(issue, 160)}")
             chapter_blocks.append(
                 f"Chapter: {c.chapter_title} ({c.word_count:,} words)\n"
                 + ("\n".join(sec_lines) if sec_lines else "  (no sections)"))
@@ -3292,13 +4220,18 @@ Write a single overall summary (3-5 short paragraphs) that:
 - Recommends a prioritized revision pass.
 Be specific; do not generalize beyond the data above.
 """.strip()
+        system = ("You are a senior developmental editor producing a "
+                  "manuscript-level rollup of per-chapter critiques.")
+        self._overall_prompt, self._overall_system = prompt, system
         try:
-            return self.primary_llm.generate_text(
+            summary = self.primary_llm.generate_text(
                 prompt,
-                "You are a senior developmental editor producing a "
-                "manuscript-level rollup of per-chapter critiques.",
+                system,
                 max_tokens=900,
-                temperature=0.5,
+                temperature=0.3 if is_local_llm(self.primary_llm) else 0.5,
             ).strip()
+            if summary.startswith("Error generating text:"):
+                raise RuntimeError(summary[len("Error generating text:"):].strip())
+            return summary
         except Exception as e:
             return f"(overall summary unavailable: {e})"

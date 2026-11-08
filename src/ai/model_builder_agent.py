@@ -22,7 +22,7 @@ from src.data.corpus_catalog import CATALOG, CorpusEntry
 from src.data.rephrase_database import (
     SOURCE_REPHRASE, SOURCE_CHAT_WRITING, SOURCE_CHAT_GENERAL,
     SOURCE_CORPUS, SOURCE_AGENT,
-    SOURCE_WORLDBUILDING, SOURCE_CHARACTER, SOURCE_PLOT,
+    SOURCE_WORLDBUILDING, SOURCE_CHARACTER, SOURCE_PLOT, SOURCE_CRITIQUE,
 )
 from src.data import genres as genre_taxonomy
 
@@ -127,6 +127,10 @@ _BAND_CANDIDATES = {
 
 def _intent_family(intent: str) -> str:
     """Map a training intent to a model family that suits it best."""
+    if intent == "critique":
+        # Instruction-following + long-context reading; the critique
+        # reports' local-model mode is tuned on Gemma.
+        return "gemma"
     if intent in ("worldbuilding", "character"):
         return "qwen"   # structured generation, named fields
     if intent in ("plot", "qa"):
@@ -499,6 +503,9 @@ _INTENT_KEYWORDS = {
                       "culture", "place", "location", "ecosystem"],
     "character": ["character", "protagonist", "antagonist", "love interest",
                   "backstory", "cast", "personality", "arc", "voice profile"],
+    "critique": ["critique", "critic", "analysis", "analyst", "analyze",
+                 "analyse", "feedback", "editor", "review", "report",
+                 "developmental edit", "beta reader", "continuity check"],
 }
 
 _MEDIUM_KEYWORDS = {
@@ -563,6 +570,13 @@ def _heuristic_recipe(description: str, *,
         rec.source_types = [SOURCE_CHARACTER, SOURCE_AGENT]
         rec.export_format = "instruction"
         rec.epochs = 3
+    elif rec.intent == "critique":
+        # Rated critique analyses only: each row is the exact system +
+        # prompt + output an analyzer used. Chat format keeps the
+        # per-report system prompt as a real system message.
+        rec.source_types = [SOURCE_CRITIQUE]
+        rec.export_format = "chat"
+        rec.epochs = 3
     else:  # both
         rec.source_types = [SOURCE_REPHRASE, SOURCE_CHAT_WRITING,
                             SOURCE_CORPUS]
@@ -577,7 +591,7 @@ def _heuristic_recipe(description: str, *,
     # the *task*, but we still surface a couple of richly-described
     # narratives so the model picks up evocative description style.
     matched: List[CorpusEntry] = []
-    for entry in CATALOG:
+    for entry in ([] if rec.intent == "critique" else CATALOG):
         if rec.intent in ("voice", "qa") and entry.purpose == "plot":
             continue
         if rec.intent == "plot" and entry.purpose == "voice":
@@ -617,7 +631,9 @@ def _heuristic_recipe(description: str, *,
     rec.recommended_comps = genre_taxonomy.comps_for(detected)
 
     # Always include at least one multi-narrative corpus when available
-    multi = [e for e in CATALOG if e.narratives >= 1000]
+    # Critique models learn from rated analyses, not fiction corpora.
+    multi = ([] if rec.intent == "critique"
+             else [e for e in CATALOG if e.narratives >= 1000])
     for e in multi[:2]:
         if e not in matched:
             matched.append(e)
@@ -645,6 +661,14 @@ def _heuristic_recipe(description: str, *,
         rec.lora_r = 8
         rec.epochs = 4
         rec.learning_rate = 1e-4
+    elif rec.intent == "critique":
+        # Structured, format-heavy output: a mid-size adapter learns the
+        # tagged-line format and the editor's judgement without
+        # memorising individual chapters. Only well-rated analyses.
+        rec.lora_r = 16
+        rec.epochs = 3
+        rec.learning_rate = 1e-4
+        rec.min_rating = "good"
 
     # Pick a base model that fits BOTH the user's intent AND the size
     # of their training data. ``recommend_base_for_corpus`` enforces:
@@ -769,10 +793,11 @@ def _llm_refine(base: TrainingRecipe, description: str,
         "described what model they want. Return ONLY JSON matching the "
         "schema below — no commentary.\n\n"
         "{\n"
-        "  \"intent\": \"voice|plot|both|qa|worldbuilding|character\",\n"
+        "  \"intent\": \"voice|plot|both|qa|worldbuilding|character|critique\",\n"
         "  \"medium\": \"books|movies|tv|short|mixed\",\n"
         "  \"source_types\": [\"rephrase\"|\"chat_writing\"|\"chat_general\""
-        "|\"corpus\"|\"agent\"|\"worldbuilding\"|\"character\"|\"plot\"],\n"
+        "|\"corpus\"|\"agent\"|\"worldbuilding\"|\"character\"|\"plot\""
+        "|\"critique\"],\n"
         "  \"recommended_corpora\": [\"<id from catalog>\", ...],\n"
         "  \"export_format\": \"instruction|chat|dpo|plot_prompt\",\n"
         "  \"base_model\": \"<HF id from the allowed list>\",\n"
@@ -839,7 +864,8 @@ def _llm_refine(base: TrainingRecipe, description: str,
                       if s in (SOURCE_REPHRASE, SOURCE_CHAT_WRITING,
                                SOURCE_CHAT_GENERAL, SOURCE_CORPUS,
                                SOURCE_AGENT, SOURCE_WORLDBUILDING,
-                               SOURCE_CHARACTER, SOURCE_PLOT)]
+                               SOURCE_CHARACTER, SOURCE_PLOT,
+                               SOURCE_CRITIQUE)]
                      or base.source_types,
         recommended_corpora=cor,
         export_format=data.get("export_format", base.export_format),
@@ -851,4 +877,11 @@ def _llm_refine(base: TrainingRecipe, description: str,
         lora_r=int(data.get("lora_r", base.lora_r) or base.lora_r),
         min_rating=base.min_rating,
     )
+    if base.intent == "critique":
+        # A critique model trains on rated analyses only; don't let the
+        # LLM's refinement drift it into a fiction-corpus recipe.
+        refined.intent = "critique"
+        refined.source_types = [SOURCE_CRITIQUE]
+        refined.recommended_corpora = []
+        refined.export_format = "chat"
     return refined

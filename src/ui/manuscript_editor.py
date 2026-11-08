@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QSize, QTimer
 from PyQt6.QtGui import QFont, QTextCursor, QAction, QTextCharFormat, QColor, QPainter, QTextDocument, QPixmap, QPen, QIcon
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import uuid
 from pathlib import Path
 
@@ -187,6 +187,14 @@ class ChapterEditor(QWidget):
     # current_chapter_editor (avoids the same flush-on-switch race
     # that was corrupting outline writes).
     events_cleared = pyqtSignal(str)  # chapter_id
+    # The planner regenerated this chapter's outline (or restored it
+    # after a failed regeneration) — MainWindow refreshes the outline
+    # panel from the new beats.
+    events_replaced = pyqtSignal(str)  # chapter_id
+    # Style panel's "Check consistency…" — MainWindow opens the dialog.
+    consistency_requested = pyqtSignal()
+    # Analyze ▸ Critique this chapter — MainWindow runs it in the Critique tab.
+    chapter_critique_requested = pyqtSignal()
     _prose_analysis_ready = pyqtSignal(str)  # Signal to deliver prose analysis result to main thread
     _character_analysis_ready = pyqtSignal(str)
     _world_analysis_ready = pyqtSignal(str)
@@ -282,57 +290,69 @@ class ChapterEditor(QWidget):
         self.heading_combo = QComboBox()
         self.heading_combo.addItems(["Normal", "Title", "H1", "H2", "H3", "H4"])
         self.heading_combo.setToolTip("Apply heading style (exports properly to Word, HTML, Markdown)")
-        self.heading_combo.setMaximumWidth(70)
+        self.heading_combo.setMinimumWidth(84)
+        self.heading_combo.setMaximumWidth(96)
         # Use activated instead of currentTextChanged so we can apply the same style multiple times
         self.heading_combo.activated.connect(self._on_heading_combo_activated)
         toolbar.addWidget(self.heading_combo)
 
         toolbar.addSeparator()
 
-        # Writing checks toggle buttons (3-state: On-demand=green, Realtime=blue, Off=white)
-        # Style templates for button states
-        self._check_button_styles = {
-            CheckMode.ON_DEMAND: "background-color: #86efac; color: black; font-weight: bold; padding: 2px 6px; border-radius: 3px;",
-            CheckMode.REALTIME: "background-color: #93c5fd; color: black; font-weight: bold; padding: 2px 6px; border-radius: 3px;",
-            CheckMode.OFF: "background-color: #f3f4f6; color: #6b7280; padding: 2px 6px; border-radius: 3px;",
-        }
-
-        self.spell_check_btn = QPushButton("ABC")
-        self.spell_check_btn.setToolTip("Spell check: Click to cycle (Green=On-demand, Blue=Realtime, White=Off)")
-        self.spell_check_btn.clicked.connect(self._toggle_spell_check)
-        self._update_check_button_style(self.spell_check_btn, CheckMode.ON_DEMAND)
-        toolbar.addWidget(self.spell_check_btn)
-
-        self.grammar_check_btn = QPushButton("Gr")
-        self.grammar_check_btn.setToolTip("Grammar check: Click to cycle (Green=On-demand, Blue=Realtime, White=Off)")
-        self.grammar_check_btn.clicked.connect(self._toggle_grammar_check)
-        self._update_check_button_style(self.grammar_check_btn, CheckMode.ON_DEMAND)
-        toolbar.addWidget(self.grammar_check_btn)
-
-        self.overuse_check_btn = QPushButton("Ov")
-        self.overuse_check_btn.setToolTip("Overuse detection: Click to cycle (Green=On-demand, Blue=Realtime, White=Off)")
-        self.overuse_check_btn.clicked.connect(self._toggle_overuse_check)
-        self._update_check_button_style(self.overuse_check_btn, CheckMode.ON_DEMAND)
-        toolbar.addWidget(self.overuse_check_btn)
-
-        # Recheck button - compact with emoji
-        self.recheck_btn = QPushButton("🔄")
-        self.recheck_btn.setToolTip("Rerun all on-demand checks on this chapter")
-        self.recheck_btn.setMinimumWidth(28)
-        self.recheck_btn.setMaximumWidth(32)
-        self.recheck_btn.setStyleSheet("font-size: 14px; padding: 2px;")
-        self.recheck_btn.clicked.connect(self._recheck_writing)
-        toolbar.addWidget(self.recheck_btn)
-
-        # Clean formatting button
-        self.clean_fmt_btn = QPushButton("Clean")
-        self.clean_fmt_btn.setToolTip(
-            "Fix formatting: normalize spacing, fonts, paragraph breaks, "
-            "and remove pasted rich-text inconsistencies"
-        )
-        self.clean_fmt_btn.setStyleSheet("font-size: 11px; padding: 2px 6px;")
-        self.clean_fmt_btn.clicked.connect(self._clean_formatting)
-        toolbar.addWidget(self.clean_fmt_btn)
+        # Writing checks — one menu instead of a row of toggle buttons.
+        self.checks_btn = QToolButton()
+        self.checks_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.checks_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.checks_btn.setStyleSheet(
+            "QToolButton { font-size: 12px; padding: 2px 8px; border: 1px solid #d1d5db; "
+            "border-radius: 4px; } QToolButton::menu-indicator { image: none; }")
+        self.checks_menu = QMenu(self.checks_btn)
+        self._show_highlights_action = self.checks_menu.addAction("Show highlights")
+        self._show_highlights_action.setCheckable(True)
+        self._show_highlights_action.setChecked(True)
+        self._show_highlights_action.setShortcut("Ctrl+Shift+H")
+        self._show_highlights_action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self._show_highlights_action.setToolTip(
+            "Show or hide every check highlight (Ctrl+Shift+H). The checks stay "
+            "on — turning highlights back on shows them again.")
+        self._show_highlights_action.toggled.connect(self._set_highlights_visible)
+        # Shortcut works while typing, not only when the menu is open.
+        self.addAction(self._show_highlights_action)
+        self.checks_menu.addSeparator()
+        self._check_actions = {}
+        for key, label, tip in (
+                ("spell", "Spelling", "Red underline. Right-click a word for suggestions "
+                                      "or to add it to the project dictionary."),
+                ("grammar", "Grammar", "Green underline — LanguageTool plus built-in rules."),
+                ("overuse", "Overused words", "Blue underline — words and phrases you "
+                                              "repeat across the chapter."),
+                ("style", "Style", "Passive voice, adverbs, wordy phrases, clichés, long / "
+                                   "hard / sticky sentences, repeated openings, echoes.")):
+            act = self.checks_menu.addAction(label)
+            act.setCheckable(True)
+            act.setToolTip(tip)
+            act.toggled.connect(lambda on, k=key: self._set_check_enabled(k, on))
+            self._check_actions[key] = act
+        self.checks_menu.setToolTipsVisible(True)
+        self.checks_menu.addSeparator()
+        self._realtime_action = self.checks_menu.addAction("Re-check grammar && overuse as I type")
+        self._realtime_action.setCheckable(True)
+        self._realtime_action.setToolTip(
+            "Off: grammar (LanguageTool) and overuse refresh on load and on Re-check now.\n"
+            "On: they also refresh whenever you pause typing.")
+        self._realtime_action.toggled.connect(lambda _on: self._apply_check_modes())
+        self.checks_menu.addAction("⟳ Re-check now", self._recheck_writing)
+        self.checks_menu.addSeparator()
+        self.checks_menu.addAction("Style issues panel…", self._open_style_panel)
+        self.checks_menu.addAction("Check consistency (names, spellings)…",
+                                   self.consistency_requested.emit)
+        self.checks_btn.setMenu(self.checks_menu)
+        toolbar.addWidget(self.checks_btn)
+        # Initial state: spelling, grammar, overuse on; style off.
+        for key in ("spell", "grammar", "overuse"):
+            self._check_actions[key].blockSignals(True)
+            self._check_actions[key].setChecked(True)
+            self._check_actions[key].blockSignals(False)
+        self._update_checks_button()
 
         toolbar.addSeparator()
 
@@ -359,37 +379,21 @@ class ChapterEditor(QWidget):
 
         toolbar.addSeparator()
 
-        # Text-to-Speech actions
-        tts_btn_style = "font-size: 12px; padding: 2px 6px;"
-
-        self.tts_speak_btn = QPushButton("🗣 Read Aloud")
-        self.tts_speak_btn.setToolTip("Read chapter aloud using text-to-speech\n(reads selection if text is selected)")
-        self.tts_speak_btn.setMinimumWidth(90)
-        self.tts_speak_btn.setStyleSheet(tts_btn_style)
+        # Text-to-Speech — one split button: click reads / pauses, the
+        # arrow holds the rest.
+        self.tts_speak_btn = QToolButton()
+        self.tts_speak_btn.setText("🗣 Read Aloud")
+        self.tts_speak_btn.setToolTip("Read the chapter aloud (or the selection)")
+        self.tts_speak_btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        self.tts_speak_btn.setStyleSheet("QToolButton { font-size: 12px; padding: 2px 6px; }")
         self.tts_speak_btn.clicked.connect(self._tts_speak_chapter)
-        toolbar.addWidget(self.tts_speak_btn)
-
-        self.tts_stop_btn = QPushButton("⏹ Stop")
-        self.tts_stop_btn.setToolTip("Stop reading")
-        self.tts_stop_btn.setMinimumWidth(60)
+        tts_menu = QMenu(self.tts_speak_btn)
+        self.tts_stop_btn = tts_menu.addAction("⏹ Stop reading", self._tts_stop)
         self.tts_stop_btn.setEnabled(False)
-        self.tts_stop_btn.setStyleSheet(tts_btn_style)
-        self.tts_stop_btn.clicked.connect(self._tts_stop)
-        toolbar.addWidget(self.tts_stop_btn)
-
-        self.tts_read_range_btn = QPushButton("🗣 Read Chapters…")
-        self.tts_read_range_btn.setToolTip("Read from one chapter to another using text-to-speech")
-        self.tts_read_range_btn.setMinimumWidth(110)
-        self.tts_read_range_btn.setStyleSheet(tts_btn_style)
-        self.tts_read_range_btn.clicked.connect(self._tts_speak_chapter_range)
-        toolbar.addWidget(self.tts_read_range_btn)
-
-        self.tts_generate_btn = QPushButton("🎙 Export Audio")
-        self.tts_generate_btn.setToolTip("Generate a TTS audio file for this chapter")
-        self.tts_generate_btn.setMinimumWidth(90)
-        self.tts_generate_btn.setStyleSheet(tts_btn_style)
-        self.tts_generate_btn.clicked.connect(self._tts_generate_document)
-        toolbar.addWidget(self.tts_generate_btn)
+        self.tts_read_range_btn = tts_menu.addAction("Read chapters…", self._tts_speak_chapter_range)
+        self.tts_generate_btn = tts_menu.addAction("🎙 Export audio file…", self._tts_generate_document)
+        self.tts_speak_btn.setMenu(tts_menu)
+        toolbar.addWidget(self.tts_speak_btn)
 
         editor_layout.addWidget(toolbar)
 
@@ -415,6 +419,14 @@ class ChapterEditor(QWidget):
         self.editor = EnhancedTextEditor()
         self.editor.setPlaceholderText("Start writing your chapter...")
         self.editor.textChanged.connect(self._on_text_changed)
+        self.editor.add_to_dictionary_callback = self._save_word_to_project_dictionary
+        # Readability is recomputed after a short pause (whole chapter, or
+        # the selection when one is made).
+        self._readability_timer = QTimer(self)
+        self._readability_timer.setSingleShot(True)
+        self._readability_timer.setInterval(700)
+        self._readability_timer.timeout.connect(self._update_readability)
+        self.editor.selectionChanged.connect(self._readability_timer.start)
 
         # Connect TTS progress signal for status updates
         self.editor.tts_progress.connect(self._on_tts_progress)
@@ -463,126 +475,82 @@ class ChapterEditor(QWidget):
         self.word_count_label.setStyleSheet("font-size: 11px;")
         bottom_toolbar.addWidget(self.word_count_label)
 
+        # Flesch-Kincaid readability (chapter, or the current selection)
+        self.readability_label = QLabel("")
+        self.readability_label.setStyleSheet("font-size: 11px; color: #4b5563; padding-left: 8px;")
+        self.readability_label.setTextFormat(Qt.TextFormat.RichText)
+        bottom_toolbar.addWidget(self.readability_label)
+
+        # Grammar engine status (LanguageTool starting / ready / basic rules)
+        self.grammar_status_label = QLabel("")
+        self.grammar_status_label.setStyleSheet("font-size: 10px; color: #6b7280; padding-left: 8px;")
+        bottom_toolbar.addWidget(self.grammar_status_label)
+        self.editor.writing_highlighter.grammar_status.connect(
+            self.grammar_status_label.setText)
+
         bottom_toolbar.addStretch()
 
-        # Compact button style
-        compact_btn_style = "font-size: 11px; padding: 3px 6px;"
+        menu_btn_style = ("QToolButton { font-size: 11px; padding: 3px 8px; border: 1px solid "
+                          "#d1d5db; border-radius: 4px; } QToolButton::menu-indicator "
+                          "{ image: none; }")
 
-        # Import from Word button
-        import_word_button = QPushButton("Import")
-        import_word_button.setToolTip("Import from Word document")
-        import_word_button.setStyleSheet(compact_btn_style)
-        import_word_button.clicked.connect(self._import_from_word)
-        bottom_toolbar.addWidget(import_word_button)
+        def menu_button(text: str, tip: str) -> Tuple[QToolButton, QMenu]:
+            btn = QToolButton()
+            btn.setText(text)
+            btn.setToolTip(tip)
+            btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+            btn.setStyleSheet(menu_btn_style)
+            menu = QMenu(btn)
+            menu.setToolTipsVisible(True)
+            btn.setMenu(menu)
+            bottom_toolbar.addWidget(btn)
+            return btn, menu
 
-        # Export to Word button
-        export_word_button = QPushButton("Export")
-        export_word_button.setToolTip("Export to Word document")
-        export_word_button.setStyleSheet(compact_btn_style)
-        export_word_button.clicked.connect(self._export_to_word)
-        bottom_toolbar.addWidget(export_word_button)
+        # AI analysis of this chapter
+        self.analyze_btn, analyze = menu_button("🔍 Analyze ▾", "Critiques and AI analysis of this chapter")
+        analyze.addAction("Critique this chapter (all reports)", self.chapter_critique_requested.emit)
+        analyze.addSeparator()
+        for label, slot, tip in (
+                ("Promises && character consistency", self._check_promises,
+                 "Check the chapter against story promises and character profiles"),
+                ("Prose — tone, style && voice", self._analyze_prose,
+                 "Analyze tone, style and voice with AI"),
+                ("Characters", self._analyze_characters,
+                 "Check character consistency against character profiles"),
+                ("Worldbuilding", self._analyze_world,
+                 "Check worldbuilding consistency in this chapter"),
+                ("Plot && pacing", self._analyze_plot,
+                 "Check plot adherence and pacing against the story plan"),
+                ("Writing hints", self._request_ai_hints, "Get AI writing hints")):
+            act = analyze.addAction(label, slot)
+            act.setToolTip(tip)
+        analyze.addSeparator()
+        analyze.addAction("Check consistency (names, spellings)…", self.consistency_requested.emit)
 
-        # AI Hints button
-        hints_button = QPushButton("Hints")
-        hints_button.setToolTip("Get AI writing hints")
-        hints_button.setStyleSheet(compact_btn_style)
-        hints_button.clicked.connect(self._request_ai_hints)
-        bottom_toolbar.addWidget(hints_button)
+        # Drafts, import / export, formatting
+        self.draft_btn, draft = menu_button("📄 Draft ▾", "Drafts, Word import / export, formatting")
+        draft.addAction("Save draft", self._save_revision).setToolTip(
+            "Save the current content as a new draft")
+        draft.addAction("View drafts…", self._view_revisions)
+        draft.addSeparator()
+        draft.addAction("Import from Word…", self._import_from_word)
+        draft.addAction("Export to Word…", self._export_to_word)
+        draft.addSeparator()
+        draft.addAction("Clean up formatting", self._clean_formatting).setToolTip(
+            "Normalize spacing, fonts and paragraph breaks; remove pasted rich-text quirks")
 
-        # Check Promises button (AI)
-        check_promises_button = QPushButton("Check")
-        check_promises_button.setToolTip("Check chapter against story promises and character consistency")
-        check_promises_button.setStyleSheet(compact_btn_style)
-        check_promises_button.clicked.connect(self._check_promises)
-        bottom_toolbar.addWidget(check_promises_button)
-
-        # Prose Analysis button (AI)
-        prose_analysis_button = QPushButton("Prose")
-        prose_analysis_button.setToolTip("Analyze tone, style, and voice of this chapter using AI")
-        prose_analysis_button.setStyleSheet(compact_btn_style)
-        prose_analysis_button.clicked.connect(self._analyze_prose)
-        bottom_toolbar.addWidget(prose_analysis_button)
-
-        # Character Analysis button (AI)
-        char_analysis_button = QPushButton("Chars")
-        char_analysis_button.setToolTip("Check character consistency against character profiles")
-        char_analysis_button.setStyleSheet(compact_btn_style)
-        char_analysis_button.clicked.connect(self._analyze_characters)
-        bottom_toolbar.addWidget(char_analysis_button)
-
-        # World Analysis button (AI)
-        world_analysis_button = QPushButton("World")
-        world_analysis_button.setToolTip("Check worldbuilding consistency in this chapter")
-        world_analysis_button.setStyleSheet(compact_btn_style)
-        world_analysis_button.clicked.connect(self._analyze_world)
-        bottom_toolbar.addWidget(world_analysis_button)
-
-        # Plot Analysis button (AI)
-        plot_analysis_button = QPushButton("Plot")
-        plot_analysis_button.setToolTip("Check plot adherence and pacing against story plan")
-        plot_analysis_button.setStyleSheet(compact_btn_style)
-        plot_analysis_button.clicked.connect(self._analyze_plot)
-        bottom_toolbar.addWidget(plot_analysis_button)
-
-        # Save draft button
-        save_revision_button = QPushButton("Save Draft")
-        save_revision_button.setToolTip("Save current content as a new draft")
-        save_revision_button.setStyleSheet(compact_btn_style)
-        save_revision_button.clicked.connect(self._save_revision)
-        bottom_toolbar.addWidget(save_revision_button)
-
-        # View drafts button
-        view_revisions_button = QPushButton("Drafts")
-        view_revisions_button.setToolTip("View and manage drafts")
-        view_revisions_button.setStyleSheet(compact_btn_style)
-        view_revisions_button.clicked.connect(self._view_revisions)
-        bottom_toolbar.addWidget(view_revisions_button)
-
-        # Toggle planner button - make it stand out but compact
-        self.toggle_planner_btn = QPushButton("📋 Plan")
+        # One toggle for the side panel (Planner / Style / Feedback tabs)
+        self.toggle_planner_btn = QPushButton("◧ Panel")
         self.toggle_planner_btn.setCheckable(True)
-        self.toggle_planner_btn.setToolTip("Show/hide chapter planner panel")
+        self.toggle_planner_btn.setToolTip(
+            "Show/hide the side panel — Planner, Style issues and Feedback tabs")
         self.toggle_planner_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #8b5cf6;
-                color: white;
-                font-weight: bold;
-                padding: 3px 8px;
-                border-radius: 3px;
-                font-size: 11px;
-            }
-            QPushButton:checked {
-                background-color: #7c3aed;
-            }
-            QPushButton:hover {
-                background-color: #7c3aed;
-            }
+            QPushButton { background-color: #8b5cf6; color: white; font-weight: bold;
+                          padding: 3px 10px; border-radius: 3px; font-size: 11px; }
+            QPushButton:checked, QPushButton:hover { background-color: #7c3aed; }
         """)
-        self.toggle_planner_btn.clicked.connect(self._toggle_planner)
+        self.toggle_planner_btn.clicked.connect(self._toggle_side_panel)
         bottom_toolbar.addWidget(self.toggle_planner_btn)
-
-        # Toggle feedback button
-        self.toggle_feedback_btn = QPushButton("Feedback")
-        self.toggle_feedback_btn.setCheckable(True)
-        self.toggle_feedback_btn.setToolTip("Show/hide feedback panel")
-        self.toggle_feedback_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #d97706;
-                color: white;
-                font-weight: bold;
-                padding: 3px 8px;
-                border-radius: 3px;
-                font-size: 11px;
-            }
-            QPushButton:checked {
-                background-color: #b45309;
-            }
-            QPushButton:hover {
-                background-color: #b45309;
-            }
-        """)
-        self.toggle_feedback_btn.clicked.connect(self._toggle_feedback)
-        bottom_toolbar.addWidget(self.toggle_feedback_btn)
 
         editor_layout.addLayout(bottom_toolbar)
 
@@ -611,7 +579,21 @@ class ChapterEditor(QWidget):
         self.planner_widget.events_cleared.connect(
             lambda: self.events_cleared.emit(
                 getattr(self.chapter, "id", "") or ""))
+        self.planner_widget.events_replaced.connect(
+            lambda: self.events_replaced.emit(
+                getattr(self.chapter, "id", "") or ""))
+        self.planner_widget.set_outline_text_provider(
+            lambda: getattr(getattr(self.chapter, "planning", None), "outline", "") or "")
+        self.planner_widget.set_selection_provider(
+            lambda: self.editor.textCursor().selectedText().replace("\u2029", "\n"))
         self.right_panel.addTab(self.planner_widget, "Planner")
+
+        from src.ui.style_panel import StyleIssuesPanel
+        self.style_panel = StyleIssuesPanel(self.editor)
+        self.style_panel.highlight_changed = self._sync_style_button
+        self.style_panel.consistency_requested.connect(self.consistency_requested.emit)
+        self.right_panel.addTab(self.style_panel, "Style")
+        self.editor.style_rewrite_requested.connect(self._rewrite_span_with_ai)
 
         from src.ui.feedback_widget import FeedbackWidget
         self.feedback_widget = FeedbackWidget()
@@ -626,35 +608,42 @@ class ChapterEditor(QWidget):
 
         layout.addWidget(self.main_splitter)
 
-    def _show_right_panel(self, tab_index: int):
-        """Show the right panel and switch to the given tab."""
+    def _show_right_panel(self, tab=None):
+        """Show the side panel, optionally switching to ``tab`` (a widget,
+        or an index for older callers)."""
         self.right_panel.setVisible(True)
-        self.right_panel.setCurrentIndex(tab_index)
+        if isinstance(tab, int):
+            self.right_panel.setCurrentIndex(tab)
+        elif tab is not None:
+            self.right_panel.setCurrentWidget(tab)
         self.main_splitter.setSizes([600, 400])
-        # Sync toggle buttons
         self.toggle_planner_btn.setChecked(True)
-        self.toggle_feedback_btn.setChecked(True)
 
     def _hide_right_panel(self):
         """Hide the right panel."""
         self.right_panel.setVisible(False)
         self.main_splitter.setSizes([1000, 0])
         self.toggle_planner_btn.setChecked(False)
-        self.toggle_feedback_btn.setChecked(False)
+
+    def _toggle_side_panel(self):
+        if self.right_panel.isVisible():
+            self._hide_right_panel()
+        else:
+            self._show_right_panel()
 
     def _toggle_planner(self):
-        """Toggle the chapter planner visibility."""
-        if self.right_panel.isVisible() and self.right_panel.currentIndex() == 0:
+        """Show the Planner tab (or hide the panel if it's showing)."""
+        if self.right_panel.isVisible() and self.right_panel.currentWidget() is self.planner_widget:
             self._hide_right_panel()
         else:
-            self._show_right_panel(0)
+            self._show_right_panel(self.planner_widget)
 
     def _toggle_feedback(self):
-        """Toggle the feedback panel visibility."""
-        if self.right_panel.isVisible() and self.right_panel.currentIndex() == 1:
+        """Show the Feedback tab (or hide the panel if it's showing)."""
+        if self.right_panel.isVisible() and self.right_panel.currentWidget() is self.feedback_widget:
             self._hide_right_panel()
         else:
-            self._show_right_panel(1)
+            self._show_right_panel(self.feedback_widget)
 
     def _on_plan_changed(self):
         """Handle plan content changes."""
@@ -1226,13 +1215,53 @@ class ChapterEditor(QWidget):
         self._update_word_count()
         self._update_margin_annotations()
         self._highlight_annotated_lines()
+        # Project names (characters, places, factions…) and the project
+        # dictionary are correct spellings.
+        if self.project is not None:
+            self.editor.set_project_vocabulary(self.project)
         # Perform initial writing check (for on-demand mode)
         self.editor.do_initial_check()
+        self._update_readability()
 
     def _on_text_changed(self):
         """Handle text changes."""
         self._update_word_count()
+        self._readability_timer.start()
         self.content_changed.emit()
+
+    def _update_readability(self):
+        """Show Flesch-Kincaid grade + reading ease for the chapter (or the
+        selection, when at least a couple of sentences are selected)."""
+        from src.utils.proofing import readability
+        cursor = self.editor.textCursor()
+        selected = cursor.selectedText().replace("\u2029", "\n") if cursor.hasSelection() else ""
+        scope = "Selection" if len(selected.split()) >= 20 else "Chapter"
+        r = readability(selected if scope == "Selection" else self.editor.toPlainText())
+        if r is None:
+            self.readability_label.setText("")
+            self.readability_label.setToolTip("")
+            return
+        color = ("#059669" if r.fk_grade <= 9 else "#b45309" if r.fk_grade <= 12 else "#dc2626")
+        self.readability_label.setText(
+            f"{scope}: FK grade <b style='color:{color}'>{r.fk_grade:.1f}</b> · "
+            f"Reading ease <b>{r.reading_ease:.0f}</b> ({r.ease_label})")
+        self.readability_label.setToolTip(
+            f"Flesch-Kincaid grade level {r.fk_grade:.1f} ({r.grade_label} reading level)\n"
+            f"Flesch reading ease {r.reading_ease:.1f} / 100 — {r.ease_label}\n\n"
+            f"{r.words:,} words · {r.sentences:,} sentences · "
+            f"{r.words / max(1, r.sentences):.1f} words/sentence · "
+            f"{r.syllables / max(1, r.words):.2f} syllables/word\n\n"
+            "Most commercial fiction reads around grade 4–8 (ease 70–90).\n"
+            "Select a passage to score just that passage.")
+
+    def _save_word_to_project_dictionary(self, word: str):
+        """Persist "Add to Dictionary" in the project so it sticks."""
+        if self.project is None or not hasattr(self.project, "dictionary"):
+            return
+        words = self.project.dictionary.words
+        if word.lower() not in {w.lower() for w in words}:
+            words.append(word)
+            self.content_changed.emit()
 
     def _update_word_count(self):
         """Update word count display."""
@@ -1408,39 +1437,82 @@ class ChapterEditor(QWidget):
         style = self.heading_combo.itemText(index)
         self.editor.apply_heading(style)
 
-    def _update_check_button_style(self, button: QPushButton, mode: CheckMode):
-        """Update button style based on check mode."""
-        button.setStyleSheet(self._check_button_styles[mode])
+    def _set_check_enabled(self, key: str, on: bool) -> None:
+        self._apply_check_modes()
+        if key == "style" and on:
+            self._show_right_panel(self.style_panel)
 
-    def _cycle_check_mode(self, current_mode: CheckMode) -> CheckMode:
-        """Cycle to the next check mode: ON_DEMAND -> REALTIME -> OFF -> ON_DEMAND."""
-        if current_mode == CheckMode.ON_DEMAND:
-            return CheckMode.REALTIME
-        elif current_mode == CheckMode.REALTIME:
-            return CheckMode.OFF
+    def _apply_check_modes(self) -> None:
+        """Push the Checks menu state to the editor."""
+        live = self._realtime_action.isChecked()
+
+        def mode(key, realtime_capable):
+            if not self._check_actions[key].isChecked():
+                return CheckMode.OFF
+            return CheckMode.REALTIME if (live and realtime_capable) else CheckMode.ON_DEMAND
+        self.editor.set_spell_mode(mode("spell", False))
+        self.editor.set_grammar_mode(mode("grammar", True))
+        self.editor.set_overuse_mode(mode("overuse", True))
+        self.editor.set_style_mode(mode("style", False))
+        if hasattr(self, "style_panel"):
+            self.style_panel.sync_highlight()
+        self._update_checks_button()
+
+    def _set_highlights_visible(self, visible: bool) -> None:
+        self.editor.set_highlights_visible(visible)
+        self._update_checks_button()
+
+    def _update_checks_button(self) -> None:
+        on = [a.text() for a in self._check_actions.values() if a.isChecked()]
+        hidden = not self._show_highlights_action.isChecked()
+        if hidden:
+            self.checks_btn.setText("✓ Checks · hidden ▾")
         else:
-            return CheckMode.ON_DEMAND
+            self.checks_btn.setText(f"✓ Checks · {len(on)} ▾" if on else "✓ Checks · off ▾")
+        self.checks_btn.setToolTip(
+            "Writing checks — " + (", ".join(on) if on else "all off")
+            + (" (re-checking as you type)" if self._realtime_action.isChecked() else ""))
 
-    def _toggle_spell_check(self):
-        """Cycle spell checking mode."""
-        current_mode = self.editor.get_spell_mode()
-        new_mode = self._cycle_check_mode(current_mode)
-        self.editor.set_spell_mode(new_mode)
-        self._update_check_button_style(self.spell_check_btn, new_mode)
+    def _toggle_style_check(self):
+        """Style highlighting on/off (used by the Style panel and tests)."""
+        act = self._check_actions["style"]
+        act.setChecked(not act.isChecked())
 
-    def _toggle_grammar_check(self):
-        """Cycle grammar checking mode."""
-        current_mode = self.editor.get_grammar_mode()
-        new_mode = self._cycle_check_mode(current_mode)
-        self.editor.set_grammar_mode(new_mode)
-        self._update_check_button_style(self.grammar_check_btn, new_mode)
+    def _sync_style_button(self):
+        """The Style panel toggled highlighting — mirror it in the menu."""
+        on = self.editor.get_style_mode() != CheckMode.OFF
+        act = self._check_actions["style"]
+        if act.isChecked() != on:
+            act.blockSignals(True)
+            act.setChecked(on)
+            act.blockSignals(False)
+        self._update_checks_button()
+        self.style_panel.sync_highlight()
 
-    def _toggle_overuse_check(self):
-        """Cycle overused word detection mode."""
-        current_mode = self.editor.get_overuse_mode()
-        new_mode = self._cycle_check_mode(current_mode)
-        self.editor.set_overuse_mode(new_mode)
-        self._update_check_button_style(self.overuse_check_btn, new_mode)
+    def _open_style_panel(self):
+        self._show_right_panel(self.style_panel)
+
+    def _rewrite_span_with_ai(self, start: int, end: int, hint: str):
+        """✨ Rewrite with AI for a style issue: select the sentence and open
+        the rephrase dialog with the issue as guidance."""
+        cursor = self.editor.textCursor()
+        cursor.setPosition(start)
+        cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+        self.editor.setTextCursor(cursor)
+        selected = cursor.selectedText()
+        if not selected.strip():
+            return
+        doc_text = self.editor.toPlainText()
+        from src.ui.rephrase_dialog import RephraseDialog
+        dialog = RephraseDialog(selected, self.project, self,
+                                surrounding_context=(doc_text[max(0, start - 500):start],
+                                                     doc_text[end:end + 500]),
+                                chapter_content=doc_text, chapter=self.chapter,
+                                instruction=hint)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            replacement = dialog.get_selected_text()
+            if replacement:
+                cursor.insertText(replacement)
 
     def _recheck_writing(self):
         """Rerun all on-demand checks on the chapter."""
@@ -3623,6 +3695,12 @@ class ManuscriptEditor(QWidget):
     # MainWindow handler can target the right chapter even if the
     # user has since clicked away.
     events_cleared = pyqtSignal(str)
+    events_replaced = pyqtSignal(str)
+    consistency_requested = pyqtSignal()
+    chapter_critique_requested = pyqtSignal()
+    # Critique a whole manuscript: (scope — "" for the main manuscript or
+    # a subproject id, include continuity across novellas).
+    manuscript_critique_requested = pyqtSignal(str, bool)
     # Subproject (novella) tabs. about_to_switch fires while the OUTGOING
     # manuscript is still active (editor already flushed) so listeners can
     # flush their own state and persist; switched fires once the incoming
@@ -4096,6 +4174,36 @@ class ManuscriptEditor(QWidget):
             )
             dialog.exec()
             self.content_changed.emit()
+
+    def open_chapter(self, chapter_id: str) -> bool:
+        """Show the chapter with ``chapter_id`` (switching to the novella
+        tab that holds it if needed). Returns True when it's open."""
+        if not chapter_id:
+            return False
+        if (self.current_chapter_editor is not None
+                and getattr(self.current_chapter_editor.chapter, "id", None) == chapter_id):
+            return True
+        project = self.project
+        if project is not None and hasattr(project, "find_chapter_with_scope"):
+            scope, chapter = project.find_chapter_with_scope(chapter_id)
+            if chapter is not None and (scope or None) != (
+                    getattr(project, "active_subproject_id", None) or None):
+                try:
+                    self.switch_subproject(scope or None)
+                    tabs = self.subproject_tabs
+                    for i in range(tabs.count()):
+                        if (tabs.tabData(i) or None) == (scope or None):
+                            tabs.blockSignals(True)
+                            tabs.setCurrentIndex(i)
+                            tabs.blockSignals(False)
+                            break
+                except Exception as e:
+                    print(f"[goto] could not switch manuscript: {e}")
+        for row in range(self.chapter_list.count()):
+            if self.chapter_list.item(row).data(Qt.ItemDataRole.UserRole) == chapter_id:
+                self.chapter_list.setCurrentRow(row)
+                return True
+        return False
 
     def _go_prev_chapter(self):
         """Navigate to the previous chapter."""
@@ -4689,6 +4797,12 @@ class ManuscriptEditor(QWidget):
             # outline-panel sync wiring.
             self.current_chapter_editor.events_cleared.connect(
                 self.events_cleared.emit)
+            self.current_chapter_editor.events_replaced.connect(
+                self.events_replaced.emit)
+            self.current_chapter_editor.consistency_requested.connect(
+                self.consistency_requested.emit)
+            self.current_chapter_editor.chapter_critique_requested.connect(
+                self.chapter_critique_requested.emit)
             self.editor_layout.addWidget(self.current_chapter_editor)
 
             # Notify listeners NOW (after the new chapter is fully
@@ -5210,6 +5324,16 @@ class ManuscriptEditor(QWidget):
             return
         sp_id = self.subproject_tabs.tabData(index) or None
         menu = QMenu(self)
+        from src.ai.continuity_analysis import has_cross_manuscript_content
+        label = self.project.scope_label(sp_id)
+        critique_action = menu.addAction(
+            f"🧐 Critique {'main manuscript' if sp_id is None else 'this novella'} “{label}”…")
+        project_critique_action = continuity_action = None
+        if sp_id is None and has_cross_manuscript_content(self.project):
+            project_critique_action = menu.addAction(
+                "🧐 Critique main project + continuity across novellas…")
+            continuity_action = menu.addAction("🔗 Check continuity across novellas…")
+        menu.addSeparator()
         rename_action = menu.addAction("Rename…")
         desc_action = delete_action = move_action = turn_action = None
         if sp_id is None and self.project.get_main_manuscript().chapters:
@@ -5228,7 +5352,13 @@ class ManuscriptEditor(QWidget):
         chosen = menu.exec(self.subproject_tabs.mapToGlobal(pos))
         if chosen is None:
             return
-        if chosen is rename_action:
+        if chosen is critique_action:
+            self.manuscript_critique_requested.emit(sp_id or "", False)
+        elif chosen is project_critique_action:
+            self.manuscript_critique_requested.emit("", True)
+        elif chosen is continuity_action:
+            self.manuscript_critique_requested.emit("__continuity__", True)
+        elif chosen is rename_action:
             self._rename_subproject(sp_id)
         elif chosen is desc_action:
             self._edit_subproject_description(sp_id)
@@ -6107,36 +6237,21 @@ class PromiseCheckDialog(QDialog):
         QApplication.processEvents()
 
         try:
-            # Try to get the LLM client
-            from src.ai.llm_client import LLMClient
             from src.ai.chapter_analysis_agent import PromiseChecker
+            from src.ai.task_llm import (
+                build_task_llm_override, build_default_llm, no_model_message,
+            )
 
-            # Get AI config
-            from src.config import get_settings
-            settings = get_settings()
-
-            if not settings.get('ai', {}).get('api_key'):
-                self.results_text.setPlainText(
-                    "⚠️ No AI API key configured.\n\n"
-                    "Please configure an API key in Settings > AI Configuration\n"
-                    "to use the promise checking feature."
-                )
+            # Promise / plot continuity is plot-task work: use the plot
+            # task model when one is set, else the default model.
+            plot_override = build_task_llm_override("plot")
+            llm = plot_override or build_default_llm()
+            if llm is None:
+                self.results_text.setPlainText("⚠️ " + no_model_message())
                 self.run_button.setEnabled(True)
                 self.run_button.setText("🔍 Run Check")
                 return
 
-            # Initialize LLM client
-            llm = LLMClient(
-                api_key=settings['ai']['api_key'],
-                provider=settings['ai'].get('provider', 'openai'),
-                model=settings['ai'].get('model', 'gpt-4o-mini')
-            )
-
-            # Run the check. Honour the per-task plot-trained model
-            # (CreativeOS settings → ``model_for_plot``) when one is
-            # configured — promise/plot continuity is plot-task work.
-            from src.ai.task_llm import build_task_llm_override
-            plot_override = build_task_llm_override("plot")
             checker = PromiseChecker(llm)
             result = checker.check_chapter(
                 chapter_content=self.chapter_content,

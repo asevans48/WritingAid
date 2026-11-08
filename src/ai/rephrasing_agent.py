@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from enum import Enum
 from src.ai.device_utils import detect_device, print_device_info
 from src.ai.mlx_utils import can_use_mlx, _mlx_cache as mlx_cache
+from src.ai.writer_voice import WriterVoice
 
 # macOS-specific: Increase stack size (addresses C stack overflow issues)
 # macOS has a default C stack size of 500KB which is too small for deep model architectures
@@ -548,6 +549,22 @@ def _build_character_voice_rules(character_context: str) -> str:
     if "emotional baseline:" in context_lower:
         rules.append("• Return to the character's baseline mood between emotional peaks. "
                       "This is their 'resting voice.'")
+    if "quirks:" in context_lower:
+        rules.append("• Let their quirks (tics, gestures, pet phrases) surface where natural — "
+                      "once, not as decoration on every line.")
+    if "worldview:" in context_lower:
+        rules.append("• Descriptions and judgments pass through their worldview — "
+                      "what they consider normal, threatening, beautiful, or beneath notice.")
+    if "moral code:" in context_lower:
+        rules.append("• Their moral code shows in what they condemn, excuse, or refuse to say.")
+    if "contradictions:" in context_lower:
+        rules.append("• Keep their contradictions alive — don't smooth them into a single tidy attitude.")
+    if "lie they believe:" in context_lower:
+        rules.append("• Their false belief colors interpretation: they read events in a way "
+                      "that confirms it.")
+    if "lines this character actually says" in context_lower:
+        rules.append("• The quoted sample lines are ground truth for their speech: match "
+                      "that cadence, vocabulary and sentence length in any dialog.")
 
     if not rules:
         rules.append("• Write as this character would naturally think and speak.")
@@ -565,12 +582,13 @@ class RephrasingAgent:
     REPHRASE_SYSTEM = """You are a skilled editor helping an author rephrase their writing.
 Your job is to provide several alternative phrasings while preserving the original meaning.
 
-You may receive CHARACTER DETAILS, SCENE context, WORLDBUILDING reference, and THESAURUS data.
+You may receive the AUTHOR'S VOICE profile, CHARACTER DETAILS, SCENE context, WORLDBUILDING reference, and THESAURUS data.
 Use them in this priority order:
-1. CHARACTER VOICE — if a character is specified, the rephrasing must sound like them
-2. SCENE CONTEXT — match the emotional beat and action of the surrounding text
-3. WORLDBUILDING — use terminology, names, and concepts from the author's world
-4. REFERENCE/THESAURUS — draw from these for vocabulary options and grounding in reality
+1. AUTHOR'S VOICE — the result must read as if this author wrote it: their sentence rhythm, punctuation habits, register, person and tense. Styles and tones are applied WITHIN this voice, never by replacing it.
+2. CHARACTER VOICE — if a character is specified, their traits, worldview and speech patterns shape the dialog and the narration's lens (what they notice, how they judge it)
+3. SCENE CONTEXT — match the emotional beat and action of the surrounding text
+4. WORLDBUILDING — use terminology, names, and concepts from the author's world
+5. REFERENCE/THESAURUS — draw from these for vocabulary options and grounding in reality
 
 Guidelines:
 - Maintain the original intent and key information
@@ -3045,6 +3063,8 @@ For each option, briefly explain what makes it different from the original."""
         scene_description: str = "",         # what's happening in the scene
         surrounding_before: str = "",        # text before the selection
         surrounding_after: str = "",         # text after the selection
+        refinement: Optional[dict] = None,   # follow-up revision request (see below)
+        writer_voice: Optional["WriterVoice"] = None,  # measured author voice
     ) -> RephraseResult:
         """Generate multiple rephrasing options for text.
 
@@ -3082,6 +3102,18 @@ For each option, briefly explain what makes it different from the original."""
             scene_description: User's description of the scene context
             surrounding_before: Text immediately before the selection in the document
             surrounding_after: Text immediately after the selection in the document
+            refinement: Optional follow-up revision request. When set, the
+                prompt switches from "rephrase the original" to "revise the
+                current draft per the author's feedback", fresh RAG context
+                is foregrounded, and options that barely differ from the
+                draft (or from earlier options) are rejected and retried.
+                Keys: ``instructions`` (list[str], oldest first),
+                ``current_draft`` (str), ``previous_options`` (list[str]),
+                ``new_context`` (str, retrieval not used in earlier passes).
+            writer_voice: Optional ``WriterVoice`` measured from the author's
+                own manuscript (see ``src.ai.writer_voice``). Its directives
+                go into both the initial and refinement prompts, and each
+                option's explanation gets a voice-match score.
 
         Returns:
             RephraseResult with multiple options
@@ -3350,6 +3382,17 @@ For each option, briefly explain what makes it different from the original."""
                 "use it to match flow, tone, and continuity, but do not include it in your output.\n"
             )
 
+        voice_note = ""
+        if writer_voice is not None and not writer_voice.is_empty:
+            voice_note = "\n" + writer_voice.to_prompt() + "\n"
+            if char_note or multi_speaker_note:
+                voice_note += (
+                    "HOW THE VOICES COMBINE: the author's habits above govern the "
+                    "prose itself (rhythm, punctuation, register). The character "
+                    "profile governs content and lens — what is noticed, judged, "
+                    "feared, wanted — and the words inside dialog. Never trade "
+                    "the author's voice for a generic one to express a trait.\n")
+
         # Build format example based on number of styles
         format_examples = []
         for i, style in enumerate(styles[:2]):  # Show at most 2 examples
@@ -3364,7 +3407,7 @@ EXPLANATION: [brief explanation]""")
         prompt = f"""Please rephrase the following text in {len(styles)} different ways:
 
 Original text: "{text}"
-{context_str}{tone_note}{pov_note}{multi_speaker_note}{char_note}{dialog_note}{scene_note}
+{voice_note}{context_str}{tone_note}{pov_note}{multi_speaker_note}{char_note}{dialog_note}{scene_note}
 Generate these variations:
 {style_instructions}
 
@@ -3376,9 +3419,28 @@ Format your response as:
 {format_example_str}
 """
 
+        refinement = refinement or None
+        if refinement:
+            prompt = self._build_refinement_prompt(
+                text=text,
+                refinement=refinement,
+                style_instructions=style_instructions,
+                voice_notes=f"{voice_note}{pov_note}{multi_speaker_note}{char_note}",
+                extra_notes=f"{context_str}{tone_note}{dialog_note}{scene_note}",
+                format_example_str=format_example_str,
+                num_styles=len(styles),
+            )
+
         # Use Python libraries if AI is disabled
         if self.use_python_libraries:
-            options = self._rephrase_with_python_libs(text, styles, tone)
+            # The rule-based path can't follow free-text feedback, but
+            # it should at least work from the draft being refined so
+            # the output moves forward instead of re-deriving the
+            # same variants from the original every time.
+            base = text
+            if refinement and (refinement.get("current_draft") or "").strip():
+                base = refinement["current_draft"].strip()
+            options = self._rephrase_with_python_libs(base, styles, tone)
             return RephraseResult(
                 original=text,
                 options=options,
@@ -3386,29 +3448,44 @@ Format your response as:
                 cost_estimate=0.0
             )
 
-        # Generate using either local or cloud model
+        def _call_model(p: str, temperature: float = 0.7) -> str:
+            if self.use_local_model:
+                print("[DEBUG] About to call _generate_local()")
+                print(f"[DEBUG] Prompt length: {len(p)} chars")
+                out = self._generate_local(p, max_tokens=800)
+                print("[DEBUG] _generate_local() returned successfully")
+                return out
+            if not self.llm:
+                raise ValueError("No LLM client configured. Enable local model or provide LLM client.")
+            return self.llm.generate_text(
+                p,
+                self.REPHRASE_SYSTEM,
+                max_tokens=800,
+                temperature=temperature,
+            )
+
         if self.use_local_model:
-            print("[DEBUG] About to call _generate_local()")
-            print(f"[DEBUG] Prompt length: {len(prompt)} chars")
-            response = self._generate_local(prompt, max_tokens=800)
-            print("[DEBUG] _generate_local() returned successfully")
             model_used = "local-phi-3"
             cost = 0.0
         else:
-            if not self.llm:
-                raise ValueError("No LLM client configured. Enable local model or provide LLM client.")
-
-            response = self.llm.generate_text(
-                prompt,
-                self.REPHRASE_SYSTEM,
-                max_tokens=800,
-                temperature=0.7
-            )
-            model_used = self.llm.model if hasattr(self.llm, 'model') else "unknown"
+            model_used = None
             cost = 0.002  # Rough estimate
+
+        # Refinement runs a little hotter so the model actually moves
+        # away from the draft rather than echoing it back.
+        response = _call_model(prompt, temperature=0.9 if refinement else 0.7)
+        if model_used is None:
+            model_used = self.llm.model if hasattr(self.llm, 'model') else "unknown"
 
         # Parse response
         options = self._parse_response(response, styles, tone)
+
+        if refinement:
+            options = self._enforce_refinement_novelty(
+                options, refinement, prompt, styles, tone, _call_model)
+
+        if writer_voice is not None:
+            self._annotate_voice_fit(options, writer_voice)
 
         return RephraseResult(
             original=text,
@@ -3416,6 +3493,177 @@ Format your response as:
             model_used=model_used,
             cost_estimate=cost
         )
+
+    # Options at or above this similarity to the draft being refined
+    # (or to an option the author already saw) count as "no real
+    # change" and are rejected.
+    REFINEMENT_SIMILARITY_LIMIT = 0.85
+
+    @staticmethod
+    def _normalize_for_compare(text: str) -> str:
+        return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", "", (text or "").lower())).strip()
+
+    @classmethod
+    def _text_similarity(cls, a: str, b: str) -> float:
+        import difflib
+        na, nb = cls._normalize_for_compare(a), cls._normalize_for_compare(b)
+        if not na or not nb:
+            return 0.0
+        return difflib.SequenceMatcher(None, na, nb).ratio()
+
+    def _build_refinement_prompt(
+        self,
+        text: str,
+        refinement: dict,
+        style_instructions: str,
+        extra_notes: str,
+        format_example_str: str,
+        num_styles: int,
+        voice_notes: str = "",
+    ) -> str:
+        """Prompt for a follow-up revision of an existing draft.
+
+        The author's feedback leads the prompt (not buried as a scene
+        note), the draft being refined is the thing to revise, and the
+        original is kept only as a meaning anchor. Retrieval that the
+        earlier pass did not surface is called out separately so the
+        model has something new to draw on.
+        """
+        instructions = [i.strip() for i in refinement.get("instructions", []) if i and i.strip()]
+        latest = instructions[-1] if instructions else ""
+        earlier = instructions[:-1]
+        draft = (refinement.get("current_draft") or "").strip() or text
+        previous = [p.strip() for p in refinement.get("previous_options", []) if p and p.strip()]
+        new_context = (refinement.get("new_context") or "").strip()
+
+        parts = [
+            "REVISION REQUEST — the author reviewed a draft and wants specific changes.",
+            "",
+            f"AUTHOR FEEDBACK (highest priority — every option must clearly apply this):\n  {latest}",
+        ]
+        if earlier:
+            parts.append("Earlier feedback that still applies:\n" + "\n".join(f"  - {e}" for e in earlier))
+        if voice_notes.strip():
+            parts += [
+                "",
+                "VOICE TO KEEP while applying the feedback (unless the feedback "
+                "explicitly asks to change it):",
+                voice_notes.strip(),
+            ]
+        parts += [
+            "",
+            f'DRAFT TO REVISE:\n"{draft}"',
+            "",
+            f'ORIGINAL PASSAGE (meaning anchor — keep its events and information):\n"{text}"',
+        ]
+        if new_context:
+            parts += [
+                "",
+                "NEW CONTEXT retrieved for this revision (not used in the earlier draft). "
+                "Where it fits the feedback, work in concrete details, names, or terminology "
+                "from it so the revision is grounded in the author's world:",
+                new_context,
+            ]
+        if previous:
+            parts += [
+                "",
+                "ALREADY SHOWN TO THE AUTHOR — do not reproduce or lightly reword these:",
+                "\n".join(f'  - "{p}"' for p in previous[:6]),
+            ]
+        parts += [
+            extra_notes.rstrip(),
+            "",
+            f"Produce {num_styles} revised versions, one per variation below:",
+            style_instructions,
+            "",
+            "Requirements:",
+            "- Each version must make a substantive, noticeable change that addresses the feedback — "
+            "not synonym swaps or punctuation tweaks.",
+            "- Revise the DRAFT, not the original; keep what the feedback doesn't ask to change "
+            "only if it already works.",
+            "- Feedback changes WHAT is said or emphasised; the author's voice and the "
+            "character's voice govern HOW. A revision that applies the feedback but "
+            "sounds like a different writer is a failed revision.",
+            "- Each EXPLANATION must say which part of the feedback was addressed and how.",
+            "",
+            "Format your response as:",
+            format_example_str,
+        ]
+        return "\n".join(parts) + "\n"
+
+    @staticmethod
+    def _annotate_voice_fit(options, writer_voice) -> None:
+        """Score each option against the author's measured voice and put
+        the best-fitting ones first (stable for ties)."""
+        scored = []
+        for i, o in enumerate(options):
+            fit = writer_voice.fit_score(o.text)
+            if fit is not None:
+                o.explanation = f"[Voice match {fit:.0%}] " + (o.explanation or "")
+            scored.append((-(fit if fit is not None else 0.0), i, o))
+        if any(f for f, _, _ in scored):
+            options[:] = [o for _, _, o in sorted(scored, key=lambda t: (t[0], t[1]))]
+
+    def _enforce_refinement_novelty(
+        self,
+        options: List["RephraseOption"],
+        refinement: dict,
+        prompt: str,
+        styles: List[RephraseStyle],
+        tone: RephraseTone,
+        call_model,
+    ) -> List["RephraseOption"]:
+        """Drop options that don't meaningfully change the draft; retry once."""
+        limit = self.REFINEMENT_SIMILARITY_LIMIT
+        draft = (refinement.get("current_draft") or "").strip()
+        references = [r for r in [draft] + list(refinement.get("previous_options", [])) if r]
+
+        def score(opt) -> float:
+            return max((self._text_similarity(opt.text, r) for r in references), default=0.0)
+
+        def novel(opts, seen_texts):
+            kept = []
+            for o in opts:
+                if not (o.text or "").strip():
+                    continue
+                if score(o) >= limit:
+                    continue
+                if any(self._text_similarity(o.text, t) >= limit for t in seen_texts):
+                    continue
+                kept.append(o)
+                seen_texts.append(o.text)
+            return kept
+
+        seen: List[str] = []
+        kept = novel(options, seen)
+        if len(kept) >= len(styles):
+            return kept
+
+        rejected = [o.text for o in options if o not in kept]
+        print(f"[refine] {len(options) - len(kept)} option(s) too close to the draft; retrying")
+        retry_prompt = (
+            prompt
+            + "\nYOUR PREVIOUS ATTEMPT WAS REJECTED: these versions were nearly identical to "
+            "the draft and did not apply the feedback:\n"
+            + "\n".join(f'  - "{r[:200]}"' for r in rejected[:4])
+            + "\nRestructure the sentences, change the imagery/specifics, and make the feedback "
+            "unmistakable in every version.\n"
+        )
+        try:
+            retry_resp = call_model(retry_prompt, temperature=1.0)
+            kept += novel(self._parse_response(retry_resp, styles, tone), seen)
+        except Exception as e:
+            print(f"[refine] retry failed: {e}")
+
+        if kept:
+            return kept[:max(len(styles), 1)]
+        # Nothing cleared the bar — return the least-similar attempts
+        # flagged as such, rather than an empty result.
+        fallback = sorted((o for o in options if (o.text or "").strip()), key=score)
+        for o in fallback:
+            o.explanation = ("(Close to the previous draft — try more specific feedback.) "
+                             + (o.explanation or ""))
+        return fallback
 
     def _parse_response(self, response: str, styles: List[RephraseStyle], tone: RephraseTone = RephraseTone.NEUTRAL) -> List[RephraseOption]:
         """Parse LLM response into structured options."""

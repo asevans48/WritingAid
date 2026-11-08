@@ -2629,6 +2629,12 @@ Cap at TWO ``<create_*>`` blocks per reply. Talk through your reasoning in prose
                     EDIT_INSERTION_PROMPT_BLOCK as _EIPB)
                 system_prompt = (
                     f"{system_prompt}\n\n{'='*60}\n{_EIPB}")
+            # Project actions — overall critique, redo the chapter
+            # outline, edit the story outline and worldbuilding.
+            if self.mode != "writer":
+                from src.ai.chat_actions import ACTIONS_PROMPT_BLOCK
+                system_prompt = (
+                    f"{system_prompt}\n\n{'='*60}\n{ACTIONS_PROMPT_BLOCK}")
 
             history = self.context.get('conversation_history') or []
             if uses_lookups:
@@ -3517,6 +3523,13 @@ class MainWindow(QMainWindow):
         view_menu.addAction(debug_action)
         self._debug_action = debug_action
 
+        # Review menu — critiques of the chapter / any manuscript, and
+        # continuity across novellas. Rebuilt on open so novella entries
+        # track the project.
+        self.review_menu = menubar.addMenu("&Review")
+        self.review_menu.aboutToShow.connect(self._populate_review_menu)
+        self._populate_review_menu()
+
         # Export menu
         export_menu = menubar.addMenu("E&xport")
 
@@ -3778,6 +3791,14 @@ class MainWindow(QMainWindow):
         # outline panel for that chapter.
         self.manuscript_editor.events_cleared.connect(
             self._handle_chapter_events_cleared)
+        self.manuscript_editor.events_replaced.connect(
+            self._handle_chapter_events_replaced)
+        self.manuscript_editor.manuscript_critique_requested.connect(
+            self._on_manuscript_critique_requested)
+        self.manuscript_editor.consistency_requested.connect(
+            self._open_consistency_dialog)
+        self.manuscript_editor.chapter_critique_requested.connect(
+            self._critique_current_chapter_from_menu)
         # Novella (subproject) tabs inside the Manuscript tab.
         self.manuscript_editor.subproject_about_to_switch.connect(
             self._on_subproject_about_to_switch)
@@ -3799,6 +3820,7 @@ class MainWindow(QMainWindow):
 
         # Connect chat to AI assistance
         self.chat_widget.message_sent.connect(self._handle_chat_message)
+        self.chat_widget.passage_link_clicked.connect(self._navigate_to_passage)
         self.chat_widget.clear_requested.connect(self._clear_chat_history)
         self.chat_widget.mode_changed.connect(lambda _: self._clear_chat_history())
         # Preview button: build the context dict + system prompt
@@ -7140,6 +7162,55 @@ class MainWindow(QMainWindow):
             "outline cleared, panel blanked",
             flush=True)
 
+    def _handle_chapter_events_replaced(self, chapter_id: str) -> None:
+        """The planner regenerated a chapter's outline: persist the new
+        beats and rewrite ``planning.outline`` + the AI-Assistant outline
+        panel from them, so every view shows the replacement."""
+        if not chapter_id or not self.current_project:
+            return
+        target = self._find_chapter_by_id(chapter_id)
+        if target is None or getattr(target, 'planning', None) is None:
+            return
+        ce = getattr(self.manuscript_editor, 'current_chapter_editor', None)
+        if ce is not None and getattr(getattr(ce, 'chapter', None), 'id', None) == chapter_id:
+            try:
+                ce.save_to_model()   # planner beats → planning.events
+            except Exception as e:
+                print(f"[outline-replace] save failed: {e}")
+        events = getattr(target.planning, 'events', None) or []
+        outline_md = self._events_to_outline_markdown(events) if events else ''
+        target.planning.outline = outline_md
+        if hasattr(target, 'plan'):
+            target.plan = outline_md
+        try:
+            panel = getattr(self.chat_widget, 'outline_panel', None)
+            if panel is not None and panel.current_chapter_id() == chapter_id:
+                panel.set_outline_text(outline_md)
+        except Exception:
+            pass
+        try:
+            self._auto_save_project()
+        except Exception:
+            pass
+        print(f"[outline-replace] chapter={chapter_id} outline replaced "
+              f"({len(events)} beats)", flush=True)
+        if getattr(self, "_chat_outline_pending", None) == chapter_id:
+            self._chat_outline_pending = None
+            planner = getattr(ce, "planner_widget", None) if ce is not None else None
+            if planner is not None and not getattr(planner, "last_replacement_ok", True):
+                self.chat_widget.add_message(
+                    "Assistant", "The new outline couldn't be generated, so the previous "
+                                 "outline was restored.")
+                return
+            beats = "\n".join(
+                f"{i}. **{getattr(ev, 'text', '')}**"
+                + (f" — {getattr(ev, 'description', '')}" if getattr(ev, 'description', '') else "")
+                for i, ev in enumerate(events, 1))
+            text = (f"New outline for “{target.title}” ({len(events)} beats):\n\n{beats}"
+                    if events else "The outline couldn't be rebuilt.")
+            self.chat_widget.add_message("Assistant", text)
+            self._record_chat_turn(getattr(self, "_chat_outline_request", ""), text)
+
     def _on_outline_panel_edited(self, outline_text: str) -> None:
         """Persist outline-panel edits back to chapter.planning.outline.
 
@@ -8286,6 +8357,15 @@ class MainWindow(QMainWindow):
         if self._chat_worker and self._chat_worker.isRunning():
             self.chat_widget.add_message("Assistant", "Please wait, I'm still thinking...")
             return
+
+        # Explicit project actions ("give me an overall critique",
+        # "redo the chapter outline") run directly — reliable with any
+        # model, no round trip needed to decide what to do.
+        if mode != "writer":
+            from src.ai.chat_actions import detect_intent
+            intent = detect_intent(message)
+            if intent is not None and self._run_chat_intent(intent, message):
+                return
 
         # Build comprehensive project context based on mode
         # Pass the user message so RAG can retrieve relevant context
@@ -10310,14 +10390,33 @@ class MainWindow(QMainWindow):
                 self._dispatch_long_form_writing(write_calls[0])
                 return
 
+            # Project-action tags (critique / chapter outline / story
+            # outline + worldbuilding edits) — applied, then stripped.
+            from src.ai.chat_actions import extract_actions
+            chat_actions, response_wo_actions = extract_actions(response)
             # Check for and handle element creation blocks in general mode
-            display_response, created_elements = self._parse_and_create_elements(response)
+            display_response, created_elements = self._parse_and_create_elements(
+                response_wo_actions)
+            action_notes, deferred_actions = self._apply_chat_actions(chat_actions)
+            if action_notes:
+                display_response = (display_response + "\n\n" +
+                                    "\n".join(f"✓ {n}" for n in action_notes)).strip()
+            # Quotes from the manuscript become "↗" links to the passage.
+            # (History keeps the un-linked text.)
+            shown_response = display_response
+            try:
+                from src.ai.text_links import add_passage_links
+                shown_response = add_passage_links(
+                    display_response, self._chapters_for_links(),
+                    self._current_chapter_id())
+            except Exception as e:
+                print(f"[chat-links] {e}")
 
             # Show the conversational part of the response
             # IMPORTANT: Pass BOTH display_response (for UI) AND original response (for training with tool calls)
             self.chat_widget.add_message(
                 "Assistant",
-                display_response,
+                shown_response,
                 system_prompt=system_prompt,
                 original_response=response  # Preserve tool calls for training data
             )
@@ -10338,6 +10437,10 @@ class MainWindow(QMainWindow):
                     )
                 # Refresh relevant UI widgets
                 self._refresh_project_widgets()
+            # Long-running actions (critique, outline rebuild) start after
+            # the reply is on screen.
+            for intent in deferred_actions:
+                self._run_chat_intent(intent, pending_msg or "")
 
     @staticmethod
     def _split_writer_response(response: str) -> tuple:
@@ -11872,6 +11975,460 @@ class MainWindow(QMainWindow):
     def _on_chat_error(self, error: str):
         """Handle AI chat error."""
         self.chat_widget.add_message("Assistant", f"Sorry, I encountered an issue: {error}")
+
+    # ── Manuscript critique (menu / tab right-click) ─────────────
+
+    def _populate_review_menu(self) -> None:
+        menu = self.review_menu
+        menu.clear()
+        project = self.current_project
+        ce = getattr(getattr(self, "manuscript_editor", None), "current_chapter_editor", None)
+        a = menu.addAction("Critique Current Chapter")
+        a.setEnabled(ce is not None)
+        a.triggered.connect(self._critique_current_chapter_from_menu)
+        if project is None:
+            menu.addSeparator()
+            menu.addAction("Open Critique Tab").triggered.connect(
+                lambda: self.tab_widget.setCurrentWidget(self.grader_widget))
+            return
+        from src.ai.continuity_analysis import has_cross_manuscript_content
+        main_label = project.scope_label(None)
+        a = menu.addAction(f"Critique Main Manuscript “{main_label}”…")
+        a.setEnabled(bool(project.get_main_manuscript().chapters))
+        a.triggered.connect(lambda: self._run_manuscript_critique(None, False))
+        novellas = [sp for sp in (getattr(project, "subprojects", None) or [])]
+        if novellas:
+            sub = menu.addMenu("Critique Novella")
+            for sp in novellas:
+                act = sub.addAction(f"“{sp.name}”…")
+                act.setEnabled(bool(sp.manuscript.chapters))
+                act.triggered.connect(lambda _=False, sid=sp.id: self._run_manuscript_critique(sid, False))
+        if has_cross_manuscript_content(project):
+            menu.addSeparator()
+            menu.addAction("Critique Main Project + Continuity Across Novellas…").triggered.connect(
+                lambda: self._run_manuscript_critique(None, True))
+            menu.addAction("Check Continuity Across Novellas…").triggered.connect(
+                lambda: self._run_manuscript_critique(None, True, continuity_only=True))
+        menu.addSeparator()
+        menu.addAction("Check Consistency (names, spellings, style)…").triggered.connect(
+            self._open_consistency_dialog)
+        menu.addAction("Open Critique Tab").triggered.connect(
+            lambda: self.tab_widget.setCurrentWidget(self.grader_widget))
+
+    # ── Consistency check ───────────────────────────────────────
+
+    def _consistency_chapters(self, scope: str = "manuscript") -> list:
+        """[(chapter_id, title, text)] for the active manuscript or, with
+        scope="project", every manuscript (live text for the open chapter)."""
+        chapters = self._chapters_for_links()
+        if scope == "project" or not self.current_project:
+            return chapters
+        active_ids = {ch.id for ch in self.current_project.manuscript.chapters}
+        return [c for c in chapters if c[0] in active_ids]
+
+    def _canon_names(self) -> list:
+        project = self.current_project
+        if project is None:
+            return []
+        names = [c.name for c in getattr(project, "characters", None) or []]
+        try:
+            from src.ai.canon_index import collect_world_entities
+            names += [e.name for e in collect_world_entities(project.worldbuilding)]
+        except Exception:
+            pass
+        names += list(getattr(getattr(project, "dictionary", None), "words", None) or [])
+        return names
+
+    def _open_consistency_dialog(self) -> None:
+        if not self.current_project:
+            return
+        ce = getattr(self.manuscript_editor, "current_chapter_editor", None)
+        if ce is not None:
+            try:
+                ce.save_to_model()
+            except Exception:
+                pass
+        from src.ui.consistency_dialog import ConsistencyDialog
+        dlg = getattr(self, "_consistency_dialog", None)
+        if dlg is not None:
+            try:
+                dlg.run()
+                dlg.show()
+                dlg.raise_()
+                return
+            except RuntimeError:
+                pass
+        if not hasattr(self, "_consistency_ignored"):
+            self._consistency_ignored = set()
+        self._consistency_dialog = ConsistencyDialog(
+            self._consistency_chapters, self._canon_names(),
+            navigate=self._navigate_to_range, apply_changes=self._apply_consistency,
+            has_novellas=bool(getattr(self.current_project, "subprojects", None)),
+            ignored=self._consistency_ignored, parent=self)
+        self._consistency_dialog.show()
+
+    def _navigate_to_range(self, chapter_id: str, start: int, end: int) -> None:
+        """Open a chapter and select [start, end) in it."""
+        self.tab_widget.setCurrentWidget(self.manuscript_editor)
+        if not self.manuscript_editor.open_chapter(chapter_id):
+            return
+        ce = self.manuscript_editor.current_chapter_editor
+        if ce is None:
+            return
+        from PyQt6.QtGui import QTextCursor
+        editor = ce.editor
+        n = len(editor.toPlainText())
+        cursor = editor.textCursor()
+        cursor.setPosition(min(start, n))
+        cursor.setPosition(min(end, n), QTextCursor.MoveMode.KeepAnchor)
+        editor.setTextCursor(cursor)
+        editor.ensureCursorVisible()
+        editor.setFocus()
+
+    def _apply_consistency(self, group, target: str) -> int:
+        """Apply a consistency fix everywhere it occurs. The open chapter
+        is edited through its editor (one undo step); other chapters'
+        text is updated in the model and saved with the project."""
+        from src.utils.consistency_checks import apply_group
+        from PyQt6.QtGui import QTextCursor
+        changes = group.changes(target)
+        ce = getattr(self.manuscript_editor, "current_chapter_editor", None)
+        open_id = getattr(getattr(ce, "chapter", None), "id", None)
+        changed = 0
+        by_ch = {}
+        for occ in changes:
+            by_ch.setdefault(occ.chapter_id, []).append(occ)
+        for cid, occs in by_ch.items():
+            if cid == open_id and ce is not None:
+                editor = ce.editor
+                text = editor.toPlainText()
+                cursor = QTextCursor(editor.document())
+                cursor.beginEditBlock()
+                for occ in sorted(occs, key=lambda o: -o.start):
+                    if text[occ.start:occ.end] != occ.text:
+                        continue
+                    cursor.setPosition(occ.start)
+                    cursor.setPosition(occ.end, QTextCursor.MoveMode.KeepAnchor)
+                    cursor.insertText(group.replacement_for(occ, target))
+                    changed += 1
+                cursor.endEditBlock()
+                continue
+            _scope, chapter = self.current_project.find_chapter_with_scope(cid)
+            if chapter is None:
+                continue
+            new_texts, n = apply_group(group, target, {cid: chapter.content or ""}, occs)
+            if n:
+                chapter.content = new_texts[cid]
+                chapter.word_count = len(chapter.content.split())
+                changed += n
+        if changed:
+            try:
+                self._on_content_changed()
+            except Exception:
+                pass
+            self.statusBar().showMessage(f"Consistency: changed {changed} occurrence(s).", 5000)
+        return changed
+
+    def _critique_current_chapter_from_menu(self) -> None:
+        ce = getattr(self.manuscript_editor, "current_chapter_editor", None)
+        if ce is None:
+            return
+        try:
+            ce.save_to_model()
+            self.grader_widget.set_current_chapter(ce.editor.toPlainText(), ce.chapter.title)
+        except Exception as e:
+            print(f"[review] could not sync chapter: {e}")
+        self.tab_widget.setCurrentWidget(self.grader_widget)
+        self.grader_widget.scope_single_radio.setChecked(True)
+        self.grader_widget._run_reports()
+
+    def _on_manuscript_critique_requested(self, scope: str, continuity: bool) -> None:
+        if scope == "__continuity__":
+            self._run_manuscript_critique(None, True, continuity_only=True)
+        else:
+            self._run_manuscript_critique(scope or None, continuity)
+
+    def _run_manuscript_critique(self, scope, continuity: bool,
+                                 continuity_only: bool = False) -> None:
+        """Critique a whole manuscript (main = None, or a novella id),
+        optionally with continuity across the novellas."""
+        if not self.current_project:
+            return
+        ce = getattr(self.manuscript_editor, "current_chapter_editor", None)
+        if ce is not None:
+            try:
+                ce.save_to_model()       # include unsaved edits
+            except Exception:
+                pass
+        self.tab_widget.setCurrentWidget(self.grader_widget)
+        error = self.grader_widget.run_manuscript_critique(
+            scope, include_continuity=continuity or continuity_only,
+            report_types=[] if continuity_only else None)
+        if error:
+            QMessageBox.information(self, "Critique", error)
+
+    # ── Links from chat to manuscript passages ───────────────────
+
+    def _chapters_for_links(self) -> list:
+        """[(chapter_id, title, text)] for every chapter — the open one
+        with its live editor text — so chat findings can link to prose."""
+        out = []
+        project = self.current_project
+        if project is None:
+            return out
+        ce = getattr(getattr(self, "manuscript_editor", None), "current_chapter_editor", None)
+        live_id, live_text = None, ""
+        if ce is not None:
+            try:
+                live_id, live_text = ce.chapter.id, ce.editor.toPlainText()
+            except Exception:
+                pass
+        try:
+            pairs = project.all_chapters()
+        except Exception:
+            pairs = [(None, ch) for ch in project.manuscript.chapters]
+        for _scope, ch in pairs:
+            text = live_text if ch.id == live_id else (ch.content or "")
+            if text.strip():
+                out.append((ch.id, ch.title or f"Chapter {ch.number}", text))
+        return out
+
+    def _current_chapter_id(self) -> str:
+        ce = getattr(getattr(self, "manuscript_editor", None), "current_chapter_editor", None)
+        return getattr(getattr(ce, "chapter", None), "id", "") or ""
+
+    def _navigate_to_passage(self, chapter_id: str, passage: str) -> None:
+        """Open the chapter and select (and briefly highlight) the passage."""
+        from src.ai.text_links import locate
+        self.tab_widget.setCurrentWidget(self.manuscript_editor)
+        if not self.manuscript_editor.open_chapter(chapter_id):
+            self.statusBar().showMessage("That chapter no longer exists.", 5000)
+            return
+        ce = self.manuscript_editor.current_chapter_editor
+        if ce is None:
+            return
+        editor = ce.editor
+        hit = locate(editor.toPlainText(), passage)
+        if hit is None:
+            self.statusBar().showMessage(
+                f"Opened “{ce.chapter.title}”, but the passage wasn't found — it may "
+                f"have been edited since.", 6000)
+            return
+        from PyQt6.QtGui import QTextCursor, QTextCharFormat, QColor
+        from PyQt6.QtWidgets import QTextEdit
+        from PyQt6.QtCore import QTimer
+        cursor = editor.textCursor()
+        cursor.setPosition(hit[0])
+        cursor.setPosition(hit[1], QTextCursor.MoveMode.KeepAnchor)
+        editor.setTextCursor(cursor)
+        editor.ensureCursorVisible()
+        editor.setFocus()
+        # Brief highlight so the eye finds it even after the selection
+        # is cleared by the next click.
+        sel = QTextEdit.ExtraSelection()
+        sel.cursor = QTextCursor(cursor)
+        fmt = QTextCharFormat()
+        fmt.setBackground(QColor("#fde68a"))
+        sel.format = fmt
+        previous = editor.extraSelections()
+        editor.setExtraSelections(previous + [sel])
+        QTimer.singleShot(2500, lambda: editor.setExtraSelections(
+            [s for s in editor.extraSelections() if s.cursor != sel.cursor]))
+
+    # ── Chat-driven project actions ──────────────────────────────
+
+    def _run_chat_intent(self, intent: dict, message: str) -> bool:
+        """Run a recognised chat action. Returns True when handled."""
+        kind = intent.get("kind")
+        if kind == "critique":
+            return self._start_chat_critique(intent.get("scope", "chapter"), message)
+        if kind == "chapter_outline":
+            return self._chat_regenerate_chapter_outline(intent.get("source", "text"), message)
+        if kind == "story_outline" and self.current_project:
+            notes, _ = self._apply_chat_actions([("update_story_outline", intent.get("data") or {})])
+            if not notes:
+                return False
+            field, value = next(iter((intent.get("data") or {}).items()))
+            text = (f"Done — the {field.replace('_', ' ')} now reads:\n\n> {value}\n\n"
+                    f"(Story Planning tab updated.)")
+            self.chat_widget.add_message("Assistant", text)
+            self._record_chat_turn(message, text)
+            return True
+        return False
+
+    def _record_chat_turn(self, user_message: str, assistant_text: str) -> None:
+        if user_message:
+            self._chat_history.append({"role": "user", "content": user_message})
+        if assistant_text:
+            self._chat_history.append({"role": "assistant", "content": assistant_text})
+        self._compact_chat_history()
+
+    def _start_chat_critique(self, scope: str, message: str) -> bool:
+        grader = getattr(self, "grader_widget", None)
+        if grader is None or not self.current_project:
+            self.chat_widget.add_message("Assistant", "Open a project to run a critique.")
+            return True
+        ce = getattr(self.manuscript_editor, "current_chapter_editor", None)
+        if scope not in ("manuscript", "continuity"):
+            if ce is None:
+                self.chat_widget.add_message(
+                    "Assistant", "Open a chapter first — or ask for a critique of the "
+                                 "whole manuscript.")
+                return True
+            try:
+                ce.save_to_model()
+                grader.set_current_chapter(ce.editor.toPlainText(), ce.chapter.title)
+            except Exception as e:
+                print(f"[chat-critique] could not sync chapter: {e}")
+        else:
+            try:
+                if ce is not None:
+                    ce.save_to_model()
+            except Exception:
+                pass
+
+        def progress(msg: str):
+            self.statusBar().showMessage(f"Critique: {msg.strip()}", 4000)
+
+        error = grader.run_critique_for_chat(
+            scope, on_done=lambda report, err: self._on_chat_critique_done(
+                report, err, message, scope),
+            on_progress=progress)
+        if error:
+            self.chat_widget.add_message("Assistant", error)
+            return True
+        label, cross = "", False
+        if scope in ("manuscript", "continuity"):
+            from src.ai.continuity_analysis import has_cross_manuscript_content
+            active = getattr(self.current_project, "active_subproject_id", None)
+            label = self.current_project.scope_label(active)
+            cross = active is None and has_cross_manuscript_content(self.current_project)
+        what = ("continuity across the project's novellas" if scope == "continuity" else
+                f"“{label}” (pacing, tension, plot, characters, worldbuilding)"
+                + (" plus continuity across the novellas" if cross else "")
+                if scope == "manuscript" else
+                f"“{ce.chapter.title}” — every report: pacing, voice, tension, plot, dialog, "
+                f"style, canon, grammar, characters and worldbuilding")
+        self.chat_widget.add_message(
+            "Assistant",
+            f"Running an overall critique of {what}, plus the promise & character "
+            f"consistency check. This takes a little while (longer with local models); "
+            f"I'll post the results here and the full reports land in the Critique tab.")
+        return True
+
+    def _on_chat_critique_done(self, report, error, message: str, scope: str) -> None:
+        from src.ai.chat_actions import format_critique_for_chat, critique_digest
+        if error or report is None:
+            self.chat_widget.add_message(
+                "Assistant", f"The critique couldn't finish: {error or 'no result'}")
+            return
+        promise_results = getattr(report, "promise_results", None) or []
+        if not report.has_llm:
+            note = ("\n\n_No AI model was available, so this is the metrics-only "
+                    "dashboard (no narrative or promise check). Pick an analysis model "
+                    "in the Critique tab._")
+        else:
+            note = ""
+        try:
+            chapters = self._chapters_for_links()
+        except Exception as e:
+            print(f"[chat-links] {e}")
+            chapters = []
+        self.chat_widget.add_message(
+            "Assistant", format_critique_for_chat(
+                report, promise_results, chapters=chapters) + note)
+        # Keep the findings in the conversation so follow-ups can use them.
+        self._record_chat_turn(message, critique_digest(report, promise_results))
+
+    def _chat_regenerate_chapter_outline(self, source: str, message: str) -> bool:
+        ce = getattr(self.manuscript_editor, "current_chapter_editor", None)
+        if ce is None:
+            self.chat_widget.add_message("Assistant", "Open the chapter whose outline "
+                                                      "you want to redo first.")
+            return True
+        planner = ce.planner_widget
+        has_text = bool(ce.editor.toPlainText().strip())
+        use_text = source == "text" and has_text
+        self._chat_outline_pending = getattr(ce.chapter, "id", "")
+        self._chat_outline_request = message
+        try:
+            ce.right_panel.setVisible(True)
+            ce.right_panel.setCurrentWidget(planner)
+        except Exception:
+            pass
+        how = ("from the chapter text" if use_text else
+               "from the chapter plan and project context" + (
+                   "" if has_text or source != "text" else " (the chapter has no text yet)"))
+        self.chat_widget.add_message(
+            "Assistant",
+            f"Rebuilding the outline for “{ce.chapter.title}” {how}. The existing outline "
+            f"is erased first and replaced (you'll be asked to confirm if one exists). "
+            f"Progress shows in the Planner panel.")
+        started = (planner._populate_outline_from_text() if use_text
+                   else planner._generate_events())
+        if not started:
+            self._chat_outline_pending = None
+            self.chat_widget.add_message("Assistant", "Okay — the outline was left unchanged.")
+        return True
+
+    def _apply_chat_actions(self, actions) -> tuple:
+        """Apply action tags from a reply. Returns (notes, deferred_intents)."""
+        from src.ai import chat_actions as ca
+        notes, deferred = [], []
+        if not actions or not self.current_project:
+            return notes, deferred
+        sp = self.current_project.story_planning
+        story_changed = world_changed = False
+        for tag, data in actions:
+            try:
+                if tag == "run_critique":
+                    deferred.append({"kind": "critique",
+                                     "scope": data.get("scope", "chapter")})
+                elif tag == "regenerate_chapter_outline":
+                    deferred.append({"kind": "chapter_outline",
+                                     "source": data.get("source", "text")})
+                elif tag == "update_story_outline":
+                    changed = ca.apply_story_outline_update(sp, data)
+                    if changed:
+                        notes.append("Story outline updated: " + ", ".join(changed))
+                        story_changed = True
+                elif tag == "update_plot_event":
+                    r = ca.update_plot_event(sp, data)
+                    notes.append(f"Plot event updated: {r}" if r else
+                                 f"Couldn't find plot event “{data.get('title', '')}”")
+                    story_changed |= bool(r)
+                elif tag == "delete_plot_event":
+                    r = ca.delete_plot_event(sp, data)
+                    notes.append(f"Plot event removed: {r}" if r else
+                                 f"Couldn't find plot event “{data.get('title', '')}”")
+                    story_changed |= bool(r)
+                elif tag == "update_subplot":
+                    r = ca.update_subplot(sp, data)
+                    notes.append(f"Subplot updated: {r}" if r else
+                                 f"Couldn't find subplot “{data.get('title', '')}”")
+                    story_changed |= bool(r)
+                elif tag == "update_element":
+                    r = ca.update_element(self.current_project, data)
+                    notes.append(f"Updated {data.get('element_type', 'element')}: {r}" if r else
+                                 f"Couldn't find {data.get('element_type', 'element')} "
+                                 f"“{data.get('name', '')}”")
+                    world_changed |= bool(r)
+            except Exception as e:
+                print(f"[chat-actions] {tag} failed: {e}")
+                notes.append(f"Couldn't apply {tag.replace('_', ' ')}: {e}")
+        if story_changed:
+            self._refresh_story_planning_after_create()
+        if world_changed:
+            try:
+                self._refresh_project_widgets()
+            except Exception as e:
+                print(f"[chat-actions] refresh failed: {e}")
+        if story_changed or world_changed:
+            try:
+                self._on_content_changed()
+            except Exception:
+                pass
+        return notes, deferred
 
     def _parse_and_create_elements(self, response: str) -> tuple:
         """Parse AI response for element creation blocks and create elements.

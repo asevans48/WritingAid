@@ -26,7 +26,9 @@ class RephraseWorker(QThread):
                  pov_character_context: str = "",
                  multi_speaker_attributions: list = None,
                  scene_description: str = "", surrounding_before: str = "",
-                 surrounding_after: str = ""):
+                 surrounding_after: str = "",
+                 refinement: dict = None,
+                 writer_voice=None):
         super().__init__()
         self.agent = agent
         self.text = text
@@ -49,6 +51,8 @@ class RephraseWorker(QThread):
         self.scene_description = scene_description
         self.surrounding_before = surrounding_before
         self.surrounding_after = surrounding_after
+        self.refinement = refinement
+        self.writer_voice = writer_voice
 
     def run(self):
         """Run rephrasing in background."""
@@ -80,6 +84,8 @@ class RephraseWorker(QThread):
                 scene_description=self.scene_description,
                 surrounding_before=self.surrounding_before,
                 surrounding_after=self.surrounding_after,
+                refinement=self.refinement,
+                writer_voice=self.writer_voice,
             )
 
             print(f"\n{'='*70}")
@@ -103,7 +109,8 @@ class RephraseDialog(QDialog):
 
     def __init__(self, text: str, project=None, parent=None,
                  surrounding_context: tuple = None,
-                 chapter_content: str = "", chapter=None):
+                 chapter_content: str = "", chapter=None,
+                 instruction: str = ""):
         """Initialize rephrase dialog.
 
         Args:
@@ -125,6 +132,14 @@ class RephraseDialog(QDialog):
         self.result: Optional[RephraseResult] = None
         self.worker: Optional[RephraseWorker] = None
         self._refinement_history: List[str] = []  # Chat history for refinements
+        # RAG state: the index is built once per dialog, and we remember
+        # which chunks already went into a prompt so refinements can
+        # pull in context the model hasn't seen yet.
+        self._rag = None
+        self._rag_seen_keys: set = set()
+        self._base_rag_context: Optional[str] = None
+        # Author-voice fingerprint, measured once from the manuscript.
+        self._writer_voice = None
         # Edit tracking: when the user types into preview_edit, this
         # flips True so we can warn before clobbering the edit on
         # option-switch and so Use Selected logs the edited text
@@ -150,6 +165,10 @@ class RephraseDialog(QDialog):
 
         self._init_ui()
         self._init_agent()
+        # Pre-filled guidance, e.g. "Fix the passive voice: …" when opened
+        # from a style issue.
+        if instruction:
+            self.scene_desc_edit.setText(instruction)
 
     def _init_ui(self):
         """Initialize the UI."""
@@ -475,7 +494,7 @@ class RephraseDialog(QDialog):
                 background-color: #9ca3af;
             }
         """)
-        self.generate_btn.clicked.connect(self._generate_options)
+        self.generate_btn.clicked.connect(lambda: self._generate_options())
         model_layout.addWidget(self.generate_btn)
 
         layout.addLayout(model_layout)
@@ -882,39 +901,18 @@ class RephraseDialog(QDialog):
             return ""
 
         chars_by_id = {c.id: c for c in self.project.characters}
-        parts = []
-        for cid in selected_ids:
-            c = chars_by_id.get(cid)
-            if not c:
-                continue
-            desc = [f"Name: {c.name}", f"Role: {c.character_type}"]
-            if c.personality:
-                desc.append(f"Personality: {c.personality}")
-            if getattr(c, 'personality_traits', None):
-                desc.append(f"Key traits: {', '.join(c.personality_traits)}")
-            if getattr(c, 'speaking_style', None):
-                desc.append(f"Speaking style: {c.speaking_style}")
-            if getattr(c, 'motivations', None):
-                desc.append(f"Motivations: {c.motivations}")
-            if getattr(c, 'emotional_baseline', None):
-                desc.append(f"Emotional baseline: {c.emotional_baseline}")
-            if getattr(c, 'personality_arc', None):
-                # Include the most recent arc snapshot
-                latest = c.personality_arc[-1]
-                if latest.emotional_state:
-                    desc.append(f"Current emotional state: {latest.emotional_state}")
-                if latest.growth_notes:
-                    desc.append(f"Recent development: {latest.growth_notes[:200]}")
-            if c.backstory:
-                backstory = c.backstory[:300] + ("..." if len(c.backstory) > 300 else "")
-                desc.append(f"Backstory: {backstory}")
-            if c.notes:
-                desc.append(f"Notes: {c.notes[:200]}")
-            parts.append("\n".join(desc))
+        parts = [self._build_character_context_from_obj(chars_by_id[cid])
+                 for cid in selected_ids if cid in chars_by_id]
         return "\n---\n".join(parts)
 
-    def _generate_options(self):
-        """Generate rephrasing options."""
+    def _generate_options(self, refinement: Optional[dict] = None):
+        """Generate rephrasing options.
+
+        Args:
+            refinement: When set, this is a follow-up revision (see
+                ``_refine_results``) — forwarded to the agent, which
+                switches to a revise-the-draft prompt.
+        """
         styles = self._get_selected_styles()
         tones = self._get_selected_tones()
         custom_tone = self._get_custom_tone()
@@ -1063,13 +1061,30 @@ class RephraseDialog(QDialog):
                 else thesaurus_hint
             )
 
-        # Add RAG-based worldbuilding context if available
-        rag_context = self._get_rag_worldbuilding()
+        # Add RAG-based worldbuilding context if available. The base
+        # context is retrieved once and reused; refinements add a
+        # separate block of chunks that weren't in it.
+        if self._base_rag_context is None:
+            self._base_rag_context = self._get_rag_worldbuilding()
+        rag_context = self._base_rag_context
+        if refinement is not None:
+            refinement = dict(refinement)
+            refinement["new_context"] = self._get_rag_for_refinement(refinement)
+            if refinement["new_context"]:
+                print(f"📚 Refinement RAG: {len(refinement['new_context'])} chars of new context")
         if rag_context:
             scene_description = (
                 f"{scene_description}\nWORLDBUILDING CONTEXT:\n{rag_context}"
                 if scene_description else f"WORLDBUILDING CONTEXT:\n{rag_context}"
             )
+
+        writer_voice = self._get_writer_voice()
+        if writer_voice.has_measurements:
+            print(f"✍️  Writer voice: {writer_voice.sentence_count} sentences analysed, "
+                  f"avg {writer_voice.avg_sentence_len:.0f} words, "
+                  f"{writer_voice.person or '?'} person / {writer_voice.tense or '?'} tense")
+        elif writer_voice.stated_targets:
+            print("✍️  Writer voice: using Prose Profile targets (not enough text to measure)")
 
         # Show progress
         self.progress_bar.setVisible(True)
@@ -1091,6 +1106,8 @@ class RephraseDialog(QDialog):
             scene_description=scene_description,
             surrounding_before=self.surrounding_before,
             surrounding_after=self.surrounding_after,
+            refinement=refinement,
+            writer_voice=writer_voice,
         )
         self.worker.finished.connect(self._on_generation_complete)
         self.worker.error.connect(self._on_generation_error)
@@ -1521,43 +1538,25 @@ class RephraseDialog(QDialog):
         if not current_text:
             current_text = self.original_text
 
-        # Collect what was previously generated so we can tell the AI to avoid it
-        previous_options = [opt.text[:100] for opt in self.result.options]
+        # Everything the author has already seen, so the agent can
+        # reject options that just echo them.
+        previous_options = [opt.text for opt in self.result.options if opt.text]
 
         # Log to history
         self._refinement_history.append(instruction)
-        history_text = "\n".join(
-            f"> {h}" for h in self._refinement_history
-        )
-        self.refine_history.setPlainText(history_text)
+        history_lines = [f"> {h}" for h in self._refinement_history]
+        if self.agent.use_python_libraries:
+            history_lines.append(
+                "(Python-libraries mode can't follow written feedback — "
+                "switch to a local or cloud model for real refinement.)")
+        self.refine_history.setPlainText("\n".join(history_lines))
         self.refine_edit.clear()
 
-        # Build refinement context that goes into scene_description
-        # This is the most natural place since the agent includes it in the prompt
-        refinement_block = (
-            "CRITICAL REFINEMENT INSTRUCTIONS — follow these exactly:\n"
-        )
-        for h in self._refinement_history:
-            refinement_block += f"  - {h}\n"
-        refinement_block += (
-            f"\nThe current version is: \"{current_text}\"\n"
-            "Generate COMPLETELY DIFFERENT phrasings that address the feedback above.\n"
-        )
-        if previous_options:
-            rejected = ' | '.join(f'"{p}"' for p in previous_options[:5])
-            refinement_block += f"Do NOT repeat these: {rejected}\n"
-
-        # Store the original scene desc once, then append refinement
-        if not hasattr(self, '_original_scene_desc'):
-            self._original_scene_desc = self.scene_desc_edit.text()
-
-        self.scene_desc_edit.setText(
-            f"{self._original_scene_desc}\n{refinement_block}" if self._original_scene_desc
-            else refinement_block
-        )
-        self._generate_options()
-        # Restore for next user edit
-        self.scene_desc_edit.setText(self._original_scene_desc)
+        self._generate_options(refinement={
+            "instructions": list(self._refinement_history),
+            "current_draft": current_text,
+            "previous_options": previous_options,
+        })
 
     def _detect_speaker_for_rephrase(self) -> str:
         """Detect the speaker from chapter context and return character details.
@@ -1960,19 +1959,37 @@ class RephraseDialog(QDialog):
         # narration to.
         return f"Name: {pov_name}\n(POV character — full profile not in cast list)"
 
+    # Character fields that shape how someone talks, notices and
+    # judges — the inputs the agent's voice rules key off.
+    _VOICE_FIELDS = (
+        ("personality", "Personality"),
+        ("speaking_style", "Speaking style"),
+        ("quirks", "Quirks"),
+        ("motivations", "Motivations"),
+        ("fears", "Fears"),
+        ("emotional_baseline", "Emotional baseline"),
+        ("worldview", "Worldview"),
+        ("moral_code", "Moral code"),
+        ("contradictions", "Contradictions"),
+        ("lie_they_believe", "Lie they believe"),
+        ("want", "Want"),
+        ("need", "Need"),
+    )
+
     def _build_character_context_from_obj(self, c) -> str:
-        """Build character context string from a Character object."""
+        """Build character context string from a Character object.
+
+        Includes every voice-relevant trait plus a few lines this
+        character actually speaks in the manuscript, so the model hears
+        how the author writes them rather than guessing from adjectives.
+        """
         desc = [f"Name: {c.name}", f"Role: {c.character_type}"]
-        if c.personality:
-            desc.append(f"Personality: {c.personality}")
         if getattr(c, 'personality_traits', None):
             desc.append(f"Key traits: {', '.join(c.personality_traits)}")
-        if getattr(c, 'speaking_style', None):
-            desc.append(f"Speaking style: {c.speaking_style}")
-        if getattr(c, 'motivations', None):
-            desc.append(f"Motivations: {c.motivations}")
-        if getattr(c, 'emotional_baseline', None):
-            desc.append(f"Emotional baseline: {c.emotional_baseline}")
+        for attr, label in self._VOICE_FIELDS:
+            val = (getattr(c, attr, '') or '').strip()
+            if val:
+                desc.append(f"{label}: {val[:300]}")
         if getattr(c, 'personality_arc', None) and c.personality_arc:
             latest = c.personality_arc[-1]
             if latest.emotional_state:
@@ -1981,18 +1998,109 @@ class RephraseDialog(QDialog):
                 desc.append(f"Recent development: {latest.growth_notes[:200]}")
         if c.backstory:
             desc.append(f"Backstory: {c.backstory[:300]}")
+        if getattr(c, 'notes', ''):
+            desc.append(f"Notes: {c.notes[:200]}")
+        samples = self._character_dialog_samples(c.name)
+        if samples:
+            desc.append("Lines this character actually says in the manuscript:")
+            desc.extend(f'  » "{line}"' for line in samples)
         return "\n".join(desc)
+
+    def _manuscript_text_for_voice(self, min_words: int = 1500) -> str:
+        """The author's own prose: current chapter first, topped up with
+        other chapters when it's too short to measure reliably."""
+        parts = [self.chapter_content or
+                 f"{self.surrounding_before}\n{self.original_text}\n{self.surrounding_after}"]
+        words = len(parts[0].split())
+        if words < min_words and self.project:
+            current_id = getattr(self.chapter, 'id', None)
+            try:
+                if hasattr(self.project, 'all_chapters'):
+                    chapters = [ch for _, ch in self.project.all_chapters()]
+                else:
+                    chapters = list(self.project.manuscript.chapters)
+            except Exception:
+                chapters = []
+            for ch in chapters:
+                if getattr(ch, 'id', None) == current_id:
+                    continue
+                content = getattr(ch, 'content', '') or ''
+                if content.strip():
+                    parts.append(content)
+                    words += len(content.split())
+                    if words >= min_words * 3:
+                        break
+        return "\n\n".join(parts)
+
+    def _character_dialog_samples(self, name: str) -> list:
+        try:
+            from src.ai.writer_voice import character_dialog_samples
+            others = [c.name for c in getattr(self.project, 'characters', []) or []]
+            return character_dialog_samples(
+                self._manuscript_text_for_voice(), name, other_names=others)
+        except Exception:
+            return []
+
+    def _get_writer_voice(self):
+        """Measure (once) the author's voice from their manuscript."""
+        if self._writer_voice is None:
+            try:
+                from src.ai.writer_voice import analyze_writer_voice, WriterVoice
+                targets = {}
+                pp = getattr(self.project, 'prose_profile', None) if self.project else None
+                if pp is not None:
+                    targets = {"Voice": pp.voice, "Style": pp.style,
+                               "Tone": pp.tone, "Notes": pp.notes}
+                self._writer_voice = analyze_writer_voice(
+                    self._manuscript_text_for_voice(),
+                    selection=self.original_text,
+                    stated_targets=targets)
+            except Exception as e:
+                print(f"[voice] analysis failed: {e}")
+                from src.ai.writer_voice import WriterVoice
+                self._writer_voice = WriterVoice()
+        return self._writer_voice
+
+    def _get_rag(self):
+        """Build (once) and return the project's RAG system, or None."""
+        if not self.project:
+            return None
+        if self._rag is None:
+            from src.ai.enhanced_rag import EnhancedRAGSystem
+            rag = EnhancedRAGSystem(project=self.project)
+            rag.rebuild_index()
+            self._rag = rag
+        return self._rag
+
+    @staticmethod
+    def _rag_key(result) -> tuple:
+        return (result.source_type, result.source_name,
+                hash((result.content or "")[:400]))
+
+    def _format_rag_results(self, results, max_tokens: int,
+                            skip_seen: bool) -> str:
+        """Format results into a context block, recording what was used."""
+        parts, used = [], 0
+        for r in results:
+            key = self._rag_key(r)
+            if skip_seen and key in self._rag_seen_keys:
+                continue
+            block = f"[{r.source_type.upper()}: {r.source_name}]\n{r.content}\n"
+            cost = len(block) // 4
+            if used + cost > max_tokens:
+                continue
+            parts.append(block)
+            used += cost
+            self._rag_seen_keys.add(key)
+        return "\n---\n".join(parts)
 
     def _get_rag_worldbuilding(self) -> str:
         """Use RAG to retrieve relevant worldbuilding context for the text."""
-        if not self.project:
-            return ""
         try:
-            from src.ai.enhanced_rag import EnhancedRAGSystem
             from src.ai.semantic_search import SearchMethod
-
-            rag = EnhancedRAGSystem(project=self.project)
-            rag.rebuild_index()
+            rag = self._get_rag()
+            if rag is None:
+                return ""
 
             query = self.original_text
             if self.surrounding_before:
@@ -2003,8 +2111,58 @@ class RephraseDialog(QDialog):
             context = rag.get_context_for_ai(
                 query=query, max_tokens=1000, method=SearchMethod.HYBRID
             )
+            # Record which chunks went in so refinements can skip them.
+            try:
+                for r in rag.search(query, SearchMethod.HYBRID, top_k=10):
+                    if r.content and r.content in context:
+                        self._rag_seen_keys.add(self._rag_key(r))
+            except Exception:
+                pass
             return context if context else ""
         except Exception:
+            return ""
+
+    def _get_rag_for_refinement(self, refinement: dict) -> str:
+        """Retrieve context driven by the author's feedback.
+
+        The first pass queried with the original passage, so asking the
+        same question again returns the same chunks. Here the query
+        leads with the feedback (that's what the author wants changed),
+        adds the draft being refined, pulls in 1-hop graph neighbours,
+        and drops anything already placed in an earlier prompt.
+        """
+        try:
+            from src.ai.semantic_search import SearchMethod
+            rag = self._get_rag()
+            if rag is None:
+                return ""
+            instructions = refinement.get("instructions") or []
+            latest = instructions[-1] if instructions else ""
+            draft = refinement.get("current_draft") or ""
+            queries = [q for q in (
+                latest,
+                f"{latest} {draft}",
+                f"{' '.join(instructions)} {self.original_text}",
+            ) if q.strip()]
+
+            results, seen_local = [], set()
+            for q in queries:
+                try:
+                    hits = rag.search_with_neighbors(
+                        query=q, top_k=12, method=SearchMethod.HYBRID,
+                        max_neighbors_per_seed=2)
+                except Exception:
+                    hits = rag.search(q, SearchMethod.HYBRID, top_k=12)
+                for h in hits:
+                    k = self._rag_key(h)
+                    if k not in seen_local:
+                        seen_local.add(k)
+                        results.append(h)
+            results.sort(key=lambda r: r.relevance_score, reverse=True)
+            return self._format_rag_results(results, max_tokens=800,
+                                            skip_seen=True)
+        except Exception as e:
+            print(f"[refine] RAG retrieval failed: {e}")
             return ""
 
     def get_selected_text(self) -> Optional[str]:

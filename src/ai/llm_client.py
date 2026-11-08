@@ -614,16 +614,33 @@ class LLMClient:
         if not self._hf_pipeline:
             raise RuntimeError("Local model pipeline not initialized")
 
-        # Build ChatML format with history
-        parts = []
+        # Use the model's own chat template (Gemma, Llama, Mistral, Phi
+        # and Qwen all differ; hard-coded ChatML only suits Qwen-style
+        # models and badly degrades the rest). apply_chat_template_safe
+        # folds the system prompt into the first user turn for families
+        # without a system role, such as Gemma.
+        messages = []
         if system_prompt:
-            parts.append(f"<|im_start|>system\n{system_prompt}<|im_end|>")
-        for msg in (history or []):
-            role = msg["role"]
-            parts.append(f"<|im_start|>{role}\n{msg['content']}<|im_end|>")
-        parts.append(f"<|im_start|>user\n{prompt}<|im_end|>")
-        parts.append("<|im_start|>assistant\n")
-        full_prompt = "\n".join(parts)
+            messages.append({"role": "system", "content": system_prompt})
+        messages.extend(history or [])
+        messages.append({"role": "user", "content": prompt})
+        try:
+            from src.ai.chat_template_fallbacks import apply_chat_template_safe
+            full_prompt = apply_chat_template_safe(
+                self._hf_tokenizer, messages,
+                model_id=self.hf_config.model_id if self.hf_config else "",
+                add_generation_prompt=True)
+        except Exception:
+            parts = []
+            for msg in messages:
+                parts.append(f"<|im_start|>{msg['role']}\n{msg['content']}<|im_end|>")
+            parts.append("<|im_start|>assistant\n")
+            full_prompt = "\n".join(parts)
+        # The pipeline's tokenizer adds BOS itself; a template-rendered
+        # BOS on top of that doubles it, which noticeably hurts Gemma.
+        bos = getattr(self._hf_tokenizer, "bos_token", None)
+        if bos and full_prompt.startswith(bos):
+            full_prompt = full_prompt[len(bos):]
 
         outputs = self._hf_pipeline(
             full_prompt,

@@ -256,9 +256,13 @@ class ExportSummaryDialog(QDialog):
     def _update_ai_status(self):
         """Update AI availability status."""
         try:
-            from src.config import get_settings
-            settings = get_settings()
-            if settings.get('ai', {}).get('api_key'):
+            from src.config.ai_config import get_ai_config
+            cfg = get_ai_config()
+            st = cfg.get_settings()
+            configured = (not cfg.is_ai_disabled()) and bool(
+                cfg.get_api_key(st.get("default_llm", "claude"))
+                or (st.get("enable_local_models") and st.get("local_model_id")))
+            if configured:
                 self.ai_status_label.setText("✅ Configured")
                 self.ai_status_label.setStyleSheet("color: #059669;")
             else:
@@ -314,24 +318,11 @@ class ExportSummaryDialog(QDialog):
         # Set up LLM client if using AI
         if method == SummarizationMethod.AI_CLOUD:
             try:
-                from src.config import get_settings
-                from src.ai.llm_client import LLMClient
-
-                settings = get_settings()
-                if not settings.get('ai', {}).get('api_key'):
-                    QMessageBox.warning(
-                        self,
-                        "No API Key",
-                        "AI summarization requires an API key.\n"
-                        "Please configure one in Settings > AI Configuration."
-                    )
+                from src.ai.task_llm import build_default_llm, no_model_message
+                llm = build_default_llm()
+                if llm is None:
+                    QMessageBox.warning(self, "No AI model", no_model_message())
                     return
-
-                llm = LLMClient(
-                    api_key=settings['ai']['api_key'],
-                    provider=settings['ai'].get('provider', 'openai'),
-                    model=settings['ai'].get('model', 'gpt-4o-mini')
-                )
                 summarizer.set_llm_client(llm)
             except Exception as e:
                 QMessageBox.warning(

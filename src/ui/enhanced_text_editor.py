@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QComboBox, QToolTip, QWidgetAction, QSlider,
     QGroupBox
 )
-from PyQt6.QtCore import pyqtSignal, Qt, QTimer, QPoint, QEvent
+from PyQt6.QtCore import pyqtSignal, Qt, QTimer, QPoint, QEvent, QThread
 from PyQt6.QtGui import (
     QAction, QTextCursor, QTextCharFormat, QColor, QFont,
     QTextBlockFormat, QSyntaxHighlighter, QTextDocument,
@@ -70,6 +70,7 @@ class ErrorType(Enum):
     GRAMMAR = "grammar"
     OVERUSE = "overuse"
     OVERUSED_PHRASE = "overused_phrase"
+    STYLE = "style"
 
 
 @dataclass
@@ -80,7 +81,7 @@ class WritingError:
     start: int
     end: int
     reason: str
-    suggestions: List[str]
+    suggestions: Optional[List[str]]   # None → computed on demand
 
 
 class SpellChecker:
@@ -396,67 +397,99 @@ class SpellChecker:
         }
         return common_words
 
-    def check_word(self, word: str) -> Tuple[bool, str]:
-        """Check if a word is spelled correctly.
+    _MISSPELLED = "Possible misspelling — right-click for suggestions."
+
+    def set_project_words(self, words) -> None:
+        """Project vocabulary (character / place / faction names, the
+        project dictionary). Multi-word names are split so each part is
+        known ("Ash Wardens" → ash, wardens)."""
+        vocab = set()
+        for w in words or []:
+            for part in re.findall(r"[A-Za-z]+(?:['’][A-Za-z]+)*", str(w)):
+                vocab.add(part.lower().replace("’", "'"))
+        self._project_words = vocab
+        self._known_cache = {}
+
+    def _is_known(self, word_lower: str) -> bool:
+        cache = getattr(self, "_known_cache", None)
+        if cache is None:
+            cache = self._known_cache = {}
+        hit = cache.get(word_lower)
+        if hit is not None:
+            return hit
+        if (word_lower in self._custom_words
+                or word_lower in getattr(self, "_project_words", ())):
+            known = True
+        elif self._use_pyspellchecker and self._pyspellchecker:
+            known = bool(self._pyspellchecker.known([word_lower]))
+        elif self._use_enchant and self._enchant_dict:
+            known = bool(self._enchant_dict.check(word_lower))
+        else:
+            known = (word_lower in self._dictionary
+                     or self._check_with_suffixes(word_lower))
+        if len(cache) > 50000:
+            cache.clear()
+        cache[word_lower] = known
+        return known
+
+    # A sentence-initial unknown word is treated as a misspelling (not a
+    # name) when its best correction is at least this common in English.
+    COMMON_CORRECTION_FREQ = 1e-6
+
+    def looks_like_common_word_typo(self, word: str) -> bool:
+        lower = word.lower().replace("’", "'")
+        if self._use_pyspellchecker and self._pyspellchecker:
+            best = self._pyspellchecker.correction(lower)
+            return bool(best and best != lower and
+                        self._pyspellchecker.word_usage_frequency(best)
+                        >= self.COMMON_CORRECTION_FREQ)
+        return True
+
+    def check_word(self, word: str, sentence_start: bool = False) -> Tuple[bool, str]:
+        """Check if a word is spelled correctly. Fast: a dictionary
+        lookup only — suggestions are computed on demand (``suggest``).
+
+        Args:
+            word: The word (may contain an apostrophe: don't, Mara's).
+            sentence_start: True when the word opens a sentence, so a
+                leading capital is just sentence case — the word is still
+                checked. Mid-sentence capitalised words are treated as
+                proper nouns and skipped unless clearly misspelled
+                common words.
 
         Returns:
             Tuple of (is_correct, reason_if_incorrect)
         """
-        # Skip very short words
         if len(word) <= 1:
             return True, ""
-
-        # Skip words that are all caps (acronyms)
-        if word.isupper() and len(word) > 1:
-            return True, ""
-
-        # Skip words starting with capital (proper nouns)
-        if word[0].isupper():
-            return True, ""
-
-        # Skip numbers and words with numbers
         if any(c.isdigit() for c in word):
             return True, ""
-
-        # Skip words with special characters
-        if not word.isalpha():
+        if word.isupper():
+            return True, ""                      # acronyms, shouting
+        norm = word.replace("’", "'")
+        if not norm.replace("'", "").isalpha():
             return True, ""
-
-        word_lower = word.lower()
-
-        # Check custom words first
-        if word_lower in self._custom_words:
+        lower = norm.lower()
+        if norm[0].isupper() and not sentence_start:
+            # Capitalised mid-sentence → a proper noun; names aren't
+            # spell-checked (project names are known anyway).
             return True, ""
-
-        # Check with pyspellchecker if available (preferred)
-        if self._use_pyspellchecker and self._pyspellchecker:
-            if self._pyspellchecker.known([word_lower]):
+        if self._is_known(lower):
+            return True, ""
+        # Possessives and contractions: accept when the base is known.
+        if "'" in lower:
+            base, _, tail = lower.rpartition("'")
+            if tail in ("s", "d", "ll", "re", "ve", "m") and self._is_known(base):
                 return True, ""
-            else:
-                suggestions = list(self._pyspellchecker.candidates(word_lower) or [])[:3]
-                if suggestions:
-                    return False, f"Possible misspelling. Did you mean: {', '.join(suggestions)}?"
-                return False, "Word not found in dictionary"
-
-        # Check with enchant if available
-        if self._use_enchant and self._enchant_dict:
-            if self._enchant_dict.check(word):
+            if tail == "t" and base.endswith("n") and self._is_known(base[:-1]):
                 return True, ""
-            else:
-                suggestions = self._enchant_dict.suggest(word)[:3]
-                if suggestions:
-                    return False, f"Possible misspelling. Did you mean: {', '.join(suggestions)}?"
-                return False, "Word not found in dictionary"
-
-        # Check built-in dictionary
-        if word_lower in self._dictionary:
+            if lower.endswith("s'") and self._is_known(lower[:-1]):
+                return True, ""
+        if sentence_start and lower in getattr(self, "_project_words", ()):
             return True, ""
-
-        # Check common suffixes
-        if self._check_with_suffixes(word_lower):
-            return True, ""
-
-        return False, "Word not found in dictionary"
+        if not (self._use_pyspellchecker or self._use_enchant):
+            return False, "Word not found in dictionary"
+        return False, self._MISSPELLED
 
     def _check_with_suffixes(self, word: str) -> bool:
         """Check if word with common suffixes is valid."""
@@ -501,10 +534,31 @@ class SpellChecker:
         return reason
 
     def suggest(self, word: str) -> List[str]:
-        """Get spelling suggestions for a word."""
+        """Spelling suggestions, most likely first, in the word's case.
+        Includes close project words (character / place names)."""
+        lower = word.lower().replace("’", "'")
+        out: List[str] = []
         if self._use_pyspellchecker and self._pyspellchecker:
-            candidates = self._pyspellchecker.candidates(word.lower())
-            return list(candidates)[:5] if candidates else []
+            sp = self._pyspellchecker
+            best = sp.correction(lower)
+            cands = sorted(sp.candidates(lower) or [],
+                           key=lambda w: -sp.word_usage_frequency(w))
+            out = ([best] if best and best != lower else []) + [c for c in cands if c != best]
+        elif self._use_enchant and self._enchant_dict:
+            out = list(self._enchant_dict.suggest(word))
+        for pw in getattr(self, "_project_words", ()):
+            if abs(len(pw) - len(lower)) <= 2 and self._edit_distance(lower, pw) <= 2:
+                out.append(pw)
+        if out:
+            seen, ranked = set(), []
+            for w in out:
+                w = (w[:1].upper() + w[1:]) if word[:1].isupper() else w
+                if w.lower() != lower and w not in seen:
+                    seen.add(w)
+                    ranked.append(w)
+            return ranked[:6]
+        if self._use_pyspellchecker or self._use_enchant:
+            return []
 
         if self._use_enchant and self._enchant_dict:
             return self._enchant_dict.suggest(word)[:5]
@@ -544,7 +598,8 @@ class SpellChecker:
 
     def add_word(self, word: str):
         """Add a word to the custom dictionary."""
-        self._custom_words.add(word.lower())
+        self._custom_words.add(word.lower().replace("’", "'"))
+        self._known_cache = {}
 
     def is_available(self) -> bool:
         """Check if spell checking is properly available."""
@@ -1377,212 +1432,126 @@ class ProWritingAnalyzer:
 
 
 class GrammarChecker:
-    """Basic grammar checker using language-tool-python, gingerit, or basic rules."""
+    """Grammar checking facade over ``src.utils.proofing``.
+
+    ``check_text`` always applies the fast built-in rules; with
+    ``use_full_check`` it also runs LanguageTool (blocking — the editor's
+    highlighter uses a background worker instead).
+    """
 
     def __init__(self):
-        """Initialize grammar checker."""
-        self._tool = None
-        self._use_language_tool = False
-        self._use_gingerit = False
         self._ignored_rules: Set[str] = set()
-        # Don't auto-init language tool - it's slow and resource intensive
-        # Only use basic rules for real-time checking
-        self._language_tool_available = self._check_language_tool_available()
-        self._gingerit_available = self._check_gingerit_available()
-
-        # Log available grammar tools
-        if self._language_tool_available:
-            print("Grammar checker: language-tool-python available (requires Java)")
-        elif self._gingerit_available:
-            print("Grammar checker: Using gingerit as fallback (no Java required)")
-        else:
-            print("Grammar checker: Using basic rules only")
-
-    def _check_java_available(self) -> bool:
-        """Check if Java is available on the system."""
-        import subprocess
-        import shutil
-
-        # First check if java is in PATH
-        java_path = shutil.which('java')
-        if not java_path:
-            return False
-
-        # Try to run java -version
-        try:
-            result = subprocess.run(
-                [java_path, '-version'],
-                capture_output=True,
-                timeout=5
-            )
-            return result.returncode == 0
-        except Exception:
-            return False
-
-    def _check_language_tool_available(self) -> bool:
-        """Check if language-tool-python is available (requires Java)."""
-        try:
-            pass
-            # Also check if Java is available
-            if not self._check_java_available():
-                print("Grammar checker: language-tool-python installed but Java not available")
-                return False
-            return True
-        except ImportError:
-            return False
-
-    def _check_gingerit_available(self) -> bool:
-        """Check if gingerit is available as a fallback."""
-        try:
-            return True
-        except ImportError:
-            return False
-
-    def _init_language_tool(self):
-        """Initialize the language tool (only when explicitly needed)."""
-        if self._tool is not None:
-            return
-
-        # Try language-tool-python first (requires Java)
-        if self._language_tool_available:
-            try:
-                import language_tool_python
-                self._tool = language_tool_python.LanguageTool('en-US')
-                self._use_language_tool = True
-                print("Grammar checker: Initialized language-tool-python")
-                return
-            except Exception as e:
-                print(f"Grammar checker: language-tool-python error ({e})")
-                self._language_tool_available = False
-
-        # Fall back to gingerit (no Java required, uses web API)
-        if self._gingerit_available:
-            try:
-                from gingerit.gingerit import GingerIt
-                self._tool = GingerIt()
-                self._use_gingerit = True
-                print("Grammar checker: Initialized gingerit (fallback)")
-                return
-            except Exception as e:
-                print(f"Grammar checker: gingerit error ({e})")
-                self._gingerit_available = False
-
-        # No advanced grammar tool available
-        print("Grammar checker: Using basic rules only (no advanced tool available)")
-        self._use_language_tool = False
-        self._use_gingerit = False
+        from src.utils.proofing import LanguageToolEngine
+        ok, why = LanguageToolEngine.prerequisites()
+        print("Grammar checker: LanguageTool available" if ok
+              else f"Grammar checker: built-in rules only ({why})")
 
     def check_text(self, text: str, use_full_check: bool = False) -> List[Tuple[int, int, str, str, List[str]]]:
         """Check text for grammar errors.
 
-        Args:
-            text: Text to check
-            use_full_check: If True, use heavy language-tool or gingerit (only for explicit recheck)
-
         Returns:
             List of (start, end, error_text, message, suggestions)
         """
-        errors = []
-
-        # Only use advanced tools for explicit full checks (recheck button)
-        if use_full_check and (self._language_tool_available or self._gingerit_available):
-            self._init_language_tool()
-
-            # Try language-tool-python first
-            if self._use_language_tool and self._tool:
-                try:
-                    matches = self._tool.check(text)
-                    for match in matches:
-                        rule = getattr(match, 'rule_id', None) or getattr(match, 'ruleId', '')
-                        err_len = getattr(match, 'error_length', None) or getattr(match, 'errorLength', 0)
-                        if rule not in self._ignored_rules:
-                            errors.append((
-                                match.offset,
-                                match.offset + err_len,
-                                text[match.offset:match.offset + err_len],
-                                match.message,
-                                match.replacements[:5] if match.replacements else []
-                            ))
-                    return errors
-                except Exception as e:
-                    print(f"Grammar check error (language-tool): {e}")
-
-            # Fall back to gingerit
-            if self._use_gingerit and self._tool:
-                try:
-                    result = self._tool.parse(text)
-                    corrections = result.get('corrections', [])
-                    for correction in corrections:
-                        start = correction.get('start', 0)
-                        end = start + len(correction.get('text', ''))
-                        errors.append((
-                            start,
-                            end,
-                            correction.get('text', ''),
-                            correction.get('definition', 'Grammar suggestion'),
-                            [correction.get('correct', '')] if correction.get('correct') else []
-                        ))
-                    return errors
-                except Exception as e:
-                    print(f"Grammar check error (gingerit): {e}")
-
-        # For real-time checking, use fast basic rules only
-        errors.extend(self._check_basic_rules(text))
-        return errors
-
-    def _check_basic_rules(self, text: str) -> List[Tuple[int, int, str, str, List[str]]]:
-        """Apply basic grammar rules."""
-        errors = []
-
-        # Double word detection
-        double_word_pattern = r'\b(\w+)\s+\1\b'
-        for match in re.finditer(double_word_pattern, text, re.IGNORECASE):
-            word = match.group(1)
-            errors.append((
-                match.start(),
-                match.end(),
-                match.group(),
-                f"Repeated word: '{word}'",
-                [word]
-            ))
-
-        # a/an usage
-        a_before_vowel = r'\ba\s+([aeiouAEIOU]\w*)\b'
-        for match in re.finditer(a_before_vowel, text):
-            errors.append((
-                match.start(),
-                match.start() + 1,
-                'a',
-                f"Use 'an' before words starting with a vowel sound",
-                ['an']
-            ))
-
-        an_before_consonant = r'\ban\s+([bcdfghjklmnpqrstvwxyzBCDFGHJKLMNPQRSTVWXYZ]\w*)\b'
-        for match in re.finditer(an_before_consonant, text):
-            # Skip words that sound like they start with vowels (hour, honest, etc.)
-            word = match.group(1).lower()
-            if word not in ['hour', 'honest', 'honor', 'honour', 'heir', 'herb']:
-                errors.append((
-                    match.start(),
-                    match.start() + 2,
-                    'an',
-                    f"Use 'a' before words starting with a consonant sound",
-                    ['a']
-                ))
-
-        return errors
+        from src.utils.proofing import LanguageToolEngine, builtin_grammar, merge_issues
+        lt = LanguageToolEngine.get().check(text) if use_full_check else []
+        issues = merge_issues(lt, builtin_grammar(text))
+        return [i.as_tuple() for i in issues if i.rule_id not in self._ignored_rules]
 
     def ignore_rule(self, rule_id: str):
         """Ignore a specific grammar rule."""
         self._ignored_rules.add(rule_id)
 
     def is_available(self) -> bool:
-        """Check if grammar checking is available."""
-        return self._use_language_tool or True  # Basic rules always available
+        """Built-in rules are always available."""
+        return True
+
+
+# Running grammar workers, held here (not parented to an editor) so a
+# chapter editor closed mid-check can't destroy a running thread.
+_RUNNING_GRAMMAR_WORKERS: Set["_GrammarWorker"] = set()
+_QUIT_HOOKED = False
+
+
+def _wait_for_grammar_workers():
+    for w in list(_RUNNING_GRAMMAR_WORKERS):
+        w.wait(10000)
+
+
+class _GrammarWorker(QThread):
+    """Runs LanguageTool over a batch of paragraphs off the UI thread.
+
+    Paragraphs are joined into a few large requests (one HTTP round trip
+    each to the local LanguageTool server) and the matches mapped back to
+    paragraph-relative offsets. Emits ``{paragraph_text: [GrammarIssue]}``.
+    """
+    results_ready = pyqtSignal(dict)
+    status = pyqtSignal(str)
+
+    CHUNK_CHARS = 20000
+
+    def __init__(self, paragraphs: List[str], parent=None):
+        super().__init__(parent)
+        self.paragraphs = paragraphs
+
+    def run(self):
+        from src.utils.proofing import LanguageToolEngine
+        engine = LanguageToolEngine.get()
+        if engine.status != "ready":
+            self.status.emit("Grammar: starting LanguageTool…")
+        if not engine.ensure_started():
+            self.status.emit(f"Grammar: {engine.describe()}")
+            self.results_ready.emit({})
+            return
+        self.status.emit("Grammar: checking…")
+        results: Dict[str, list] = {p: [] for p in self.paragraphs}
+        batch: List[str] = []
+        size = 0
+
+        def flush():
+            if not batch:
+                return
+            joined = "\n".join(batch)
+            starts, pos = [], 0
+            for p in batch:
+                starts.append(pos)
+                pos += len(p) + 1
+            for issue in engine.check(joined):
+                for p, st in zip(batch, starts):
+                    if st <= issue.start < st + len(p):
+                        if issue.end <= st + len(p):
+                            issue.start -= st
+                            issue.end -= st
+                            results[p].append(issue)
+                        break
+            batch.clear()
+
+        for p in self.paragraphs:
+            if size + len(p) > self.CHUNK_CHARS:
+                flush()
+                size = 0
+            batch.append(p)
+            size += len(p) + 1
+        flush()
+        self.status.emit("Grammar: LanguageTool")
+        self.results_ready.emit(results)
 
 
 class WritingHighlighter(QSyntaxHighlighter):
-    """Syntax highlighter for spelling, grammar, and overuse checking."""
+    """Syntax highlighter for spelling, grammar, and overuse checking.
+
+    Modes per check: OFF, ON_DEMAND (green) and REALTIME (blue). Whenever
+    a check is on, its underlines are drawn for every paragraph and
+    survive edits and re-highlights:
+
+      * Spelling is a fast dictionary lookup, applied live.
+      * Grammar = built-in rules (live) + LanguageTool results cached per
+        paragraph text. ON_DEMAND runs LanguageTool on load, when the
+        check is switched on, and on Recheck; REALTIME also re-checks
+        edited paragraphs after a typing pause.
+      * Overuse uses the document statistics from the last refresh.
+    """
+
+    grammar_status = pyqtSignal(str)
 
     def __init__(
         self,
@@ -1621,29 +1590,40 @@ class WritingHighlighter(QSyntaxHighlighter):
         # Track block content hashes to detect changes
         self._block_hashes: Dict[int, int] = {}
 
+        # Style checks (passive, adverbs, wordiness, long / hard / sticky
+        # sentences…). Off until switched on (toolbar "Sty" / Style panel).
+        from src.utils.style_checks import DEFAULT_KINDS
+        self._style_mode = CheckMode.OFF
+        self._style_kinds: Set[str] = set(DEFAULT_KINDS)
+        self._style_ignored: Set[Tuple[str, str]] = set()   # (kind, text lower)
+        self._style_cache: Dict[Tuple[str, frozenset], list] = {}
+        self._style_formats = self._build_style_formats()
+
+        # LanguageTool results keyed by paragraph text (so they survive
+        # edits elsewhere, block renumbering and re-highlights).
+        self._lt_cache: Dict[str, list] = {}
+        self._grammar_worker: Optional[_GrammarWorker] = None
+        self._grammar_rerun = False
+        # (block_number, position) of the word being typed — not flagged
+        # until the writer moves past it.
+        self._typing: Optional[Tuple[int, int]] = None
+        # Overused-phrase positions come from a full-text snapshot; they
+        # are only trusted while that snapshot matches the document.
+        self._full_text_fresh = False
+
         # Connect to document changes to clear stale data
         document.contentsChange.connect(self._on_contents_change)
 
-        # Spelling format (red wavy underline)
-        self.spelling_format = QTextCharFormat()
-        self.spelling_format.setUnderlineStyle(
-            QTextCharFormat.UnderlineStyle.SpellCheckUnderline
-        )
-        self.spelling_format.setUnderlineColor(QColor(255, 0, 0))  # Red
-
-        # Grammar format (green wavy underline)
-        self.grammar_format = QTextCharFormat()
-        self.grammar_format.setUnderlineStyle(
-            QTextCharFormat.UnderlineStyle.SpellCheckUnderline
-        )
-        self.grammar_format.setUnderlineColor(QColor(0, 180, 0))  # Green
-
-        # Overuse format (blue wavy underline)
-        self.overuse_format = QTextCharFormat()
-        self.overuse_format.setUnderlineStyle(
-            QTextCharFormat.UnderlineStyle.SpellCheckUnderline
-        )
-        self.overuse_format.setUnderlineColor(QColor(0, 120, 255))  # Blue
+        # Check marks: a solid background highlight on the word (easy to
+        # see) plus a thin underline in the same hue (still visible inside
+        # a tinted style sentence). Highlights are recomputed per paragraph
+        # as it changes, so they follow the words and vanish once fixed.
+        self.spelling_format = self._mark_format("#fca5a5", QColor(255, 0, 0))      # red
+        self.grammar_format = self._mark_format("#86efac", QColor(0, 180, 0))       # green
+        self.overuse_format = self._mark_format("#bfdbfe", QColor(0, 120, 255))     # blue
+        self.phrase_format = self._mark_format("#ddd6fe", QColor(148, 0, 211))      # purple
+        # Master switch: hide every check mark without turning checks off.
+        self._highlights_visible = True
 
         # Markdown heading formats
         self.md_title_format = QTextCharFormat()
@@ -1713,24 +1693,143 @@ class WritingHighlighter(QSyntaxHighlighter):
                     del self._errors[bn]
                 if bn in self._block_hashes:
                     del self._block_hashes[bn]
+            self._full_text_fresh = False
 
     def set_spell_mode(self, mode: CheckMode):
-        """Set spell checking mode."""
+        """Set spell checking mode (takes effect immediately)."""
+        changed = mode != self._spell_mode
         self._spell_mode = mode
-        # Only rehighlight if switching to realtime (other modes handled by recheck)
-        if mode == CheckMode.REALTIME:
+        if changed:
             self.rehighlight()
 
     def set_grammar_mode(self, mode: CheckMode):
-        """Set grammar checking mode."""
+        """Set grammar checking mode; switching it on runs a check."""
+        was_off = self._grammar_mode == CheckMode.OFF
+        changed = mode != self._grammar_mode
         self._grammar_mode = mode
-        if mode == CheckMode.REALTIME:
+        if changed:
+            self.rehighlight()
+        if mode != CheckMode.OFF and was_off:
+            self.request_grammar_check()
+
+    @staticmethod
+    def _mark_format(background: str, underline: QColor) -> QTextCharFormat:
+        fmt = QTextCharFormat()
+        fmt.setBackground(QColor(background))
+        fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SingleUnderline)
+        fmt.setUnderlineColor(underline)
+        return fmt
+
+    def set_highlights_visible(self, visible: bool) -> None:
+        """Show / hide all check highlights (checks keep their settings)."""
+        if visible != self._highlights_visible:
+            self._highlights_visible = visible
             self.rehighlight()
 
+    def highlights_visible(self) -> bool:
+        return self._highlights_visible
+
+    def _lt_issues_for_block(self, text: str) -> list:
+        """LanguageTool issues for this paragraph.
+
+        Cached by paragraph text. When the paragraph was edited since the
+        last LanguageTool pass, the previous issues are carried over
+        through the edit: ones on untouched text shift with it, ones on
+        changed text are dropped (the word was fixed or rewritten).
+        """
+        issues = self._lt_cache.get(text)
+        data = self.currentBlockUserData()
+        if issues is None:
+            snap = getattr(data, "lt_snapshot", None)
+            issues = self._remap_issues(snap[0], snap[1], text) if snap else []
+        if data is None:
+            data = BlockData()
+            self.setCurrentBlockUserData(data)
+        data.lt_snapshot = (text, issues)
+        return issues
+
+    @staticmethod
+    def _remap_issues(old: str, issues: list, new: str) -> list:
+        if not issues or old == new:
+            return list(issues or [])
+        import copy
+        import difflib
+        ops = difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes()
+        def boundary(text: str, i: int) -> bool:
+            return not (0 <= i < len(text) and (text[i].isalnum() or text[i] in "'’"))
+
+        out = []
+        for issue in issues:
+            for tag, i1, i2, j1, _j2 in ops:
+                if tag == "equal" and i1 <= issue.start and issue.end <= i2:
+                    shift = j1 - i1
+                    ns, ne = issue.start + shift, issue.end + shift
+                    # The flagged word itself must be unchanged — "walk" →
+                    # "walked" leaves "walk" intact but it's a different word.
+                    if (boundary(old, issue.start - 1) != boundary(new, ns - 1)
+                            or boundary(old, issue.end) != boundary(new, ne)):
+                        break
+                    moved = copy.copy(issue)
+                    moved.start, moved.end = ns, ne
+                    out.append(moved)
+                    break
+        return out
+
+    # ── Style checks ─────────────────────────────────────────────
+
+    @staticmethod
+    def _build_style_formats() -> Dict[str, QTextCharFormat]:
+        from src.utils.style_checks import KINDS
+        formats = {}
+        for kind, (_label, color, sentence_level) in KINDS.items():
+            fmt = QTextCharFormat()
+            if sentence_level:
+                fmt.setBackground(QColor(color))
+            else:
+                fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.DashUnderline)
+                fmt.setUnderlineColor(QColor(color))
+            formats[kind] = fmt
+        return formats
+
+    def set_style_mode(self, mode: CheckMode):
+        changed = mode != self._style_mode
+        self._style_mode = mode
+        if changed:
+            self.rehighlight()
+
+    def get_style_mode(self) -> CheckMode:
+        return self._style_mode
+
+    def set_style_kinds(self, kinds) -> None:
+        kinds = set(kinds)
+        if kinds != self._style_kinds:
+            self._style_kinds = kinds
+            if self._style_mode != CheckMode.OFF:
+                self.rehighlight()
+
+    def ignore_style_issue(self, kind: str, text: str) -> None:
+        self._style_ignored.add((kind, (text or "").strip().lower()))
+        if self._style_mode != CheckMode.OFF:
+            self.rehighlight()
+
+    def style_issues_for(self, text: str) -> list:
+        """Style issues for one paragraph (cached, minus ignored ones)."""
+        from src.utils.style_checks import analyze_paragraph
+        key = (text, frozenset(self._style_kinds))
+        issues = self._style_cache.get(key)
+        if issues is None:
+            issues = analyze_paragraph(text, self._style_kinds)
+            if len(self._style_cache) > 4000:
+                self._style_cache.clear()
+            self._style_cache[key] = issues
+        return [i for i in issues
+                if (i.kind, i.text.strip().lower()) not in self._style_ignored]
+
     def set_overuse_mode(self, mode: CheckMode):
-        """Set overuse detection mode."""
+        """Set overuse detection mode (takes effect immediately)."""
+        changed = mode != self._overuse_mode
         self._overuse_mode = mode
-        if mode == CheckMode.REALTIME:
+        if changed:
             self.rehighlight()
 
     def get_spell_mode(self) -> CheckMode:
@@ -1748,20 +1847,106 @@ class WritingHighlighter(QSyntaxHighlighter):
     def update_full_text(self, text: str):
         """Update the full document text for overuse analysis."""
         self._full_text = text
+        self._full_text_fresh = True
 
     def do_full_recheck(self):
-        """Perform a full recheck including heavy grammar analysis (on-demand checks)."""
-        self._full_grammar_check = True
-        self._doing_on_demand_check = True
+        """Recheck everything: re-run LanguageTool on every paragraph."""
+        self._lt_cache.clear()
         self.rehighlight()
-        self._full_grammar_check = False
-        self._doing_on_demand_check = False
+        self.request_grammar_check()
 
     def do_initial_check(self):
         """Perform initial check when document is loaded."""
-        self._doing_on_demand_check = True
         self.rehighlight()
-        self._doing_on_demand_check = False
+        self.request_grammar_check()
+
+    # ── LanguageTool (background) ─────────────────────────────────
+
+    def request_grammar_check(self) -> None:
+        """Check paragraphs LanguageTool hasn't seen yet, in the background."""
+        if self._grammar_mode == CheckMode.OFF:
+            return
+        from src.utils.proofing import LanguageToolEngine
+        if LanguageToolEngine.get().status in ("unavailable", "failed"):
+            self.grammar_status.emit(f"Grammar: {LanguageToolEngine.get().describe()}")
+            return
+        if self._grammar_worker is not None and self._grammar_worker.isRunning():
+            self._grammar_rerun = True
+            return
+        doc = self.document()
+        if doc is None:
+            return
+        todo, seen = [], set()
+        block = doc.begin()
+        while block.isValid():
+            t = block.text()
+            if t.strip() and t not in self._lt_cache and t not in seen:
+                seen.add(t)
+                todo.append(t)
+            block = block.next()
+        if not todo:
+            return
+        global _QUIT_HOOKED
+        # Collect pending garbage here, on the GUI thread. Otherwise the
+        # collector can run on the worker thread (it allocates heavily)
+        # and destroy discarded Qt widgets off the GUI thread — a crash.
+        import gc
+        gc.collect()
+        worker = _GrammarWorker(todo)
+        worker.results_ready.connect(self._on_grammar_results)
+        # Signal-to-signal (not ``.emit``) so Qt drops the connection if
+        # this highlighter is deleted while the worker is still running.
+        worker.status.connect(self.grammar_status)
+        worker.finished.connect(self._on_grammar_worker_finished)
+        _RUNNING_GRAMMAR_WORKERS.add(worker)
+        worker.finished.connect(lambda w=worker: _RUNNING_GRAMMAR_WORKERS.discard(w))
+        if not _QUIT_HOOKED:
+            from PyQt6.QtCore import QCoreApplication
+            app = QCoreApplication.instance()
+            if app is not None:
+                app.aboutToQuit.connect(_wait_for_grammar_workers)
+                _QUIT_HOOKED = True
+        self._grammar_worker = worker
+        worker.start()
+
+    def _on_grammar_results(self, results: dict) -> None:
+        if not results:
+            return
+        self._lt_cache.update(results)
+        if len(self._lt_cache) > 5000:
+            # Keep only paragraphs still in the document.
+            live = set()
+            b = self.document().begin()
+            while b.isValid():
+                live.add(b.text())
+                b = b.next()
+            self._lt_cache = {k: v for k, v in self._lt_cache.items() if k in live}
+        block = self.document().begin()
+        while block.isValid():
+            if block.text() in results:
+                self.rehighlightBlock(block)
+            block = block.next()
+
+    def _on_grammar_worker_finished(self) -> None:
+        if self._grammar_rerun:
+            self._grammar_rerun = False
+            QTimer.singleShot(0, self.request_grammar_check)
+
+    def wait_for_grammar(self, timeout_ms: int = 60000) -> None:
+        """Block until a running LanguageTool pass finishes (tests / export)."""
+        if self._grammar_worker is not None:
+            self._grammar_worker.wait(timeout_ms)
+            from PyQt6.QtCore import QCoreApplication
+            QCoreApplication.processEvents()
+
+    def set_typing_position(self, block_number: Optional[int], pos: int = 0) -> None:
+        """The word ending at (block, pos) is being typed — don't flag it yet."""
+        prev = self._typing
+        self._typing = (block_number, pos) if block_number is not None else None
+        if prev is not None and (self._typing is None or prev[0] != self._typing[0]):
+            b = self.document().findBlockByNumber(prev[0])
+            if b.isValid():
+                self.rehighlightBlock(b)
 
     def ignore_error(self, block_number: int, start: int, word: str, error_type: Optional[ErrorType] = None):
         """Ignore a specific error.
@@ -1798,23 +1983,62 @@ class WritingHighlighter(QSyntaxHighlighter):
         self.rehighlight()
 
     def get_error_at(self, block_number: int, position_in_block: int) -> Optional[WritingError]:
-        """Get error at position."""
+        """Get error at position (suggestions filled in on demand)."""
         if block_number not in self._errors:
+            # Error records for this block were dropped when an edit
+            # above it shifted block numbers; rebuild them.
+            block = self.document().findBlockByNumber(block_number)
+            if block.isValid():
+                self.rehighlightBlock(block)
+        # The most specific error wins (a misspelled word inside a long
+        # sentence flagged for style is the misspelling).
+        hits = [e for e in self._errors.get(block_number, [])
+                if e.start <= position_in_block < e.end]
+        if not hits:
             return None
-
-        for error in self._errors[block_number]:
-            if error.start <= position_in_block < error.end:
-                return error
-        return None
+        error = min(hits, key=lambda e: (e.end - e.start, e.error_type == ErrorType.STYLE))
+        if error.suggestions is None:
+            error.suggestions = (self.spell_checker.suggest(error.word)
+                                 if error.error_type == ErrorType.SPELLING else [])
+        return error
 
     def _should_check(self, mode: CheckMode) -> bool:
-        """Determine if a check should run based on mode and current state."""
-        if mode == CheckMode.OFF:
-            return False
-        if mode == CheckMode.REALTIME:
-            return True
-        # ON_DEMAND: only check during on-demand operations (recheck button or initial)
-        return self._doing_on_demand_check
+        """A check draws its underlines whenever it is on. (ON_DEMAND vs
+        REALTIME only changes when the heavy LanguageTool pass and the
+        overuse statistics refresh.)"""
+        return mode != CheckMode.OFF
+
+    def _probably_a_name(self, word: str) -> bool:
+        """Is a capitalised, sentence-initial unknown word a proper noun?
+
+        Evidence from the document first: capitalised mid-sentence
+        elsewhere → a name; written lowercase elsewhere → an ordinary
+        word (so check it). Otherwise it's a name unless its best
+        correction is a common English word ("Tommorow" → tomorrow).
+        """
+        cache = self.__dict__.setdefault("_name_cache", {})
+        key = (word, len(self._full_text))
+        if key in cache:
+            return cache[key]
+        text = self._full_text or ""
+        esc = re.escape(word)
+        if re.search(rf"[a-z,;]\s+{esc}\b", text):
+            result = True
+        elif re.search(rf"(?<![A-Za-z']){re.escape(word.lower())}(?![A-Za-z'])", text):
+            result = False
+        else:
+            result = not self.spell_checker.looks_like_common_word_typo(word)
+        if len(cache) > 5000:
+            cache.clear()
+        cache[key] = result
+        return result
+
+    _SENTENCE_END_RX = re.compile(r"[.!?…:]\s*$|^\s*$")
+
+    @classmethod
+    def _starts_sentence(cls, text: str, pos: int) -> bool:
+        before = re.sub(r"[\"“”‘'(\[\-—–\s*_]+$", "", text[:pos])
+        return not before or bool(re.search(r"[.!?…:]$", before))
 
     def _apply_markdown_formatting(self, text: str):
         """Apply visual formatting for Markdown syntax.
@@ -1899,59 +2123,114 @@ class WritingHighlighter(QSyntaxHighlighter):
 
         # Apply Markdown formatting first (before error checks)
         self._apply_markdown_formatting(text)
+        if not self._highlights_visible:
+            return
 
         # Helper to get the existing character format at a position in the block
         # This preserves font size, weight, etc. when we add underlines
         def get_existing_format(pos: int) -> QTextCharFormat:
-            """Get the document's character format at position within current block."""
+            """Document format at ``pos`` merged with what this highlighter
+            already applied there (so a style tint survives a spelling
+            underline drawn over it)."""
             cursor = QTextCursor(block)
             cursor.setPosition(block.position() + pos)
-            return cursor.charFormat()
+            fmt = cursor.charFormat()
+            fmt.merge(self.format(pos))
+            return fmt
+
+        # Style checks — drawn first so the error underlines below layer
+        # on top of the sentence tints.
+        if self._should_check(self._style_mode):
+            from src.utils.style_checks import KINDS
+            for issue in self.style_issues_for(text):
+                fmt_add = self._style_formats.get(issue.kind)
+                if fmt_add is None or issue.end <= issue.start:
+                    continue
+                pos = issue.start
+                while pos < issue.end:       # merge segment by segment
+                    seg_end = pos + 1
+                    base = self.format(pos)
+                    while seg_end < issue.end and self.format(seg_end) == base:
+                        seg_end += 1
+                    merged = get_existing_format(pos)
+                    merged.merge(fmt_add)
+                    self.setFormat(pos, seg_end - pos, merged)
+                    pos = seg_end
+                self._errors[block_number].append(WritingError(
+                    error_type=ErrorType.STYLE,
+                    word=issue.text,
+                    start=issue.start,
+                    end=issue.end,
+                    reason=f"{KINDS[issue.kind][0]}: {issue.message}",
+                    suggestions=list(issue.suggestions),
+                ))
+                self._errors[block_number][-1].style_kind = issue.kind
 
         # Spell checking - respects mode
         if self._should_check(self._spell_mode):
-            for match in re.finditer(r'\b[a-zA-Z]+\b', text):
+            typing_end = (self._typing[1] if self._typing and self._typing[0] == block_number
+                          else -1)
+            for match in re.finditer(r"[A-Za-z]+(?:['’][A-Za-z]+)*", text):
                 word = match.group()
-                # Skip if ignored
+                if match.end() == typing_end:
+                    continue  # still being typed
                 if self.is_word_ignored(word, ErrorType.SPELLING):
                     continue
-
-                is_correct, reason = self.spell_checker.check_word(word)
+                sentence_start = self._starts_sentence(text, match.start())
+                is_correct, reason = self.spell_checker.check_word(
+                    word, sentence_start=sentence_start)
+                if (not is_correct and sentence_start and word[:1].isupper()
+                        and self._probably_a_name(word)):
+                    is_correct = True
                 if not is_correct:
                     # Get existing format and merge with our underline format
                     # This preserves font size, weight, etc.
                     existing_format = get_existing_format(match.start())
                     existing_format.merge(self.spelling_format)
                     self.setFormat(match.start(), len(word), existing_format)
-                    suggestions = self.spell_checker.suggest(word)
                     self._errors[block_number].append(WritingError(
                         error_type=ErrorType.SPELLING,
                         word=word,
                         start=match.start(),
                         end=match.end(),
                         reason=reason,
-                        suggestions=suggestions
+                        suggestions=None,   # computed on demand (get_error_at)
                     ))
 
         # Grammar checking - respects mode
         # Use full check only during explicit recheck, otherwise use fast basic rules
         if self._should_check(self._grammar_mode) and self.grammar_checker:
-            grammar_errors = self.grammar_checker.check_text(text, use_full_check=self._full_grammar_check)
+            from src.utils.proofing import builtin_grammar, merge_issues
+            issues = merge_issues(self._lt_issues_for_block(text), builtin_grammar(text))
+            grammar_errors = [i.as_tuple() for i in issues]
             for start, end, error_text, message, suggestions in grammar_errors:
+                if start < 0 or end > len(text) or end <= start:
+                    continue
                 # Skip if ignored
                 if self.is_word_ignored(error_text, ErrorType.GRAMMAR):
                     continue
 
-                # Don't double-flag spelling errors
-                already_flagged = any(
-                    e.start == start and e.end == end
-                    for e in self._errors[block_number]
-                )
+                # A span already flagged as a spelling error isn't
+                # re-flagged; a longer grammar issue that merely overlaps
+                # one (e.g. a double negative starting with "dont") is
+                # underlined on the parts the spelling error doesn't cover.
+                taken = sorted((e.start, e.end) for e in self._errors[block_number]
+                               if start < e.end and e.start < end
+                               and e.error_type != ErrorType.STYLE)
+                already_flagged = any(s0 <= start and end <= e0 for s0, e0 in taken)
                 if not already_flagged:
-                    # Merge with existing format to preserve font size, weight, etc.
-                    existing_format = get_existing_format(start)
-                    existing_format.merge(self.grammar_format)
-                    self.setFormat(start, end - start, existing_format)
+                    segments, cur = [], start
+                    for s0, e0 in taken:
+                        if s0 > cur:
+                            segments.append((cur, s0))
+                        cur = max(cur, e0)
+                    if cur < end:
+                        segments.append((cur, end))
+                    for seg_start, seg_end in segments:
+                        # Merge with existing format to preserve font size, weight, etc.
+                        existing_format = get_existing_format(seg_start)
+                        existing_format.merge(self.grammar_format)
+                        self.setFormat(seg_start, seg_end - seg_start, existing_format)
                     self._errors[block_number].append(WritingError(
                         error_type=ErrorType.GRAMMAR,
                         word=error_text,
@@ -1997,9 +2276,9 @@ class WritingHighlighter(QSyntaxHighlighter):
             block_end = block_start + len(text)
 
             # Get overused phrases that overlap with this block
-            phrase_occurrences = self.overuse_detector.get_overused_phrases_in_range(
+            phrase_occurrences = (self.overuse_detector.get_overused_phrases_in_range(
                 self._full_text, block_start, block_end
-            )
+            ) if self._full_text_fresh else [])
 
             for phrase, phrase_start, phrase_end, count in phrase_occurrences:
                 # Convert document position to block position
@@ -2021,11 +2300,7 @@ class WritingHighlighter(QSyntaxHighlighter):
                 )
                 if not already_flagged:
                     # Use a different shade of blue for phrases (purple-ish)
-                    phrase_format = QTextCharFormat()
-                    phrase_format.setUnderlineStyle(
-                        QTextCharFormat.UnderlineStyle.SpellCheckUnderline
-                    )
-                    phrase_format.setUnderlineColor(QColor(148, 0, 211))  # Purple for phrases
+                    phrase_format = self.phrase_format
 
                     existing_format = get_existing_format(local_start)
                     existing_format.merge(phrase_format)
@@ -2121,6 +2396,8 @@ class EnhancedTextEditor(QTextEdit):
     tts_stopped = pyqtSignal()
     tts_error = pyqtSignal(str)
     tts_progress = pyqtSignal(str)  # Progress updates for VibeVoice
+    # "✨ Rewrite with AI" on a style issue: (doc start, doc end, hint).
+    style_rewrite_requested = pyqtSignal(int, int, str)
 
     # Heading style definitions for display and export
     # Format: (font_size, bold, top_margin, bottom_margin, heading_level)
@@ -2179,6 +2456,7 @@ class EnhancedTextEditor(QTextEdit):
 
         # Update overuse detection when text changes (with longer debounce for performance)
         self.textChanged.connect(self._on_text_changed)
+        self.cursorPositionChanged.connect(self._on_cursor_moved)
         self._update_timer = QTimer()
         self._update_timer.setSingleShot(True)
         self._update_timer.timeout.connect(self._update_realtime_analysis)
@@ -2196,11 +2474,40 @@ class EnhancedTextEditor(QTextEdit):
 
     def _on_text_changed(self):
         """Handle text changes - debounce analysis for realtime modes."""
+        # The word at the cursor is still being typed: don't underline it
+        # until the writer moves on (space, punctuation, click away).
+        cur = self.textCursor()
+        block = cur.block()
+        pos = cur.positionInBlock()
+        if pos > 0 and block.text()[pos - 1:pos].isalpha():
+            self.writing_highlighter.set_typing_position(block.blockNumber(), pos)
+        else:
+            self.writing_highlighter.set_typing_position(None)
         # Use longer debounce (1.5s) to avoid freezing during rapid typing
         self._update_timer.start(1500)
 
+    def _on_cursor_moved(self):
+        """Cursor moved without typing — the pending word is finished."""
+        hl = self.writing_highlighter
+        if hl._typing is None:
+            return
+        cur = self.textCursor()
+        if (cur.block().blockNumber(), cur.positionInBlock()) != hl._typing:
+            hl.set_typing_position(None)
+            b = self.document().findBlockByNumber(cur.block().blockNumber())
+            if b.isValid():
+                hl.rehighlightBlock(b)
+
     def _update_realtime_analysis(self):
-        """Update analysis for any checks in realtime mode."""
+        """Typing paused: finish the pending word, refresh statistics, and
+        (REALTIME grammar) check edited paragraphs with LanguageTool."""
+        hl = self.writing_highlighter
+        if hl._typing is not None:
+            pending = hl._typing
+            hl.set_typing_position(None)
+            b = self.document().findBlockByNumber(pending[0])
+            if b.isValid():
+                hl.rehighlightBlock(b)
         current_text = self.toPlainText()
         current_hash = hash(current_text)
 
@@ -2209,11 +2516,27 @@ class EnhancedTextEditor(QTextEdit):
             self._last_text_hash = current_hash
             # Update the cache in overuse detector
             self.overuse_detector.update_cache(current_text)
-            self.writing_highlighter.update_full_text(current_text)
+            hl.update_full_text(current_text)
 
-            # Only rehighlight if any check is in realtime mode
-            if self._has_realtime_checks():
-                self.writing_highlighter.rehighlight()
+            if hl.get_grammar_mode() == CheckMode.REALTIME:
+                hl.request_grammar_check()
+            # Overuse counts span the whole document — redraw in realtime.
+            if hl.get_overuse_mode() == CheckMode.REALTIME:
+                hl.rehighlight()
+
+    def set_project_vocabulary(self, project) -> None:
+        """Teach the spell checker the project's names and dictionary."""
+        words: List[str] = []
+        try:
+            words += [c.name for c in getattr(project, "characters", None) or []]
+            from src.ai.canon_index import collect_world_entities
+            words += [e.name for e in collect_world_entities(
+                getattr(project, "worldbuilding", None))]
+            words += list(getattr(getattr(project, "dictionary", None), "words", None) or [])
+        except Exception as e:
+            print(f"[spell] project vocabulary unavailable: {e}")
+        self.spell_checker.set_project_words(words)
+        self.writing_highlighter.rehighlight()
 
     def _has_realtime_checks(self) -> bool:
         """Check if any writing check is in realtime mode."""
@@ -2234,6 +2557,18 @@ class EnhancedTextEditor(QTextEdit):
     def set_spell_mode(self, mode: CheckMode):
         """Set spell checking mode."""
         self.writing_highlighter.set_spell_mode(mode)
+
+    def set_style_mode(self, mode: CheckMode):
+        self.writing_highlighter.set_style_mode(mode)
+
+    def set_highlights_visible(self, visible: bool) -> None:
+        self.writing_highlighter.set_highlights_visible(visible)
+
+    def highlights_visible(self) -> bool:
+        return self.writing_highlighter.highlights_visible()
+
+    def get_style_mode(self) -> CheckMode:
+        return self.writing_highlighter.get_style_mode()
 
     def set_grammar_mode(self, mode: CheckMode):
         """Set grammar checking mode."""
@@ -2455,6 +2790,7 @@ class EnhancedTextEditor(QTextEdit):
                 ErrorType.GRAMMAR: "Grammar",
                 ErrorType.OVERUSE: "Overused Word",
                 ErrorType.OVERUSED_PHRASE: "Repeated Phrase",
+                ErrorType.STYLE: "Style",
             }
             type_name = type_names.get(error.error_type, "Error")
 
@@ -2476,25 +2812,39 @@ class EnhancedTextEditor(QTextEdit):
 
             menu.addSeparator()
 
-            # Suggestions as clickable menu items
+            # Suggestions as clickable menu items. Replace the flagged
+            # span exactly (multi-word issues like "could of" / "in order
+            # to" would lose words with a word-under-cursor selection).
             if error.suggestions:
                 suggestions_label = menu.addAction("Replace with:")
                 suggestions_label.setEnabled(False)
-
-                # Get cursor for word replacement
-                word_cursor = self.cursorForPosition(position)
-                word_cursor.select(QTextCursor.SelectionType.WordUnderCursor)
-
+                span_cursor = QTextCursor(block)
+                span_cursor.setPosition(block.position() + error.start)
+                span_cursor.setPosition(block.position() + error.end,
+                                        QTextCursor.MoveMode.KeepAnchor)
                 for suggestion in error.suggestions[:7]:
-                    action = menu.addAction(f"  {suggestion}")
+                    label = f"  {suggestion}" if suggestion else f"  Delete “{error.word}”"
+                    action = menu.addAction(label)
                     action.triggered.connect(
-                        lambda checked, s=suggestion, c=word_cursor: self._replace_word(c, s)
+                        lambda checked, s=suggestion, c=QTextCursor(span_cursor):
+                            self._replace_word(c, s)
                     )
 
                 menu.addSeparator()
 
+            if error.error_type == ErrorType.STYLE:
+                rewrite = menu.addAction("✨ Rewrite with AI…")
+                rewrite.triggered.connect(
+                    lambda checked=False, e=error, b=block: self._request_style_rewrite(b, e))
+                ignore_style = menu.addAction("Ignore this issue")
+                ignore_style.triggered.connect(
+                    lambda checked=False, e=error: self.writing_highlighter.ignore_style_issue(
+                        getattr(e, "style_kind", ""), e.word))
+                menu.addSeparator()
+
             # Ignore option
             ignore_action = menu.addAction(f"Ignore '{error.word}'")
+            ignore_action.setVisible(error.error_type != ErrorType.STYLE)
             ignore_action.triggered.connect(
                 lambda: self._ignore_error(block_number, error.start, error.word, error.error_type)
             )
@@ -2620,12 +2970,46 @@ class EnhancedTextEditor(QTextEdit):
         menu.exec(self.mapToGlobal(position))
 
     def _replace_word(self, cursor: QTextCursor, replacement: str):
-        """Replace word at cursor with replacement."""
+        """Replace the selected span with ``replacement`` ("" deletes it,
+        tidying the double space a deletion leaves behind)."""
+        if replacement == "" and cursor.hasSelection():
+            # Deleting a word: take one neighbouring space with it.
+            doc = self.document()
+            st, en = cursor.selectionStart(), cursor.selectionEnd()
+            if st > 0 and doc.characterAt(st - 1) == " ":
+                st -= 1
+            elif doc.characterAt(en) == " ":
+                en += 1
+            cursor.setPosition(st)
+            cursor.setPosition(en, QTextCursor.MoveMode.KeepAnchor)
         cursor.insertText(replacement)
+
+    def _request_style_rewrite(self, block, error) -> None:
+        """Ask the host to AI-rewrite the sentence around a style issue."""
+        from src.utils.style_checks import sentences_with_offsets, KINDS
+        start, end = error.start, error.end
+        for s0, e0, _ in sentences_with_offsets(block.text()):
+            if s0 <= error.start < e0:
+                start, end = min(start, s0), max(end, e0)
+                break
+        kind = getattr(error, "style_kind", "")
+        hint = f"Fix this style issue: {error.reason}"
+        if kind and kind in KINDS:
+            hint = f"Fix the {KINDS[kind][0].lower()}: {error.reason.split(': ', 1)[-1]}"
+        self.style_rewrite_requested.emit(block.position() + start, block.position() + end, hint)
+
+    # Set by the host to persist "Add to Dictionary" (e.g. into the
+    # project's dictionary so the word stays known next session).
+    add_to_dictionary_callback: Optional[Callable[[str], None]] = None
 
     def _add_to_dictionary(self, word: str):
         """Add word to custom dictionary."""
         self.spell_checker.add_word(word)
+        if self.add_to_dictionary_callback:
+            try:
+                self.add_to_dictionary_callback(word)
+            except Exception as e:
+                print(f"[spell] could not save '{word}' to the project dictionary: {e}")
         self.writing_highlighter.rehighlight()
 
     def _ignore_error(self, block_number: int, start: int, word: str, error_type: ErrorType):

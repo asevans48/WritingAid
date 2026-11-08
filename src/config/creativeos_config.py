@@ -72,11 +72,13 @@ SHARED_LLM_DEFAULTS: Dict[str, Any] = {
     #   * plot         — outline / plot generation
     #   * worldbuilding — generate world elements (locations, factions, lore)
     #   * character    — character profiles, backstories, voice
+    #   * critique     — critique / analysis reports (Critique tab)
     #   * general      — fallback for chat / lookup
     "model_for_rephrase": "",
     "model_for_plot": "",
     "model_for_worldbuilding": "",
     "model_for_character": "",
+    "model_for_critique": "",
     "model_for_general": "",
 
     # Multi-model memory management. Both the writing tool's per-task
@@ -124,6 +126,7 @@ TASK_MODEL_KEYS: List[str] = [
     "model_for_plot",
     "model_for_worldbuilding",
     "model_for_character",
+    "model_for_critique",
     "model_for_general",
 ]
 
@@ -132,6 +135,7 @@ TASK_MODEL_LABELS: Dict[str, str] = {
     "model_for_plot": "Plot / outline generation",
     "model_for_worldbuilding": "Worldbuilding",
     "model_for_character": "Character generation",
+    "model_for_critique": "Critique & analysis",
     "model_for_general": "General chat / lookup",
 }
 

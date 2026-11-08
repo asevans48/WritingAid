@@ -302,6 +302,8 @@ class ChatWidget(QWidget):
     # into the chapter planner's public ``add_event_from_external``
     # API.
     add_as_arc_event_requested = pyqtSignal(str)
+    # A "go to text" link in a message was clicked: (chapter_id, passage).
+    passage_link_clicked = pyqtSignal(str, str)
 
     def __init__(self):
         """Initialize chat widget."""
@@ -608,8 +610,14 @@ class ChatWidget(QWidget):
         content_layout.addWidget(separator)
 
         # Chat history with modern styling
-        self.chat_history = QTextEdit()
+        from PyQt6.QtWidgets import QTextBrowser
+        self.chat_history = QTextBrowser()
         self.chat_history.setReadOnly(True)
+        # Links are handled in-app (jump to the manuscript passage) —
+        # never opened as URLs.
+        self.chat_history.setOpenLinks(False)
+        self.chat_history.setOpenExternalLinks(False)
+        self.chat_history.anchorClicked.connect(self._on_chat_link_clicked)
         self.chat_history.setPlaceholderText("Start a conversation...")
         self.chat_history.setStyleSheet("""
             QTextEdit {
@@ -1263,9 +1271,26 @@ class ChatWidget(QWidget):
 
         return '\n'.join(html_lines)
 
+    def _on_chat_link_clicked(self, url) -> None:
+        from src.ai.text_links import parse_link
+        target = parse_link(url.toString())
+        if target is not None:
+            self.passage_link_clicked.emit(target[0], target[1])
+
+    _GOTO_LINK_STYLE = ("color:#2563eb; text-decoration:none; font-size:12px; "
+                        "background:#eff6ff; border-radius:3px; padding:0 3px;")
+
     def _inline_markdown(self, text: str) -> str:
-        """Convert inline markdown (bold, italic, code) to HTML."""
+        """Convert inline markdown (bold, italic, code, go-to-text links) to HTML."""
         import re
+        # "Go to text" links → anchors. Stashed as placeholders so the
+        # bold / italic passes can't touch the (URL-encoded) targets.
+        links = []
+
+        def _stash(m):
+            links.append(f'<a href="{m.group(2)}" style="{self._GOTO_LINK_STYLE}">{m.group(1)}</a>')
+            return f"\x00{len(links) - 1}\x00"
+        text = re.sub(r'\[([^\]\n]{1,40})\]\((wa-goto:[^)\s]+)\)', _stash, text)
         # Bold
         text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
         # Italic
@@ -1276,6 +1301,8 @@ class ChatWidget(QWidget):
             r'<code style="background-color: #f3f4f6; padding: 1px 4px; border-radius: 3px; font-family: monospace; font-size: 12px;">\1</code>',
             text
         )
+        if links:
+            text = re.sub(r"\x00(\d+)\x00", lambda m: links[int(m.group(1))], text)
         return text
 
     def set_characters(self, characters: list):

@@ -789,6 +789,10 @@ class ChapterPlannerWidget(QWidget):
     # blanking the AI-Assistant outline panel — the planner widget
     # only owns its own UI state.
     events_cleared = pyqtSignal()
+    # Emitted after the outline was regenerated (or restored after a
+    # failed regeneration) so the host can persist the new beats and
+    # refresh the AI-Assistant outline panel.
+    events_replaced = pyqtSignal()
     _ai_response_ready = pyqtSignal(object)  # Internal signal for thread-safe callback delivery
 
     def __init__(self, parent=None):
@@ -891,10 +895,22 @@ class ChapterPlannerWidget(QWidget):
         events_actions.setSpacing(4)
 
         self.generate_events_btn = QPushButton("AI Generate")
-        self.generate_events_btn.setToolTip("Generate story events with AI")
+        self.generate_events_btn.setToolTip(
+            "Generate story events with AI (from the chapter's prose, "
+            "description or project context). Replaces any existing outline.")
         self.generate_events_btn.setStyleSheet("font-size: 11px; padding: 3px 6px;")
         self.generate_events_btn.clicked.connect(self._generate_events)
         events_actions.addWidget(self.generate_events_btn)
+
+        self.outline_from_text_btn = QPushButton("From Text")
+        self.outline_from_text_btn.setToolTip(
+            "Build this chapter's outline from the chapter text — every beat "
+            "comes from what's actually written, start to finish (or from the "
+            "selected passage, if you've selected text in the editor).\n"
+            "If an outline already exists it is erased first and replaced.")
+        self.outline_from_text_btn.setStyleSheet("font-size: 11px; padding: 3px 6px;")
+        self.outline_from_text_btn.clicked.connect(self._populate_outline_from_text)
+        events_actions.addWidget(self.outline_from_text_btn)
 
         self.reorder_events_btn = QPushButton("Auto-Order")
         self.reorder_events_btn.setToolTip("Reorder events by arc position")
@@ -2368,6 +2384,16 @@ class ChapterPlannerWidget(QWidget):
         """Set function that provides plot/worldbuilding context."""
         self._context_provider = provider
 
+    def set_outline_text_provider(self, provider: Callable[[], str]):
+        """Callable returning the chapter's saved outline text (the
+        AI-Assistant outline panel's field), so regeneration knows an
+        outline exists even when the beat list is empty."""
+        self._outline_text_provider = provider
+
+    def set_selection_provider(self, provider: Callable[[], str]):
+        """Callable returning the editor's selected text ("" if none)."""
+        self._selection_provider = provider
+
     def set_chapter_content_provider(self, provider: Callable):
         """Set function that provides current chapter content."""
         self._chapter_content_provider = provider
@@ -2658,15 +2684,91 @@ class ChapterPlannerWidget(QWidget):
         self.progress_bar.setVisible(is_processing)
         self.send_btn.setEnabled(not is_processing)
         self.generate_events_btn.setEnabled(not is_processing)
+        if hasattr(self, "outline_from_text_btn"):
+            self.outline_from_text_btn.setEnabled(not is_processing)
         self.check_plan_btn.setEnabled(not is_processing)
 
-    def _generate_events(self):
-        """Generate story events using AI."""
+    # ── Replacing an existing outline ────────────────────────────
+
+    def _has_existing_outline(self) -> bool:
+        if self._event_widgets:
+            return True
+        provider = getattr(self, "_outline_text_provider", None)
+        try:
+            return bool(provider and (provider() or "").strip())
+        except Exception:
+            return False
+
+    def _confirm_and_erase_outline(self, action: str) -> Optional[list]:
+        """If an outline exists, confirm replacing it and erase it.
+
+        Returns the erased beats (so a failed generation can restore
+        them), ``[]`` when there was nothing to erase, or ``None`` when
+        the writer cancelled.
+        """
+        if not self._has_existing_outline():
+            return []
+        n = len(self._event_widgets)
+        what = f"{n} beat{'s' if n != 1 else ''}" if n else "the saved outline"
+        reply = QMessageBox.question(
+            self, "Replace the outline?",
+            f"This chapter already has an outline ({what}).\n\n"
+            f"{action} erases it first and builds a new one in its place. "
+            f"The chapter prose is not changed. If generation fails, the "
+            f"current outline is put back.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes)
+        if reply != QMessageBox.StandardButton.Yes:
+            return None
+        snapshot = [w.get_data() for w in self._event_widgets]
+        self._erase_outline()
+        return snapshot
+
+    def _erase_outline(self) -> None:
+        """Remove every beat + the saved outline (no confirmation)."""
+        for w in self._event_widgets[:]:
+            w.deleteLater()
+        self._event_widgets.clear()
+        self._update_arc_widget()
+        self.events_cleared.emit()
+        self._on_plan_changed()
+
+    def _finish_replacement(self, added: int, snapshot: list, ok_message: str,
+                            failure: str) -> None:
+        """Common tail for regeneration: publish the new beats, or put
+        the erased outline back when nothing usable came back."""
+        self._set_processing(False)
+        self.last_replacement_ok = bool(added)
+        if added:
+            self._update_arc_widget()
+            self._on_plan_changed()
+            self.events_replaced.emit()
+            self._append_to_chat("assistant", ok_message)
+            return
+        if snapshot:
+            self.update_events(snapshot)
+            self._on_plan_changed()
+            self.events_replaced.emit()
+            self._append_to_chat("error", f"{failure} The previous outline was restored.")
+        else:
+            self._append_to_chat("error", failure)
+
+    def _generate_events(self) -> bool:
+        """Generate story events using AI (replacing any existing outline).
+        Returns True when generation started."""
         if not self._ai_handler:
             QMessageBox.warning(self, "AI Not Available", "AI handler not configured.")
-            return
+            return False
+
+        snapshot = self._confirm_and_erase_outline("Re-generating")
+        if snapshot is None:
+            return False
 
         context = self._get_context()
+        # A regeneration starts fresh — never feed the erased outline or
+        # the conversation about it back to the model.
+        for key in ("current_plan", "planner_history_summary", "planner_recent_turns"):
+            context.pop(key, None)
         chapter_title = context.get('chapter_title', 'this chapter')
 
         # Detect whether the writer has already written prose; the
@@ -2770,29 +2872,173 @@ and scene details — never generic craft advice."""
         self._set_processing(True)
 
         def on_response(response: str):
-            self._set_processing(False)
-            if response:
-                gaps = self._parse_ai_events_response(response)
-                if gaps:
-                    # Partial arc — tell the writer which stages
-                    # weren't found in the prose so they know what
-                    # the AI deliberately didn't fabricate.
-                    self._append_to_chat(
-                        "assistant",
-                        f"Events recognized from the chapter. The "
-                        f"AI noted that these arc stages aren't yet "
-                        f"present in the prose: **{gaps}**. Add "
-                        f"beats for those manually when you write "
-                        f"them.")
-                else:
-                    self._append_to_chat(
-                        "assistant",
-                        "Events generated! Review and adjust as "
-                        "needed.")
+            gaps = self._parse_ai_events_response(response) if response else ""
+            added = len(self._event_widgets)
+            if gaps:
+                # Partial arc — tell the writer which stages weren't
+                # found in the prose so they know what the AI
+                # deliberately didn't fabricate.
+                ok = (f"Events recognized from the chapter. The AI noted that "
+                      f"these arc stages aren't yet present in the prose: "
+                      f"**{gaps}**. Add beats for those manually when you "
+                      f"write them.")
             else:
-                self._append_to_chat("error", "Failed to generate events.")
+                ok = "Events generated! Review and adjust as needed."
+            self._finish_replacement(added, snapshot, ok, "Failed to generate events.")
 
         self._run_ai_request(prompt, context, on_response)
+        return True
+
+    # ── Outline from the chapter text ────────────────────────────
+
+    # Chapters up to this many words are outlined in one call; longer
+    # ones are read in sections (beats per section, then one merge) so
+    # the middle of the chapter isn't skipped.
+    FROM_TEXT_SINGLE_PASS_WORDS = 3500
+    FROM_TEXT_SECTION_WORDS = 2500
+
+    _EVENT_FORMAT_SPEC = """FORMAT YOUR RESPONSE — TWO LINES PER EVENT:
+Use a numbered list. The FIRST line of each item is the [stage] tag and a
+SHORT TITLE (3-7 words). The SECOND line, indented two spaces, is a
+DESCRIPTION (1-2 sentences: who does what, where, why it matters).
+Stages: exposition, rising, climax, falling, resolution, or partial (the
+text stops mid-beat).
+
+EXAMPLE FORMAT (made-up content — do not copy):
+
+1. [exposition] The Council Summons
+  Ilsa Varn is brought before the council to answer for her raids on the border villages.
+
+2. [rising] Refusing the Call
+  She argues with Teodor that taking the mission means abandoning the survivors at Highmoor.
+
+3. [climax] The Reckoning
+  Ilsa accepts the council's terms, knowing it will cost her Teodor's trust."""
+
+    @staticmethod
+    def _split_into_sections(text: str, words_per_section: int) -> List[str]:
+        """Split prose into ~N-word sections on paragraph boundaries."""
+        sections, current, count = [], [], 0
+        for para in [p for p in text.split("\n") if p.strip()]:
+            n = len(para.split())
+            if current and count + n > words_per_section:
+                sections.append("\n".join(current))
+                current, count = [], 0
+            current.append(para)
+            count += n
+        if current:
+            sections.append("\n".join(current))
+        return sections
+
+    def _from_text_prompt(self, title: str, body: str, *, merged_beats: bool) -> str:
+        source = ("BEATS FOUND IN THE CHAPTER, IN ORDER (from reading it section "
+                  "by section)" if merged_beats else "CHAPTER TEXT")
+        return f"""TASK: Build the outline for the chapter "{title}" from its text.
+
+RULES:
+- Every event must be a moment that actually happens in the text below,
+  in the order it happens. Do not invent, foreshadow or add beats that
+  aren't there, and don't add stages the text doesn't reach.
+- Cover the whole chapter from its opening to its last scene.
+- Use 4-10 events: one per real beat, merging minor moments.
+- Name the characters involved and where it happens.
+- If the text stops partway through a beat, tag it [partial].
+
+{self._EVENT_FORMAT_SPEC}
+
+{source}:
+{body}"""
+
+    def _populate_outline_from_text(self) -> bool:
+        """Populate the chapter outline from the chapter text (or the
+        editor selection), replacing any existing outline. Returns True
+        when generation started."""
+        if not self._ai_handler:
+            QMessageBox.warning(self, "AI Not Available", "AI handler not configured.")
+            return False
+        selection = ""
+        sel_provider = getattr(self, "_selection_provider", None)
+        if sel_provider:
+            try:
+                selection = (sel_provider() or "").strip()
+            except Exception:
+                selection = ""
+        use_selection = len(selection.split()) >= 50
+        text = selection if use_selection else (self._get_chapter_content() or "").strip()
+        if len(text.split()) < 30:
+            QMessageBox.information(
+                self, "Not enough text",
+                "Write (or paste) some of the chapter first — the outline is "
+                "built from the chapter text.")
+            return False
+
+        snapshot = self._confirm_and_erase_outline("Building the outline from the text")
+        if snapshot is None:
+            return False
+
+        title = (self._get_context() or {}).get("chapter_title", "this chapter")
+        handler = self._ai_handler
+        words = len(text.split())
+        sections = ([text] if words <= self.FROM_TEXT_SINGLE_PASS_WORDS
+                    else self._split_into_sections(text, self.FROM_TEXT_SECTION_WORDS))
+        scope = "the selected passage" if use_selection else f"“{title}”"
+        self._append_to_chat(
+            "system",
+            f"Building the outline from {scope} ({words:,} words"
+            + (f", {len(sections)} sections" if len(sections) > 1 else "") + ")…")
+        self._set_processing(True)
+        extract = self._extract_response_only
+
+        def job() -> str:
+            if len(sections) == 1:
+                prompt = self._from_text_prompt(title, sections[0], merged_beats=False)
+                return extract(handler(prompt, "Auto") or "", prompt, prompt)
+            # Read section by section, then merge into one arc.
+            found = []
+            for i, sec in enumerate(sections, 1):
+                prompt = (
+                    f"List the story beats in this section ({i} of {len(sections)}) "
+                    f"of the chapter \"{title}\", in the order they happen. One "
+                    f"line each: '- <who does what, where>'. Only what is in the "
+                    f"text; 2-5 lines; no commentary.\n\nSECTION TEXT:\n{sec}")
+                reply = extract(handler(prompt, "Auto") or "", prompt, prompt)
+                lines = [l.strip() for l in reply.splitlines()
+                         if l.strip().startswith(("-", "*", "•")) or l.strip()[:2].rstrip(".").isdigit()]
+                found.append(f"Section {i}:\n" + "\n".join(lines or [reply.strip()[:600]]))
+            prompt = self._from_text_prompt(title, "\n\n".join(found), merged_beats=True)
+            return extract(handler(prompt, "Auto") or "", prompt, prompt)
+
+        def on_response(response):
+            gaps = self._parse_ai_events_response(response) if response else ""
+            added = len(self._event_widgets)
+            ok = (f"Outline built from {scope}: {added} beat"
+                  f"{'s' if added != 1 else ''}. Review and adjust as needed."
+                  + (f" Stages not reached in the text: **{gaps}**." if gaps else ""))
+            self._finish_replacement(added, snapshot, ok,
+                                     "Couldn't build an outline from the text.")
+
+        self._run_ai_job(job, on_response)
+        return True
+
+    def _run_ai_job(self, job: Callable[[], str], callback: Callable) -> None:
+        """Run ``job`` (which may make several model calls) on a worker
+        thread and deliver its result to ``callback`` on the UI thread."""
+        self._current_callback = callback
+        try:
+            self._ai_response_ready.disconnect(self._handle_ai_response)
+        except Exception:
+            pass
+        self._ai_response_ready.connect(self._handle_ai_response)
+
+        def run():
+            try:
+                result = job()
+            except Exception as e:
+                print(f"[ChapterPlanner] outline job failed: {e}")
+                result = None
+            self._ai_response_ready.emit(result)
+
+        threading.Thread(target=run, daemon=True).start()
 
     def _parse_ai_events_response(self, response: str) -> str:
         """Parse AI response into events.

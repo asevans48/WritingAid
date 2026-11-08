@@ -30,6 +30,10 @@ if TYPE_CHECKING:
     from src.ai.llm_client import LLMClient
 
 
+# Why the most recent model construction failed (shown to the user).
+_last_error: str = ""
+
+
 def _build_local_llm(model_id: str,
                      force_mlx: Optional[bool] = None
                      ) -> Optional["LLMClient"]:
@@ -71,6 +75,8 @@ def _build_local_llm(model_id: str,
                     else LLMProvider.HUGGINGFACE_LOCAL)
         return LLMClient(provider=provider, hf_config=hf_config)
     except Exception as e:
+        global _last_error
+        _last_error = f"Couldn't load the local model '{model_id}': {e}"
         print(f"[task_llm] Could not build local LLM '{model_id}': {e}")
         return None
 
@@ -153,3 +159,94 @@ def build_task_llm_override(task: str) -> Optional["LLMClient"]:
         return _build_cloud_llm(spec.get("provider", ""),
                                   model_override=spec.get("model"))
     return None
+
+
+def build_llm_from_spec(spec_str: str) -> Optional["LLMClient"]:
+    """Build an ``LLMClient`` straight from a model spec string
+    (``trained:<name>``, ``mlx:<id>``, ``hf:<id>``, ``local:<id>``,
+    ``cloud:<provider>[:<model>]``). ``None`` for an empty or
+    unresolvable spec."""
+    try:
+        from src.config.creativeos_config import (
+            parse_task_model_spec, load_trained_models,
+        )
+    except Exception:
+        return None
+    spec = parse_task_model_spec(spec_str or "")
+    kind = spec.get("kind", "")
+    if kind == "trained":
+        entry = next((m for m in load_trained_models()
+                      if m.get("name") == spec.get("name")), None)
+        return _build_local_llm(entry.get("path", "")) if entry else None
+    if kind in ("hf", "mlx", "local"):
+        force = {"mlx": True, "hf": False}.get(kind)
+        return _build_local_llm(spec.get("model_id", ""), force_mlx=force)
+    if kind == "cloud":
+        return _build_cloud_llm(spec.get("provider", ""),
+                                model_override=spec.get("model"))
+    return None
+
+
+def build_critique_llm(spec_override: str = "") -> Optional["LLMClient"]:
+    """The model for critique / analysis reports.
+
+    Resolution: an explicit ``spec_override`` (the picker in the Critique
+    tab) → the ``model_for_critique`` task setting → the legacy
+    ``model_for_plot`` setting the critique used before it had its own
+    task → ``None`` (caller uses the global default model).
+    """
+    if spec_override:
+        llm = build_llm_from_spec(spec_override)
+        if llm is not None:
+            return llm
+    try:
+        from src.config.creativeos_config import get_creativeos_config
+        cfg = get_creativeos_config()
+        if (cfg.get("model_for_critique", "") or "").strip():
+            llm = build_llm_from_spec(cfg.get("model_for_critique", ""))
+            if llm is not None:
+                return llm
+        if (cfg.get("model_for_plot", "") or "").strip():
+            return build_task_llm_override("plot")
+    except Exception as e:
+        print(f"[task_llm] critique model resolution failed: {e}")
+    return None
+
+
+def build_default_llm() -> Optional["LLMClient"]:
+    """The user's default model from AI Settings: the configured local
+    model when "prefer local" is on, otherwise the default cloud
+    provider. ``None`` when AI is disabled or nothing is configured."""
+    global _last_error
+    _last_error = ""
+    try:
+        from src.config.ai_config import get_ai_config
+        cfg = get_ai_config()
+        if cfg.is_ai_disabled():
+            _last_error = "AI features are turned off in Settings."
+            return None
+        settings = cfg.get_settings()
+    except Exception as e:
+        print(f"[task_llm] AI settings unavailable: {e}")
+        return None
+    local_id = settings.get("local_model_id", "")
+    if (settings.get("prefer_local_model", False)
+            and settings.get("enable_local_models", False) and local_id):
+        llm = _build_local_llm(local_id)
+        if llm is not None:
+            return llm
+        local_error = _last_error
+        cloud = _build_cloud_llm(settings.get("default_llm", "claude"))
+        _last_error = "" if cloud is not None else local_error
+        return cloud
+    return _build_cloud_llm(settings.get("default_llm", "claude"))
+
+
+def no_model_message() -> str:
+    """User-facing explanation for when no model can be built."""
+    if _last_error:
+        return (f"{_last_error}\n\nCheck the model under Settings › Local Models, "
+                f"pick a different one, or add a cloud API key under Settings › "
+                f"AI Configuration.")
+    return ("No AI model is configured.\n\nAdd an API key under Settings › AI "
+            "Configuration, or enable a local model (Settings › Local Models).")
