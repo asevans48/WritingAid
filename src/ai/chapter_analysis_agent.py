@@ -2934,7 +2934,8 @@ class GrammarAnalyzer(_BaseAnalyzer):
         if sc is None:
             return []
         # Tokenize words (preserve apostrophes for contractions).
-        words = re.findall(r"[A-Za-z][A-Za-z'’]*", text)
+        from src.utils.proofing import word_tokens
+        words = word_tokens(text)          # contractions whole, any apostrophe
         if not words:
             return []
         # Filter out: proper-noun-shaped tokens (capitalized) and very

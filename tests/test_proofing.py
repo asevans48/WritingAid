@@ -364,3 +364,97 @@ def test_card_hides_when_mouse_leaves_or_typing(app, monkeypatch):
     assert _hover(e, "tommorow") and card.isVisible()
     e.textCursor().insertText("x")
     assert not card.isVisible()
+
+
+# ── Contractions with any apostrophe character ───────────────────
+
+APOSTROPHES = ["'", "’", "‘", "ʼ", "′", "´", "`"]
+
+
+@pytest.mark.parametrize("ap", APOSTROPHES)
+def test_contractions_are_whole_words_with_any_apostrophe(app, monkeypatch, ap):
+    e = _editor(app, f"I don{ap}t know. She wasn{ap}t there. We{ap}ll see. Mara{ap}s boat. "
+                     f"She did{ap}nt go.", monkeypatch=monkeypatch)
+    words = [x.word for b in e.writing_highlighter._errors.values() for x in b]
+    assert words == [f"did{ap}nt"]                    # only the real misspelling, as typed
+    assert not any(w in ("don", "wasn", "ll", "t") for w in words)
+
+
+def test_grammar_and_style_report_text_as_typed():
+    from src.utils.proofing import builtin_grammar, normalize_apostrophes, readability
+    from src.utils.style_checks import analyze_paragraph
+    text = "I could of gone, i‘m sure. It was very cold."
+    assert normalize_apostrophes(text) == text.replace("‘", "'")
+    assert len(normalize_apostrophes(text)) == len(text)
+    issues = {i.rule_id: i.text for i in builtin_grammar(text)}
+    assert issues["LOWERCASE_I"] == "i‘m"
+    assert readability("I don‘t know. She wasn‘t there. We will see.").words == 9
+    assert all(text[i.start:i.end] == i.text for i in analyze_paragraph(text))
+
+
+def test_card_fix_keeps_the_writers_apostrophe(app, monkeypatch):
+    e = _editor(app, "She did’nt go.", monkeypatch=monkeypatch)
+    e.show()
+    assert _hover(e, "did’nt")
+    buttons = _card_buttons(e)
+    target = next(t for t in buttons if t.replace("'", "’") == "didn’t" or t == "didn't")
+    buttons[target].click()
+    assert e.toPlainText() == "She didn’t go."
+
+
+# ── Contractions in the overuse checker and writing statistics ────
+
+@pytest.mark.parametrize("ap", ["'", "’", "‘"])
+def test_overuse_keeps_contractions_whole(app, monkeypatch, ap):
+    t = (f"I didn{ap}t go. She didn{ap}t care. They didn{ap}t know. I don{ap}t think so. "
+         f"We don{ap}t mind. You don{ap}t say.\nThe lantern swung. The lantern swung. The lantern swung.")
+    e = _editor(app, t, monkeypatch=monkeypatch)
+    words = {x.word.lower() for b in e.writing_highlighter._errors.values() for x in b}
+    assert not words & {"didn", "don", "t"}
+    assert not any(w.startswith(("didn", "don")) for w in words)
+    assert "lantern" in words                                   # real overuse still found
+
+
+def test_overuse_counts_possessive_toward_the_name():
+    from src.ui.enhanced_text_editor import OveruseDetector
+    od = OveruseDetector()
+    text = "Mara‘s boat. Mara's oar. Mara rowed. She didn't stop."
+    od.update_cache(text)
+    assert od._cached_counts["mara"] == 3
+    assert "didn" not in od._cached_counts and "didn't" not in od._cached_counts
+    assert od.is_overused("Mara’s", text) == (True, 3)
+
+
+def test_writing_stats_count_contractions_as_one_word():
+    from src.ui.enhanced_text_editor import ProWritingAnalyzer
+    st = ProWritingAnalyzer().analyze("I didn‘t know. She wasn't there. Don't go.")
+    assert st.word_count == 8
+    assert not any(w in ("didn", "wasn") for w, _, _ in st.echoes)
+
+
+# ── Hyphenated compounds are one word for overuse / counts ────────
+
+def test_overuse_treats_hyphenated_words_as_one(app, monkeypatch):
+    t = ("One-half of the crew left. One-half stayed. One-half wept. One man ran.\n"
+         "She paused--then ran. He waited — then left. "
+         "Self-aware, self-aware, self‑aware.")
+    e = _editor(app, t, monkeypatch=monkeypatch)
+    flagged = {x.word.lower() for b in e.writing_highlighter._errors.values() for x in b
+               if x.error_type.value == "overuse"}
+    assert "one-half" in flagged and "one" not in flagged and "half" not in flagged
+    assert any(w.startswith("self") and ("-" in w or "‑" in w) for w in flagged)
+    from src.ui.enhanced_text_editor import OveruseDetector
+    od = OveruseDetector()
+    od.update_cache(t)
+    assert od._cached_counts["one-half"] == 3 and od._cached_counts["self-aware"] == 3
+    assert od._cached_counts.get("one", 0) == 1                 # only the stand-alone "One"
+    assert "paused--then" not in od._cached_counts             # dashes don't join
+
+
+def test_compound_tokens_and_word_counts():
+    from src.utils.proofing import compound_tokens, word_tokens
+    from src.ui.enhanced_text_editor import ProWritingAnalyzer
+    assert compound_tokens("A well-known, self‑aware man didn‘t--quite") == \
+        ["A", "well-known", "self‑aware", "man", "didn't", "quite"]
+    assert word_tokens("well-known") == ["well", "known"]      # spelling still checks parts
+    assert ProWritingAnalyzer().analyze("One-half of it. A well-known, self-aware man.").word_count == 7

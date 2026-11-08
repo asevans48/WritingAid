@@ -84,6 +84,12 @@ class WritingError:
     suggestions: Optional[List[str]]   # None → computed on demand
 
 
+def _apos(text: str) -> str:
+    """Every apostrophe look-alike → "'" (spell-checking dictionary form)."""
+    from src.utils.proofing import APOSTROPHE_LIKE
+    return text.translate({ord(c): "'" for c in APOSTROPHE_LIKE})
+
+
 class SpellChecker:
     """Spell checker using nltk words corpus or pyenchant."""
 
@@ -406,7 +412,7 @@ class SpellChecker:
         vocab = set()
         for w in words or []:
             for part in re.findall(r"[A-Za-z]+(?:['’][A-Za-z]+)*", str(w)):
-                vocab.add(part.lower().replace("’", "'"))
+                vocab.add(_apos(part.lower()))
         self._project_words = vocab
         self._known_cache = {}
 
@@ -437,7 +443,7 @@ class SpellChecker:
     COMMON_CORRECTION_FREQ = 1e-6
 
     def looks_like_common_word_typo(self, word: str) -> bool:
-        lower = word.lower().replace("’", "'")
+        lower = _apos(word.lower())
         if self._use_pyspellchecker and self._pyspellchecker:
             best = self._pyspellchecker.correction(lower)
             return bool(best and best != lower and
@@ -466,7 +472,7 @@ class SpellChecker:
             return True, ""
         if word.isupper():
             return True, ""                      # acronyms, shouting
-        norm = word.replace("’", "'")
+        norm = _apos(word)
         if not norm.replace("'", "").isalpha():
             return True, ""
         lower = norm.lower()
@@ -536,7 +542,7 @@ class SpellChecker:
     def suggest(self, word: str) -> List[str]:
         """Spelling suggestions, most likely first, in the word's case.
         Includes close project words (character / place names)."""
-        lower = word.lower().replace("’", "'")
+        lower = _apos(word.lower())
         out: List[str] = []
         if self._use_pyspellchecker and self._pyspellchecker:
             sp = self._pyspellchecker
@@ -598,7 +604,7 @@ class SpellChecker:
 
     def add_word(self, word: str):
         """Add a word to the custom dictionary."""
-        self._custom_words.add(word.lower().replace("’", "'"))
+        self._custom_words.add(_apos(word.lower()))
         self._known_cache = {}
 
     def is_available(self) -> bool:
@@ -698,6 +704,27 @@ class OveruseDetector:
         # Cache phrase positions for highlighting: phrase -> [(start, end), ...]
         self._cached_phrase_positions: Dict[str, List[Tuple[int, int]]] = {}
 
+    # Contraction endings of helper words ("didn't", "it's", "we'll") — these
+    # repeat by nature, like the IGNORE_WORDS they're built from.
+    _CONTRACTION_TAILS = ("n't", "'s", "'re", "'ve", "'ll", "'d", "'m")
+
+    def _count_key(self, token: str) -> Optional[str]:
+        """Word as counted for overuse: possessives count toward the base
+        word ("Mara's" → "mara"); helper-word contractions are skipped."""
+        t = token.lower().replace("\u2011", "-")     # non-breaking hyphen = hyphen
+        if "'" not in t:
+            return t
+        if t.endswith("n't") or t.split("'", 1)[0] in self.IGNORE_WORDS:
+            return None
+        if t.endswith("'s"):
+            return t[:-2]
+        return None
+
+    @staticmethod
+    def _tokens(text_lower: str) -> List[str]:
+        from src.utils.proofing import compound_tokens
+        return compound_tokens(text_lower)      # "one-half", "didn't" stay whole
+
     def _extract_ngrams(self, words: List[str], n: int) -> List[str]:
         """Extract n-grams from a list of words."""
         if len(words) < n:
@@ -709,9 +736,11 @@ class OveruseDetector:
         text_hash = hash(text)
         if text_hash != self._cached_text_hash:
             self._cached_text_hash = text_hash
-            text_lower = text.lower()
-            words = re.findall(r'\b[a-zA-Z]+\b', text_lower)
-            self._cached_counts = Counter(words)
+            from src.utils.proofing import normalize_apostrophes
+            # Normalised 1:1, so phrase positions still index the original.
+            text_lower = normalize_apostrophes(text.lower())
+            words = self._tokens(text_lower)
+            self._cached_counts = Counter(k for k in (self._count_key(w) for w in words) if k)
 
             # Extract and count phrases (2, 3, 4, 5-word ngrams)
             all_phrases: List[str] = []
@@ -727,7 +756,9 @@ class OveruseDetector:
                     # Find all positions of this phrase in the text
                     positions = []
                     start = 0
-                    phrase_pattern = r'\b' + r'\s+'.join(re.escape(w) for w in phrase.split()) + r'\b'
+                    phrase_pattern = (r"(?<![\w'\-\u2011])"
+                                      + r'\s+'.join(re.escape(w) for w in phrase.split())
+                                      + r"(?![\w'\u2011]|-\w)")
                     for match in re.finditer(phrase_pattern, text_lower):
                         positions.append((match.start(), match.end()))
                     if positions:
@@ -752,7 +783,10 @@ class OveruseDetector:
         Returns:
             Tuple of (is_overused, count)
         """
-        word_lower = word.lower()
+        from src.utils.proofing import normalize_apostrophes
+        word_lower = self._count_key(normalize_apostrophes(word))
+        if word_lower is None:
+            return False, 0
 
         if word_lower in self.IGNORE_WORDS or word_lower in self._ignored_words:
             return False, 0
@@ -1044,7 +1078,8 @@ class ProWritingAnalyzer:
             return stats
 
         # Basic counts
-        words = re.findall(r'\b[a-zA-Z]+\b', text)
+        from src.utils.proofing import compound_tokens
+        words = compound_tokens(text)      # "didn't", "one-half" are one word
         stats.word_count = len(words)
 
         # Sentence detection
@@ -1117,7 +1152,8 @@ class ProWritingAnalyzer:
         lengths = []
 
         for sentence in sentences:
-            words = len(re.findall(r'\b[a-zA-Z]+\b', sentence))
+            from src.utils.proofing import compound_tokens
+            words = len(compound_tokens(sentence))
             lengths.append(words)
 
             if words < 10:
@@ -1148,7 +1184,8 @@ class ProWritingAnalyzer:
         total_glue_index = 0
 
         for sentence in sentences:
-            words = re.findall(r'\b[a-zA-Z]+\b', sentence.lower())
+            from src.utils.proofing import compound_tokens
+            words = compound_tokens(sentence.lower())
             if len(words) < 4:
                 continue
 
@@ -1164,7 +1201,12 @@ class ProWritingAnalyzer:
 
     def _analyze_echoes(self, text: str, stats: WritingStats):
         """Find words repeated within close proximity (echoes)."""
-        words = re.findall(r'\b([a-zA-Z]{4,})\b', text.lower())  # Only words 4+ chars
+        from src.utils.proofing import compound_tokens
+        # Only words 4+ chars; contractions and compounds stay whole
+        # ("didn't", "one-half") and helper-word contractions aren't echoes.
+        words = [w for w in compound_tokens(text.lower())
+                 if len(w) >= 4 and not w.endswith("n't")
+                 and w.split("'", 1)[0] not in self.GLUE_WORDS]
         word_positions: Dict[str, List[int]] = {}
 
         for i, word in enumerate(words):
@@ -1808,7 +1850,7 @@ class WritingHighlighter(QSyntaxHighlighter):
                 self.rehighlight()
 
     def ignore_style_issue(self, kind: str, text: str) -> None:
-        self._style_ignored.add((kind, (text or "").strip().lower()))
+        self._style_ignored.add((kind, _apos((text or "").strip().lower())))
         if self._style_mode != CheckMode.OFF:
             self.rehighlight()
 
@@ -1823,7 +1865,7 @@ class WritingHighlighter(QSyntaxHighlighter):
                 self._style_cache.clear()
             self._style_cache[key] = issues
         return [i for i in issues
-                if (i.kind, i.text.strip().lower()) not in self._style_ignored]
+                if (i.kind, _apos(i.text.strip().lower())) not in self._style_ignored]
 
     def set_overuse_mode(self, mode: CheckMode):
         """Set overuse detection mode (takes effect immediately)."""
@@ -2170,8 +2212,9 @@ class WritingHighlighter(QSyntaxHighlighter):
         if self._should_check(self._spell_mode):
             typing_end = (self._typing[1] if self._typing and self._typing[0] == block_number
                           else -1)
-            for match in re.finditer(r"[A-Za-z]+(?:['’][A-Za-z]+)*", text):
-                word = match.group()
+            from src.utils.proofing import normalize_apostrophes
+            for match in re.finditer(r"[A-Za-z]+(?:'[A-Za-z]+)*", normalize_apostrophes(text)):
+                word = text[match.start():match.end()]   # as typed (any apostrophe)
                 if match.end() == typing_end:
                     continue  # still being typed
                 if self.is_word_ignored(word, ErrorType.SPELLING):
@@ -2242,8 +2285,9 @@ class WritingHighlighter(QSyntaxHighlighter):
 
         # Overuse detection - respects mode
         if self._should_check(self._overuse_mode) and self._full_text and self.overuse_detector:
-            for match in re.finditer(r'\b[a-zA-Z]+\b', text):
-                word = match.group()
+            from src.utils.proofing import COMPOUND_TOKEN_RX, normalize_apostrophes
+            for match in COMPOUND_TOKEN_RX.finditer(normalize_apostrophes(text)):
+                word = text[match.start():match.end()]   # as typed (whole compound)
                 # Skip if ignored
                 if self.is_word_ignored(word, ErrorType.OVERUSE):
                     continue
@@ -2309,7 +2353,7 @@ class WritingHighlighter(QSyntaxHighlighter):
                     word_count = len(phrase.split())
                     self._errors[block_number].append(WritingError(
                         error_type=ErrorType.OVERUSED_PHRASE,
-                        word=phrase,
+                        word=text[local_start:local_end],   # as typed
                         start=local_start,
                         end=local_end,
                         reason=f"Phrase '{phrase}' ({word_count} words) appears {count} times. Consider rephrasing.",
@@ -2587,6 +2631,11 @@ def _html(text: str) -> str:
 
 
 def _match_word_case(original: str, replacement: str) -> str:
+    # Keep the writer's apostrophe style ("did’nt" → "didn’t", not "didn't").
+    from src.utils.proofing import APOSTROPHE_LIKE
+    used = next((c for c in original if c in APOSTROPHE_LIKE), None)
+    if used and "'" in replacement:
+        replacement = replacement.replace("'", used)
     if original.isupper() and len(original) > 1:
         return replacement.upper()
     if original[:1].isupper():

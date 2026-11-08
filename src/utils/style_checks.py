@@ -177,6 +177,16 @@ def analyze_paragraph(text: str, kinds: Optional[Iterable[str]] = None) -> List[
     issues: List[StyleIssue] = []
     if not text or not text.strip():
         return issues
+    from src.utils.proofing import normalize_apostrophes
+    original, text = text, normalize_apostrophes(text)
+    issues = _analyze(text, kinds)
+    for i in issues:
+        i.text = original[i.start:i.end]   # report what's actually on the page
+    return issues
+
+
+def _analyze(text: str, kinds) -> List[StyleIssue]:
+    issues: List[StyleIssue] = []
     add = issues.append
     sentences = sentences_with_offsets(text)
 
@@ -266,7 +276,8 @@ def analyze_paragraph(text: str, kinds: Optional[Iterable[str]] = None) -> List[
                                f"{run} sentences in a row start with “{orig}” — vary the openings."))
 
     if "echo" in kinds:
-        words = [(m.group(0).lower(), m.start(), m.end()) for m in _WORD_RX.finditer(text)]
+        from src.utils.proofing import COMPOUND_TOKEN_RX
+        words = [(m.group(0).lower(), m.start(), m.end()) for m in COMPOUND_TOKEN_RX.finditer(text)]
         last: Dict[str, int] = {}
         for i, (w, s, e) in enumerate(words):
             if len(w) < 4 or w in GLUE or w in INTENSIFIERS:

@@ -29,6 +29,41 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 
+# Characters people (and smart-quote / Word conversion) type for an
+# apostrophe. Between two letters they all mean the same thing: "don‘t",
+# "donʼt", "don´t" and "don`t" are "don't".
+APOSTROPHE_LIKE = "’‘ʼ′´`"
+_APOS_BETWEEN_LETTERS = re.compile(r"(?<=[A-Za-z])[" + re.escape(APOSTROPHE_LIKE) + r"](?=[A-Za-z])")
+
+
+def normalize_apostrophes(text: str) -> str:
+    """Replace apostrophe look-alikes inside words with "'". One character
+    for one character, so offsets into the original text stay valid."""
+    return _APOS_BETWEEN_LETTERS.sub("'", text or "")
+
+
+# One word, contractions and possessives included ("didn't", "Mara's").
+# Use on normalize_apostrophes() text so every apostrophe style matches.
+WORD_TOKEN_RX = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)*")
+
+
+def word_tokens(text: str) -> List[str]:
+    """Words in ``text`` with contractions kept whole, any apostrophe style."""
+    return WORD_TOKEN_RX.findall(normalize_apostrophes(text or ""))
+
+
+# Like WORD_TOKEN_RX but hyphenated compounds are one word too ("one-half",
+# "well-known"; U+2011 non-breaking hyphen included). A single hyphen
+# between letters joins; dashes ("--", "—", "–") never do. For counting
+# and repetition (overuse, echoes, word counts) — spelling checks the parts.
+COMPOUND_TOKEN_RX = re.compile(r"[A-Za-z]+(?:(?:'|-|\u2011)[A-Za-z]+)*")
+
+
+def compound_tokens(text: str) -> List[str]:
+    """Words with contractions and hyphenated compounds kept whole."""
+    return COMPOUND_TOKEN_RX.findall(normalize_apostrophes(text or ""))
+
+
 @dataclass
 class GrammarIssue:
     start: int
@@ -123,6 +158,7 @@ class LanguageToolEngine:
         """Check ``text``; [] when LanguageTool isn't running."""
         if not text.strip() or not self.ensure_started():
             return []
+        original, text = text, normalize_apostrophes(text)
         with self._check_lock:
             try:
                 matches = self._tool.check(text)
@@ -139,7 +175,7 @@ class LanguageToolEngine:
             if length <= 0:
                 continue
             out.append(GrammarIssue(
-                offset, offset + length, text[offset:offset + length],
+                offset, offset + length, original[offset:offset + length],
                 getattr(m, "message", "") or "Possible grammar issue",
                 list(getattr(m, "replacements", None) or [])[:5],
                 rule, "languagetool"))
@@ -192,7 +228,16 @@ def _match_case(src: str, repl: str) -> str:
 
 def builtin_grammar(text: str) -> List[GrammarIssue]:
     """Fast regex grammar rules. Precision over recall: each rule targets
-    patterns that are almost always wrong in prose."""
+    patterns that are almost always wrong in prose. Apostrophe look-alikes
+    are normalised first; reported text is the original."""
+    original = text or ""
+    issues = _builtin_grammar(normalize_apostrophes(original))
+    for i in issues:
+        i.text = original[i.start:i.end]
+    return issues
+
+
+def _builtin_grammar(text: str) -> List[GrammarIssue]:
     issues: List[GrammarIssue] = []
     add = issues.append
 
@@ -385,7 +430,8 @@ class Readability:
 def readability(text: str) -> Optional[Readability]:
     """Flesch-Kincaid grade level and Flesch reading ease, or None when
     there's too little text for a meaningful score."""
-    words = _WORD_RX.findall(text or "")
+    text = normalize_apostrophes(text or "")
+    words = _WORD_RX.findall(text)
     if len(words) < 3:
         return None
     sentences = max(1, len(_SENT_RX.findall(text)) or 1)

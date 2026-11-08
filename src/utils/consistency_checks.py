@@ -330,7 +330,8 @@ class ConsistencyChecker:
         canon_low = {t.lower() for n in self.canon for t in re.findall(r"[A-Za-z]+", n)}
         caps: Dict[str, list] = {}
         lows: Dict[str, list] = {}
-        word_rx = re.compile(r"\b[A-Za-z]{4,}\b")
+        # Whole words only — never the "didn" of "didn't" (any apostrophe).
+        word_rx = re.compile(r"(?<![\w'’‘ʼ′´`])[A-Za-z]{4,}(?![\w'’‘ʼ′´`])")
         for ch, m in self._find_all(word_rx):
             w = m.group(0)
             low = w.lower()
