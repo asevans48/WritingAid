@@ -458,3 +458,32 @@ def test_compound_tokens_and_word_counts():
         ["A", "well-known", "self‑aware", "man", "didn't", "quite"]
     assert word_tokens("well-known") == ["well", "known"]      # spelling still checks parts
     assert ProWritingAnalyzer().analyze("One-half of it. A well-known, self-aware man.").word_count == 7
+
+
+def test_languagetool_jvm_heap_capped_only_while_starting(monkeypatch):
+    import sys
+    from types import SimpleNamespace as NS
+    from src.utils import proofing
+
+    seen = {}
+
+    def fake_tool(_lang):
+        seen["options"] = os.environ.get("JAVA_TOOL_OPTIONS")
+        return NS(disabled_rules=set())
+
+    monkeypatch.setitem(sys.modules, "language_tool_python", NS(LanguageTool=fake_tool))
+    monkeypatch.delenv("JAVA_TOOL_OPTIONS", raising=False)
+    engine = LanguageToolEngine()
+    monkeypatch.setattr(engine, "prerequisites", lambda: (True, ""))
+    engine.status = "idle"
+    assert engine.ensure_started() is True
+    assert seen["options"] == proofing.LT_JVM_OPTIONS
+    assert "JAVA_TOOL_OPTIONS" not in os.environ
+
+
+def test_languagetool_respects_users_jvm_options(monkeypatch):
+    from src.utils import proofing
+    monkeypatch.setenv("JAVA_TOOL_OPTIONS", "-Xmx4g")
+    with proofing._jvm_memory_cap():
+        assert os.environ["JAVA_TOOL_OPTIONS"] == "-Xmx4g"
+    assert os.environ["JAVA_TOOL_OPTIONS"] == "-Xmx4g"

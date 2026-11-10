@@ -46,10 +46,13 @@ from __future__ import annotations
 
 import threading
 import time
+import weakref
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from src.ai.mlx_utils import register_model_release_hook
 
 
 @dataclass
@@ -88,7 +91,15 @@ def _estimated_ram_gb(registry_entry) -> float:
         # Unknown size — assume mid-band so we don't accidentally
         # let many large models stack.
         size_b = 4.0
+    # Quantized weights take far less than bf16 (a 26B 4-bit is ~15 GB, not 52).
     bf16_bytes_per_param = 2.0
+    try:
+        from src.ai.mlx_utils import _GB_PER_BILLION, quantization_of
+        name = " ".join(str(getattr(registry_entry, a, "") or "")
+                        for a in ("id", "base_model", "path"))
+        bf16_bytes_per_param = _GB_PER_BILLION.get(quantization_of(name), 2.0)
+    except Exception:
+        pass
     overhead = 1.2  # KV cache + activations
     base_gb = size_b * 1e9 * bf16_bytes_per_param * overhead / (1024 ** 3)
     if getattr(registry_entry, "is_adapter", False):
@@ -96,6 +107,27 @@ def _estimated_ram_gb(registry_entry) -> float:
         # have to load the base — same total RAM footprint.
         base_gb *= 1.05
     return round(base_gb, 1)
+
+
+_LIVE_CACHES: "weakref.WeakSet" = weakref.WeakSet()
+
+
+def _release_cached_models(model_ids) -> None:
+    """Evict models another load needs room for."""
+    for cache in list(_LIVE_CACHES):
+        # Never wait: a thread holding this lock may be waiting on the
+        # generate lock that our caller holds.
+        if not cache._lock.acquire(blocking=False):
+            continue
+        try:
+            for key, entry in list(cache._cache.items()):
+                if id(entry.model) in model_ids:
+                    cache._evict_one(key)
+        finally:
+            cache._lock.release()
+
+
+register_model_release_hook(_release_cached_models)
 
 
 class LoadedModelCache:
@@ -114,6 +146,7 @@ class LoadedModelCache:
         self._cache: "OrderedDict[str, _CacheEntry]" = OrderedDict()
         self._lock = threading.RLock()
         self._log = on_log or (lambda _msg: None)
+        _LIVE_CACHES.add(self)
 
     # ── Public API ────────────────────────────────────────
 
@@ -243,6 +276,11 @@ class LoadedModelCache:
         try:
             import gc
             gc.collect()
+        except Exception:
+            pass
+        try:
+            from src.ai.mlx_utils import release_mlx_memory
+            release_mlx_memory()
         except Exception:
             pass
         try:
@@ -446,37 +484,10 @@ def _load_mlx(model_id: str, *, trust_remote_code: bool = False):
     Returns ``(tokenizer, model)`` to match the transformers shape so
     the cache's storage layer treats every entry uniformly.
     """
-    try:
-        from mlx_lm import load as mlx_load
-    except ImportError:
-        raise RuntimeError(
-            f"MLX model {model_id!r} requested but the 'mlx-lm' "
-            f"package isn't installed. Install with:\n"
-            f"  pip install mlx-lm\n"
-            f"On Apple Silicon, also: pip install mlx-vlm")
-    try:
-        model, tokenizer = mlx_load(model_id)
-    except Exception as e:
-        msg = str(e).lower()
-        # mlx_lm raises various error shapes when it doesn't know an
-        # arch — "model type", "not supported", "quant_model unknown",
-        # etc. All map to "try mlx_vlm instead".
-        if any(needle in msg for needle in (
-                "model type", "not supported",
-                "quant_model unknown", "quantization")):
-            try:
-                from mlx_vlm import load as vlm_load
-            except ImportError:
-                raise RuntimeError(
-                    f"MLX model {model_id!r} uses an architecture "
-                    f"mlx_lm doesn't recognise yet ({e}). Install "
-                    f"mlx-vlm for fallback support:\n"
-                    f"  pip install --upgrade mlx mlx-lm mlx-vlm")
-            model, tokenizer = vlm_load(model_id)
-        else:
-            raise RuntimeError(
-                f"MLX load failed for {model_id!r}: {e}\n"
-                f"Try: pip install --upgrade mlx mlx-lm")
+    # The shared loader: reuses a copy already in memory (e.g. the model
+    # the chat is using) instead of loading a second one.
+    from src.ai.mlx_utils import load_mlx_model
+    model, tokenizer = load_mlx_model(model_id, use_slot=False)
     return tokenizer, model
 
 
@@ -494,24 +505,26 @@ def mlx_generate(tokenizer, model, prompt: str, *,
     """Generate text from an MLX-loaded model. Mirrors LLMClient's
     ``_generate_mlx_local`` but takes prompt as a plain string so the
     caller has full control over chat-template formatting."""
-    try:
-        from mlx_lm import generate as _mlx_generate
-        from mlx_lm.sample_utils import make_sampler
-        sampler = make_sampler(temp=temperature, top_p=top_p)
-        text = _mlx_generate(
-            model, tokenizer,
-            prompt=prompt,
-            max_tokens=max_tokens,
-            sampler=sampler,
-            verbose=False)
-    except Exception:
-        # mlx_vlm path — different signature.
-        from mlx_vlm import generate as _vlm_generate
-        text = _vlm_generate(
-            model, tokenizer, prompt,
-            max_tokens=max_tokens,
-            temp=temperature,
-            verbose=False)
+    from src.ai.mlx_utils import MLX_GENERATE_LOCK
+    with MLX_GENERATE_LOCK:
+        try:
+            from mlx_lm import generate as _mlx_generate
+            from mlx_lm.sample_utils import make_sampler
+            sampler = make_sampler(temp=temperature, top_p=top_p)
+            text = _mlx_generate(
+                model, tokenizer,
+                prompt=prompt,
+                max_tokens=max_tokens,
+                sampler=sampler,
+                verbose=False)
+        except Exception:
+            # mlx_vlm path — different signature.
+            from mlx_vlm import generate as _vlm_generate
+            text = _vlm_generate(
+                model, tokenizer, prompt,
+                max_tokens=max_tokens,
+                temp=temperature,
+                verbose=False)
     if not isinstance(text, str):
         text = getattr(text, "text", "") or str(text)
     return text

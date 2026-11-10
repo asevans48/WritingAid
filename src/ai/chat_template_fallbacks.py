@@ -134,11 +134,18 @@ def apply_chat_template_safe(tokenizer: Any,
     # Path 1: tokenizer already configured.
     existing = getattr(tokenizer, "chat_template", None)
     if existing:
+        # Gemma 4 thinks only when asked, but mlx_lm's wrapper asks by
+        # default. Reasoning eats the reply budget and leaks into prose.
+        extra = {}
+        if (isinstance(existing, str) and "enable_thinking" in existing
+                and "<|channel>" in existing):
+            extra["enable_thinking"] = False
         try:
             return tokenizer.apply_chat_template(
                 messages,
                 tokenize=False,
-                add_generation_prompt=add_generation_prompt)
+                add_generation_prompt=add_generation_prompt,
+                **extra)
         except Exception:
             # Fall through to family fallback if the template is
             # somehow broken.

@@ -3,6 +3,7 @@ Writer Platform - Main Application Entry Point
 A comprehensive platform for writers to organize books, short stories, and media.
 """
 
+import gc
 import sys
 import os
 from pathlib import Path
@@ -176,6 +177,11 @@ def main():
     if default_font.pointSize() <= 0:
         default_font.setPointSize(10)
     app.setFont(default_font)
+
+    # Startup modules live for the whole session; keeping them out of every
+    # collection shortens the GC pauses during typing and chapter switches.
+    gc.collect()
+    gc.freeze()
 
     # Direct-launch the Writing Tool with --writer (legacy entry point)
     if "--writer" in sys.argv:

@@ -420,6 +420,25 @@ class RephraseDatabase:
             cur = c.execute(sql, params)
             return [dict(r) for r in cur.fetchall()]
 
+    def rated_examples(self, *, source_types: Iterable[str] = ("rephrase",),
+                       project_path: str = "", limit: int = 40) -> Dict[str, List[Dict[str, Any]]]:
+        """Recent rows the writer rated: ``chosen`` (excellent/good, used)
+        and ``rejected`` (poor/bad), this project's rows first."""
+        types = list(source_types)
+        marks = ",".join("?" * len(types))
+        order = ("ORDER BY (project_path = ?) DESC, "
+                 "CASE rating WHEN 'excellent' THEN 0 WHEN 'bad' THEN 0 ELSE 1 END, "
+                 "created_at DESC LIMIT ?")
+        out: Dict[str, List[Dict[str, Any]]] = {}
+        with self._conn() as c:
+            for key, where in (("chosen", "rating IN ('excellent','good') AND accepted = 1"),
+                               ("rejected", "rating IN ('poor','bad')")):
+                cur = c.execute(
+                    f"SELECT * FROM rephrases WHERE source_type IN ({marks}) AND {where} {order}",
+                    types + [project_path or "", limit])
+                out[key] = [dict(r) for r in cur.fetchall()]
+        return out
+
     def stats(self) -> Dict[str, Any]:
         """Return a summary of database contents — total rows, counts by
         genre and character. Used by the training tool to brief the user.

@@ -16,6 +16,7 @@ from typing import Optional, Callable, List, Set, Dict, Tuple
 from dataclasses import dataclass
 from enum import Enum
 from collections import Counter
+import bisect
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from pathlib import Path
@@ -90,6 +91,11 @@ def _apos(text: str) -> str:
     return text.translate({ord(c): "'" for c in APOSTROPHE_LIKE})
 
 
+# pyspellchecker's dictionary is read-only here (custom and project words
+# live on each SpellChecker), so one copy serves every editor.
+_SHARED_PYSPELL = None
+
+
 class SpellChecker:
     """Spell checker using nltk words corpus or pyenchant."""
 
@@ -109,7 +115,10 @@ class SpellChecker:
         # First try pyspellchecker (pure Python, works everywhere)
         try:
             from spellchecker import SpellChecker as PySpellChecker
-            self._pyspellchecker = PySpellChecker()
+            global _SHARED_PYSPELL
+            if _SHARED_PYSPELL is None:
+                _SHARED_PYSPELL = PySpellChecker()
+            self._pyspellchecker = _SHARED_PYSPELL
             self._use_pyspellchecker = True
             print("Spell checker: Using pyspellchecker")
             return
@@ -703,6 +712,8 @@ class OveruseDetector:
         self._cached_phrase_counts: Dict[str, int] = {}
         # Cache phrase positions for highlighting: phrase -> [(start, end), ...]
         self._cached_phrase_positions: Dict[str, List[Tuple[int, int]]] = {}
+        # Occurrences sorted by start, built on first range query.
+        self._phrase_index = None
 
     # Contraction endings of helper words ("didn't", "it's", "we'll") — these
     # repeat by nature, like the IGNORE_WORDS they're built from.
@@ -736,33 +747,65 @@ class OveruseDetector:
         text_hash = hash(text)
         if text_hash != self._cached_text_hash:
             self._cached_text_hash = text_hash
-            from src.utils.proofing import normalize_apostrophes
+            from src.utils.proofing import COMPOUND_TOKEN_RX, normalize_apostrophes
             # Normalised 1:1, so phrase positions still index the original.
             text_lower = normalize_apostrophes(text.lower())
-            words = self._tokens(text_lower)
+            spans = [m.span() for m in COMPOUND_TOKEN_RX.finditer(text_lower)]
+            words = [text_lower[s:e] for s, e in spans]
             self._cached_counts = Counter(k for k in (self._count_key(w) for w in words) if k)
 
             # Extract and count phrases (2, 3, 4, 5-word ngrams)
-            all_phrases: List[str] = []
-            for n in range(2, 6):  # 2, 3, 4, 5-word phrases
-                all_phrases.extend(self._extract_ngrams(words, n))
+            grams = [self._extract_ngrams(words, n) for n in range(2, 6)]
+            self._cached_phrase_counts = Counter(p for ngrams in grams for p in ngrams)
+            self._index_phrase_positions(text_lower, spans, grams)
 
-            self._cached_phrase_counts = Counter(all_phrases)
+    def _index_phrase_positions(self, text: str, spans: List[Tuple[int, int]],
+                                grams: List[List[str]]) -> None:
+        """Locate every overused phrase in one pass over the tokens.
 
-            # Build phrase positions for highlighting
-            self._cached_phrase_positions.clear()
-            for phrase, count in self._cached_phrase_counts.items():
-                if count >= self.phrase_threshold and phrase not in self.IGNORE_PHRASES and phrase not in self._ignored_phrases:
-                    # Find all positions of this phrase in the text
-                    positions = []
-                    start = 0
-                    phrase_pattern = (r"(?<![\w'\-\u2011])"
-                                      + r'\s+'.join(re.escape(w) for w in phrase.split())
-                                      + r"(?![\w'\u2011]|-\w)")
-                    for match in re.finditer(phrase_pattern, text_lower):
-                        positions.append((match.start(), match.end()))
-                    if positions:
-                        self._cached_phrase_positions[phrase] = positions
+        An occurrence is n tokens separated only by whitespace, not embedded
+        in a longer word or compound. Occurrences of one phrase never overlap.
+        """
+        self._phrase_index = None
+        self._cached_phrase_positions.clear()
+        wanted = {p for p, c in self._cached_phrase_counts.items()
+                  if c >= self.phrase_threshold
+                  and p not in self.IGNORE_PHRASES and p not in self._ignored_phrases}
+        if not wanted:
+            return
+
+        def word_char(c: str) -> bool:
+            return c.isalnum() or c == "_"
+
+        size = len(text)
+        count = len(spans)
+        # runs[i]: how many tokens after token i are joined by whitespace alone.
+        runs = [0] * count
+        for i in range(count - 2, -1, -1):
+            if text[spans[i][1]:spans[i + 1][0]].isspace():
+                runs[i] = runs[i + 1] + 1
+
+        found: Dict[str, List[Tuple[int, int]]] = {}
+        for n, ngrams in enumerate(grams, start=2):
+            for i, phrase in enumerate(ngrams):
+                if phrase not in wanted or runs[i] < n - 1:
+                    continue
+                start, end = spans[i][0], spans[i + n - 1][1]
+                before = text[start - 1] if start else ""
+                if before and (word_char(before) or before in "'-\u2011"):
+                    continue
+                after = text[end] if end < size else ""
+                if after and (word_char(after) or after in "'\u2011"
+                              or (after == "-" and end + 1 < size and word_char(text[end + 1]))):
+                    continue
+                positions = found.setdefault(phrase, [])
+                if not positions or positions[-1][1] <= start:
+                    positions.append((start, end))
+
+        # Same order as the phrase counts: later phrases draw over earlier ones.
+        for phrase in self._cached_phrase_counts:
+            if phrase in found:
+                self._cached_phrase_positions[phrase] = found[phrase]
 
     def analyze_text(self, text: str) -> Dict[str, int]:
         """Analyze text and return word frequencies for non-ignored words."""
@@ -879,15 +922,21 @@ class OveruseDetector:
         if self._cached_text_hash != hash(text):
             self.update_cache(text)
 
-        results = []
-        for phrase, positions in self._cached_phrase_positions.items():
-            count = self._cached_phrase_counts.get(phrase, 0)
-            for pos_start, pos_end in positions:
-                # Check if this phrase occurrence overlaps with our range
-                if pos_start < end and pos_end > start:
-                    results.append((phrase, pos_start, pos_end, count))
+        if self._phrase_index is None:
+            rows = sorted(
+                (pos_start, pos_end, rank, phrase)
+                for rank, (phrase, positions) in enumerate(self._cached_phrase_positions.items())
+                for pos_start, pos_end in positions)
+            longest = max((row[1] - row[0] for row in rows), default=0)
+            self._phrase_index = ([row[0] for row in rows], rows, longest)
 
-        return results
+        starts, rows, longest = self._phrase_index
+        first = bisect.bisect_left(starts, start - longest)
+        last = bisect.bisect_left(starts, end)
+        hits = [row for row in rows[first:last] if row[1] > start]
+        hits.sort(key=lambda row: (row[2], row[0]))     # phrase order, then position
+        return [(phrase, s, e, self._cached_phrase_counts.get(phrase, 0))
+                for s, e, _rank, phrase in hits]
 
     def get_phrase_at_position(self, text: str, position: int) -> Optional[Tuple[str, int, int, int]]:
         """Get overused phrase at a specific position, if any.
@@ -922,6 +971,7 @@ class OveruseDetector:
         phrase_lower = phrase.lower()
         if phrase_lower in self._cached_phrase_positions:
             del self._cached_phrase_positions[phrase_lower]
+            self._phrase_index = None
 
     def is_phrase_ignored(self, phrase: str) -> bool:
         """Check if phrase is in ignored list."""
@@ -1666,6 +1716,7 @@ class WritingHighlighter(QSyntaxHighlighter):
         self.phrase_format = self._mark_format("#ddd6fe", QColor(148, 0, 211))      # purple
         # Master switch: hide every check mark without turning checks off.
         self._highlights_visible = True
+        self._suspended = False
 
         # Markdown heading formats
         self.md_title_format = QTextCharFormat()
@@ -1790,13 +1841,39 @@ class WritingHighlighter(QSyntaxHighlighter):
         data.lt_snapshot = (text, issues)
         return issues
 
+    # Above this many changed characters, skip the fine-grained diff: its
+    # cost is quadratic, and the background grammar pass re-flags the span.
+    _MAX_DIFF_CHARS = 2000
+
+    @staticmethod
+    def _diff_opcodes(old: str, new: str) -> list:
+        """difflib-style opcodes, diffing only the region that changed."""
+        import difflib
+        limit = min(len(old), len(new))
+        prefix = 0
+        while prefix < limit and old[prefix] == new[prefix]:
+            prefix += 1
+        suffix = 0
+        while suffix < limit - prefix and old[-1 - suffix] == new[-1 - suffix]:
+            suffix += 1
+        old_mid = old[prefix:len(old) - suffix]
+        new_mid = new[prefix:len(new) - suffix]
+        ops = [("equal", 0, prefix, 0, prefix)] if prefix else []
+        if (old_mid and new_mid and len(old_mid) <= WritingHighlighter._MAX_DIFF_CHARS
+                and len(new_mid) <= WritingHighlighter._MAX_DIFF_CHARS):
+            matcher = difflib.SequenceMatcher(None, old_mid, new_mid, autojunk=False)
+            ops += [(tag, i1 + prefix, i2 + prefix, j1 + prefix, j2 + prefix)
+                    for tag, i1, i2, j1, j2 in matcher.get_opcodes()]
+        if suffix:
+            ops.append(("equal", len(old) - suffix, len(old), len(new) - suffix, len(new)))
+        return ops
+
     @staticmethod
     def _remap_issues(old: str, issues: list, new: str) -> list:
         if not issues or old == new:
             return list(issues or [])
         import copy
-        import difflib
-        ops = difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes()
+        ops = WritingHighlighter._diff_opcodes(old, new)
         def boundary(text: str, i: int) -> bool:
             return not (0 <= i < len(text) and (text[i].isalnum() or text[i] in "'’"))
 
@@ -1896,6 +1973,13 @@ class WritingHighlighter(QSyntaxHighlighter):
         self._lt_cache.clear()
         self.rehighlight()
         self.request_grammar_check()
+
+    def suspend(self) -> None:
+        """Skip highlighting during a bulk load; finish with a rehighlight."""
+        self._suspended = True
+
+    def resume(self) -> None:
+        self._suspended = False
 
     def do_initial_check(self):
         """Perform initial check when document is loaded."""
@@ -2040,8 +2124,12 @@ class WritingHighlighter(QSyntaxHighlighter):
             return None
         error = min(hits, key=lambda e: (e.end - e.start, e.error_type == ErrorType.STYLE))
         if error.suggestions is None:
-            error.suggestions = (self.spell_checker.suggest(error.word)
-                                 if error.error_type == ErrorType.SPELLING else [])
+            if error.error_type == ErrorType.SPELLING:
+                error.suggestions = self.spell_checker.suggest(error.word)
+            elif error.error_type == ErrorType.OVERUSE and self.overuse_detector:
+                error.suggestions = self.overuse_detector.get_synonyms(error.word)
+            else:
+                error.suggestions = []
         return error
 
     def _should_check(self, mode: CheckMode) -> bool:
@@ -2077,10 +2165,14 @@ class WritingHighlighter(QSyntaxHighlighter):
 
     _SENTENCE_END_RX = re.compile(r"[.!?…:]\s*$|^\s*$")
 
+    _BEFORE_SENTENCE_CHARS = frozenset("\"“”‘'([-—–*_")
+
     @classmethod
     def _starts_sentence(cls, text: str, pos: int) -> bool:
-        before = re.sub(r"[\"“”‘'(\[\-—–\s*_]+$", "", text[:pos])
-        return not before or bool(re.search(r"[.!?…:]$", before))
+        i = pos
+        while i > 0 and (text[i - 1] in cls._BEFORE_SENTENCE_CHARS or text[i - 1].isspace()):
+            i -= 1
+        return i == 0 or text[i - 1] in ".!?…:"
 
     def _apply_markdown_formatting(self, text: str):
         """Apply visual formatting for Markdown syntax.
@@ -2153,6 +2245,8 @@ class WritingHighlighter(QSyntaxHighlighter):
 
     def highlightBlock(self, text: str):
         """Highlight errors in a block of text."""
+        if self._suspended:
+            return
         block = self.currentBlock()
         block_number = block.blockNumber()
 
@@ -2286,6 +2380,7 @@ class WritingHighlighter(QSyntaxHighlighter):
         # Overuse detection - respects mode
         if self._should_check(self._overuse_mode) and self._full_text and self.overuse_detector:
             from src.utils.proofing import COMPOUND_TOKEN_RX, normalize_apostrophes
+            flagged_spans = {(e.start, e.end) for e in self._errors[block_number]}
             for match in COMPOUND_TOKEN_RX.finditer(normalize_apostrophes(text)):
                 word = text[match.start():match.end()]   # as typed (whole compound)
                 # Skip if ignored
@@ -2295,23 +2390,19 @@ class WritingHighlighter(QSyntaxHighlighter):
                 is_overused, count = self.overuse_detector.is_overused(word, self._full_text)
                 if is_overused:
                     # Don't double-flag
-                    already_flagged = any(
-                        e.start == match.start() and e.end == match.end()
-                        for e in self._errors[block_number]
-                    )
-                    if not already_flagged:
+                    if match.span() not in flagged_spans:
+                        flagged_spans.add(match.span())
                         # Merge with existing format to preserve font size, weight, etc.
                         existing_format = get_existing_format(match.start())
                         existing_format.merge(self.overuse_format)
                         self.setFormat(match.start(), len(word), existing_format)
-                        synonyms = self.overuse_detector.get_synonyms(word)
                         self._errors[block_number].append(WritingError(
                             error_type=ErrorType.OVERUSE,
                             word=word,
                             start=match.start(),
                             end=match.end(),
                             reason=f"Word '{word}' appears {count} times. Consider varying your word choice.",
-                            suggestions=synonyms
+                            suggestions=None,   # computed on demand (get_error_at)
                         ))
 
             # Overused phrase detection (2, 3, 4, 5-word phrases)
@@ -2338,11 +2429,8 @@ class WritingHighlighter(QSyntaxHighlighter):
                     continue
 
                 # Don't double-flag if already flagged
-                already_flagged = any(
-                    e.start == local_start and e.end == local_end
-                    for e in self._errors[block_number]
-                )
-                if not already_flagged:
+                if (local_start, local_end) not in flagged_spans:
+                    flagged_spans.add((local_start, local_end))
                     # Use a different shade of blue for phrases (purple-ish)
                     phrase_format = self.phrase_format
 

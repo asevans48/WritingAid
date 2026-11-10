@@ -2,6 +2,8 @@
 
 from typing import List, Dict, Optional, Any, Set, Tuple, TYPE_CHECKING
 from dataclasses import dataclass
+import contextlib
+import threading
 import uuid
 
 from src.models.project import WriterProject
@@ -57,6 +59,7 @@ class EnhancedRAGSystem:
         # the book in focus doesn't pull prose from a sibling novella.
         # None = no filter (worldbuilding / character work sees all).
         self.chapter_scope_filter: Optional[set] = None
+        self._scope_override = threading.local()
         self._chapter_scope_by_id: Dict[str, str] = {}
 
         # Set up embedding function if LLM client available
@@ -1051,6 +1054,16 @@ Related Characters: {', '.join(chars) if chars else 'All'}
             )
             self.search_engine.index_document(chunk)
 
+    @contextlib.contextmanager
+    def scoped_to(self, scopes: set):
+        """Limit this thread's searches to ``scopes``, leaving the filter
+        other threads (the chat) rely on untouched."""
+        self._scope_override.scopes = scopes
+        try:
+            yield
+        finally:
+            del self._scope_override.scopes
+
     def search(
         self,
         query: str,
@@ -1072,7 +1085,7 @@ Related Characters: {', '.join(chars) if chars else 'All'}
         if not self._indexed:
             self.rebuild_index()
 
-        scopes = self.chapter_scope_filter
+        scopes = getattr(self._scope_override, "scopes", self.chapter_scope_filter)
         fetch = top_k * 3 if scopes is not None else top_k
         results = self.search_engine.search(query, method, fetch, source_types)
         if scopes is not None:

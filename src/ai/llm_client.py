@@ -4,10 +4,8 @@ import gc
 import weakref
 from typing import Optional, Dict, List, TYPE_CHECKING
 from enum import Enum
-import anthropic
-import openai
-from google import genai
 from src.ai.device_utils import detect_device, can_use_quantization
+from src.ai.mlx_utils import register_model_release_hook as _register_model_release_hook
 
 
 # Sentence-final punctuation set used by the truncation heuristic.
@@ -50,6 +48,42 @@ def list_loaded_local_clients() -> List["LLMClient"]:
     return [c for c in _LIVE_LOCAL_CLIENTS if c.has_loaded_local_model()]
 
 
+# One loaded Hugging Face pipeline shared across LLMClient instances.
+_HF_SHARED: dict = {}
+
+
+def _hf_cache_key(cfg) -> tuple:
+    return (cfg.model_id, cfg.quantization, cfg.device, bool(cfg.trust_remote_code))
+
+
+def release_shared_hf_models() -> None:
+    """Drop the shared Hugging Face pipeline and free its memory."""
+    if not _HF_SHARED:
+        return
+    _HF_SHARED.clear()
+    import gc
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        elif hasattr(torch, "mps") and torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+    except Exception:
+        pass
+
+
+def _release_clients_holding(model_ids) -> None:
+    """Drop models another load needs room for; these clients reload on use."""
+    for client in list(_LIVE_LOCAL_CLIENTS):
+        if client._mlx_model is not None and id(client._mlx_model) in model_ids:
+            client.unload()
+            client._mlx_released_for_room = True
+
+
+_register_model_release_hook(_release_clients_holding)
+
+
 def unload_all_local_clients(clear_cuda: bool = True,
                              clear_mlx: bool = True) -> int:
     """Drop every loaded local model from RAM. Returns count unloaded.
@@ -71,6 +105,15 @@ def unload_all_local_clients(clear_cuda: bool = True,
                 n += 1
             except Exception as e:
                 print(f"[llm_client] unload failed: {e}")
+    release_shared_hf_models()
+    if clear_mlx:
+        # The shared slot also holds a reference; without this the
+        # weights never actually left memory.
+        try:
+            from src.ai.mlx_utils import get_mlx_cache
+            get_mlx_cache().unload()
+        except Exception:
+            pass
 
     # Aggressive cache clears so the freed weights actually return
     # memory to the OS (otherwise PyTorch / MLX may keep large arenas
@@ -168,13 +211,17 @@ class LLMClient:
         self._hf_tokenizer = None
         self._mlx_model = None
         self._mlx_tokenizer = None
+        self._mlx_released_for_room = False
 
         if provider == LLMProvider.CLAUDE:
+            import anthropic  # SDKs load on use: only the chosen provider's
             self.client = anthropic.Anthropic(api_key=api_key)
         elif provider == LLMProvider.CHATGPT:
+            import openai
             openai.api_key = api_key
             self.client = openai
         elif provider == LLMProvider.GEMINI:
+            from google import genai
             self.client = genai.Client(api_key=api_key)
         elif provider == LLMProvider.HUGGINGFACE:
             self._init_huggingface_api()
@@ -248,9 +295,22 @@ class LLMClient:
         if not self.hf_config:
             raise ValueError("HuggingFaceConfig is required for local models")
 
+        # The chat builds a fresh client per turn; don't reload weights.
+        key = _hf_cache_key(self.hf_config)
+        cached = _HF_SHARED.get(key)
+        if cached is not None:
+            print(f"Using cached local model: {self.hf_config.model_id}")
+            self._hf_pipeline, self._hf_tokenizer = cached
+            return
+        # Only one shared model at a time, released before the next loads.
+        if _HF_SHARED:
+            release_shared_hf_models()
+
         try:
             import sys
             import torch
+            from src.ai.mlx_utils import ensure_torchvision_usable
+            ensure_torchvision_usable()
             from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 
             # Increase recursion limit to prevent stack overflow
@@ -366,6 +426,7 @@ class LLMClient:
                     device=pipeline_device
                 )
 
+                _HF_SHARED[key] = (self._hf_pipeline, self._hf_tokenizer)
                 print(f"Model initialized successfully on {device_name}")
 
             finally:
@@ -392,49 +453,15 @@ class LLMClient:
             model_id = self.hf_config.model_id
             quantization = self.hf_config.quantization
 
-            # Check the global cache first — shared with RephrasingAgent
-            from src.ai.mlx_utils import get_mlx_cache
+            # Shared with RephrasingAgent and the model cache: one load,
+            # one copy in memory, previous model released first.
+            from src.ai.mlx_utils import get_mlx_cache, load_mlx_model
             cache = get_mlx_cache()
-            cached_model, cached_tokenizer = cache.get_model(model_id)
-            if cached_model is not None:
+            if cache.is_loaded(model_id):
                 print(f"Using cached MLX model: {model_id}")
-                self._mlx_model = cached_model
-                self._mlx_tokenizer = cached_tokenizer
-                return
-
-            print(f"Loading MLX model: {model_id}")
-
-            from mlx_lm import load
-
-            # Load MLX model — try mlx_lm first, fall back to mlx_vlm
-            # for newer architectures (gemma4, etc.) not yet in mlx_lm
-            try:
-                self._mlx_model, self._mlx_tokenizer = load(model_id)
-            except Exception as load_err:
-                err_str = str(load_err)
-                if "not supported" in err_str.lower() or "model type" in err_str.lower():
-                    print(f"mlx_lm does not support this model type, trying mlx_vlm...")
-                    try:
-                        from mlx_vlm import load as vlm_load
-                        self._mlx_model, self._mlx_tokenizer = vlm_load(model_id)
-                    except ImportError:
-                        raise RuntimeError(
-                            f"Model type not supported by mlx_lm. "
-                            f"Install mlx_vlm:\n  pip install --upgrade mlx-vlm"
-                        )
-                elif "'list' object has no attribute 'keys'" in err_str:
-                    raise RuntimeError(
-                        f"Failed to load '{model_id}': tokenizer config incompatibility.\n\n"
-                        f"Run: pip install --upgrade mlx mlx-lm mlx-vlm transformers"
-                    )
-                else:
-                    raise RuntimeError(
-                        f"Failed to load '{model_id}': {load_err}\n\n"
-                        f"Try: pip install --upgrade mlx mlx-lm"
-                    )
-
-            # Store in global cache so other components reuse it
-            cache.set_model(model_id, self._mlx_model, self._mlx_tokenizer)
+            else:
+                print(f"Loading MLX model: {model_id}")
+            self._mlx_model, self._mlx_tokenizer = load_mlx_model(model_id)
 
             # Apply on-the-fly quantization if requested and model isn't already quantized.
             already_quantized = "4bit" in model_id or "8bit" in model_id
@@ -653,7 +680,15 @@ class LLMClient:
 
         return outputs[0]['generated_text'].strip()
 
-    def _generate_mlx_local(
+    def _generate_mlx_local(self, *args, **kwargs) -> str:
+        from src.ai.mlx_utils import MLX_GENERATE_LOCK, load_mlx_model
+        with MLX_GENERATE_LOCK:
+            if self._mlx_released_for_room and self._mlx_model is None:
+                self._mlx_model, self._mlx_tokenizer = load_mlx_model(self.hf_config.model_id)
+                self._mlx_released_for_room = False
+            return self._generate_mlx_loaded(*args, **kwargs)
+
+    def _generate_mlx_loaded(
         self,
         prompt: str,
         system_prompt: Optional[str],
@@ -696,29 +731,31 @@ class LLMClient:
 
         # Try mlx_lm.generate first, fall back to mlx_vlm.generate for
         # newer model architectures (gemma4, etc.)
-        try:
-            from mlx_lm import generate
-            from mlx_lm.sample_utils import make_sampler
-            sampler = make_sampler(temp=temperature)
-            response = generate(
-                self._mlx_model,
-                self._mlx_tokenizer,
-                prompt=full_prompt,
-                max_tokens=max_tokens,
-                sampler=sampler,
-                verbose=False
-            )
-        except Exception:
-            # Model was likely loaded via mlx_vlm — use its generate
-            from mlx_vlm import generate as vlm_generate
-            response = vlm_generate(
-                self._mlx_model,
-                self._mlx_tokenizer,
-                full_prompt,
-                max_tokens=max_tokens,
-                temp=temperature,
-                verbose=False
-            )
+        from src.ai.mlx_utils import MLX_GENERATE_LOCK
+        with MLX_GENERATE_LOCK:
+            try:
+                from mlx_lm import generate
+                from mlx_lm.sample_utils import make_sampler
+                sampler = make_sampler(temp=temperature)
+                response = generate(
+                    self._mlx_model,
+                    self._mlx_tokenizer,
+                    prompt=full_prompt,
+                    max_tokens=max_tokens,
+                    sampler=sampler,
+                    verbose=False
+                )
+            except Exception:
+                # Model was likely loaded via mlx_vlm — use its generate
+                from mlx_vlm import generate as vlm_generate
+                response = vlm_generate(
+                    self._mlx_model,
+                    self._mlx_tokenizer,
+                    full_prompt,
+                    max_tokens=max_tokens,
+                    temp=temperature,
+                    verbose=False
+                )
 
         # mlx_vlm.generate may return a GenerationResult object, not a string
         if not isinstance(response, str):

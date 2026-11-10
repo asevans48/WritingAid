@@ -45,12 +45,47 @@ def history_path(project: Any) -> Path:
     return Path.home() / ".creativeos" / "critique_history" / f"{name}.json"
 
 
+def _titles(report: Any) -> List[str]:
+    return [c.chapter_title for c in getattr(report, "chapters", []) or []]
+
+
 def scope_key(report: Any) -> str:
+    """History bucket for a run. Novella ids are stable, so renaming one
+    keeps its history, and "Chapter 1" of two novellas stay separate."""
+    kind = getattr(report, "run_kind", None)
+    scope_id = getattr(report, "scope_id", None)
+    if kind:
+        return f"{kind}:{scope_id or 'main'}"
     label = getattr(report, "scope_label", "") or ""
-    if label:
+    if kind is None and label:         # a report from before run_kind
         return f"scope:{label}"
-    titles = [c.chapter_title for c in getattr(report, "chapters", []) or []]
-    return "chapter:" + "|".join(titles)
+    prefix = f"chapter@{scope_id}:" if scope_id else "chapter:"
+    return prefix + "|".join(_titles(report))
+
+
+def _earlier_keys(project: Any, report: Any, data: Dict[str, Any]) -> List[str]:
+    """Where this run's history may be stored under an older key."""
+    titles = _titles(report)
+    bare = "chapter:" + "|".join(titles)
+    kind = getattr(report, "run_kind", None)
+    scope_id = getattr(report, "scope_id", None)
+    get_main = getattr(project, "get_main_manuscript", None)
+    main_chapters = get_main().chapters if get_main else []
+    main_titles = {c.title for c in main_chapters}
+    still_main = bool(set(titles) & main_titles)
+    keys: List[str] = []
+    if kind:
+        keys.append(f"scope:{getattr(report, 'scope_label', '') or ''}")
+    if not scope_id:
+        return keys + ([bare] if kind else [])
+    if not still_main:
+        keys.append(bare)              # recorded before novellas had keys, or moved
+    if kind and not main_chapters:     # the main manuscript was moved into this novella
+        main_key = f"{kind}:main"
+        previous = (data.get(main_key) or [{}])[-1].get("chapters", {})
+        if set(titles) & set(previous):
+            keys.append(main_key)
+    return keys
 
 
 def snapshot(report: Any) -> Dict[str, Any]:
@@ -138,6 +173,11 @@ def record(project: Any, report: Any) -> Optional[Dict[str, Any]]:
     same scope (None on the first run)."""
     data = load(project)
     key = scope_key(report)
+    if key not in data:
+        for earlier in _earlier_keys(project, report, data):
+            if earlier in data:
+                data[key] = data.pop(earlier)
+                break
     runs = data.setdefault(key, [])
     cur = snapshot(report)
     progress = compare(runs[-1], cur) if runs else None

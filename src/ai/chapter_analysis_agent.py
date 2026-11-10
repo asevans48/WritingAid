@@ -1238,6 +1238,10 @@ class _BaseAnalyzer:
     the actual numbers instead of hallucinating about pacing.
     """
 
+    # The author's measured voice (``WriterVoice``), set by the orchestrator
+    # so recommendations respect deliberate style.
+    writer_voice = None
+
     report_type: ReportType = None  # overridden by subclasses
     max_tokens: int = 900           # narrative budget; heavier reports raise it
 
@@ -1548,6 +1552,10 @@ class _BaseAnalyzer:
                     f"{critique_context.additional_instructions}")
             if ctx_lines:
                 parts.append("AUTHOR CONTEXT:\n" + "\n".join(ctx_lines))
+        voice_line = (self.writer_voice.to_critique_prompt()
+                      if self.writer_voice is not None else "")
+        if voice_line:
+            parts.append(voice_line)
 
         plot_block = self._format_plot_anchor_block(chapter_index)
         if plot_block:
@@ -3891,6 +3899,8 @@ class CritiqueOrchestrator:
         # Manuscript the chapters belong to, when it isn't the project's
         # active one (critiquing a novella from another tab).
         self.manuscript_override = None
+        # The author's measured voice, shared with every report.
+        self.writer_voice = None
         self.total_cost = 0.0
         # RAG memoization within a single critique run. Two reports
         # that resolve to identical (query, source_types, hops) hit
@@ -3956,18 +3966,21 @@ class CritiqueOrchestrator:
                                           if self.project else None)
         if cls is PlotAnalyzer:
             synopsis = self.chapter_synopses.get(chapter_title, "")
-            return cls(
+            analyzer = cls(
                 primary_llm=self.primary_llm,
                 story_planning=sp,
                 manuscript=ms,
                 chapter_synopsis=synopsis,
             )
-        return cls(
-            primary_llm=self.primary_llm,
-            story_planning=sp,
-            manuscript=ms,
-            project=self.project,
-        )
+        else:
+            analyzer = cls(
+                primary_llm=self.primary_llm,
+                story_planning=sp,
+                manuscript=ms,
+                project=self.project,
+            )
+        analyzer.writer_voice = self.writer_voice
+        return analyzer
 
     def _gather_rag(
         self,

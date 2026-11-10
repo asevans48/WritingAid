@@ -183,6 +183,24 @@ class WriterVoice:
             lines.extend(f'  » "{e}"' for e in self.exemplars)
         return "\n".join(lines)
 
+    def to_critique_prompt(self) -> str:
+        """The measured habits as facts for a critic: deliberate style to
+        respect, not a defect list."""
+        if not self.has_measurements:
+            return ""
+        bits = [f"sentences average ~{self.avg_sentence_len:.0f} words "
+                f"({self.short_sentence_pct:.0f}% under 8, {self.long_sentence_pct:.0f}% over 25)"]
+        if self.person or self.tense:
+            bits.append(f"{self.person or 'mixed'} person, {self.tense or 'mixed'} tense")
+        bits.append(f"{self.contractions_per_100_words:.1f} contractions and "
+                    f"{self.adverbs_per_100_words:.1f} -ly adverbs per 100 words")
+        used = [m for m, r in self.punctuation_per_100_sentences.items() if r >= 8]
+        if used:
+            bits.append("favours " + ", ".join(used))
+        return ("AUTHOR'S MEASURED VOICE (from their manuscript): " + "; ".join(bits) + ". "
+                "Treat these habits as deliberate style. Recommend changing one only where "
+                "it hurts this chapter, and keep any example fixes in this voice.")
+
     # ------------------------------------------------------------------
     def fit_score(self, candidate: str) -> Optional[float]:
         """0–1 estimate of how well a candidate matches the measured voice.
@@ -236,6 +254,46 @@ _PUNCT_PATTERNS = {
     "exclamations": re.compile(r"!"),
     "questions": re.compile(r"\?"),
 }
+
+
+def manuscript_sample(project, chapter=None, chapter_text: str = "",
+                      min_words: int = 1500) -> str:
+    """The author's own prose to measure: the given chapter first, topped
+    up with other chapters when it's too short to measure reliably."""
+    parts = [chapter_text or getattr(chapter, "content", "") or ""]
+    words = len(parts[0].split())
+    if words < min_words and project is not None:
+        try:
+            chapters = ([ch for _, ch in project.all_chapters()]
+                        if hasattr(project, "all_chapters") else list(project.manuscript.chapters))
+        except Exception:
+            chapters = []
+        current = getattr(chapter, "id", None)
+        for ch in chapters:
+            content = getattr(ch, "content", "") or ""
+            if getattr(ch, "id", None) == current or not content.strip():
+                continue
+            parts.append(content)
+            words += len(content.split())
+            if words >= min_words * 3:
+                break
+    return "\n\n".join(p for p in parts if p)
+
+
+def project_voice(project, chapter=None, chapter_text: str = "",
+                  selection: str = "") -> "WriterVoice":
+    """Measure the author's voice, with the Prose Profile's stated targets."""
+    targets = {}
+    pp = getattr(project, "prose_profile", None) if project is not None else None
+    if pp is not None:
+        targets = {"Voice": getattr(pp, "voice", ""), "Style": getattr(pp, "style", ""),
+                   "Tone": getattr(pp, "tone", ""), "Notes": getattr(pp, "notes", "")}
+    try:
+        return analyze_writer_voice(manuscript_sample(project, chapter, chapter_text),
+                                    selection=selection, stated_targets=targets)
+    except Exception as e:
+        print(f"[voice] analysis failed: {e}")
+        return WriterVoice()
 
 
 def analyze_writer_voice(

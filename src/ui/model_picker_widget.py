@@ -132,6 +132,16 @@ MLX_MODELS: List[LocalModelInfo] = [
         requires_trust_remote_code=False,
     ),
     LocalModelInfo(
+        model_id="mlx-community/gemma-4-26b-a4b-it-8bit",
+        display_name="Gemma 4 26B-A4B 8-bit - MLX [MoE, Higher Fidelity]",
+        size_gb=28.0,
+        description="Gemma 4 MoE at 8-bit — closer to full quality than 4-bit, "
+                    "about twice the memory",
+        ram_required="48GB+",
+        best_for="Best 26B quality on high-memory machines",
+        requires_trust_remote_code=False,
+    ),
+    LocalModelInfo(
         model_id="mlx-community/gemma-3-27b-it-4bit",
         display_name="Gemma 3 (27B) - MLX",
         size_gb=14.0,
@@ -156,6 +166,16 @@ MLX_MODELS: List[LocalModelInfo] = [
         description="Gemma 4 31B — frontier quality, 256K context",
         ram_required="32GB+",
         best_for="Maximum quality, nuanced dialogue, worldbuilding",
+        requires_trust_remote_code=False,
+    ),
+    LocalModelInfo(
+        model_id="mlx-community/gemma-4-31b-it-8bit",
+        display_name="Gemma 4 31B 8-bit - MLX [Frontier, Higher Fidelity]",
+        size_gb=34.0,
+        description="Gemma 4 31B at 8-bit — closer to full quality than 4-bit, "
+                    "about twice the memory",
+        ram_required="64GB+",
+        best_for="Top local quality on very high-memory machines",
         requires_trust_remote_code=False,
     ),
     # Cydonia 24B v3.1 — TheDrummer's creative-writing fine-tune

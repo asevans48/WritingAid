@@ -102,6 +102,7 @@ SHARED_LLM_DEFAULTS: Dict[str, Any] = {
     #                          Default 60% matches the previous hard-
     #                          coded value.
     "max_loaded_models": 2,
+    "allow_oversized_local_models": False,
     "model_cache_ram_pct": 60,
 
     # Transfer-learning data collection (opt-in). Each flag gates one

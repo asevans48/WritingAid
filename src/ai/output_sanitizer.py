@@ -88,6 +88,9 @@ _LEADING_ROLE_RE = re.compile(
 # meta-thinking shouldn't reach the user. Bound the match so a
 # runaway tag doesn't swallow the whole response.
 _THINK_BLOCK_RES = [
+    # Gemma 4: <|channel>thought\n … <channel|>
+    re.compile(r"<\|channel>\s*(?:thought|thinking|reasoning|analysis)\b.*?(?:<channel\|>|\Z)",
+               re.IGNORECASE | re.DOTALL),
     re.compile(r"<think(?:ing)?\b[^>]*>(.*?)</think(?:ing)?>",
                re.IGNORECASE | re.DOTALL),
     re.compile(r"<thought\b[^>]*>(.*?)</thought>",

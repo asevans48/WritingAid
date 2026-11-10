@@ -28,8 +28,10 @@ class RephraseWorker(QThread):
                  scene_description: str = "", surrounding_before: str = "",
                  surrounding_after: str = "",
                  refinement: dict = None,
-                 writer_voice=None):
+                 writer_voice=None,
+                 examples_note: str = ""):
         super().__init__()
+        self.examples_note = examples_note
         self.agent = agent
         self.text = text
         self.styles = styles
@@ -86,6 +88,7 @@ class RephraseWorker(QThread):
                 surrounding_after=self.surrounding_after,
                 refinement=self.refinement,
                 writer_voice=self.writer_voice,
+                examples_note=self.examples_note,
             )
 
             print(f"\n{'='*70}")
@@ -1108,6 +1111,7 @@ class RephraseDialog(QDialog):
             surrounding_after=self.surrounding_after,
             refinement=refinement,
             writer_voice=writer_voice,
+            examples_note=self._rated_examples(),
         )
         self.worker.finished.connect(self._on_generation_complete)
         self.worker.error.connect(self._on_generation_error)
@@ -2060,6 +2064,16 @@ class RephraseDialog(QDialog):
                 from src.ai.writer_voice import WriterVoice
                 self._writer_voice = WriterVoice()
         return self._writer_voice
+
+    def _rated_examples(self) -> str:
+        """The author's best-rated past rewrites, closest to this text."""
+        try:
+            from src.ai.rewrite_quality import examples_prompt
+            path = str(getattr(self.project, "project_path", "") or "") if self.project else ""
+            return examples_prompt(self.original_text, path)
+        except Exception as e:
+            print(f"[rephrase] rated examples unavailable: {e}")
+            return ""
 
     def _get_rag(self):
         """Build (once) and return the project's RAG system, or None."""

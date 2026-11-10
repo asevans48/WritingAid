@@ -4180,6 +4180,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"[subprojects] video studio refresh failed: {e}")
         self._sync_outline_panel_to_chapter()
+        self.grader_widget.refresh_manuscripts(follow_active=True)
         # Scope filter follows the newly focused manuscript.
         self._rag_all_manuscripts = False
         self._apply_rag_scope()
@@ -4192,6 +4193,7 @@ class MainWindow(QMainWindow):
 
     def _on_subprojects_changed(self) -> None:
         """A novella was created, renamed or deleted — persist it."""
+        self.grader_widget.refresh_manuscripts()
         self._on_content_changed()
         self._auto_save_project()
 
@@ -7707,8 +7709,12 @@ class MainWindow(QMainWindow):
                                    max_total_chars: int = 3500,
                                    expand_neighbors: bool = False,
                                    max_neighbors_per_seed: int = 2,
-                                   hops: int = 1) -> str:
+                                   hops: int = 1,
+                                   chapter_scope: Optional[str] = None) -> str:
         """Return a RAG-selected formatted block for given source types.
+
+        ``chapter_scope`` searches that manuscript ("" = main) instead of
+        the one open in Write.
 
         Used by the plot-AI context builder to populate
         ``rag_focused_*`` keys with the most relevant chunks for the
@@ -7723,6 +7729,12 @@ class MainWindow(QMainWindow):
         as a filter, so an unknown type is silently dropped without
         crashing the call.
         """
+        if chapter_scope is not None and hasattr(getattr(self, "_rag_system", None), "scoped_to"):
+            with self._rag_system.scoped_to({chapter_scope}):
+                return self._rag_top_chunks_per_type(
+                    query, source_types, top_k, max_chars_per_chunk, max_total_chars,
+                    expand_neighbors, max_neighbors_per_seed, hops)
+
         if not self._rag_initialized or not self._rag_system:
             return ""
         if not query or not source_types:
@@ -7896,6 +7908,7 @@ class MainWindow(QMainWindow):
             # Update grader widget with current chapter content
             content, title = self.manuscript_editor.get_current_chapter_info()
             self.grader_widget.set_current_chapter(content, title)
+            self.grader_widget.refresh_manuscripts()
 
         # Update editor selection tracking when manuscript tab is active
         if index == 0:  # Manuscript tab

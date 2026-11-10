@@ -328,8 +328,12 @@ class CritiqueWorker(QThread):
         manuscript_override: Optional[Any] = None,
         include_continuity: bool = False,
         scope_label: str = "",
+        scope_id: Optional[str] = None,
+        run_kind: str = "",
     ):
         super().__init__()
+        self.scope_id = scope_id
+        self.run_kind = run_kind
         self.manuscript_override = manuscript_override
         self.include_continuity = include_continuity
         self.scope_label = scope_label
@@ -397,6 +401,10 @@ class CritiqueWorker(QThread):
 
             orchestrator.manuscript_override = self.manuscript_override
             if self.chapters:
+                from src.ai.writer_voice import project_voice
+                orchestrator.writer_voice = project_voice(
+                    self.project, None, "\n\n".join(c.get("text", "") for c in self.chapters))
+            if self.chapters:
                 report = orchestrator.run(
                     chapters=self.chapters,
                     report_types=self.report_types,
@@ -410,6 +418,8 @@ class CritiqueWorker(QThread):
                     chapters=[], genre=resolve_genre_profile(self.genre_key),
                     has_llm=llm is not None)
             report.scope_label = self.scope_label
+            report.scope_id = self.scope_id
+            report.run_kind = self.run_kind
             # Instant style-check counts per chapter (tracked across runs).
             try:
                 from src.utils.style_checks import analyze_document, summarize
@@ -502,6 +512,7 @@ class GraderWidget(QWidget):
         self._worker: Optional[CritiqueWorker] = None
         self._last_report: Optional[CritiqueReport] = None
         self._metadata_store = get_critique_metadata_store()
+        self._current_chapter_scope: Optional[str] = None
         self._content_provider: Optional[callable] = None  # Callback to get fresh content
         self._init_ui()
         # Auto-sync genre dropdown from the Style/Genre free-text
@@ -556,6 +567,25 @@ class GraderWidget(QWidget):
             scope_radio_row.addWidget(rb)
         scope_radio_row.addStretch()
         scope_outer.addLayout(scope_radio_row)
+
+        # Which manuscript "Selected chapters" and "Full manuscript" read
+        # from (only shown when the project has novellas).
+        self.manuscript_row = QWidget()
+        manuscript_layout = QHBoxLayout(self.manuscript_row)
+        manuscript_layout.setContentsMargins(0, 0, 0, 0)
+        manuscript_layout.addWidget(QLabel("Manuscript:"))
+        self.manuscript_combo = QComboBox()
+        self.manuscript_combo.setToolTip(
+            "The main manuscript or novella to critique. Follows the tab open "
+            "in Write; pick another to critique it without switching.")
+        self.manuscript_combo.currentIndexChanged.connect(self._on_manuscript_chosen)
+        manuscript_layout.addWidget(self.manuscript_combo, 1)
+        self.continuity_check = QCheckBox("Also check continuity across novellas")
+        self.continuity_check.setToolTip(
+            "Compare characters, facts and timeline across every manuscript in the project.")
+        manuscript_layout.addWidget(self.continuity_check)
+        self.manuscript_row.setVisible(False)
+        scope_outer.addWidget(self.manuscript_row)
 
         # Current chapter info (for Single scope)
         self.chapter_info_label = QLabel("No chapter selected")
@@ -946,7 +976,89 @@ class GraderWidget(QWidget):
             self._project_path = ""
         # Refresh chapter picker and manuscript info so the multi /
         # manuscript scopes are immediately usable.
+        self.refresh_manuscripts(follow_active=True)
+
+    # ── Manuscripts (main + novellas) ─────────────────────────────
+
+    def _active_scope(self) -> Optional[str]:
+        return getattr(self.project, "active_subproject_id", None) or None
+
+    def _selected_scope(self) -> Optional[str]:
+        """Manuscript chosen for multi-chapter runs (None = main)."""
+        if not getattr(self.project, "subprojects", None):
+            return self._active_scope()
+        return self.manuscript_combo.currentData() or None
+
+    def _selected_manuscript(self):
+        if not self.project:
+            return None
+        if not getattr(self.project, "subprojects", None):
+            return self.project.manuscript
+        return self.project.get_manuscript_for(self._selected_scope())
+
+    def refresh_manuscripts(self, follow_active: bool = False) -> None:
+        """Re-read the project's manuscripts after a switch, new novella,
+        rename, drop or move. A choice that no longer exists falls back
+        to the manuscript open in Write."""
+        combo = self.manuscript_combo
+        active = self._active_scope() or ""
+        previous = combo.currentData()
+        wanted = active if (follow_active or previous is None) else previous
+        combo.blockSignals(True)
+        combo.clear()
+        if getattr(self.project, "subprojects", None):
+            combo.addItem(self.project.scope_label(None), "")
+            for sp in self.project.subprojects:
+                combo.addItem(sp.name, sp.id)
+        index = combo.findData(wanted)
+        combo.setCurrentIndex(index if index >= 0 else combo.findData(active))
+        combo.blockSignals(False)
+        self._update_manuscript_row()
         self._populate_chapter_list()
+
+    def _on_manuscript_chosen(self, _index: int = 0) -> None:
+        self._update_manuscript_row()
+        self._populate_chapter_list()
+
+    def _update_manuscript_row(self) -> None:
+        multi = self.scope_multi_radio.isChecked()
+        whole = self.scope_manuscript_radio.isChecked()
+        self.manuscript_row.setVisible(
+            bool(getattr(self.project, "subprojects", None)) and (multi or whole))
+        self.continuity_check.setVisible(whole and self._has_continuity_content())
+
+    def _has_continuity_content(self) -> bool:
+        if not getattr(self.project, "subprojects", None):
+            return False
+        from src.ai.continuity_analysis import has_cross_manuscript_content
+        return has_cross_manuscript_content(self.project)
+
+    @staticmethod
+    def _store_key(title: str, scope: Optional[str]) -> str:
+        """Saved notes and critiques are stored by title; novellas repeat
+        titles like "Chapter 1", so theirs carry the novella id."""
+        return f"{scope}::{title}" if scope else title
+
+    def _main_chapter_titles(self) -> set:
+        if not getattr(self.project, "subprojects", None):
+            return set()
+        return {c.title for c in self.project.get_main_manuscript().chapters}
+
+    def _context_lookup_keys(self) -> List[str]:
+        """Keys for the open chapter's notes. Notes saved before the novella
+        keys, or before a chapter moved, sit under the bare title."""
+        title, scope = self._current_chapter_title, self._current_chapter_scope
+        keys = [self._store_key(title, scope)]
+        if scope and title not in self._main_chapter_titles():
+            keys.append(title)
+        return keys
+
+    def _get_saved_chapter_context(self) -> Optional[Dict[str, Any]]:
+        for key in self._context_lookup_keys():
+            saved = self._metadata_store.get_context(self._project_path, key)
+            if saved and "context" in saved:
+                return saved
+        return None
 
     def _sync_genre_from_style(self):
         """Update the Genre dropdown when the Style/Genre field changes.
@@ -974,13 +1086,14 @@ class GraderWidget(QWidget):
 
         self._current_chapter_text = text
         self._current_chapter_title = title
+        self._current_chapter_scope = self._active_scope()
         word_count = len(text.split()) if text else 0
         self.chapter_info_label.setText(f"Chapter: {title} ({word_count:,} words)")
 
         # Load saved context for this chapter
         self._load_chapter_context()
 
-    def _build_manuscript_context(self) -> tuple:
+    def _build_manuscript_context(self, manuscript=None) -> tuple:
         """Build manuscript_context string and chapter_synopsis from the current project.
 
         Returns:
@@ -1012,7 +1125,10 @@ class GraderWidget(QWidget):
                 char_lines.append(line)
             context_parts.append("Characters:\n" + "\n".join(char_lines))
 
-        if self.project.manuscript and self.project.manuscript.chapters:
+        # The open chapter's place in the book; a critique of another
+        # manuscript may merely share its title.
+        if self.project.manuscript and self.project.manuscript.chapters and (
+                manuscript is None or manuscript is self.project.manuscript):
             total = len(self.project.manuscript.chapters)
             for i, ch in enumerate(self.project.manuscript.chapters):
                 if ch.title == self._current_chapter_title:
@@ -1083,6 +1199,7 @@ class GraderWidget(QWidget):
         self.chapter_picker.setVisible(is_multi)
         self.custom_text_edit.setVisible(is_custom)
         self.manuscript_info_label.setVisible(is_manu)
+        self._update_manuscript_row()
         if is_multi or is_manu:
             self._populate_chapter_list()
 
@@ -1130,7 +1247,8 @@ class GraderWidget(QWidget):
 
     def run_manuscript_critique(self, scope: Optional[str], include_continuity: bool = False,
                                 report_types=None, confirm: bool = True,
-                                on_done=None, on_progress=None) -> Optional[str]:
+                                on_done=None, on_progress=None,
+                                promise_check: bool = True) -> Optional[str]:
         """Critique a whole manuscript — the main one (``scope=None``) or a
         novella (its subproject id) — optionally with the cross-novella
         continuity analysis. ``report_types`` defaults to the reports
@@ -1155,7 +1273,7 @@ class GraderWidget(QWidget):
                     pass
             if content.strip():
                 chapters.append({"title": ch.title or f"Chapter {ch.number}",
-                                 "text": content, "index": idx})
+                                 "text": content, "index": idx, "scope": scope})
         if report_types is None:
             report_types = [rt for rt, cb in self.report_checkboxes.items() if cb.isChecked()]
             if not report_types and not include_continuity:
@@ -1180,13 +1298,17 @@ class GraderWidget(QWidget):
                 QMessageBox.StandardButton.Yes)
             if reply != QMessageBox.StandardButton.Yes:
                 return ""
-        self._start_critique(chapters, report_types, include_promise_check=bool(chapters),
+        run_kind = ("continuity" if not chapters else
+                    "manuscript+continuity" if include_continuity else "manuscript")
+        self._start_critique(chapters, report_types,
+                             include_promise_check=promise_check and bool(chapters),
                              on_done=on_done, on_progress=on_progress,
                              manuscript_override=ms, include_continuity=include_continuity,
                              scope_label=label + (" + continuity across novellas"
                                                   if include_continuity and chapters else
                                                   "" if chapters else
-                                                  " — continuity across novellas"))
+                                                  " — continuity across novellas"),
+                             scope_id=scope if chapters else None, run_kind=run_kind)
         return None
 
     def _populate_analysis_model_combo(self) -> None:
@@ -1244,13 +1366,23 @@ class GraderWidget(QWidget):
 
     def _populate_chapter_list(self):
         """Refresh the chapter picker + manuscript info from the current project."""
+        scope = self._selected_scope()
+        same_manuscript = scope == getattr(self, "_picker_scope", scope)
+        ticked = ({self.chapter_picker.item(i).data(Qt.ItemDataRole.UserRole + 1)
+                   for i in range(self.chapter_picker.count())
+                   if self.chapter_picker.item(i).isSelected()}
+                  if same_manuscript else set())
+        self._picker_scope = scope
         self.chapter_picker.clear()
-        if (not self.project or not self.project.manuscript
-                or not self.project.manuscript.chapters):
+        manuscript = self._selected_manuscript()
+        if manuscript is None or not manuscript.chapters:
             self.manuscript_info_label.setText(
-                "No chapters loaded for this project.")
+                f"“{self.project.scope_label(scope)}” has no chapters yet."
+                if getattr(self.project, "subprojects", None)
+                else "No chapters loaded for this project.")
             return
-        chapters = self.project.manuscript.chapters
+        chapters = manuscript.chapters
+        open_here = scope == self._current_chapter_scope and not ticked
         total_words = 0
         for i, ch in enumerate(chapters):
             wc = ch.word_count or len((ch.content or "").split())
@@ -1258,13 +1390,16 @@ class GraderWidget(QWidget):
             label = f"{ch.number:02d}. {ch.title} ({wc:,} words)"
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, i)  # index in chapters
+            item.setData(Qt.ItemDataRole.UserRole + 1, ch.id)
             self.chapter_picker.addItem(item)
             # Pre-select the current chapter when first populating
-            if (self._current_chapter_title
-                    and ch.title == self._current_chapter_title):
+            if ch.id in ticked or (open_here and self._current_chapter_title
+                                   and ch.title == self._current_chapter_title):
                 item.setSelected(True)
+        prefix = (f"“{self.project.scope_label(scope)}”: "
+                  if getattr(self.project, "subprojects", None) else "")
         self.manuscript_info_label.setText(
-            f"{len(chapters)} chapter(s), {total_words:,} words total. "
+            f"{prefix}{len(chapters)} chapter(s), {total_words:,} words total. "
             "Reports run chapter by chapter.")
 
     def _get_chapters_for_run(self) -> List[Dict[str, Any]]:
@@ -1287,12 +1422,14 @@ class GraderWidget(QWidget):
                 "title": self._current_chapter_title or "Current Chapter",
                 "text": self._current_chapter_text,
                 "index": 0,
+                "scope": self._active_scope(),
             }]
 
-        if (not self.project or not self.project.manuscript
-                or not self.project.manuscript.chapters):
+        manuscript = self._selected_manuscript()
+        if manuscript is None or not manuscript.chapters:
             return []
-        chapters = self.project.manuscript.chapters
+        chapters = manuscript.chapters
+        scope = self._selected_scope()
 
         if self.scope_manuscript_radio.isChecked():
             indices = list(range(len(chapters)))
@@ -1323,6 +1460,7 @@ class GraderWidget(QWidget):
                         "title": ch.title or f"Chapter {ch.number}",
                         "text": content,
                         "index": idx,
+                        "scope": scope,
                     })
         return results
 
@@ -1346,7 +1484,7 @@ class GraderWidget(QWidget):
             return None
         return ctx
 
-    def _make_rag_provider(self):
+    def _make_rag_provider(self, scope: Optional[str] = None):
         """Build a RAG provider callable bound to the main window's RAG.
 
         Returns ``(query, source_types, hops=1) → str`` or ``None`` if
@@ -1370,18 +1508,20 @@ class GraderWidget(QWidget):
                         max_total_chars=2500,
                         expand_neighbors=True,
                         hops=hops,
+                        **({} if scope is None else {"chapter_scope": scope}),
                     )
                 )
         except Exception as e:
             print(f"[critique] RAG provider unavailable: {e}")
         return None
 
-    def _build_chapter_synopses(self) -> Dict[str, str]:
+    def _build_chapter_synopses(self, manuscript=None) -> Dict[str, str]:
         """Map chapter title → planning synopsis for PlotAnalyzer."""
         synopses: Dict[str, str] = {}
-        if not self.project or not self.project.manuscript:
+        manuscript = manuscript or (self.project.manuscript if self.project else None)
+        if not manuscript:
             return synopses
-        for ch in self.project.manuscript.chapters:
+        for ch in manuscript.chapters:
             if hasattr(ch, "planning") and ch.planning:
                 if ch.planning.description:
                     synopses[ch.title] = ch.planning.description[:400]
@@ -1408,16 +1548,38 @@ class GraderWidget(QWidget):
                 self, "No reports selected",
                 "Select at least one report to run.")
             return
+        if self.scope_manuscript_radio.isChecked() and self.project:
+            error = self.run_manuscript_critique(
+                self._selected_scope(),
+                include_continuity=(self.continuity_check.isChecked()
+                                    and self._has_continuity_content()),
+                report_types=report_types, confirm=False, promise_check=False)
+            if error:
+                QMessageBox.warning(self, "Critique", error)
+            return
         self._start_critique(chapters, report_types)
 
     def _start_critique(self, chapters, report_types, include_promise_check: bool = False,
                         on_done=None, on_progress=None, manuscript_override=None,
-                        include_continuity: bool = False, scope_label: str = "") -> None:
+                        include_continuity: bool = False, scope_label: str = "",
+                        scope_id: Optional[str] = None, run_kind: str = "") -> None:
         """Start the critique worker (shared by the button and the chat)."""
         critique_context = self._collect_critique_context()
-        ms_context, _ = self._build_manuscript_context()
-        chapter_synopses = self._build_chapter_synopses()
-        rag_provider = self._make_rag_provider()
+        # Chapters know their manuscript; pasted custom text has none.
+        first = chapters[0] if chapters else {}
+        in_manuscript = "scope" in first and self.project is not None
+        if in_manuscript:
+            scope_id = first["scope"]
+            has_novellas = bool(getattr(self.project, "subprojects", None))
+            if manuscript_override is None and has_novellas:
+                manuscript_override = self.project.get_manuscript_for(scope_id)
+            if not scope_label and has_novellas:
+                scope_label = self.project.scope_label(scope_id)
+        ms_context, _ = self._build_manuscript_context(manuscript_override)
+        chapter_synopses = self._build_chapter_synopses(manuscript_override)
+        rag_provider = self._make_rag_provider(
+            (scope_id or "") if in_manuscript and getattr(self.project, "subprojects", None)
+            else None)
         # Genre key — prefer the dropdown selection; the dropdown is
         # auto-synced from the Style/Genre field elsewhere.
         genre_key = self.genre_combo.currentData() or "default"
@@ -1447,6 +1609,8 @@ class GraderWidget(QWidget):
             manuscript_override=manuscript_override,
             include_continuity=include_continuity,
             scope_label=scope_label,
+            scope_id=scope_id,
+            run_kind=run_kind,
         )
         self._worker.finished.connect(self._on_critique_finished)
         self._worker.error.connect(self._on_critique_error)
@@ -2066,7 +2230,7 @@ class GraderWidget(QWidget):
         critique_data = self._serialize_report(self._last_report)
         critique_id = self._metadata_store.save_critique(
             self._project_path,
-            chapter_title,
+            self._store_key(chapter_title, getattr(self._last_report, "scope_id", None)),
             critique_data,
             critique_type="reports",
         )
@@ -2083,16 +2247,19 @@ class GraderWidget(QWidget):
         # Aggregate critiques across chapters so the picker can show
         # everything saved for this project at once.
         all_entries: List[tuple] = []  # (label, chapter_title, id)
-        if (self.project and self.project.manuscript
-                and self.project.manuscript.chapters):
-            chapter_titles = [c.title for c in self.project.manuscript.chapters]
-        else:
-            chapter_titles = []
+        places: List[tuple] = []       # (shown name, store key)
+        if self.project:
+            main_titles = self._main_chapter_titles()
+            for scope, chapter in self.project.all_chapters():
+                shown = self.project.chapter_label(scope, chapter)
+                places.append((shown, self._store_key(chapter.title, scope)))
+                if scope and chapter.title not in main_titles:
+                    places.append((shown, chapter.title))   # saved before a move
         if self._current_chapter_title:
-            chapter_titles.append(self._current_chapter_title)
-        chapter_titles.extend(["Custom Text"])
+            places.append((self._current_chapter_title, self._current_chapter_title))
+        places += [("Custom Text", "Custom Text"), ("Across novellas", "Across novellas")]
         seen = set()
-        for ct in chapter_titles:
+        for shown, ct in places:
             if ct in seen:
                 continue
             seen.add(ct)
@@ -2104,7 +2271,7 @@ class GraderWidget(QWidget):
                 except (ValueError, KeyError):
                     pretty = c.get("timestamp", "?")
                 all_entries.append(
-                    (f"[{ct}] {pretty} ({c.get('type', '?')})",
+                    (f"[{shown}] {pretty} ({c.get('type', '?')})",
                      ct, c["id"]))
         if not all_entries:
             QMessageBox.information(
@@ -2149,6 +2316,8 @@ class GraderWidget(QWidget):
         """Convert a CritiqueReport to a JSON-safe dict."""
         return {
             "schema_version": 2,
+            "scope_label": getattr(report, "scope_label", "") or "",
+            "scope_id": getattr(report, "scope_id", None),
             "genre_key": report.genre.key,
             "has_llm": report.has_llm,
             "overall_summary": report.overall_summary,
@@ -2221,7 +2390,7 @@ class GraderWidget(QWidget):
                 word_count=c.get("word_count", 0),
                 sections=sections,
             ))
-        return CritiqueReport(
+        report = CritiqueReport(
             chapters=chapters,
             genre=genre,
             overall_summary=data.get("overall_summary", ""),
@@ -2230,6 +2399,9 @@ class GraderWidget(QWidget):
             has_llm=data.get("has_llm", False),
             estimated_cost=data.get("estimated_cost", 0.0),
         )
+        report.scope_label = data.get("scope_label", "") or ""
+        report.scope_id = data.get("scope_id")
+        return report
 
     def _export_critique(self):
         """Export the current CritiqueReport to a Markdown file."""
@@ -2380,7 +2552,7 @@ class GraderWidget(QWidget):
 
         self._metadata_store.save_context(
             self._project_path,
-            self._current_chapter_title,
+            self._store_key(self._current_chapter_title, self._current_chapter_scope),
             context
         )
 
@@ -2395,10 +2567,7 @@ class GraderWidget(QWidget):
             return
 
         # First try chapter-specific context
-        saved_data = self._metadata_store.get_context(
-            self._project_path,
-            self._current_chapter_title
-        )
+        saved_data = self._get_saved_chapter_context()
 
         if saved_data and "context" in saved_data:
             self._set_context_from_dict(saved_data["context"])
@@ -2454,7 +2623,7 @@ class GraderWidget(QWidget):
                 return
             self._metadata_store.save_context(
                 self._project_path,
-                self._current_chapter_title,
+                self._store_key(self._current_chapter_title, self._current_chapter_scope),
                 context
             )
             self.context_status_label.setText(f"✓ Saved for '{self._current_chapter_title}'")
@@ -2481,10 +2650,7 @@ class GraderWidget(QWidget):
                     "Please select a chapter first, or choose 'Entire Project' scope."
                 )
                 return
-            saved_data = self._metadata_store.get_context(
-                self._project_path,
-                self._current_chapter_title
-            )
+            saved_data = self._get_saved_chapter_context()
             if saved_data and "context" in saved_data:
                 self._set_context_from_dict(saved_data["context"])
                 self.context_status_label.setText(f"✓ Loaded context for '{self._current_chapter_title}'")

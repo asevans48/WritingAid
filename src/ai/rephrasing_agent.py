@@ -3,13 +3,16 @@
 import sys
 import re
 import threading
+import weakref
 import platform
 import time
 from typing import List, Optional, TYPE_CHECKING
 from dataclasses import dataclass
 from enum import Enum
 from src.ai.device_utils import detect_device, print_device_info
-from src.ai.mlx_utils import can_use_mlx, _mlx_cache as mlx_cache
+from src.ai.mlx_utils import (
+    can_use_mlx, _mlx_cache as mlx_cache, register_model_release_hook,
+)
 from src.ai.writer_voice import WriterVoice
 
 # macOS-specific: Increase stack size (addresses C stack overflow issues)
@@ -37,6 +40,13 @@ if platform.system() == "Darwin":
     except (ValueError, OSError, ImportError) as e:
         # Stack size setting might fail on some systems
         print(f"[MODULE INIT] Could not adjust stack size: {e}")
+
+# A torchvision built for another torch would break the transformers import.
+try:
+    from src.ai.mlx_utils import ensure_torchvision_usable as _ensure_tv
+    _ensure_tv()
+except Exception:
+    pass
 
 # Increase recursion limit BEFORE importing torch/transformers to prevent stack overflow
 # Both PyTorch and Transformers can trigger deep recursion during import on some platforms
@@ -198,6 +208,20 @@ _nlp_cache = _NLPCache()
 
 
 # Global model cache to persist models across agent instances
+_LIVE_AGENTS: "weakref.WeakSet" = weakref.WeakSet()
+
+
+def _release_agents_holding(model_ids) -> None:
+    """Drop models another load needs room for; agents reload on next use."""
+    for agent in list(_LIVE_AGENTS):
+        if getattr(agent, "_mlx_model", None) is not None and id(agent._mlx_model) in model_ids:
+            agent._mlx_model = None
+            agent._mlx_tokenizer = None
+
+
+register_model_release_hook(_release_agents_holding)
+
+
 class _LocalModelCache:
     """Singleton cache for local models to avoid reloading on each use."""
     _instance = None
@@ -725,6 +749,7 @@ For each option, briefly explain what makes it different from the original."""
         self.use_local_model = use_local_model
         self.local_model_id = local_model_id
         self.use_python_libraries = use_python_libraries
+        _LIVE_AGENTS.add(self)
         self._local_model = None
         self._local_tokenizer = None
         self._device = None
@@ -825,6 +850,9 @@ For each option, briefly explain what makes it different from the original."""
             "google/gemma-3-4b-it": "mlx-community/gemma-3-4b-it-4bit",
             "google/gemma-3-12b-it": "mlx-community/gemma-3-12b-it-4bit",
             "google/gemma-3-27b-it": "mlx-community/gemma-3-27b-it-4bit",
+            # Gemma 4 large models (4-bit: fits 32 GB; 8-bit ids pass through)
+            "google/gemma-4-26b-a4b-it": "mlx-community/gemma-4-26b-a4b-it-4bit",
+            "google/gemma-4-31b-it": "mlx-community/gemma-4-31b-it-4bit",
 
             # Mistral series (Mistral AI - excellent instruction following)
             "mistralai/Mistral-7B-Instruct-v0.3": "mlx-community/Mistral-7B-Instruct-v0.3-4bit",
@@ -868,6 +896,10 @@ For each option, briefly explain what makes it different from the original."""
             "mlx-community/gemma-3-4b-it-4bit": "google/gemma-3-4b-it",
             "mlx-community/gemma-3-12b-it-4bit": "google/gemma-3-12b-it",
             "mlx-community/gemma-3-27b-it-4bit": "google/gemma-3-27b-it",
+            "mlx-community/gemma-4-26b-a4b-it-4bit": "google/gemma-4-26b-a4b-it",
+            "mlx-community/gemma-4-26b-a4b-it-8bit": "google/gemma-4-26b-a4b-it",
+            "mlx-community/gemma-4-31b-it-4bit": "google/gemma-4-31b-it",
+            "mlx-community/gemma-4-31b-it-8bit": "google/gemma-4-31b-it",
 
             # Mistral series
             "mlx-community/Mistral-7B-Instruct-v0.3-4bit": "mistralai/Mistral-7B-Instruct-v0.3",
@@ -909,7 +941,7 @@ For each option, briefly explain what makes it different from the original."""
             return
 
         # Check if instance already has this model loaded
-        if self._mlx_model is not None:
+        if self._mlx_model is not None and getattr(self, "_mlx_model_id", model_id) == model_id:
             return
 
         try:
@@ -932,33 +964,10 @@ For each option, briefly explain what makes it different from the original."""
                 print(f"  This may be a PyTorch model, not an MLX model.")
                 print(f"  Attempting to load anyway...")
 
-            model, tokenizer = None, None
-
-            # Try mlx_lm first (text-only models)
-            try:
-                from mlx_lm import load
-                print("  Loading with mlx_lm...")
-                model, tokenizer = load(model_id)
-                print(f"[OK] MLX model loaded via mlx_lm")
-            except Exception as mlx_lm_err:
-                err_str = str(mlx_lm_err)
-                if "not supported" in err_str.lower() or "model type" in err_str.lower():
-                    # Model type not in mlx_lm — try mlx_vlm which supports
-                    # newer architectures like gemma4
-                    print(f"  mlx_lm does not support this model type: {err_str}")
-                    print(f"  Trying mlx_vlm...")
-                    try:
-                        from mlx_vlm import load as vlm_load
-                        model, tokenizer = vlm_load(model_id)
-                        print(f"[OK] MLX model loaded via mlx_vlm")
-                    except ImportError:
-                        raise RuntimeError(
-                            f"Model type not supported by mlx_lm. "
-                            f"Install mlx_vlm for Gemma 4 support:\n"
-                            f"  pip install --upgrade mlx-vlm"
-                        )
-                else:
-                    raise
+            # Shared loader: one copy in memory, previous model released
+            # first, mlx_vlm fallback for newer architectures.
+            from src.ai.mlx_utils import load_mlx_model
+            model, tokenizer = load_mlx_model(model_id)
 
             if model is None:
                 raise RuntimeError(f"Failed to load model: no loader succeeded")
@@ -1319,6 +1328,11 @@ For each option, briefly explain what makes it different from the original."""
 
     def _generate_mlx(self, prompt: str, max_tokens: int = 500) -> str:
         """Generate text using MLX (Apple Silicon optimized)."""
+        from src.ai.mlx_utils import MLX_GENERATE_LOCK
+        with MLX_GENERATE_LOCK:   # weights can't be released mid-generation
+            return self._generate_mlx_locked(prompt, max_tokens)
+
+    def _generate_mlx_locked(self, prompt: str, max_tokens: int) -> str:
         if not _MLX_AVAILABLE:
             raise RuntimeError("MLX is not available")
 
@@ -1362,28 +1376,30 @@ For each option, briefly explain what makes it different from the original."""
 
             # Try mlx_lm.generate first, fall back to mlx_vlm.generate
             # for newer architectures (gemma4, etc.)
-            try:
-                from mlx_lm import generate as mlx_generate
-                from mlx_lm.sample_utils import make_sampler
-                sampler = make_sampler(temp=0.7)
-                response = mlx_generate(
-                    self._mlx_model,
-                    self._mlx_tokenizer,
-                    prompt=prompt_text,
-                    max_tokens=max_tokens,
-                    sampler=sampler,
-                    verbose=False
-                )
-            except Exception:
-                from mlx_vlm import generate as vlm_generate
-                response = vlm_generate(
-                    self._mlx_model,
-                    self._mlx_tokenizer,
-                    prompt_text,
-                    max_tokens=max_tokens,
-                    temp=0.7,
-                    verbose=False
-                )
+            from src.ai.mlx_utils import MLX_GENERATE_LOCK
+            with MLX_GENERATE_LOCK:
+                try:
+                    from mlx_lm import generate as mlx_generate
+                    from mlx_lm.sample_utils import make_sampler
+                    sampler = make_sampler(temp=0.7)
+                    response = mlx_generate(
+                        self._mlx_model,
+                        self._mlx_tokenizer,
+                        prompt=prompt_text,
+                        max_tokens=max_tokens,
+                        sampler=sampler,
+                        verbose=False
+                    )
+                except Exception:
+                    from mlx_vlm import generate as vlm_generate
+                    response = vlm_generate(
+                        self._mlx_model,
+                        self._mlx_tokenizer,
+                        prompt_text,
+                        max_tokens=max_tokens,
+                        temp=0.7,
+                        verbose=False
+                    )
 
             # Calculate and log generation time
             gen_end_time = time.time()
@@ -3065,6 +3081,7 @@ For each option, briefly explain what makes it different from the original."""
         surrounding_after: str = "",         # text after the selection
         refinement: Optional[dict] = None,   # follow-up revision request (see below)
         writer_voice: Optional["WriterVoice"] = None,  # measured author voice
+        examples_note: str = "",             # rewrites the author rated before
     ) -> RephraseResult:
         """Generate multiple rephrasing options for text.
 
@@ -3382,6 +3399,7 @@ For each option, briefly explain what makes it different from the original."""
                 "use it to match flow, tone, and continuity, but do not include it in your output.\n"
             )
 
+        examples_block = f"\n{examples_note.strip()}\n" if (examples_note or "").strip() else ""
         voice_note = ""
         if writer_voice is not None and not writer_voice.is_empty:
             voice_note = "\n" + writer_voice.to_prompt() + "\n"
@@ -3407,7 +3425,7 @@ EXPLANATION: [brief explanation]""")
         prompt = f"""Please rephrase the following text in {len(styles)} different ways:
 
 Original text: "{text}"
-{voice_note}{context_str}{tone_note}{pov_note}{multi_speaker_note}{char_note}{dialog_note}{scene_note}
+{voice_note}{examples_block}{context_str}{tone_note}{pov_note}{multi_speaker_note}{char_note}{dialog_note}{scene_note}
 Generate these variations:
 {style_instructions}
 
@@ -3425,7 +3443,7 @@ Format your response as:
                 text=text,
                 refinement=refinement,
                 style_instructions=style_instructions,
-                voice_notes=f"{voice_note}{pov_note}{multi_speaker_note}{char_note}",
+                voice_notes=f"{voice_note}{examples_block}{pov_note}{multi_speaker_note}{char_note}",
                 extra_notes=f"{context_str}{tone_note}{dialog_note}{scene_note}",
                 format_example_str=format_example_str,
                 num_styles=len(styles),
@@ -3486,6 +3504,14 @@ Format your response as:
 
         if writer_voice is not None:
             self._annotate_voice_fit(options, writer_voice)
+
+        options = self._apply_rewrite_checks(
+            options, text, writer_voice, surrounding_before, surrounding_after,
+            prompt, styles, tone, _call_model,
+            focus=" ".join((refinement or {}).get("instructions", []) or []),
+            extra_names=" ".join([(refinement or {}).get("new_context", "") or "",
+                                  *((refinement or {}).get("instructions", []) or []),
+                                  str(scene_description or ""), str(context or "")]))
 
         return RephraseResult(
             original=text,
@@ -3603,6 +3629,48 @@ Format your response as:
             scored.append((-(fit if fit is not None else 0.0), i, o))
         if any(f for f, _, _ in scored):
             options[:] = [o for _, _, o in sorted(scored, key=lambda t: (t[0], t[1]))]
+
+    def _apply_rewrite_checks(self, options, text, writer_voice, before, after,
+                              prompt, styles, tone, call_model,
+                              focus: str = "", extra_names: str = "") -> List["RephraseOption"]:
+        """Replace options with serious problems (misspelled or invented
+        names, POV/tense switch, wrong length, copied context) with one
+        retry; note the rest. Options with problems sort last."""
+        try:
+            from src.ai.rewrite_quality import check_rewrite, known_names_for
+            # Names the author or retrieval brought in on purpose are fine.
+            names = known_names_for(self.project) + re.findall(r"[A-Z][a-z]+", extra_names)
+
+            def check(o):
+                return check_rewrite(text, o.text, voice=writer_voice, known_names=names,
+                                     before=before or "", after=after or "", focus=focus)
+
+            checks = [check(o) for o in options]
+            failed = [(o, c) for o, c in zip(options, checks) if not c.ok]
+            if failed:
+                print(f"[rephrase] {len(failed)} option(s) failed checks; retrying once")
+                retry = (prompt + "\nSOME EARLIER VERSIONS WERE REJECTED because they "
+                         + "; ".join(sorted({p for _, c in failed for p in c.serious}))
+                         + ". Keep the same point of view and tense, spell names exactly as "
+                           "in the story, keep a similar length, and don't copy the "
+                           "surrounding text.\n")
+                fresh = [(o, check(o)) for o in self._parse_response(
+                    call_model(retry, temperature=0.8), styles, tone)]
+                fresh = sorted((oc for oc in fresh if oc[1].ok), key=lambda oc: oc[1].rank())
+                for i, c in enumerate(checks):
+                    if not c.ok and fresh:
+                        new, new_check = fresh.pop(0)
+                        new.style = options[i].style or new.style
+                        options[i], checks[i] = new, new_check
+            for o, c in zip(options, checks):
+                if c.notes:
+                    o.explanation = ((o.explanation or "") + " ⚠ This version "
+                                     + "; ".join(c.notes) + ".").strip()
+            order = sorted(range(len(options)), key=lambda i: (len(checks[i].serious), i))
+            return [options[i] for i in order]
+        except Exception as e:
+            print(f"[rephrase] rewrite checks skipped: {e}")
+            return options
 
     def _enforce_refinement_novelty(
         self,

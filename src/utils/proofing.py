@@ -22,6 +22,8 @@ No Qt here; the editor drives these from a worker thread.
 
 from __future__ import annotations
 
+import contextlib
+import os
 import re
 import shutil
 import threading
@@ -34,6 +36,23 @@ from typing import Dict, List, Optional, Tuple
 # "donʼt", "don´t" and "don`t" are "don't".
 APOSTROPHE_LIKE = "’‘ʼ′´`"
 _APOS_BETWEEN_LETTERS = re.compile(r"(?<=[A-Za-z])[" + re.escape(APOSTROPHE_LIKE) + r"](?=[A-Za-z])")
+
+
+LT_JVM_OPTIONS = "-Xmx512m -XX:+UseSerialGC"
+
+
+@contextlib.contextmanager
+def _jvm_memory_cap():
+    """Launch LanguageTool's JVM with a fixed heap. By default it grows to
+    several GB on long texts, memory a large local model needs."""
+    if "JAVA_TOOL_OPTIONS" in os.environ:   # the user's own settings win
+        yield
+        return
+    os.environ["JAVA_TOOL_OPTIONS"] = LT_JVM_OPTIONS
+    try:
+        yield
+    finally:
+        os.environ.pop("JAVA_TOOL_OPTIONS", None)
 
 
 def normalize_apostrophes(text: str) -> str:
@@ -141,7 +160,8 @@ class LanguageToolEngine:
             self.status = "starting"
             try:
                 import language_tool_python
-                tool = language_tool_python.LanguageTool("en-US")
+                with _jvm_memory_cap():
+                    tool = language_tool_python.LanguageTool("en-US")
                 try:
                     tool.disabled_rules.update(LT_DISABLED_RULES)
                 except Exception:

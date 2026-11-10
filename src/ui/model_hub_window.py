@@ -138,8 +138,9 @@ class _AgentTestWorker(QThread):
                 if system:
                     msgs.append({"role": "system", "content": system})
                 msgs.append({"role": "user", "content": user_msg})
-                prompt = tok.apply_chat_template(
-                    msgs, tokenize=False, add_generation_prompt=True)
+                from src.ai.chat_template_fallbacks import apply_chat_template_safe
+                prompt = apply_chat_template_safe(
+                    tok, msgs, add_generation_prompt=True)
             else:
                 if user_input:
                     prompt = (f"### Instruction:\n{instr}\n\n"

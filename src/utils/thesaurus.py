@@ -1,32 +1,49 @@
 """Thesaurus utility for synonym lookup."""
 
 import re
+import threading
 from typing import List, Dict, Optional, Tuple  # Tuple used in _find_synonyms_wordnet
 from dataclasses import dataclass
 
-# Try to import NLTK for WordNet support
+# NLTK/WordNet support, loaded on the first lookup (NLTK pulls in scipy,
+# scikit-learn and pandas, which cost about a second at startup).
 _WORDNET_AVAILABLE = False
 _LEMMATIZER_AVAILABLE = False
 _wordnet = None
 _lemmatizer = None
+_wordnet_probed = False
+_wordnet_lock = threading.RLock()
 
-try:
-    from nltk.corpus import wordnet as _wordnet
-    # Test if wordnet data is available
-    _wordnet.synsets('test')
-    _WORDNET_AVAILABLE = True
 
-    # Try to get the lemmatizer (uses WordNet's morphy internally)
-    try:
-        from nltk.stem import WordNetLemmatizer
-        _lemmatizer = WordNetLemmatizer()
-        # Test it works
-        _lemmatizer.lemmatize('testing', pos='v')
-        _LEMMATIZER_AVAILABLE = True
-    except (ImportError, LookupError):
-        _LEMMATIZER_AVAILABLE = False
-except (ImportError, LookupError):
-    _WORDNET_AVAILABLE = False
+def _ensure_wordnet() -> bool:
+    """Load WordNet once; return whether it is available."""
+    global _WORDNET_AVAILABLE, _LEMMATIZER_AVAILABLE, _wordnet, _lemmatizer, _wordnet_probed
+    if _wordnet_probed:
+        return _WORDNET_AVAILABLE
+    with _wordnet_lock:
+        if _wordnet_probed:
+            return _WORDNET_AVAILABLE
+        try:
+            from nltk.corpus import wordnet
+            # Test if wordnet data is available
+            wordnet.synsets('test')
+            _wordnet = wordnet
+            _WORDNET_AVAILABLE = True
+
+            # Try to get the lemmatizer (uses WordNet's morphy internally)
+            try:
+                from nltk.stem import WordNetLemmatizer
+                lemmatizer = WordNetLemmatizer()
+                # Test it works
+                lemmatizer.lemmatize('testing', pos='v')
+                _lemmatizer = lemmatizer
+                _LEMMATIZER_AVAILABLE = True
+            except (ImportError, LookupError):
+                _LEMMATIZER_AVAILABLE = False
+        except (ImportError, LookupError):
+            _WORDNET_AVAILABLE = False
+        _wordnet_probed = True
+    return _WORDNET_AVAILABLE
 
 
 @dataclass
@@ -225,7 +242,7 @@ class WordStemmer:
         forms = []
 
         # Strategy 1: Use NLTK lemmatizer if available (most accurate)
-        if _LEMMATIZER_AVAILABLE and _lemmatizer:
+        if _ensure_wordnet() and _LEMMATIZER_AVAILABLE and _lemmatizer:
             # Try all POS tags - noun, verb, adjective, adverb
             for pos in ['n', 'v', 'a', 'r']:
                 try:
@@ -742,7 +759,10 @@ class Thesaurus:
     def __init__(self):
         """Initialize the thesaurus."""
         self._cache: Dict[str, SynonymResult] = {}
-        self._use_wordnet = _WORDNET_AVAILABLE
+
+    @property
+    def _use_wordnet(self) -> bool:
+        return _ensure_wordnet()
 
     def refresh_wordnet(self):
         """Refresh WordNet availability status.
@@ -750,7 +770,6 @@ class Thesaurus:
         Call this after downloading WordNet data to enable it without restart.
         Also clears the cache to ensure new lookups use WordNet.
         """
-        self._use_wordnet = _WORDNET_AVAILABLE
         # Clear cache so new lookups will use WordNet
         self._cache.clear()
 
@@ -978,7 +997,7 @@ def get_antonyms(word: str, max_results: int = 5) -> List[str]:
 
 def is_wordnet_available() -> bool:
     """Check if WordNet (NLTK) is available for enhanced synonym lookup."""
-    return _WORDNET_AVAILABLE
+    return _ensure_wordnet()
 
 
 def refresh_wordnet_availability() -> bool:
@@ -990,8 +1009,9 @@ def refresh_wordnet_availability() -> bool:
     Returns:
         True if WordNet is now available, False otherwise
     """
-    global _WORDNET_AVAILABLE, _LEMMATIZER_AVAILABLE, _wordnet, _lemmatizer
+    global _WORDNET_AVAILABLE, _LEMMATIZER_AVAILABLE, _wordnet, _lemmatizer, _wordnet_probed
 
+    _wordnet_probed = True
     try:
         # Try to import/reimport wordnet
         from nltk.corpus import wordnet

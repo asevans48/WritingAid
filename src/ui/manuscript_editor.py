@@ -1170,6 +1170,18 @@ class ChapterEditor(QWidget):
         Content is stored as Markdown - the highlighter renders it visually.
         """
         self.title_edit.setPlainText(self.chapter.title)
+        # One highlight pass per load: the initial check below does it.
+        highlighter = self.editor.writing_highlighter
+        highlighter.suspend()
+        try:
+            self._populate_chapter_fields()
+        finally:
+            highlighter.resume()
+        # Perform initial writing check (for on-demand mode)
+        self.editor.do_initial_check()
+        self._update_readability()
+
+    def _populate_chapter_fields(self):
         # Load plain text content (now with Markdown formatting)
         self.editor.setPlainText(self.chapter.content)
         # Load chapter planning data (separate from content)
@@ -1219,9 +1231,6 @@ class ChapterEditor(QWidget):
         # dictionary are correct spellings.
         if self.project is not None:
             self.editor.set_project_vocabulary(self.project)
-        # Perform initial writing check (for on-demand mode)
-        self.editor.do_initial_check()
-        self._update_readability()
 
     def _on_text_changed(self):
         """Handle text changes."""
@@ -1582,6 +1591,38 @@ class ChapterEditor(QWidget):
             if replacement:
                 cursor.insertText(replacement)
 
+    def _suggest_for_selection(self):
+        """Critique the highlighted text (widened to whole sentences) and
+        offer three rewrites; the chosen one replaces the passage."""
+        cursor = self.editor.textCursor()
+        if not cursor.hasSelection() or len(cursor.selectedText().strip()) < 3:
+            QMessageBox.information(self, "No Selection",
+                                    "Highlight the text you'd like suggestions for.")
+            return
+        from src.ai.passage_critique import (
+            expand_to_sentences, py_to_qt_index, qt_to_py_index)
+        doc_text = self.editor.toPlainText()
+        sel_start = qt_to_py_index(doc_text, cursor.selectionStart())
+        sel_end = qt_to_py_index(doc_text, cursor.selectionEnd())
+        start, end = expand_to_sentences(doc_text, sel_start, sel_end)
+        if not doc_text[start:end].strip():
+            return
+        from src.ui.passage_critique_dialog import PassageCritiqueDialog
+        dialog = PassageCritiqueDialog(doc_text, start, end, self.project, self.chapter,
+                                       self, selection=(sel_start, sel_end))
+        if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.replacement:
+            return
+        if self.editor.toPlainText() != doc_text:
+            QMessageBox.information(self, "Suggestions",
+                                    "The chapter changed while the dialog was open, so the "
+                                    "suggestion wasn't inserted. Run Suggestions again.")
+            return
+        replace = QTextCursor(self.editor.document())
+        replace.setPosition(py_to_qt_index(doc_text, start))
+        replace.setPosition(py_to_qt_index(doc_text, end), QTextCursor.MoveMode.KeepAnchor)
+        replace.insertText(dialog.replacement)
+        self.editor.setTextCursor(replace)
+
     def _world_word_selection(self):
         """Open world-appropriate word dialog for selected text."""
         cursor = self.editor.textCursor()
@@ -1752,6 +1793,11 @@ class ChapterEditor(QWidget):
 
             rephrase_action = menu.addAction("✨ Rephrase with AI...")
             rephrase_action.triggered.connect(self._rephrase_selection)
+            suggest_action = menu.addAction("💡 Suggestions (critique + rewrites)...")
+            suggest_action.setToolTip(
+                "Critique the highlighted sentences against your characters, world, "
+                "plot and outline, with three rewrites")
+            suggest_action.triggered.connect(self._suggest_for_selection)
 
             # Heading style submenu
             heading_menu = menu.addMenu("Heading Style")

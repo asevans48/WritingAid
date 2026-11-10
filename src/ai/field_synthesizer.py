@@ -38,27 +38,31 @@ def _generate_with_cached_mlx(prompt: str, system_prompt: str,
         ]
 
         if hasattr(tokenizer, 'apply_chat_template'):
-            full_prompt = tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
+            from src.ai.chat_template_fallbacks import apply_chat_template_safe
+            full_prompt = apply_chat_template_safe(
+                tokenizer, messages, model_id=cache._model_id or "",
+                add_generation_prompt=True
             )
         else:
             full_prompt = f"{system_prompt}\n\nUser: {prompt}\n\nAssistant:"
 
         # Generate — try mlx_lm first, then mlx_vlm
-        try:
-            from mlx_lm import generate
-            from mlx_lm.sample_utils import make_sampler
-            sampler = make_sampler(temp=temperature)
-            response = generate(
-                model, tokenizer, prompt=full_prompt,
-                max_tokens=max_tokens, sampler=sampler, verbose=False
-            )
-        except Exception:
-            from mlx_vlm import generate as vlm_generate
-            response = vlm_generate(
-                model, tokenizer, full_prompt,
-                max_tokens=max_tokens, temp=temperature, verbose=False
-            )
+        from src.ai.mlx_utils import MLX_GENERATE_LOCK
+        with MLX_GENERATE_LOCK:
+            try:
+                from mlx_lm import generate
+                from mlx_lm.sample_utils import make_sampler
+                sampler = make_sampler(temp=temperature)
+                response = generate(
+                    model, tokenizer, prompt=full_prompt,
+                    max_tokens=max_tokens, sampler=sampler, verbose=False
+                )
+            except Exception:
+                from mlx_vlm import generate as vlm_generate
+                response = vlm_generate(
+                    model, tokenizer, full_prompt,
+                    max_tokens=max_tokens, temp=temperature, verbose=False
+                )
 
         if not isinstance(response, str):
             response = getattr(response, 'text', '') or str(response)
