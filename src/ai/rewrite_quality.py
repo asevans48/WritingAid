@@ -19,7 +19,7 @@ import html
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 _WORD_RX = re.compile(r"[A-Za-z][A-Za-z'’\-]*")
 _NAME_RX = re.compile(r"(?<![A-Za-z'’])([A-Z][a-z]+(?:[-'’][A-Za-z]+)*)")
@@ -41,6 +41,142 @@ _COMMON_CAPS = {"I", "God", "Mr", "Mrs", "Ms", "Dr", "Sir", "Lady", "Lord", "Cap
                 "January", "February", "March", "April", "May", "June", "July", "August",
                 "September", "October", "November", "December", "English", "OK"}
 _dictionary = None
+
+# Phrases local models (Gemma especially) reach for again and again.
+# (label shown to the writer, pattern)
+STOCK_PHRASES = [
+    ("bruised (sky / light)", r"\bbruis(?:ed|e)[- ](?:sky|skies|light|purple|clouds?|horizon|dark)|"
+                               r"\b(?:sky|skies|horizon|clouds?)\b[^.]{0,20}\bbruise"),
+    ("heart hammering", r"\bheart\s+(?:was\s+)?(?:hammer|pound|thunder|slamm)\w*"),
+    ("breath she didn't know she was holding", r"breath (?:he|she|they|I) (?:didn't|did not) know"),
+    ("let out a breath", r"\blet out a (?:shaky |long |slow )?breath"),
+    ("breath hitched", r"\bbreath (?:hitch|caught)\w*"),
+    ("the weight of …", r"\bthe (?:full |crushing |heavy )?weight of (?:it|the|her|his|their|what|every)"),
+    ("swallowed by / swallowed them",
+     r"\b(?:fog|mist|dark(?:ness)?|night|sea|water|shadows?|silence)\s+swallow\w*"
+     r"|\bswallow(?:ed|ing|s)? (?:them|him|her|the light|the sound|whole)|\bswallowed by\b"),
+    ("fog / mist clung", r"\b(?:fog|mist|silence|darkness|smoke)\s+(?:clung|clinging)"),
+    ("a testament to", r"\ba testament to\b"),
+    ("tapestry of", r"\btapestry of\b"),
+    ("symphony of", r"\bsymphony of\b"),
+    ("dance of", r"\b(?:a|the) dance of\b"),
+    ("palpable", r"\bpalpable\b"),
+    ("the air thick with", r"\b(?:air|room|silence)\s+(?:was\s+)?(?:thick|heavy|electric)\s+with\b"),
+    ("time stood still", r"\btime (?:seemed to )?(?:stood|stand|stop(?:ped)?) still\b"),
+    ("something shifted", r"\bsomething (?:shifted|changed) (?:in|between)\b"),
+    ("knuckles white", r"\bknuckles\s+(?:turn(?:ed|ing)?\s+)?white|\bwhite-knuckled\b"),
+    ("jaw clenched / tightened", r"\bjaw (?:clench|tighten|set)\w*"),
+    ("ghost of a smile", r"\bghost of a (?:smile|grin|laugh)"),
+    ("a flicker of …", r"\ba flicker of\b"),
+    ("barely above a whisper", r"\bbarely (?:above|more than) a whisper"),
+    ("sent a shiver / chill", r"\b(?:sent|a) (?:shivers?|chills?) (?:down|up|ran|crept|through)"),
+    ("couldn't help but", r"\bcould(?:n't| not) help but\b"),
+    ("it was as if", r"\bit was as (?:if|though)\b"),
+    ("eyes that held", r"\beyes (?:that )?held\b"),
+    ("copper / metallic tang", r"\b(?:coppery|metallic|copper) (?:tang|taste)\b"),
+    ("ozone", r"\bozone\b"),
+    ("unspoken …", r"\bunspoken (?:words?|question|tension|promise)"),
+    ("electric silence / tension", r"\belectric (?:silence|tension|air)"),
+    ("a beat passed", r"\ba beat (?:passed|of silence)|\bfor a heartbeat\b"),
+    ("in that moment", r"\bin that moment\b"),
+]
+_STOCK_RX = [(label, re.compile(rx, re.I)) for label, rx in STOCK_PHRASES]
+
+# Concrete things a rewrite must not invent (a gun, a wound, a horse…).
+FACT_WORDS = {
+    # Words that are usually figurative ("dead calm", "blade of grass", a
+    # ship's bow) are left out.
+    "weapon": """gun guns rifle rifles pistol pistols revolver musket shotgun crossbow arrow
+        arrows sword swords knife knives dagger axe spear bomb grenade cannon harpoon
+        bullet bullets""",
+    "injury": """bleeding bled corpse corpses killed fracture""",
+    "vehicle or animal": """car truck horse horses carriage wagon train helicopter plane dog dogs
+        cat motorbike bicycle""",
+}
+_FACT_INDEX = {w: kind for kind, words in FACT_WORDS.items() for w in words.split()}
+
+
+def avoid_phrases() -> List[str]:
+    """Phrases the writer asked never to see (Suggestions › Avoid a phrase)."""
+    try:
+        from src.config.creativeos_config import get_creativeos_config
+        return [p for p in get_creativeos_config().get("avoid_phrases", []) or []
+                if isinstance(p, str) and p.strip()]
+    except Exception:
+        return []
+
+
+def add_avoid_phrase(phrase: str) -> bool:
+    phrase = " ".join((phrase or "").split())
+    if len(phrase) < 3:
+        return False
+    from src.config.creativeos_config import get_creativeos_config
+    cfg = get_creativeos_config()
+    current = list(cfg.get("avoid_phrases", []) or [])
+    if phrase.lower() in (p.lower() for p in current):
+        return False
+    cfg.set("avoid_phrases", current + [phrase])
+    return True
+
+
+def stock_phrases_in(text: str, extra: Iterable[str] = ()) -> List[str]:
+    """Labels of the stock phrases (and the writer's avoided ones) in ``text``."""
+    found = [label for label, rx in _STOCK_RX if rx.search(text or "")]
+    for phrase in extra:
+        if re.search(r"\b" + re.escape(phrase) + r"\b", text or "", re.I):
+            found.append(phrase)
+    return found
+
+
+def avoid_prompt(extra: Iterable[str] = ()) -> str:
+    """Prompt line listing stock phrasing to stay away from."""
+    labels = [label for label, _ in STOCK_PHRASES] + list(extra)
+    return ("Avoid stock phrasing, including: " + "; ".join(labels)
+            + ". Find a fresh, specific image instead.")
+
+
+def new_facts(candidate: str, context: str) -> List[str]:
+    """Concrete things in ``candidate`` that appear nowhere in ``context``."""
+    have = set(_words(context))
+    out = []
+    for w in dict.fromkeys(_words(candidate)):
+        if w in _FACT_INDEX and w not in have and w.rstrip("s") not in have \
+                and w + "s" not in have:
+            out.append(w)
+    return out
+
+
+TWIN_PREFIX = "is nearly the same as suggestion"
+SAME_OPENING_PREFIX = "opens the same way as suggestion"
+
+
+def twin_problems(texts: Sequence[str]) -> Dict[int, str]:
+    """Index → problem, for a rewrite whose narration is mostly the same
+    wording as an earlier one's. Dialogue is ignored: keeping the author's
+    lines is right, so it would make every rewrite look alike."""
+    out: Dict[int, str] = {}
+    words = [_words(_narration(t)) for t in texts]
+    for j in range(len(texts)):
+        for i in range(j):
+            if min(len(words[i]), len(words[j])) < 8:
+                continue
+            if difflib.SequenceMatcher(None, words[i], words[j], autojunk=False).ratio() >= 0.7:
+                out[j] = f"{TWIN_PREFIX} {i + 1}"
+                break
+    return out
+
+
+def same_openings(texts: Sequence[str]) -> Dict[int, str]:
+    """Index → note, for rewrites opening with the same three words as an
+    earlier one (often right when the fix is to lead with the cause)."""
+    out: Dict[int, str] = {}
+    words = [_words(t)[:3] for t in texts]
+    for j in range(len(texts)):
+        for i in range(j):
+            if words[i] and words[i] == words[j]:
+                out[j] = f"{SAME_OPENING_PREFIX} {i + 1}"
+                break
+    return out
 
 
 def _known_word(word: str) -> bool:
@@ -121,6 +257,81 @@ def _name_problems(candidate: str, context: str, known_names: Iterable[str]) -> 
     return out
 
 
+_STOP = set("""the a an and or but of to in on at by for with from as is was were be been are it
+its this that these those not no so than then into about over his her him she he they them their
+there here had has have did does do would could should will just only very what when where which
+who whom while all any each some out off down upward back again still even once across
+through toward towards onto upon""".split())
+
+
+def split_sentences(text: str) -> List[str]:
+    """Sentences of ``text`` (paragraph by paragraph)."""
+    from src.ai.passage_critique import _sentence_spans
+    out = []
+    for para in (text or "").split("\n"):
+        out += [para[s:e] for s, e in _sentence_spans(para)]
+    return out
+
+
+def _stem(word: str) -> str:
+    for suffix in ("ingly", "edly", "ing", "ed", "ly", "es", "s"):
+        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+            return word[:-len(suffix)]
+    return word
+
+
+def content_words(text: str, ignore: frozenset = frozenset()) -> set:
+    words = (re.sub(r"'s$", "", w).strip("'-") for w in _words(text))
+    return {_stem(w) for w in words if len(w) >= 3 and w not in _STOP and w not in ignore}
+
+
+def _capitalized(*texts: str) -> frozenset:
+    """Names (and other capitalised words) — shared by any two sentences
+    about the same people, so they don't count as retelling."""
+    return frozenset(w.lower() for t in texts for w in _NAME_RX.findall(t or "")) - {"i"}
+
+
+def similarity(a: str, b: str, ignore: frozenset = frozenset()) -> float:
+    """Content-word overlap of two sentences, 0–1 (catches paraphrase,
+    not just copying). Names in ``ignore`` don't count."""
+    wa, wb = content_words(a, ignore), content_words(b, ignore)
+    if len(wa) < 3 or len(wb) < 3:
+        return 0.0
+    return len(wa & wb) / min(len(wa), len(wb))
+
+
+def restated_sentences(text: str, earlier: str, *, threshold: float = 0.6,
+                       against: str = "") -> List[Tuple[str, str]]:
+    """Sentences of ``text`` that retell a sentence of ``earlier``:
+    (sentence, the earlier sentence). With ``against`` (the passage being
+    replaced), a sentence that's closer to the passage itself is fine —
+    unless that passage sentence is itself a retelling."""
+    earlier_sents = split_sentences(earlier)[-14:]
+    # A retelling often merges two neighbouring sentences into one.
+    earlier_sents += [f"{a} {b}" for a, b in zip(earlier_sents, earlier_sents[1:])]
+
+    names = _capitalized(text, earlier, against)
+    sim = lambda a, b: similarity(a, b, names)
+
+    def retells(sent):
+        return max((sim(sent, e) for e in earlier_sents), default=0.0) >= threshold
+
+    own = [o for o in split_sentences(against) if not retells(o)]
+    out = []
+    for sent in split_sentences(text):
+        # Short sentences share a word or two with anything nearby.
+        if len(content_words(sent, names)) < 4:
+            continue
+        best = max(earlier_sents, key=lambda e: sim(sent, e), default="")
+        score = sim(sent, best) if best else 0.0
+        if score < threshold:
+            continue
+        if own and max(sim(sent, o) for o in own) >= score:
+            continue
+        out.append((sent, best))
+    return out
+
+
 def _copied_context(candidate: str, original: str, around: str, n: int = 8) -> bool:
     def grams(text):
         w = _words(text)
@@ -135,8 +346,14 @@ def _style_counts(text: str) -> Counter:
 
 def check_rewrite(original: str, candidate: str, *, voice: Any = None,
                   known_names: Iterable[str] = (), before: str = "", after: str = "",
-                  focus: str = "") -> RewriteCheck:
-    """Problems with ``candidate`` as a replacement for ``original``."""
+                  focus: str = "", notes: str = "",
+                  avoid: Optional[Iterable[str]] = None) -> RewriteCheck:
+    """Problems with ``candidate`` as a replacement for ``original``.
+
+    ``notes`` is the story-bible text the model was given (new concrete
+    facts are fine if they come from it); ``avoid`` the writer's banned
+    phrases (default: from settings).
+    """
     check = RewriteCheck()
     if not (candidate or "").strip():
         check.serious.append("is empty")
@@ -165,6 +382,30 @@ def check_rewrite(original: str, candidate: str, *, voice: Any = None,
                              f"({n_new} words vs {n_orig})")
     if _copied_context(candidate, original, f"{before[-2000:]}\n{after[:2000]}"):
         check.serious.append("repeats text from before or after the passage")
+    else:
+        retold = restated_sentences(candidate, before[-2500:], against=original)
+        if retold:
+            check.serious.append(f"retells “{_short(retold[0][1])}”, which comes before the passage")
+        elif restated_sentences(candidate, after[:1500], against=original):
+            check.serious.append("retells what comes after the passage")
+
+    scene = f"{before}\n{original}\n{after}"
+    invented = new_facts(candidate, f"{scene}\n{notes}\n{focus}")
+    if invented:
+        check.serious.append("adds " + ", ".join(f"“{w}”" for w in invented[:3])
+                             + ", which isn't in the scene or your notes")
+
+    avoid = avoid_phrases() if avoid is None else list(avoid)
+    stock = [p for p in stock_phrases_in(candidate, avoid)
+             if p not in stock_phrases_in(scene, avoid)]
+    if len(stock) >= 2 or any(p in avoid for p in stock):
+        check.serious.append("leans on stock phrasing (" + ", ".join(stock[:3]) + ")")
+    elif stock:
+        check.minor.append(f"uses the stock phrase “{stock[0]}”")
+    rates = getattr(voice, "punctuation_per_100_sentences", None) or {}
+    if (getattr(voice, "can_judge_absence", False) and rates.get("em-dashes", 1) == 0
+            and re.search(r"—|--", candidate) and not re.search(r"—|--", original)):
+        check.minor.append("adds em-dashes, which you don't use")
 
     try:
         was, now = _style_counts(original), _style_counts(candidate)
@@ -180,6 +421,11 @@ def check_rewrite(original: str, candidate: str, *, voice: Any = None,
         if check.voice_fit is not None and check.voice_fit < 0.55:
             check.minor.append(f"is a weak match for your voice ({check.voice_fit:.0%})")
     return check
+
+
+def _short(text: str, n: int = 70) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= n else text[:n - 1] + "…"
 
 
 def known_names_for(project: Any) -> List[str]:

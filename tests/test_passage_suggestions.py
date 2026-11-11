@@ -200,7 +200,7 @@ def test_tops_up_to_three_suggestions(project, chapter):
     llm = FakeLLM(first, "SUGGESTION 1:\nTwo.\nWHY: a\n\nSUGGESTION 2:\nThree.\nWHY: b")
     ctx = pc.build_context(project, chapter, TEXT, 0, 24)
     r = pc.critique_passage(llm, ctx)
-    assert [s.text for s in r.suggestions] == ["Mara sprinted for the pier.", "Two.", "Three."]
+    assert sorted(s.text for s in r.suggestions) == ["Mara sprinted for the pier.", "Three.", "Two."]
     assert "already suggested" in llm.prompts[1]
 
 
@@ -308,3 +308,70 @@ def test_context_menu_offers_suggestions(app, project, chapter, monkeypatch):
         x.text() for x in self.actions()))
     ed._show_context_menu(ed.editor.rect().center())
     assert any(label.startswith("💡 Suggestions") for label in labels)
+
+
+# ── Order, and not retelling earlier text ─────────────────────────
+
+SCENE = ("The patrol boat swung its lamp across the harbor. Mara crouched behind the crates "
+         "and held her breath until the light passed.\n\n"
+         "Mara held her breath behind the crates while the lamp passed over. She flinched at "
+         "the gunshot. A shot cracked across the water. Tobin cursed.")
+
+
+def scene_ctx():
+    s = SCENE.index("Mara held her breath behind")
+    e = SCENE.index(" Tobin cursed.")
+    return pc.build_context(None, None, SCENE, s, e)
+
+
+def test_passage_is_marked_in_place_and_numbered():
+    ctx = scene_ctx()
+    prompt = pc.build_prompt(ctx)
+    assert "⟦PASSAGE START⟧ Mara held her breath behind" in prompt
+    assert "gunshot. A shot cracked across the water. ⟦PASSAGE END⟧" in prompt
+    assert "[2] She flinched at the gunshot." in prompt and "[3] A shot cracked" in prompt
+    assert "ORDER AND FLOW" in prompt and "reacts after" in prompt
+    assert "CHAPTER TEXT BEFORE" not in prompt
+
+
+def test_scan_notices_the_passage_retelling_earlier_text():
+    ctx = scene_ctx()
+    assert len(ctx.observations) == 1 and ctx.observations[0].startswith("Sentence [1]")
+    assert "already noticed".upper() in pc.build_prompt(ctx).upper()
+
+
+def test_order_section_is_parsed_and_scan_notes_kept():
+    ctx = scene_ctx()
+    reply = ("WHAT WORKS:\n- Tense.\n\n**Order and flow:**\n- [2] reacts to the shot before "
+             "[3] fires it — swap them.\n\nSUGGESTION 1:\nA shot cracked across the water. "
+             "Mara flinched behind the crates.\nWHY: cause first.")
+    llm = type("L", (), {"generate_text": lambda self, *a, **k: reply})()
+    r = pc.critique_passage(llm, ctx)
+    assert r.order[0].startswith("[2] reacts to the shot")
+    assert any(o.startswith("Sentence [1] largely restates") for o in r.order)
+
+
+def test_rewrite_that_retells_earlier_text_is_flagged():
+    from src.ai.rewrite_quality import check_rewrite
+    ctx = scene_ctx()
+    retold = ("The patrol boat's lamp swept over the harbor and Mara hid behind the crates. "
+              "A shot cracked across the water and she flinched.")
+    fixed = "A shot cracked across the water. Mara flinched and pressed lower behind the crates."
+    bad = check_rewrite(ctx.passage, retold, before=ctx.before, after=ctx.after)
+    assert any("retells" in p for p in bad.serious), bad.serious
+    assert check_rewrite(ctx.passage, fixed, before=ctx.before, after=ctx.after).ok
+
+
+def test_similarity_catches_paraphrase_not_just_copying():
+    from src.ai.rewrite_quality import similarity
+    assert similarity("The patrol boat swung its lamp across the harbor.",
+                      "Across the harbor, the patrol boat's lamp swung.") >= 0.6
+    assert similarity("The patrol boat swung its lamp across the harbor.",
+                      "Tobin cursed and reached for the oars.") < 0.3
+
+
+def test_sharing_names_and_places_is_not_retelling():
+    from src.ai.rewrite_quality import restated_sentences
+    earlier = "Mara crouched behind the crates and held her breath until the light passed."
+    assert restated_sentences("Mara pressed against the crates, listening.", earlier) == []
+    assert restated_sentences("Tobin and Mara argued about the crates for an hour.", earlier) == []

@@ -16,3 +16,10 @@ def _isolated_rephrase_database(tmp_path, monkeypatch):
     user's real one (data collection may be switched on)."""
     import src.data.rephrase_database as rd
     monkeypatch.setattr(rd, "_instance", rd.RephraseDatabase(tmp_path / "rephrase_test.db"))
+
+
+@pytest.fixture(autouse=True)
+def _no_personal_avoid_list(monkeypatch):
+    """The writer's own avoided phrases live in their settings; tests use none."""
+    import src.ai.rewrite_quality as rq
+    monkeypatch.setattr(rq, "avoid_phrases", lambda: [])

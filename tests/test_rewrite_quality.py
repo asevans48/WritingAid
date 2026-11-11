@@ -183,7 +183,7 @@ def test_failing_suggestion_is_replaced_quietly(project):
 def test_unfixable_suggestion_is_kept_last_with_a_warning(project):
     bad = "Marra stared at the water and thought about her brother again."
     llm = FakeLLM(reply("Mara stared at the water and thought of her brother out there.",
-                        bad, "Mara watched the dark water and thought of her brother."),
+                        bad, "Her brother filled every thought as the dark water rolled by."),
                   "SUGGESTION 1:\nMarra again stared at the water and thought.\nWHY: x")
     r = pc.critique_passage(llm, passage_ctx(project))
     assert r.suggestions[-1].text == bad and r.suggestions[-1].notes

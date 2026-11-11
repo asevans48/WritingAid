@@ -31,7 +31,7 @@ import re
 import statistics
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 _SENT_SPLIT = re.compile(r'(?<=[.!?…])["”’\')\]]*\s+(?=["“‘\'(\[]?[A-Z])')
 _WORD_RE = re.compile(r"[A-Za-z][A-Za-z'’]*")
@@ -134,11 +134,14 @@ class WriterVoice:
         lines = ["AUTHOR'S VOICE — the rewrite must read as if this author wrote it. "
                  "Match these measured habits of their prose (narration, not dialog):"]
         if self.has_measurements:
+            low, high = self.sentence_range()
             lines.append(
-                f"• Sentence length: ~{self.avg_sentence_len:.0f} words on average "
-                f"(spread ±{self.sentence_len_stdev:.0f}); "
-                f"{self.short_sentence_pct:.0f}% short (<8 words), "
-                f"{self.long_sentence_pct:.0f}% long (>25). Keep that rhythm.")
+                f"• Sentence length: usually {low}–{high} words (average "
+                f"~{self.avg_sentence_len:.0f}); {self.short_sentence_pct:.0f}% are short "
+                f"(<8 words), {self.long_sentence_pct:.0f}% long (>25). These are tendencies, "
+                f"not limits: vary within and occasionally beyond that range the way the "
+                f"author does. Variety is part of the voice; don't make every sentence the "
+                f"same length.")
             if self.sentences_per_paragraph:
                 lines.append(f"• Paragraphs run ~{self.sentences_per_paragraph:.1f} sentences.")
             if self.person or self.tense:
@@ -183,12 +186,19 @@ class WriterVoice:
             lines.extend(f'  » "{e}"' for e in self.exemplars)
         return "\n".join(lines)
 
+    def sentence_range(self) -> Tuple[int, int]:
+        """The author's usual sentence length, as (low, high) words."""
+        spread = max(self.sentence_len_stdev, self.avg_sentence_len * 0.35)
+        return (max(2, round(self.avg_sentence_len - spread)),
+                max(4, round(self.avg_sentence_len + spread)))
+
     def to_critique_prompt(self) -> str:
         """The measured habits as facts for a critic: deliberate style to
         respect, not a defect list."""
         if not self.has_measurements:
             return ""
-        bits = [f"sentences average ~{self.avg_sentence_len:.0f} words "
+        low, high = self.sentence_range()
+        bits = [f"sentences usually run {low}–{high} words, average ~{self.avg_sentence_len:.0f} "
                 f"({self.short_sentence_pct:.0f}% under 8, {self.long_sentence_pct:.0f}% over 25)"]
         if self.person or self.tense:
             bits.append(f"{self.person or 'mixed'} person, {self.tense or 'mixed'} tense")
@@ -198,8 +208,10 @@ class WriterVoice:
         if used:
             bits.append("favours " + ", ".join(used))
         return ("AUTHOR'S MEASURED VOICE (from their manuscript): " + "; ".join(bits) + ". "
-                "Treat these habits as deliberate style. Recommend changing one only where "
-                "it hurts this chapter, and keep any example fixes in this voice.")
+                "Treat these habits as deliberate style and these numbers as ranges, not "
+                "rules: never fault a sentence just for being longer or shorter than the "
+                "average. Recommend changing a habit only where it hurts this chapter, and "
+                "keep any example fixes in this voice.")
 
     # ------------------------------------------------------------------
     def fit_score(self, candidate: str) -> Optional[float]:

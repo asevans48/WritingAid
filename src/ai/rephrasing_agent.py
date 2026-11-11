@@ -3400,6 +3400,11 @@ For each option, briefly explain what makes it different from the original."""
             )
 
         examples_block = f"\n{examples_note.strip()}\n" if (examples_note or "").strip() else ""
+        try:
+            from src.ai.rewrite_quality import avoid_phrases, avoid_prompt
+            examples_block += "\n" + avoid_prompt(avoid_phrases()) + "\n"
+        except Exception:
+            pass
         voice_note = ""
         if writer_voice is not None and not writer_voice.is_empty:
             voice_note = "\n" + writer_voice.to_prompt() + "\n"
@@ -3643,7 +3648,8 @@ Format your response as:
 
             def check(o):
                 return check_rewrite(text, o.text, voice=writer_voice, known_names=names,
-                                     before=before or "", after=after or "", focus=focus)
+                                     before=before or "", after=after or "", focus=focus,
+                                     notes=extra_names)
 
             checks = [check(o) for o in options]
             failed = [(o, c) for o, c in zip(options, checks) if not c.ok]

@@ -176,6 +176,12 @@ class PassageCritiqueDialog(QDialog):
             btn.clicked.connect(lambda _=False, v=value: self._rate(v))
             rate_row.addWidget(btn)
             self.rate_buttons[value] = btn
+        self.avoid_btn = QPushButton("🚫 Avoid a phrase…")
+        self.avoid_btn.setToolTip("Select a phrase in the suggestion you never want to see "
+                                  "again. Suggestions and Rephrase will avoid it and replace "
+                                  "rewrites that use it.")
+        self.avoid_btn.clicked.connect(self._avoid_phrase)
+        rate_row.addWidget(self.avoid_btn)
         rate_row.addStretch()
         self.rating_status = QLabel("")
         self.rating_status.setStyleSheet("color: #666; font-size: 11px;")
@@ -266,7 +272,8 @@ class PassageCritiqueDialog(QDialog):
             rows = "".join(f"<li>{html.escape(i)}</li>" for i in items)
             return f"<h3 style='color:{color}'>{mark} {title}</h3><ul>{rows}</ul>"
         body = (section("What works", result.works, "#2e7d32", "✓")
-                + section("What doesn't work", result.issues, "#c62828", "✗"))
+                + section("What doesn't work", result.issues, "#c62828", "✗")
+                + section("Order and flow", result.order, "#1d4ed8", "⇅"))
         return body or "<p><i>No discussion — see the suggestions below.</i></p>"
 
     def _show_suggestion(self, row: int):
@@ -295,6 +302,24 @@ class PassageCritiqueDialog(QDialog):
                                  project_path=_project_path(self.project),
                                  before=self.text[max(0, self.start - 500):self.start],
                                  after=self.text[self.end:self.end + 500], genre=genre)
+
+    def _avoid_phrase(self, _checked: bool = False, phrase: Optional[str] = None):
+        from src.ai.rewrite_quality import add_avoid_phrase
+        if phrase is None:
+            phrase = self.preview_edit.textCursor().selectedText().strip()
+        if not phrase:
+            from PyQt6.QtWidgets import QInputDialog
+            phrase, ok = QInputDialog.getText(
+                self, "Avoid a phrase", "Phrase Suggestions and Rephrase should never use:")
+            if not ok:
+                return
+        try:
+            added = add_avoid_phrase(phrase)
+        except Exception as e:
+            self.rating_status.setText(f"Couldn't save: {e}")
+            return
+        self.rating_status.setText(f"Won't suggest “{phrase.strip()}” again." if added
+                                   else "Already avoided (or too short).")
 
     def _rate(self, value: str):
         row = self.suggestion_list.currentRow()

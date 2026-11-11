@@ -124,6 +124,13 @@ class PassageContext:
     voice: str = ""             # the author's measured voice
     examples: str = ""          # rewrites the author rated before
     known_names: List[str] = field(default_factory=list)   # for spelling checks
+    observations: List[str] = field(default_factory=list)  # found without the model
+    speakers: str = ""          # who says each line of dialogue in the passage
+
+    def notes_text(self) -> str:
+        """Everything from the story bible the model was shown."""
+        return "\n".join((self.story_outline, self.plot, self.earlier, self.chapter,
+                          self.characters, self.world, self.related))
 
     def sections(self) -> List[Tuple[str, str]]:
         return [("STORY OUTLINE", self.story_outline), ("PLOT", self.plot),
@@ -131,10 +138,25 @@ class PassageContext:
                 ("THIS CHAPTER", self.chapter), ("CHARACTERS IN THIS PASSAGE", self.characters),
                 ("WORLDBUILDING IN THIS PASSAGE", self.world),
                 ("OTHER RELATED PROJECT NOTES", self.related),
-                ("CHAPTER TEXT BEFORE THE PASSAGE", self.before),
-                ("CHAPTER TEXT AFTER THE PASSAGE", self.after),
                 ("THE AUTHOR'S VOICE", self.voice),
                 ("THE AUTHOR'S TASTE", self.examples)]
+
+    def sentences(self) -> List[str]:
+        from src.ai.rewrite_quality import split_sentences
+        return split_sentences(self.passage)
+
+    def scene(self, before_chars: int = 0) -> str:
+        """The surrounding text with the passage marked in place, so the
+        model sees exactly where it sits and what is already written."""
+        before = self.before[-before_chars:] if before_chars else self.before
+        return (f"{before}\n⟦PASSAGE START⟧ {self.passage.strip()} ⟦PASSAGE END⟧\n"
+                f"{self.after}").strip()
+
+    def numbered_passage(self) -> str:
+        sents = self.sentences()
+        if len(sents) < 2:
+            return self.passage.strip()
+        return "\n".join(f"[{i}] {s}" for i, s in enumerate(sents, 1))
 
 
 def _clip(text: str, limit: int, *, from_end: bool = False) -> str:
@@ -319,7 +341,29 @@ def build_context(project: Any, chapter: Any, text: str, start: int, end: int, *
             ctx.related = _clip(related(window[-1200:]), size(1500))
         except Exception as e:
             print(f"[suggestions] project search unavailable: {e}")
+    ctx.observations = _observations(ctx, before)
+    if '"' in passage or "“" in passage:
+        from src.ai.dialogue_speakers import attribute_lines
+        people = [c.name for c in getattr(project, "characters", None) or []]
+        # Read from the paragraph start so beats and earlier tags count.
+        para_start = text.rfind("\n", 0, start) + 1
+        lines = attribute_lines(text[para_start:end], people)
+        skip = len(attribute_lines(text[para_start:start], people))
+        ctx.speakers = "\n".join(f"- {l.label()}" for l in lines[skip:][:12])
     return ctx
+
+
+def _observations(ctx: PassageContext, before: str) -> List[str]:
+    """Things a quick scan can see for sure: sentences of the passage that
+    retell what the chapter already said."""
+    from src.ai.rewrite_quality import restated_sentences, split_sentences
+    sents = split_sentences(ctx.passage)
+    out = []
+    for sent, earlier in restated_sentences(ctx.passage, before[-2500:]):
+        n = sents.index(sent) + 1 if sent in sents else 0
+        out.append(f"Sentence [{n}] largely restates something already written just before "
+                   f"the passage: “{earlier.strip()}”")
+    return out
 
 
 # ── Prompt ───────────────────────────────────────────────────────────
@@ -329,7 +373,36 @@ SYSTEM_PROMPT = (
     "own story bible — characters, world, plot and outline — and the chapter around it, "
     "then rewrite it. You are specific and honest, quote the passage when you point at "
     "something, and never pad. Each rewrite keeps the author's point of view, tense and "
-    "voice and stays consistent with the story bible.")
+    "voice and stays consistent with the story bible. You only ever rewrite the marked "
+    "passage: the text around it is already written and stays exactly as it is.")
+
+# One approach per suggestion: small models follow a named angle far more
+# reliably than "make them different".
+ANGLES = [
+    ("tightened", "the same content, every word earning its place"),
+    ("restructured", "rebuilt sentence by sentence: new structure and rhythm, a different "
+                     "opening, combined or split sentences"),
+    ("new focus", "the moment told through a character's perception or one concrete "
+                  "sensory detail, with a different opening"),
+    ("expanded", "slowed down with one or two vivid beats of action or detail from the scene"),
+]
+
+_REWRITE_RULES = (
+    "Rules for the rewrites:\n"
+    "- Each suggestion follows its own approach (named in its heading), so the three read "
+    "clearly differently. Don't just swap synonyms. Fixing the order comes first, even if "
+    "that means two suggestions start with the same event.\n"
+    "- Add no new facts: no objects, weapons, injuries, people, places or events that "
+    "aren't in the passage, the scene or the notes. You may cut, reorder and sharpen what "
+    "is there, and add sensory detail that fits the scene.\n"
+    "- Keep each line of dialogue with the speaker given above.\n")
+
+_SCOPE_RULES = (
+    "Your rewrites REPLACE ONLY the text between ⟦PASSAGE START⟧ and ⟦PASSAGE END⟧. "
+    "They must pick up exactly where the text before the passage leaves off and lead into "
+    "the text after it. Never retell, summarise or rephrase anything that is already "
+    "written before the passage (it stays on the page), and don't jump ahead to what "
+    "happens after it.")
 
 
 def build_prompt(ctx: PassageContext, focus: str = "") -> str:
@@ -337,36 +410,67 @@ def build_prompt(ctx: PassageContext, focus: str = "") -> str:
     for title, body in ctx.sections():
         if body.strip():
             parts.append(f"=== {title} ===\n{body.strip()}")
-    parts.append(f"=== PASSAGE TO CRITIQUE ===\n{ctx.passage.strip()}")
+    parts.append("=== THE SCENE (already written — the passage to critique is marked) ===\n"
+                 + ctx.scene())
+    parts.append("=== PASSAGE TO CRITIQUE, SENTENCE BY SENTENCE ===\n" + ctx.numbered_passage())
+    if ctx.speakers:
+        parts.append("=== WHO SPEAKS EACH LINE (from the dialogue tags — trust this; a name "
+                     "inside the quotes is who is being spoken to) ===\n" + ctx.speakers)
+    if ctx.observations:
+        parts.append("=== ALREADY NOTICED (confirm and include these) ===\n"
+                     + "\n".join(f"- {o}" for o in ctx.observations))
     if focus.strip():
         parts.append(f"=== THE AUTHOR WANTS YOU TO FOCUS ON ===\n{focus.strip()}")
     parts.append(
-        "Critique ONLY the passage. Judge it on: consistency with the characters "
-        "(personality, voice, motivation, where they are in their arc), the worldbuilding, "
-        "the plot and story outline, and how well it flows from the text before it into "
-        "the text after it — plus the prose itself (clarity, rhythm, showing vs telling, "
-        "tension).\n\n"
+        "Critique ONLY the passage. Judge it on:\n"
+        "- ORDER AND FLOW: is everything in the right sequence? Check that causes come "
+        "before effects, that a character reacts after (not before) what they react to, "
+        "that actions happen in a physically possible order, that information isn't used "
+        "before it is revealed, that nothing repeats what the text before already said, "
+        "and that the passage connects to the text before and after it. Refer to "
+        "sentences by number, e.g. \"[3] should come before [2]\".\n"
+        "- Consistency with the characters (personality, voice, motivation, arc), the "
+        "worldbuilding, the plot and the story outline.\n"
+        "- The prose: clarity, rhythm, showing vs telling, tension. The author's measured "
+        "voice gives ranges, not rules — don't fault a sentence only for its length.\n\n"
+        + _SCOPE_RULES + "\n\n" + _REWRITE_RULES + "- " + _avoid_line() + "\n\n"
         "Answer in exactly this format:\n\n"
         "WHAT WORKS:\n- <a specific strength>\n- <another>\n\n"
         "WHAT DOESN'T WORK:\n- <a specific problem and why>\n- <another>\n\n"
-        "SUGGESTION 1:\n<a complete rewrite of the passage>\nWHY: <one sentence>\n\n"
-        "SUGGESTION 2:\n<a different rewrite>\nWHY: <one sentence>\n\n"
-        "SUGGESTION 3:\n<a third, different approach>\nWHY: <one sentence>\n\n"
+        "ORDER AND FLOW:\n- <what's out of order, repeated or disconnected, by sentence "
+        "number — or \"In order.\" if the sequence is right>\n\n"
+        + "".join(f"SUGGESTION {i} ({name}):\n<a complete rewrite — {how}>\n"
+                  f"WHY: <one sentence>\n\n"
+                  for i, (name, how) in enumerate(ANGLES[:NUM_SUGGESTIONS], 1)) +
         "Each suggestion replaces the whole passage, so write it in full, about the same "
-        "length unless length is the problem. Do not repeat the text before or after it. "
-        "Make the three suggestions genuinely different approaches.")
+        "length unless length is the problem (the expanded one may run a little longer). If "
+        "anything is out of order, every suggestion must fix the order.")
     return "\n\n".join(parts)
+
+
+def _avoid_line() -> str:
+    from src.ai.rewrite_quality import avoid_phrases, avoid_prompt
+    return (avoid_prompt(avoid_phrases()) + " (This list is for your rewrites — only "
+            "criticise the passage for a phrase that really is a cliché.)")
+
+
+def _angles_for(count: int, used: List[str]) -> List[Tuple[str, str]]:
+    fresh = [a for a in ANGLES if a[0] not in used]
+    return (fresh + ANGLES)[:count]
 
 
 def build_more_prompt(ctx: PassageContext, have: List["Suggestion"], wanted: int) -> str:
     seen = "\n\n".join(f"(already suggested)\n{s.text}" for s in have)
-    return (f"=== PASSAGE ===\n{ctx.passage.strip()}\n\n"
+    return ("=== THE SCENE (the passage is marked) ===\n" + ctx.scene(1500) + "\n\n"
             + (f"=== EXISTING REWRITES ===\n{seen}\n\n" if seen else "")
-            + (f"=== CHAPTER TEXT BEFORE ===\n{ctx.before[-1200:]}\n\n" if ctx.before else "")
-            + f"Write {wanted} more rewrite(s) of the passage, each different from the "
-              f"existing ones, keeping the same point of view, tense and voice. Format:\n\n"
-            + "\n\n".join(f"SUGGESTION {i + 1}:\n<the rewrite>\nWHY: <one sentence>"
-                          for i in range(wanted)))
+            + f"{_SCOPE_RULES}\n\n{_REWRITE_RULES}- {_avoid_line()}\n\n"
+              f"Write {wanted} more rewrite(s) of the marked passage, "
+              f"each different from the existing ones, keeping the same point of view, tense "
+              f"and voice. Format:\n\n"
+            + "\n\n".join(f"SUGGESTION {i + 1} ({name}):\n<the rewrite — {how}>\n"
+                            f"WHY: <one sentence>"
+                            for i, (name, how) in enumerate(
+                                _angles_for(wanted, [s.angle for s in have]))))
 
 
 # ── Output parsing ───────────────────────────────────────────────────
@@ -377,18 +481,20 @@ class Suggestion:
     why: str = ""
     notes: List[str] = field(default_factory=list)     # problems the checks found
     voice_fit: Optional[float] = None
+    angle: str = ""                                    # e.g. "tightened"
 
 
 @dataclass
 class PassageCritique:
     works: List[str] = field(default_factory=list)
     issues: List[str] = field(default_factory=list)
+    order: List[str] = field(default_factory=list)      # sequence / repetition / flow
     suggestions: List[Suggestion] = field(default_factory=list)
     raw: str = ""
 
     @property
     def empty(self) -> bool:
-        return not (self.works or self.issues or self.suggestions)
+        return not (self.works or self.issues or self.order or self.suggestions)
 
 
 _HEAD = r"^\s*(?:#+\s*)?(?:\*\*|__)?\s*"
@@ -397,6 +503,9 @@ _WORKS_RX = re.compile(_HEAD + r"(?:what\s+works|works|strengths?)" + _HEAD_TAIL
 _ISSUES_RX = re.compile(
     _HEAD + r"(?:what\s+(?:doesn['’]?t|does\s+not|isn['’]?t)\s+work(?:ing)?|doesn['’]?t\s+work"
     r"|weaknesses|issues|problems)" + _HEAD_TAIL, re.I | re.M)
+_ORDER_RX = re.compile(
+    _HEAD + r"(?:order(?:\s*(?:and|&|/)\s*flow)?|sequence|flow(?:\s*(?:and|&|/)\s*order)?"
+    r"|order\s+of\s+events)" + _HEAD_TAIL, re.I | re.M)
 _SUGGESTION_RX = re.compile(
     _HEAD + r"(?:suggestion|option|version|rewrite|alternative)\s*#?\s*(\d)\b\s*(?:\*\*|__)?"
     r"\s*(?:\((?P<angle>[^)\n]{0,60})\))?\s*(?:\*\*|__)?\s*(?:[:.)\-–—]|$)"
@@ -440,6 +549,7 @@ def parse_critique(raw: str) -> PassageCritique:
     marks = sorted(
         [(m.start(), m.end(), "works", None) for m in _WORKS_RX.finditer(text)]
         + [(m.start(), m.end(), "issues", None) for m in _ISSUES_RX.finditer(text)]
+        + [(m.start(), m.end(), "order", None) for m in _ORDER_RX.finditer(text)]
         + [(m.start(), m.end(), "suggestion", m) for m in _SUGGESTION_RX.finditer(text)],
         key=lambda x: x[0])
     for i, (s, e, kind, m) in enumerate(marks):
@@ -448,6 +558,8 @@ def parse_critique(raw: str) -> PassageCritique:
             out.works += _bullets(body)
         elif kind == "issues":
             out.issues += _bullets(body)
+        elif kind == "order":
+            out.order += _bullets(body)
         else:
             rest = (m.group("rest") or "").strip()
             body = rest + body
@@ -458,32 +570,61 @@ def parse_critique(raw: str) -> PassageCritique:
                 body = body[:w.start()]
             rewrite = _clean_rewrite(body)
             if rewrite:
-                out.suggestions.append(Suggestion(rewrite, why.strip("*_ ")))
+                angle = (m.group("angle") or "").strip().lower()
+                out.suggestions.append(Suggestion(rewrite, why.strip("*_ "), angle=angle))
     return out
 
 
 # ── Running it ───────────────────────────────────────────────────────
 
-def build_fix_prompt(ctx: PassageContext, failed: List[Tuple["Suggestion", List[str]]]) -> str:
+def build_fix_prompt(ctx: PassageContext, failed: List[Tuple["Suggestion", List[str]]],
+                     keep: Optional[List["Suggestion"]] = None,
+                     slots: Optional[List[int]] = None) -> str:
+    """``slots``: the suggestion numbers (0-based) being replaced, so each
+    replacement keeps that slot's approach."""
     problems = "\n".join(f"- A rewrite that {'; '.join(p)}" for _, p in failed)
-    return (f"=== PASSAGE ===\n{ctx.passage.strip()}\n\n"
-            + (f"=== CHAPTER TEXT BEFORE ===\n{ctx.before[-1200:]}\n\n" if ctx.before else "")
+    kept = "\n\n".join(s.text for s in keep or [])
+    angles = ([ANGLES[i % len(ANGLES)] for i in slots] if slots
+              else _angles_for(len(failed), [s.angle for s in keep or []]))
+    return ("=== THE SCENE (the passage is marked) ===\n" + ctx.scene(1500) + "\n\n"
+            + (f"=== WHO SPEAKS EACH LINE ===\n{ctx.speakers}\n\n" if ctx.speakers else "")
+            + (f"=== REWRITES ALREADY KEPT (yours must differ from these in opening and "
+               f"approach) ===\n{kept}\n\n" if kept else "")
+            + f"{_SCOPE_RULES}\n\n{_REWRITE_RULES}- {_avoid_line()}\n\n"
             + (f"=== {ctx.voice}\n\n" if ctx.voice else "")
             + (f"=== NAMES IN THE STORY ===\n{', '.join(ctx.known_names[:40])}\n\n"
                if ctx.known_names else "")
             + f"Earlier rewrites were rejected because of these problems:\n{problems}\n\n"
               f"Write {len(failed)} new rewrite(s) of the passage that avoid them: same point "
               f"of view and tense, names spelled as in the story, similar length, and nothing "
-              f"copied from the surrounding text. Format:\n\n"
-            + "\n\n".join(f"SUGGESTION {i + 1}:\n<the rewrite>\nWHY: <one sentence>"
-                            for i in range(len(failed))))
+              f"retold from the surrounding text. Format:\n\n"
+            + "\n\n".join(f"SUGGESTION {i + 1} ({name}):\n<the rewrite — {how}>\n"
+                            f"WHY: <one sentence>" for i, (name, how) in enumerate(angles)))
 
 
 def _check_all(ctx: PassageContext, suggestions: List["Suggestion"], voice: Any, focus: str):
     from src.ai.rewrite_quality import check_rewrite
-    return [check_rewrite(ctx.passage, s.text, voice=voice, known_names=ctx.known_names,
-                          before=ctx.before, after=ctx.after, focus=focus)
-            for s in suggestions]
+    checks = [check_rewrite(ctx.passage, s.text, voice=voice, known_names=ctx.known_names,
+                            before=ctx.before, after=ctx.after, focus=focus,
+                            notes=ctx.notes_text())
+              for s in suggestions]
+    _mark_twins(suggestions, checks)
+    return checks
+
+
+def _mark_twins(suggestions: List["Suggestion"], checks) -> None:
+    """Near-identical narration needs replacing; a shared opening is a note."""
+    from src.ai.rewrite_quality import (SAME_OPENING_PREFIX, TWIN_PREFIX, same_openings,
+                                        twin_problems)
+    texts = [s.text for s in suggestions]
+    for check in checks:
+        check.serious = [p for p in check.serious if not p.startswith(TWIN_PREFIX)]
+        check.minor = [p for p in check.minor if not p.startswith(SAME_OPENING_PREFIX)]
+    for i, problem in twin_problems(texts).items():
+        checks[i].serious.append(problem)
+    for i, note in same_openings(texts).items():
+        if checks[i].ok:
+            checks[i].minor.append(note)
 
 
 def critique_passage(llm: Any, ctx: PassageContext, focus: str = "",
@@ -507,6 +648,11 @@ def critique_passage(llm: Any, ctx: PassageContext, focus: str = "",
     passage = " ".join(ctx.passage.split())
     result.suggestions = [s for s in result.suggestions
                           if " ".join(s.text.split()) != passage][:NUM_SUGGESTIONS]
+    # What the scan found is reported even if the model skipped it.
+    for note in ctx.observations:
+        if not any(note[:14] in o or "restat" in o.lower() or "repeat" in o.lower()
+                   for o in result.order):
+            result.order.append(note)
     if not result.suggestions:
         return result
 
@@ -515,13 +661,18 @@ def critique_passage(llm: Any, ctx: PassageContext, focus: str = "",
     if failed:
         say("Replacing weak suggestions…")
         try:
+            keep = [s for s, c in zip(result.suggestions, checks) if c.ok]
+            slots = [i for i, c in enumerate(checks) if not c.ok]
             fresh = parse_critique(llm.generate_text(
-                build_fix_prompt(ctx, failed), SYSTEM_PROMPT, max_tokens=1200, temperature=0.7))
+                build_fix_prompt(ctx, failed, keep, slots), SYSTEM_PROMPT,
+                max_tokens=1200, temperature=0.8))
             fresh_checks = _check_all(ctx, fresh.suggestions, voice, focus)
             spare = sorted(zip(fresh.suggestions, fresh_checks), key=lambda sc: sc[1].rank())
             for i, check in enumerate(checks):
                 if not check.ok and spare and spare[0][1].rank() < check.rank():
                     result.suggestions[i], checks[i] = spare.pop(0)
+            # Replacements must not twin the suggestions kept alongside them.
+            _mark_twins(result.suggestions, checks)
         except Exception as e:
             print(f"[suggestions] could not replace weak rewrites: {e}")
 
