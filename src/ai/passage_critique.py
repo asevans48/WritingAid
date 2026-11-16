@@ -127,6 +127,7 @@ class PassageContext:
     observations: List[str] = field(default_factory=list)  # found without the model
     allowed_reorders: set = field(default_factory=set)     # sentence pairs the critique flagged
     speakers: str = ""          # who says each line of dialogue in the passage
+    where: str = ""             # who's present, location, beats done / next
     # Dialogue mode (the passage is mostly conversation)
     dialogue_mode: bool = False
     speech: str = ""            # how the speakers talk (profiles)
@@ -145,7 +146,8 @@ class PassageContext:
                 ("HOW THESE CHARACTERS TALK", self.speech),
                 ("WHAT'S BETWEEN THE SPEAKERS", self.exchange),
                 ("EARLIER CHAPTERS", self.earlier),
-                ("THIS CHAPTER", self.chapter), ("CHARACTERS IN THIS PASSAGE", self.characters),
+                ("THIS CHAPTER", self.chapter), ("WHERE WE ARE IN THE SCENE", self.where),
+                ("CHARACTERS IN THIS PASSAGE", self.characters),
                 ("WORLDBUILDING IN THIS PASSAGE", self.world),
                 ("OTHER RELATED PROJECT NOTES", self.related),
                 ("THE AUTHOR'S VOICE", self.voice),
@@ -341,6 +343,8 @@ def build_context(project: Any, chapter: Any, text: str, start: int, end: int, *
         ctx.characters = _characters(project, chapter, window, passage, size(2400))
         ctx.world = _world(project, window, passage, size(1400))
         ctx.earlier = _earlier_chapters(project, chapter, size(1200))
+        from src.ai.scene_brief import scene_brief
+        ctx.where = scene_brief(project, chapter, before, passage, chapter_notes=False)
         from src.ai.rewrite_quality import known_names_for
         ctx.known_names = known_names_for(project)
     if voice is not None and not getattr(voice, "is_empty", True):

@@ -12,7 +12,7 @@ from PyQt6.QtGui import (
     QTextBlockFormat, QSyntaxHighlighter, QTextDocument,
     QTextBlockUserData, QMouseEvent
 )
-from typing import Optional, Callable, List, Set, Dict, Tuple
+from typing import Any, Optional, Callable, Iterable, List, Set, Dict, Tuple
 from dataclasses import dataclass
 from enum import Enum
 from collections import Counter
@@ -83,6 +83,9 @@ class WritingError:
     end: int
     reason: str
     suggestions: Optional[List[str]]   # None → computed on demand
+    # Span the suggestions replace, when it's wider than the word (the
+    # whole set phrase "mobile home" for an overused "home").
+    replace_span: Optional[Tuple[int, int]] = None
 
 
 def _apos(text: str) -> str:
@@ -621,6 +624,29 @@ class SpellChecker:
         return self._use_pyspellchecker or self._use_enchant or len(self._dictionary) > 100
 
 
+def _sentence_at(text: str, pos: int, limit: int = 180) -> str:
+    """The sentence around ``pos`` (clipped)."""
+    start = max(text.rfind(". ", 0, pos), text.rfind("\n", 0, pos), text.rfind("? ", 0, pos),
+                text.rfind("! ", 0, pos))
+    start = 0 if start < 0 else start + 1
+    ends = [i for i in (text.find(". ", pos), text.find("\n", pos), text.find("? ", pos),
+                        text.find("! ", pos)) if i >= 0]
+    end = min(ends) + 1 if ends else len(text)
+    sentence = " ".join(text[start:end].split())
+    return sentence if len(sentence) <= limit else sentence[:limit - 1] + "…"
+
+
+def _sentences_with(text: str, word: str, limit: int = 3) -> List[str]:
+    out = []
+    for m in re.finditer(rf"(?<![A-Za-z']){re.escape(word)}(?![A-Za-z])", text, re.I):
+        sentence = _sentence_at(text, m.start())
+        if sentence not in out:
+            out.append(sentence)
+        if len(out) >= limit:
+            break
+    return out
+
+
 class OveruseDetector:
     """Detects overused words and phrases, providing synonym suggestions."""
 
@@ -714,6 +740,19 @@ class OveruseDetector:
         self._cached_phrase_positions: Dict[str, List[Tuple[int, int]]] = {}
         # Occurrences sorted by start, built on first range query.
         self._phrase_index = None
+        # Light repeats (a word 3–5 times, a phrase 2–3 times) are only
+        # flagged when they weaken the writing — judged by a model when one
+        # is set up (``apply_verdicts``), else by proximity and how unusual
+        # the word is. Off by default; the editor turns it on.
+        self.review_low_counts = False
+        self.strong_threshold = 6
+        self.phrase_strong_threshold = 4
+        self._verdicts: Dict[str, Tuple[bool, str]] = {}   # "w:word" / "p:phrase"
+        self._names: Set[str] = set()                       # never overused
+        self._word_index: Dict[str, List[int]] = {}         # word → token positions
+        self._total_words = 0
+        self._text = ""
+        self._review_pending_phrases: Dict[str, List[Tuple[int, int]]] = {}
 
     # Contraction endings of helper words ("didn't", "it's", "we'll") — these
     # repeat by nature, like the IGNORE_WORDS they're built from.
@@ -752,7 +791,15 @@ class OveruseDetector:
             text_lower = normalize_apostrophes(text.lower())
             spans = [m.span() for m in COMPOUND_TOKEN_RX.finditer(text_lower)]
             words = [text_lower[s:e] for s, e in spans]
-            self._cached_counts = Counter(k for k in (self._count_key(w) for w in words) if k)
+            keys = [self._count_key(w) for w in words]
+            self._cached_counts = Counter(k for k in keys if k)
+            self._total_words = len(words)
+            self._text = text
+            self._word_index = {}
+            if self.review_low_counts:
+                for i, k in enumerate(keys):
+                    if k and self._cached_counts[k] >= self.threshold:
+                        self._word_index.setdefault(k, []).append(i)
 
             # Extract and count phrases (2, 3, 4, 5-word ngrams)
             grams = [self._extract_ngrams(words, n) for n in range(2, 6)]
@@ -768,9 +815,15 @@ class OveruseDetector:
         """
         self._phrase_index = None
         self._cached_phrase_positions.clear()
+        # Light repeats not flagged (yet): the judge may still flag them.
+        self._review_pending_phrases = {}
         wanted = {p for p, c in self._cached_phrase_counts.items()
                   if c >= self.phrase_threshold
                   and p not in self.IGNORE_PHRASES and p not in self._ignored_phrases}
+        if self.review_low_counts:
+            # A phrase needs two real words: "of her" / "out of the" are
+            # grammar, and "the boat" is just the word "boat" (checked alone).
+            wanted = {p for p in wanted if not self._only_names(p) and self._content_words(p) >= 2}
         if not wanted:
             return
 
@@ -805,6 +858,9 @@ class OveruseDetector:
         # Same order as the phrase counts: later phrases draw over earlier ones.
         for phrase in self._cached_phrase_counts:
             if phrase in found:
+                if self.review_low_counts and not self.phrase_verdict(phrase, found[phrase])[0]:
+                    self._review_pending_phrases[phrase] = found[phrase]
+                    continue
                 self._cached_phrase_positions[phrase] = found[phrase]
 
     def analyze_text(self, text: str) -> Dict[str, int]:
@@ -845,7 +901,119 @@ class OveruseDetector:
             self.update_cache(text)
             count = self._cached_counts.get(word_lower, 0)
 
-        return count >= self.threshold, count
+        if count < self.threshold:
+            return False, count
+        if self.review_low_counts:
+            if word_lower in self._names or word_lower in self._FUNCTION_WORDS:
+                return False, count
+            return self.word_verdict(word_lower, count)[0], count
+        return True, count
+
+    # ── Which light repeats matter ───────────────────────────────
+
+    RARE_FREQUENCY = 3e-6          # rarer than this, a word stands out when repeated
+    ECHO_WORDS = 50                # two uses this close are an echo
+    PHRASE_ECHO_CHARS = 600
+
+    def set_names(self, names: Iterable[str]) -> None:
+        """Character and place names: repeating them is how stories work."""
+        tokens = set()
+        for name in names or []:
+            for t in re.findall(r"[A-Za-z][A-Za-z'’-]+", name or ""):
+                tokens.add(t.lower())
+        self._names = tokens
+        self._cached_text_hash = 0          # recount with the names excluded
+
+    _FUNCTION_WORDS = set("""into onto out off over under along through past around about before
+    after behind across toward towards upon without within against between among like down up
+    away back then there than into upon via per""".split())
+
+    def _content_words(self, phrase: str) -> int:
+        return sum(1 for w in phrase.split()
+                   if len(w) > 2 and w not in self.IGNORE_WORDS and w not in self._FUNCTION_WORDS
+                   and w not in self._names)
+
+    def _only_names(self, phrase: str) -> bool:
+        words = [w for w in phrase.split() if w not in self.IGNORE_WORDS]
+        return bool(words) and all(w in self._names for w in words)
+
+    def _strong(self) -> int:
+        # Longer chapters can carry a few more uses before they grate.
+        return max(self.strong_threshold, self._total_words // 500)
+
+    def _word_frequency(self, word: str) -> float:
+        try:
+            from src.ai import rewrite_quality
+            rewrite_quality._known_word("the")      # loads the dictionary once
+            d = rewrite_quality._dictionary
+            return d.word_usage_frequency(word) if d else 1.0
+        except Exception:
+            return 1.0
+
+    def heuristic_verdict(self, word: str, count: int) -> Tuple[bool, str]:
+        """No model: flag a light repeat if two uses are close together, or
+        the word is unusual enough that readers notice it coming back."""
+        positions = self._word_index.get(word, [])
+        gaps = [b - a for a, b in zip(positions, positions[1:])]
+        if gaps and min(gaps) <= self.ECHO_WORDS:
+            return True, f"Two uses within {min(gaps)} words of each other."
+        if self._word_frequency(word) < self.RARE_FREQUENCY:
+            return True, "A distinctive word — readers notice it coming back."
+        return False, ""
+
+    def word_verdict(self, word: str, count: int) -> Tuple[bool, str]:
+        if count >= self._strong():
+            return True, ""
+        if f"w:{word}" in self._verdicts:
+            return self._verdicts[f"w:{word}"]
+        return self.heuristic_verdict(word, count)
+
+    def phrase_verdict(self, phrase: str, positions: List[Tuple[int, int]]) -> Tuple[bool, str]:
+        if len(positions) >= self.phrase_strong_threshold:
+            return True, ""
+        if f"p:{phrase}" in self._verdicts:
+            return self._verdicts[f"p:{phrase}"]
+        gaps = [b[0] - a[1] for a, b in zip(positions, positions[1:])]
+        if gaps and min(gaps) <= self.PHRASE_ECHO_CHARS:
+            return True, "Repeated close together."
+        return False, ""
+
+    def verdict_reason(self, key: str) -> str:
+        """The judge's reason for flagging a word ("w:…") or phrase ("p:…")."""
+        flagged, reason = self._verdicts.get(key, (False, ""))
+        return reason if flagged else ""
+
+    def review_items(self, limit: int = 40) -> List[Dict[str, Any]]:
+        """Light repeats for the judge: each with the sentences it's in.
+        Close echoes and distinctive words first."""
+        if not self.review_low_counts or not self._text:
+            return []
+        text = self._text
+        items = []
+        strong = self._strong()
+        for word, count in self._cached_counts.items():
+            if (self.threshold <= count < strong and len(word) > 2
+                    and word not in self.IGNORE_WORDS and word not in self._ignored_words
+                    and word not in self._names and word not in self._FUNCTION_WORDS):
+                items.append({"key": f"w:{word}", "text": word, "count": count,
+                              "sentences": _sentences_with(text, word),
+                              "suspicion": self.heuristic_verdict(word, count)[0]})
+        light = dict(self._review_pending_phrases)
+        light.update(self._cached_phrase_positions)
+        for phrase, positions in light.items():
+            if len(positions) < self.phrase_strong_threshold:
+                items.append({"key": f"p:{phrase}", "text": phrase, "count": len(positions),
+                              "sentences": [_sentence_at(text, s) for s, _ in positions[:3]],
+                              "suspicion": self.phrase_verdict(phrase, positions)[0]})
+        items.sort(key=lambda i: not i["suspicion"])
+        return items[:limit]
+
+    def apply_verdicts(self, verdicts: Dict[str, Tuple[bool, str]]) -> None:
+        """Results from the judge; recount so phrase highlights follow."""
+        self._verdicts.update(verdicts)
+        self._cached_text_hash = 0
+        if self._text:
+            self.update_cache(self._text)
 
     def get_synonyms(self, word: str) -> List[str]:
         """Get synonyms for a word."""
@@ -868,6 +1036,144 @@ class OveruseDetector:
             pass
 
         return []
+
+    # Words that make the next one an adverb of direction: "went home".
+    _MOTION = set("""went go goes going gone came come comes coming headed head heads drove
+    drive driving walked walk walking ran run running got get getting sent send brought bring
+    flew fly hurried rushed returned return returning made make way back""".split())
+    _NOUN_BEFORE = set("""a an the their his her my our your its this that these those every
+    each another some any no whose""".split())
+
+    def _guess_pos(self, word: str, paragraph: str, position: Optional[int]) -> Optional[str]:
+        """"noun", "verb", "adverb" or None — from the word's form and the
+        word before it (a full tagger takes seconds to load)."""
+        from src.utils.word_forms import form_of
+        if form_of(word) in ("past", "ing"):
+            return "verb"
+        if position is None or not paragraph:
+            return None
+        before = re.findall(r"[A-Za-z']+", paragraph[:position])
+        prev = before[-1].lower() if before else ""
+        if prev in self._MOTION:
+            return "adverb"
+        if prev in self._NOUN_BEFORE or prev.endswith("'s"):
+            return "noun"
+        if prev in ("to", "will", "would", "could", "should", "might", "must", "can", "did",
+                    "do", "does", "not", "never"):
+            return "verb"
+        return None
+
+    # Repeated phrases with a standard fix: (pattern, replacements). "" means
+    # cut it; \1 keeps a captured word ("nodded her head" → "nodded").
+    PHRASE_FIXES = [
+        (r"for a (?:moment|second|minute|beat)", ["", "briefly"]),
+        (r"(?:at|in) that (?:very )?moment", ["", "then"]),
+        (r"all of a sudden", ["suddenly", ""]),
+        (r"out of nowhere", ["suddenly", ""]),
+        (r"at the same time", ["meanwhile", "together"]),
+        (r"in the middle of", ["amid", "in"]),
+        (r"a little bit", ["a little", "slightly"]),
+        (r"(?:kind|sort) of", ["", "somewhat"]),
+        (r"seemed to be", ["seemed", "was"]),
+        (r"a lot of", ["many", "much"]),
+        (r"the fact that", ["that"]),
+        (r"(nodded|shook) (?:his|her|their|my|your) heads?", [r"\1"]),
+        (r"(shrugged) (?:his|her|their|my|your) shoulders", [r"\1"]),
+        (r"(blinked) (?:his|her|their|my|your) eyes", [r"\1"]),
+        (r"(turned|spun|whirled) around", [r"\1"]),
+        (r"(stood|stands|standing) up", [r"\1", "rose"]),
+        (r"(sat|sits|sitting) down", [r"\1"]),
+        (r"(clapped) (?:his|her|their|my|your) hands", [r"\1"]),
+    ]
+
+    def phrase_alternatives(self, phrase: str):
+        """``(start, end, options)`` for the part of a repeated phrase with a
+        standard fix (padding, redundant body language, wordy phrasing), or
+        None. Options replace ``phrase[start:end]``; "" cuts it."""
+        from src.utils.style_checks import WORDY
+        text = phrase or ""
+        best = None
+        candidates = list(self.PHRASE_FIXES) + [
+            (re.escape(k), [v]) for k, v in WORDY.items() if v is not None]
+        for pattern, options in candidates:
+            m = re.search(rf"(?<![A-Za-z]){pattern}(?![A-Za-z])", text, re.I)
+            if m and (best is None or (m.end() - m.start()) > (best[1] - best[0])):
+                best = (m.start(), m.end(), [m.expand(o) if "\\" in o else o for o in options])
+        if best is None:
+            return None
+        start, end, options = best
+        original = text[start:end]
+        fixed = []
+        for o in options:
+            if o and original[:1].isupper():
+                o = o[:1].upper() + o[1:]
+            if o.lower() != original.lower() and o not in fixed:
+                fixed.append(o)
+        return (start, end, fixed) if fixed else None
+
+    def _common_sense_synonyms(self, word: str, pos_hint: Optional[str] = None) -> List[str]:
+        """WordNet synonyms from the word's commonest meanings only — "home"
+        gives dwelling, abode…, not "plate" (baseball); "house" a building,
+        not a firm. Meanings are ranked by how often the word is used in
+        each (WordNet's sense counts)."""
+        from src.utils.word_forms import base_of, form_of
+        if pos_hint == "adverb":
+            return []          # "went home": no single word swaps in cleanly
+        try:
+            from src.utils.thesaurus import _ensure_wordnet
+            if not _ensure_wordnet():
+                return []
+            from nltk.corpus import wordnet as wn
+        except Exception:
+            return []
+        base = base_of(word) if form_of(word) != "base" else word.lower()
+        pos = {"verb": wn.VERB, "noun": wn.NOUN}.get(pos_hint or "")
+        synsets = wn.synsets(base, pos=pos) if pos else wn.synsets(base)
+        if not synsets:
+            return []
+
+        def uses(syn):
+            return sum(l.count() for l in syn.lemmas() if l.name().lower() == base)
+
+        ranked = sorted(synsets, key=uses, reverse=True)
+        top = uses(ranked[0])
+        senses = [s for s in ranked if top == 0 or uses(s) >= top * 0.25][:2]
+        out: List[str] = []
+        for syn in senses:
+            for lemma in sorted(syn.lemmas(), key=lambda l: -l.count()):
+                name = lemma.name().replace("_", " ")
+                if name.lower() not in (base, word.lower()) and name not in out:
+                    out.append(name)
+        return out
+
+    def contextual_synonyms(self, word: str, paragraph: str = "", full_text: str = "",
+                            limit: int = 7, position: Optional[int] = None) -> List[str]:
+        """Synonyms fitted to where the word is: in its form ("looked" →
+        "glanced"), minus ones already in the paragraph or themselves
+        overused, words the author already uses first. No model needed."""
+        from src.utils.word_forms import base_of, form_of, match_form
+        curated = self.SYNONYMS.get(word.lower()) or self.SYNONYMS.get(base_of(word))
+        pos = self._guess_pos(word, paragraph, position)
+        if pos == "adverb":
+            return []
+        candidates = list(curated) if curated else self._common_sense_synonyms(word, pos)
+        if full_text and self._cached_text_hash != hash(full_text):
+            self.update_cache(full_text)
+        in_paragraph = {w.lower() for w in re.findall(r"[A-Za-z'’-]+", paragraph or "")}
+        out, seen = [], {word.lower()}
+        for cand in candidates:
+            fitted = match_form(cand, word)
+            low = fitted.lower()
+            if low in seen or low in in_paragraph:
+                continue
+            seen.add(low)
+            if self._cached_counts.get(low, 0) >= self.threshold:
+                continue                       # swapping one overused word for another
+            out.append(fitted)
+        # Words already in the author's vocabulary first (stable otherwise).
+        used = lambda w: self._cached_counts.get(w.lower().split()[0], 0) > 0
+        out.sort(key=lambda w: not used(w))
+        return out[:limit]
 
     def ignore_word(self, word: str):
         """Add word to ignored list."""
@@ -1628,6 +1934,55 @@ class _GrammarWorker(QThread):
         self.results_ready.emit(results)
 
 
+class _ContextSuggestWorker(QThread):
+    """One quick model call for in-context replacements of a word."""
+    done = pyqtSignal(object, str)          # word_suggest.WordSuggestions | None, error
+
+    def __init__(self, word: str, sentence, count: int):
+        super().__init__()
+        self.word, self.sentence, self.count = word, sentence, count
+
+    def run(self):
+        try:
+            from src.ai import word_suggest as ws
+            llm = ws.get_llm()
+            if llm is None:
+                from src.ai.task_llm import no_model_message
+                self.done.emit(None, no_model_message())
+                return
+            self.done.emit(ws.suggest(llm, self.word, self.sentence, self.count), "")
+        except Exception as e:
+            self.done.emit(None, f"Couldn't get suggestions: {e}")
+
+
+_RUNNING_SUGGESTERS: Set["_ContextSuggestWorker"] = set()
+
+
+class _RepetitionWorker(QThread):
+    """Asks the model which light repeats weaken the writing."""
+    done = pyqtSignal(object, bool)          # verdicts, no model available
+
+    def __init__(self, items):
+        super().__init__()
+        self.items = items
+
+    def run(self):
+        try:
+            from src.ai import repetition_judge as rj
+            from src.ai import word_suggest as ws
+            llm = ws.get_llm()
+            if llm is None:
+                self.done.emit({}, True)
+                return
+            self.done.emit(rj.judge(llm, self.items), False)
+        except Exception as e:
+            print(f"[repetition] review failed: {e}")
+            self.done.emit({}, False)
+
+
+_RUNNING_REVIEWERS: Set["_RepetitionWorker"] = set()
+
+
 class WritingHighlighter(QSyntaxHighlighter):
     """Syntax highlighter for spelling, grammar, and overuse checking.
 
@@ -2122,12 +2477,50 @@ class WritingHighlighter(QSyntaxHighlighter):
                 if e.start <= position_in_block < e.end]
         if not hits:
             return None
-        error = min(hits, key=lambda e: (e.end - e.start, e.error_type == ErrorType.STYLE))
+        if all(e.error_type == ErrorType.OVERUSED_PHRASE for e in hits):
+            # Overlapping repeated phrases: the longest is the one to fix.
+            error = max(hits, key=lambda e: e.end - e.start)
+        else:
+            error = min(hits, key=lambda e: (e.end - e.start, e.error_type == ErrorType.STYLE))
+        return self._fill_suggestions(block_number, error)
+
+    def phrase_error_at(self, block_number: int, position_in_block: int) -> Optional[WritingError]:
+        """The longest repeated phrase covering this position (it can sit
+        under an overused word, which wins the click), suggestions filled in."""
+        hits = [e for e in self._errors.get(block_number, [])
+                if e.start <= position_in_block < e.end
+                and e.error_type == ErrorType.OVERUSED_PHRASE]
+        if not hits:
+            return None
+        return self._fill_suggestions(block_number,
+                                      max(hits, key=lambda e: e.end - e.start))
+
+    def _fill_suggestions(self, block_number: int, error: WritingError) -> WritingError:
         if error.suggestions is None:
             if error.error_type == ErrorType.SPELLING:
                 error.suggestions = self.spell_checker.suggest(error.word)
             elif error.error_type == ErrorType.OVERUSE and self.overuse_detector:
-                error.suggestions = self.overuse_detector.get_synonyms(error.word)
+                block = self.document().findBlockByNumber(block_number) if self.document() else None
+                paragraph = block.text() if block is not None and block.isValid() else ""
+                from src.ai.word_suggest import compound_around
+                compound = compound_around(paragraph, error.start, error.end)
+                if compound is not None:
+                    # One word of a set phrase: replace the whole phrase, or nothing.
+                    error.replace_span = (compound.start, compound.end)
+                    error.suggestions = compound.synonyms
+                    error.reason += (f" Here it's part of “{compound.phrase}” — suggestions "
+                                     f"replace the whole phrase.")
+                else:
+                    error.suggestions = self.overuse_detector.contextual_synonyms(
+                        error.word, paragraph, self._full_text or "", position=error.start)
+            elif error.error_type == ErrorType.OVERUSED_PHRASE and self.overuse_detector:
+                fix = self.overuse_detector.phrase_alternatives(error.word)
+                if fix is not None:
+                    sub_start, sub_end, options = fix
+                    error.replace_span = (error.start + sub_start, error.start + sub_end)
+                    error.suggestions = options
+                else:
+                    error.suggestions = []
             else:
                 error.suggestions = []
         return error
@@ -2401,7 +2794,10 @@ class WritingHighlighter(QSyntaxHighlighter):
                             word=word,
                             start=match.start(),
                             end=match.end(),
-                            reason=f"Word '{word}' appears {count} times. Consider varying your word choice.",
+                            reason=(f"Word '{word}' appears {count} times. "
+                                    + (self.overuse_detector.verdict_reason(
+                                        "w:" + (self.overuse_detector._count_key(word.lower()) or ""))
+                                       or "Consider varying your word choice.")),
                             suggestions=None,   # computed on demand (get_error_at)
                         ))
 
@@ -2444,8 +2840,10 @@ class WritingHighlighter(QSyntaxHighlighter):
                         word=text[local_start:local_end],   # as typed
                         start=local_start,
                         end=local_end,
-                        reason=f"Phrase '{phrase}' ({word_count} words) appears {count} times. Consider rephrasing.",
-                        suggestions=[]  # No automatic suggestions for phrases
+                        reason=(f"Phrase '{phrase}' ({word_count} words) appears {count} times. "
+                                + (self.overuse_detector.verdict_reason(f"p:{phrase}")
+                                   or "Consider rephrasing.")),
+                        suggestions=None,   # computed on demand (get_error_at)
                     ))
 
 
@@ -2566,8 +2964,11 @@ class ErrorCard(QWidget):
                     if sub is not None:
                         sub.deleteLater()
 
-    def show_for(self, error, block, global_pos: QPoint) -> None:
-        key = (block.position() + error.start, block.position() + error.end, error.reason)
+    def show_for(self, error, block, global_pos: QPoint, phrase=None) -> None:
+        """``phrase``: a repeated phrase under an overused word, shown as a
+        second section with its own fixes."""
+        key = (block.position() + error.start, block.position() + error.end, error.reason,
+               getattr(phrase, "start", None))
         if self.isVisible() and self.error is not None and key == getattr(self, "_key", None):
             self._hide_timer.stop()
             return
@@ -2588,26 +2989,22 @@ class ErrorCard(QWidget):
         why.setStyleSheet("color: #4b5563;")
         self._layout.addWidget(why)
 
-        suggestions = [s for s in (error.suggestions or [])][:5]
-        if suggestions:
-            row = QHBoxLayout()
-            row.setSpacing(4)
-            for sug in suggestions:
-                btn = QPushButton(sug if sug else f"Delete “{error.word[:20]}”")
-                btn.setObjectName("fix")
-                btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn.setToolTip(f"Replace “{error.word}” with “{sug}”" if sug else "Delete it")
-                btn.clicked.connect(lambda _=False, s_=sug: self._apply(s_))
-                row.addWidget(btn)
-            row.addStretch()
-            self._layout.addLayout(row)
-        elif kind == "spelling":
+        self._block = block
+        self._fix_row(error, block)
+        if not error.suggestions and kind == "spelling":
             none = QLabel("<i>No suggestions.</i>")
+            none.setStyleSheet("color: #6b7280;")
+            self._layout.addWidget(none)
+        elif not error.suggestions and kind == "overused_phrase":
+            none = QLabel("<i>No standard fix — try ✨ Suggest in context.</i>")
             none.setStyleSheet("color: #6b7280;")
             self._layout.addWidget(none)
 
         actions = QHBoxLayout()
         actions.setSpacing(2)
+        if kind in ("overuse", "overused_phrase"):
+            self._action(actions, "✨ Suggest in context",
+                         lambda _=False, e=error: self._suggest_in_context(e))
         if kind == "style":
             self._action(actions, "✨ Rewrite with AI", self._rewrite)
         if kind == "spelling":
@@ -2615,10 +3012,60 @@ class ErrorCard(QWidget):
         self._action(actions, "Ignore", self._ignore)
         actions.addStretch()
         self._layout.addLayout(actions)
+
+        if phrase is not None:
+            line = QLabel(f"<span style='color:{self.COLORS['overused_phrase']}; "
+                          f"font-weight:bold'>Repeated phrase</span> · "
+                          f"<b>{_html(phrase.word[:60])}</b>")
+            self._layout.addWidget(line)
+            note = QLabel(_html(phrase.reason))
+            note.setWordWrap(True)
+            note.setMaximumWidth(340)
+            note.setStyleSheet("color: #4b5563;")
+            self._layout.addWidget(note)
+            self._fix_row(phrase, block)
+            more = QHBoxLayout()
+            more.setSpacing(2)
+            self._action(more, "✨ Suggest in context",
+                         lambda _=False, e=phrase: self._suggest_in_context(e))
+            self._action(more, "Ignore phrase", lambda _=False, e=phrase: self._ignore_one(e))
+            more.addStretch()
+            self._layout.addLayout(more)
         self.adjustSize()
         self._place(global_pos)
         self.show()
         self.raise_()
+
+    def _fix_row(self, error, block) -> None:
+        """Buttons for an issue's fixes; each replaces the issue's fix span."""
+        suggestions = [s for s in (error.suggestions or [])][:5]
+        if not suggestions:
+            return
+        start, end = error.replace_span or (error.start, error.end)
+        span = (block.position() + start, block.position() + end)
+        target = block.text()[start:end]
+        row = QHBoxLayout()
+        row.setSpacing(4)
+        for sug in suggestions:
+            btn = QPushButton(sug if sug else f"Delete “{target[:20]}”")
+            btn.setObjectName("fix")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setToolTip(f"Replace “{target}” with “{sug}”" if sug else f"Delete “{target}”")
+            btn.clicked.connect(lambda _=False, s_=sug, e=error, sp=span, t=target:
+                                self._apply(s_, e, sp, t))
+            row.addWidget(btn)
+        row.addStretch()
+        self._layout.addLayout(row)
+
+    def _suggest_in_context(self, error) -> None:
+        block = getattr(self, "_block", None)
+        self.hide()
+        if block is not None and block.isValid():
+            self.editor.suggest_in_context(block, error)
+
+    def _ignore_one(self, error) -> None:
+        self.hide()
+        self.editor._ignore_error(self.block_number, error.start, error.word, error.error_type)
 
     def _action(self, row, text, slot) -> None:
         btn = QPushButton(text)
@@ -2648,16 +3095,18 @@ class ErrorCard(QWidget):
         cur.setPosition(self.span[1], QTextCursor.MoveMode.KeepAnchor)
         return cur.selectedText()
 
-    def _apply(self, suggestion: str) -> None:
-        error = self.error
+    def _apply(self, suggestion: str, error=None, span=None, target=None) -> None:
+        error = error or self.error
         if error is None:
             return
-        if self._span_text() != error.word:   # text changed since the card opened
+        span = span or self.span
+        target = error.word if target is None else target
+        cur = QTextCursor(self.editor.document())
+        cur.setPosition(span[0])
+        cur.setPosition(span[1], QTextCursor.MoveMode.KeepAnchor)
+        if cur.selectedText() != target:      # text changed since the card opened
             self.hide()
             return
-        cur = QTextCursor(self.editor.document())
-        cur.setPosition(self.span[0])
-        cur.setPosition(self.span[1], QTextCursor.MoveMode.KeepAnchor)
         if suggestion and error.error_type == ErrorType.SPELLING:
             suggestion = _match_word_case(error.word, suggestion)
         self.hide()
@@ -2787,6 +3236,8 @@ class EnhancedTextEditor(QTextEdit):
         self.spell_checker = SpellChecker()
         self.grammar_checker = GrammarChecker()
         self.overuse_detector = OveruseDetector()
+        # Light repeats are only marked when they weaken the writing.
+        self.overuse_detector.review_low_counts = True
 
         # Initialize combined highlighter
         self.writing_highlighter = WritingHighlighter(
@@ -2808,6 +3259,14 @@ class EnhancedTextEditor(QTextEdit):
         self._update_timer = QTimer()
         self._update_timer.setSingleShot(True)
         self._update_timer.timeout.connect(self._update_realtime_analysis)
+        # Model review of light repeats, a moment after the text settles.
+        self._review_timer = QTimer(self)
+        self._review_timer.setSingleShot(True)
+        self._review_timer.setInterval(2500)
+        self._review_timer.timeout.connect(self._start_repetition_review)
+        self._review_worker = None
+        self._review_rerun = False
+        self._no_repetition_judge = False
         self._last_text_hash = 0
 
         # Set up context menu
@@ -2871,6 +3330,7 @@ class EnhancedTextEditor(QTextEdit):
             # Overuse counts span the whole document — redraw in realtime.
             if hl.get_overuse_mode() == CheckMode.REALTIME:
                 hl.rehighlight()
+            self._review_timer.start()
 
     def set_project_vocabulary(self, project) -> None:
         """Teach the spell checker the project's names and dictionary."""
@@ -2884,7 +3344,73 @@ class EnhancedTextEditor(QTextEdit):
         except Exception as e:
             print(f"[spell] project vocabulary unavailable: {e}")
         self.spell_checker.set_project_words(words)
+        # Names repeat because stories are about people and places.
+        names = [c.name for c in getattr(project, "characters", None) or []]
+        try:
+            from src.ai.canon_index import collect_world_entities
+            names += [e.name for e in collect_world_entities(getattr(project, "worldbuilding", None))]
+        except Exception:
+            pass
+        self.overuse_detector.set_names(names)
+        text = self.toPlainText()
+        self.overuse_detector.update_cache(text)
+        self.writing_highlighter.update_full_text(text)
         self.writing_highlighter.rehighlight()
+
+    # ── Model review of light repeats ─────────────────────────────
+
+    def _start_repetition_review(self) -> None:
+        """Ask the model which light repeats weaken the writing (background);
+        until it answers — or with no model — the quick rules apply."""
+        hl = self.writing_highlighter
+        if hl.get_overuse_mode() == CheckMode.OFF or self._no_repetition_judge:
+            return
+        from src.ai import repetition_judge as rj
+        if not rj.enabled():
+            return
+        detector = self.overuse_detector
+        if detector._cached_text_hash != hash(self.toPlainText()):
+            detector.update_cache(self.toPlainText())
+        items = detector.review_items()
+        if not items:
+            return
+        known = rj.cached_verdicts(items)
+        if known:
+            self._apply_repetition_verdicts(known)
+            items = [i for i in items if i["key"] not in known]
+            if not items:
+                return
+        if self._review_worker is not None and self._review_worker.isRunning():
+            self._review_rerun = True
+            return
+        import gc
+        gc.collect()      # never let the worker's allocations collect Qt objects
+        worker = _RepetitionWorker(items)
+        worker.done.connect(self._on_repetition_verdicts)
+        _RUNNING_REVIEWERS.add(worker)
+        worker.finished.connect(lambda w=worker: _RUNNING_REVIEWERS.discard(w))
+        self._review_worker = worker
+        worker.start()
+
+    def _on_repetition_verdicts(self, verdicts, no_model: bool) -> None:
+        try:
+            if no_model:
+                self._no_repetition_judge = True     # quick rules from now on
+                return
+            if verdicts:
+                self._apply_repetition_verdicts(verdicts)
+            if self._review_rerun:
+                self._review_rerun = False
+                self._review_timer.start()
+        except Exception as e:          # an exception escaping a slot aborts PyQt6
+            print(f"[repetition] could not apply verdicts: {e}")
+
+    def _apply_repetition_verdicts(self, verdicts) -> None:
+        self.overuse_detector.apply_verdicts(verdicts)
+        text = self.toPlainText()
+        self.writing_highlighter.update_full_text(text)
+        if self.writing_highlighter.get_overuse_mode() != CheckMode.OFF:
+            self.writing_highlighter.rehighlight()
 
     def _has_realtime_checks(self) -> bool:
         """Check if any writing check is in realtime mode."""
@@ -2901,6 +3427,7 @@ class EnhancedTextEditor(QTextEdit):
         self.writing_highlighter.update_full_text(current_text)
         self.writing_highlighter.do_initial_check()
         self._last_text_hash = hash(current_text)  # Update hash to avoid immediate re-check
+        self._review_timer.start()
 
     def set_spell_mode(self, mode: CheckMode):
         """Set spell checking mode."""
@@ -2964,7 +3491,12 @@ class EnhancedTextEditor(QTextEdit):
         error, block = self._error_at_viewport_pos(viewport_pos)
         if error is not None:
             QToolTip.hideText()
-            self.error_card.show_for(error, block, global_pos)
+            phrase = None
+            if error.error_type != ErrorType.OVERUSED_PHRASE:
+                cursor = self.cursorForPosition(viewport_pos)
+                phrase = self.writing_highlighter.phrase_error_at(block.blockNumber(),
+                                                                  cursor.positionInBlock())
+            self.error_card.show_for(error, block, global_pos, phrase=phrase)
             return True
         if getattr(self, "_error_card", None) is not None:
             self._error_card.schedule_hide()
@@ -3224,18 +3756,30 @@ class EnhancedTextEditor(QTextEdit):
             if error.suggestions:
                 suggestions_label = menu.addAction("Replace with:")
                 suggestions_label.setEnabled(False)
+                span_start, span_end = error.replace_span or (error.start, error.end)
                 span_cursor = QTextCursor(block)
-                span_cursor.setPosition(block.position() + error.start)
-                span_cursor.setPosition(block.position() + error.end,
+                span_cursor.setPosition(block.position() + span_start)
+                span_cursor.setPosition(block.position() + span_end,
                                         QTextCursor.MoveMode.KeepAnchor)
+                replaced = block.text()[span_start:span_end] or error.word
                 for suggestion in error.suggestions[:7]:
-                    label = f"  {suggestion}" if suggestion else f"  Delete “{error.word}”"
+                    label = f"  {suggestion}" if suggestion else f"  Delete “{replaced}”"
                     action = menu.addAction(label)
                     action.triggered.connect(
                         lambda checked, s=suggestion, c=QTextCursor(span_cursor):
                             self._replace_word(c, s)
                     )
 
+                menu.addSeparator()
+
+            if error.error_type == ErrorType.OVERUSE and error.replace_span and not error.suggestions:
+                menu.addAction(f"Part of a set phrase — try ✨ Suggest in context").setEnabled(False)
+            if error.error_type in (ErrorType.OVERUSE, ErrorType.OVERUSED_PHRASE):
+                in_context = menu.addAction("✨ Suggest in context…")
+                in_context.setToolTip("Words that fit this sentence, and rewrites that avoid "
+                                      "the word — one quick AI call.")
+                in_context.triggered.connect(
+                    lambda checked=False, e=error, b=block: self.suggest_in_context(b, e))
                 menu.addSeparator()
 
             if error.error_type == ErrorType.STYLE:
@@ -3247,6 +3791,12 @@ class EnhancedTextEditor(QTextEdit):
                     lambda checked=False, e=error: self.writing_highlighter.ignore_style_issue(
                         getattr(e, "style_kind", ""), e.word))
                 menu.addSeparator()
+
+            # A repeated phrase under an overused word: its fixes in a submenu.
+            phrase = (self.writing_highlighter.phrase_error_at(block_number, position_in_block)
+                      if error.error_type != ErrorType.OVERUSED_PHRASE else None)
+            if phrase is not None:
+                self._add_phrase_submenu(menu, block, block_number, phrase)
 
             # Ignore option
             ignore_action = menu.addAction(f"Ignore '{error.word}'")
@@ -3389,6 +3939,120 @@ class EnhancedTextEditor(QTextEdit):
             cursor.setPosition(st)
             cursor.setPosition(en, QTextCursor.MoveMode.KeepAnchor)
         cursor.insertText(replacement)
+
+    def _add_phrase_submenu(self, menu, block, block_number: int, phrase) -> None:
+        sub = menu.addMenu(f"Repeated phrase: “{phrase.word}”")
+        sub.addAction(phrase.reason).setEnabled(False)
+        if phrase.suggestions:
+            start, end = phrase.replace_span or (phrase.start, phrase.end)
+            span = QTextCursor(block)
+            span.setPosition(block.position() + start)
+            span.setPosition(block.position() + end, QTextCursor.MoveMode.KeepAnchor)
+            replaced = block.text()[start:end]
+            for s in phrase.suggestions[:7]:
+                label = f"  {s}" if s else f"  Delete “{replaced}”"
+                sub.addAction(label).triggered.connect(
+                    lambda checked=False, t=s, c=QTextCursor(span): self._replace_word(c, t))
+        sub.addAction("✨ Suggest in context…").triggered.connect(
+            lambda checked=False, e=phrase, b=block: self.suggest_in_context(b, e))
+        sub.addAction(f"Ignore this phrase").triggered.connect(
+            lambda checked=False: self._ignore_error(block_number, phrase.start, phrase.word,
+                                                     phrase.error_type))
+        menu.addSeparator()
+
+    # ── Context-aware suggestions for overused words ──────────────
+
+    def suggest_in_context(self, block, error) -> None:
+        """Ask the model for words that fit this sentence (and rewrites that
+        avoid the word), then offer them in a menu at the word."""
+        from src.ai import word_suggest as ws
+        text = block.text()
+        position = block.position()
+        compound = (ws.compound_around(text, error.start, error.end)
+                    if error.error_type == ErrorType.OVERUSE else None)
+        if compound is not None:
+            # Ask about the whole set phrase ("mobile home"), not one word of it.
+            import copy
+            error = copy.copy(error)
+            error.word, error.start, error.end = compound.phrase, compound.start, compound.end
+        sentence = ws.sentence_around(text, error.start, error.end)
+        if error.error_type == ErrorType.OVERUSED_PHRASE:
+            from src.utils.proofing import normalize_apostrophes
+            phrases = getattr(self.overuse_detector, "_cached_phrase_counts", {}) or {}
+            count = phrases.get(" ".join(normalize_apostrophes(error.word.lower()).split()), 0)
+        else:
+            counts = getattr(self.overuse_detector, "_cached_counts", {}) or {}
+            count = counts.get(error.word.lower(), 0)
+        cached = ws.cached(error.word, sentence.text)
+        if cached is not None:
+            self._show_context_suggestions(block, text, position, error, sentence, cached)
+            return
+        rect = self.cursorRect(self._cursor_at(position + error.start))
+        from PyQt6.QtWidgets import QToolTip
+        QToolTip.showText(self.viewport().mapToGlobal(rect.bottomLeft()),
+                          f"Finding words that fit this sentence…", self.viewport())
+        worker = _ContextSuggestWorker(error.word, sentence, count)
+        worker.done.connect(
+            lambda result, err, b=block, t=text, p=position, e=error, s=sentence:
+                self._on_context_suggestions(b, t, p, e, s, result, err))
+        _RUNNING_SUGGESTERS.add(worker)
+        worker.finished.connect(lambda w=worker: _RUNNING_SUGGESTERS.discard(w))
+        worker.start()
+
+    def _cursor_at(self, pos: int) -> QTextCursor:
+        c = QTextCursor(self.document())
+        c.setPosition(max(0, min(pos, self.document().characterCount() - 1)))
+        return c
+
+    def _on_context_suggestions(self, block, text, position, error, sentence, result, err):
+        try:
+            from PyQt6.QtWidgets import QToolTip
+            QToolTip.hideText()
+            if result is None:
+                QMessageBox.information(self, "Suggest in context", err or "No suggestions.")
+                return
+            self._show_context_suggestions(block, text, position, error, sentence, result)
+        except Exception as e:              # an exception escaping a slot aborts PyQt6
+            print(f"[overuse] could not show suggestions: {e}")
+
+    def _show_context_suggestions(self, block, text, position, error, sentence, result) -> None:
+        if not block.isValid() or block.text() != text:
+            QMessageBox.information(self, "Suggest in context",
+                                    "The paragraph changed — right-click the word again.")
+            return
+        from src.ai.passage_critique import py_to_qt_index
+        menu = QMenu(self)
+        words = result.words
+        if self.overuse_detector:
+            counts = getattr(self.overuse_detector, "_cached_counts", {}) or {}
+            threshold = getattr(self.overuse_detector, "threshold", 3)
+            words = [w for w in words if counts.get(w.lower(), 0) < threshold]
+        if words:
+            menu.addAction(f"Instead of “{error.word}”:").setEnabled(False)
+            span = QTextCursor(self.document())
+            span.setPosition(position + py_to_qt_index(text, error.start))
+            span.setPosition(position + py_to_qt_index(text, error.end),
+                             QTextCursor.MoveMode.KeepAnchor)
+            for w in words:
+                menu.addAction(f"  {w}").triggered.connect(
+                    lambda checked=False, s=w, c=QTextCursor(span): self._replace_word(c, s))
+        if result.rewrites:
+            if words:
+                menu.addSeparator()
+            menu.addAction("Rewrite the sentence:").setEnabled(False)
+            whole = QTextCursor(self.document())
+            whole.setPosition(position + py_to_qt_index(text, sentence.start))
+            whole.setPosition(position + py_to_qt_index(text, sentence.end),
+                              QTextCursor.MoveMode.KeepAnchor)
+            for r in result.rewrites:
+                label = r if len(r) <= 90 else r[:89] + "…"
+                menu.addAction(f"  {label}").triggered.connect(
+                    lambda checked=False, s=r, c=QTextCursor(whole): self._replace_word(c, s))
+        if not words and not result.rewrites:
+            menu.addAction("No suggestions that fit — try Rephrase.").setEnabled(False)
+        rect = self.cursorRect(self._cursor_at(position + py_to_qt_index(text, error.start)))
+        self._context_menu = menu
+        menu.popup(self.viewport().mapToGlobal(rect.bottomLeft()))
 
     def _request_style_rewrite(self, block, error) -> None:
         """Ask the host to AI-rewrite the sentence around a style issue."""

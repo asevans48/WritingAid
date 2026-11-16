@@ -1513,11 +1513,13 @@ class ChapterEditor(QWidget):
             return
         doc_text = self.editor.toPlainText()
         from src.ui.rephrase_dialog import RephraseDialog
+        from src.ai.passage_critique import qt_to_py_index
         dialog = RephraseDialog(selected, self.project, self,
                                 surrounding_context=(doc_text[max(0, start - 500):start],
                                                      doc_text[end:end + 500]),
                                 chapter_content=doc_text, chapter=self.chapter,
-                                instruction=hint)
+                                instruction=hint,
+                                text_before=doc_text[:qt_to_py_index(doc_text, start)])
         if dialog.exec() == QDialog.DialogCode.Accepted:
             replacement = dialog.get_selected_text()
             if replacement:
@@ -1583,10 +1585,12 @@ class ChapterEditor(QWidget):
 
         # Open rephrase dialog
         from src.ui.rephrase_dialog import RephraseDialog
+        from src.ai.passage_critique import qt_to_py_index
         dialog = RephraseDialog(selected_text, self.project, self,
                                 surrounding_context=surrounding_context,
                                 chapter_content=doc_text,
-                                chapter=self.chapter)
+                                chapter=self.chapter,
+                                text_before=doc_text[:qt_to_py_index(doc_text, sel_start)])
         if dialog.exec() == QDialog.DialogCode.Accepted:
             replacement = dialog.get_selected_text()
             if replacement:

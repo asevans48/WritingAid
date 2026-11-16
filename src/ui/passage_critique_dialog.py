@@ -74,6 +74,8 @@ class SuggestionWorker(QThread):
                                 compact=is_local_llm(llm), related=search,
                                 voice=voice, examples=examples)
             result = critique_passage(llm, ctx, self.focus, self.progress.emit, voice=voice)
+            # Kept for the conversation that follows.
+            self.llm, self.ctx, self.voice = llm, ctx, voice
             if result.empty:
                 self.done.emit(None, "The model's reply couldn't be read as a critique. "
                                      "Try again, or pick another model in Settings.")
@@ -91,6 +93,9 @@ class PassageCritiqueDialog(QDialog):
                  parent=None, selection: tuple = None, worker_factory=SuggestionWorker):
         super().__init__(parent)
         self.text, self.start, self.end = text, start, end
+        self.turns: list = []               # the conversation (rewrite_chat.ChatTurn)
+        self._chat_worker = None
+        self._llm = self._ctx = self._voice = None
         self.ratings: dict = {}              # suggestion index → rating
         self.project, self.chapter = project, chapter
         self.passage = text[start:end]
@@ -189,7 +194,19 @@ class PassageCritiqueDialog(QDialog):
         right.addLayout(rate_row)
         lower_layout.addLayout(right, 1)
         splitter.addWidget(lower)
-        splitter.setSizes([300, 320])
+        from src.ui.rewrite_chat_panel import ConversationPanel
+        chat_box = QWidget()
+        chat_layout = QVBoxLayout(chat_box)
+        chat_layout.setContentsMargins(0, 0, 0, 0)
+        chat_layout.addWidget(QLabel("<b>Talk it through</b> — ask why, give direction, or "
+                                     "ask for changes; new versions go to the top of the list."))
+        self.chat = ConversationPanel("e.g. why is [2] out of order? · combine 1 and 3 · "
+                                      "keep Tobin rambling")
+        self.chat.message_sent.connect(self._send_message)
+        self.chat.set_busy(True, "")
+        chat_layout.addWidget(self.chat)
+        splitter.addWidget(chat_box)
+        splitter.setSizes([240, 300, 200])
         layout.addWidget(splitter, 1)
 
         buttons = QHBoxLayout()
@@ -239,6 +256,10 @@ class PassageCritiqueDialog(QDialog):
     def _on_done(self, result, error: str):
         try:
             self.regenerate_btn.setEnabled(True)
+            worker = self._worker
+            self._llm = getattr(worker, "llm", None)
+            self._ctx = getattr(worker, "ctx", None)
+            self._voice = getattr(worker, "voice", None)
             if result is None:
                 self.status_label.setText("")
                 self.discussion.setHtml(f"<p style='color:#b00020'>{html.escape(error)}</p>")
@@ -253,16 +274,91 @@ class PassageCritiqueDialog(QDialog):
         self.status_label.setText(
             "" if count >= 3 else f"The model gave {count} suggestion(s) — Regenerate for more.")
         self.discussion.setHtml(self._discussion_html(result))
+        self._fill_suggestion_list(0)
+        # A fresh critique starts a fresh conversation.
+        self.turns = []
+        self.chat.clear()
+        self.chat.set_busy(self._llm is None or self._ctx is None, "")
+
+    def _fill_suggestion_list(self, select: int = 0) -> None:
         self.ratings = {}
         self.suggestion_list.clear()
-        for i, s in enumerate(result.suggestions, 1):
+        for i, s in enumerate(self.result.suggestions, 1):
             fit = f" · voice {s.voice_fit:.0%}" if s.voice_fit is not None else ""
             flag = " ⚠" if s.notes else ""
-            item = QListWidgetItem(f"Suggestion {i}{fit}{flag}\n{_short(s.text, 70)}")
+            tag = " · revised" if s.angle.startswith("revised") else ""
+            item = QListWidgetItem(f"Suggestion {i}{tag}{fit}{flag}\n{_short(s.text, 70)}")
             item.setToolTip(s.why or s.text[:300])
             self.suggestion_list.addItem(item)
-        if result.suggestions:
-            self.suggestion_list.setCurrentRow(0)
+        if self.result.suggestions:
+            self.suggestion_list.setCurrentRow(select)
+
+    # ── Conversation ─────────────────────────────────────────────────
+
+    def _chat_context(self):
+        from src.ai import passage_critique as pc
+        ctx, r = self._ctx, self.result
+        critique = []
+        for title, items in (("What works", r.works), ("What doesn't work", r.issues),
+                             ("Dialogue", getattr(r, "dialogue", [])), ("Order and flow", r.order)):
+            if items:
+                critique.append(f"{title}:\n" + "\n".join(f"- {i}" for i in items))
+        blocks = [(t, b) for t, b in ctx.sections() if b]
+        blocks.append(("THE SCENE (the passage is marked)", ctx.scene(1500)))
+        from src.ai.event_order import events_prompt
+        timeline = events_prompt(ctx.passage)
+        if timeline:
+            head, _, body = timeline.partition(":\n")
+            blocks.append((head, body))
+        if ctx.speakers:
+            blocks.append(("WHO SPEAKS EACH LINE", ctx.speakers))
+        if critique:
+            blocks.append(("YOUR CRITIQUE OF THE PASSAGE", "\n\n".join(critique)))
+        rules = pc._SCOPE_RULES + "\n" + pc._REWRITE_RULES + "- " + pc._avoid_line()
+        return blocks, rules
+
+    def _send_message(self, message: str) -> None:
+        if self._llm is None or self._ctx is None or self.result is None:
+            return
+        from src.ai import passage_critique as pc
+        from src.ai.rewrite_chat import ChatTurn, chat_turn
+        from src.ui.rewrite_chat_panel import run_turn
+        self.chat.add_message("You", message)
+        self.chat.set_busy(True, "Thinking…")
+        blocks, rules = self._chat_context()
+        versions = [(s.angle, s.text) for s in self.result.suggestions]
+        turns = list(self.turns)
+        llm, ctx, voice = self._llm, self._ctx, self._voice
+
+        def check(found):
+            return pc._check_all(ctx, found, voice, message)
+
+        def turn():
+            return chat_turn(llm, system=pc.SYSTEM_PROMPT, context=blocks, passage=ctx.passage,
+                             versions=versions, turns=turns, message=message, check=check,
+                             rules=rules)
+
+        self.turns.append(ChatTurn("author", message))
+        run_turn(self, turn, self._on_reply)
+
+    def _on_reply(self, result, error: str) -> None:
+        from src.ai.rewrite_chat import ChatTurn
+        self.chat.set_busy(False, "")
+        if result is None:
+            self.chat.add_message("Editor", error)
+            return
+        self.chat.add_message("Editor", result.reply)
+        note = result.reply
+        if result.versions:
+            for v in result.versions:
+                v.angle = "revised" + (f": {v.angle}" if v.angle else "")
+            self.result.suggestions = result.versions + self.result.suggestions
+            self._fill_suggestion_list(0)
+            count = len(result.versions)
+            self.chat.status.setText(f"{count} new version{'s' if count != 1 else ''} at the top "
+                                     f"of the list.")
+            note += "\n" + "\n".join(f"(new version: {_short(v.text, 120)})" for v in result.versions)
+        self.turns.append(ChatTurn("editor", note))
 
     @staticmethod
     def _discussion_html(result: PassageCritique) -> str:
@@ -350,6 +446,11 @@ class PassageCritiqueDialog(QDialog):
         if self._worker is not None:
             try:
                 self._worker.done.disconnect(self._on_done)
+            except TypeError:
+                pass
+        if self._chat_worker is not None:
+            try:
+                self._chat_worker.done.disconnect()
             except TypeError:
                 pass
         super().done(code)

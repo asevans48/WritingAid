@@ -10,7 +10,9 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 
-from src.ai.rephrasing_agent import RephrasingAgent, RephraseStyle, RephraseTone, RephraseResult
+from src.ai.rephrasing_agent import (
+    RephrasingAgent, RephraseOption, RephraseStyle, RephraseTone, RephraseResult,
+)
 from src.ai.mlx_utils import can_use_mlx
 
 
@@ -107,13 +109,52 @@ class RephraseWorker(QThread):
             self.error.emit(str(e))
 
 
+class _SceneBox(QTextEdit):
+    """A few lines for the scene description, with QLineEdit's text API."""
+
+    def __init__(self):
+        super().__init__()
+        self.setAcceptRichText(False)
+        self.setMaximumHeight(78)
+
+    def text(self) -> str:
+        return self.toPlainText()
+
+    def setText(self, text: str) -> None:
+        self.setPlainText(text or "")
+
+
+class _MomentWorker(QThread):
+    """Summarises the text leading up to the passage (one model call)."""
+    done = pyqtSignal(str)
+
+    def __init__(self, llm_factory, chapter, before: str, names: list, refresh: bool):
+        super().__init__()
+        self.llm_factory, self.chapter, self.before = llm_factory, chapter, before
+        self.names, self.refresh = names, refresh
+
+    def run(self):
+        try:
+            from src.ai.scene_brief import moment_summary
+            llm = self.llm_factory()
+            self.done.emit(moment_summary(llm, self.chapter, self.before, self.names,
+                                          refresh=self.refresh))
+        except Exception as e:
+            print(f"[scene] summary unavailable: {e}")
+            self.done.emit("")
+
+
+# A QThread destroyed while running aborts the app; keep them until done.
+_RUNNING_MOMENTS: set = set()
+
+
 class RephraseDialog(QDialog):
     """Dialog for rephrasing selected text with AI."""
 
     def __init__(self, text: str, project=None, parent=None,
                  surrounding_context: tuple = None,
                  chapter_content: str = "", chapter=None,
-                 instruction: str = ""):
+                 instruction: str = "", text_before: str = ""):
         """Initialize rephrase dialog.
 
         Args:
@@ -138,6 +179,8 @@ class RephraseDialog(QDialog):
         self.result: Optional[RephraseResult] = None
         self.worker: Optional[RephraseWorker] = None
         self._refinement_history: List[str] = []  # Chat history for refinements
+        self._chat_turns: list = []               # the conversation (rewrite_chat.ChatTurn)
+        self._chat_worker = None
         # RAG state: the index is built once per dialog, and we remember
         # which chunks already went into a prompt so refinements can
         # pull in context the model hasn't seen yet.
@@ -169,12 +212,21 @@ class RephraseDialog(QDialog):
         self._pending_rating: str = ""
         self._last_saved_sig: tuple = ()
 
+        # The chapter text before the passage (for the scene summary).
+        from src.ai.dialogue_craft import normalize_breaks
+        self.text_before = normalize_breaks(text_before) or self.surrounding_before
+        self._instruction = instruction
+        self._auto_scene: Optional[str] = None
+        self._scene_brief = ""
+        self._moment_worker = None
+
         self._init_ui()
         self._init_agent()
-        # Pre-filled guidance, e.g. "Fix the passive voice: …" when opened
-        # from a style issue.
-        if instruction:
-            self.scene_desc_edit.setText(instruction)
+        # Pre-filled guidance (e.g. "Fix the passive voice: …" from a style
+        # issue), then where we are in the scene; the model's summary of the
+        # lead-up is added when it arrives.
+        self._fill_scene_description()
+        self._start_moment_summary()
 
     def _init_ui(self):
         """Initialize the UI."""
@@ -304,14 +356,30 @@ class RephraseDialog(QDialog):
         genre_row.addWidget(self.genre_combo, 1)
         layout.addLayout(genre_row)
 
-        # Scene description (optional, user-provided)
-        self.scene_desc_edit = QLineEdit()
+        # Scene description — filled in automatically (what's happening, who's
+        # there, what the chapter is building toward); edit it if it's off.
+        scene_row = QHBoxLayout()
+        scene_label = QLabel("Scene:")
+        scene_label.setStyleSheet("font-size: 10px; font-weight: bold;")
+        scene_row.addWidget(scene_label)
+        self.scene_status_label = QLabel("")
+        self.scene_status_label.setStyleSheet("font-size: 10px; color: #6b7280;")
+        scene_row.addWidget(self.scene_status_label, 1)
+        self.scene_refresh_btn = QPushButton("↻ Refresh")
+        self.scene_refresh_btn.setToolTip(
+            "Rebuild the scene description from your notes and summarise the text "
+            "leading up to the passage again.")
+        self.scene_refresh_btn.setStyleSheet("font-size: 10px; padding: 2px 6px;")
+        self.scene_refresh_btn.clicked.connect(lambda: self._start_moment_summary(refresh=True))
+        scene_row.addWidget(self.scene_refresh_btn)
+        layout.addLayout(scene_row)
+        self.scene_desc_edit = _SceneBox()
         self.scene_desc_edit.setPlaceholderText(
             "Describe what's happening in the scene (optional)..."
         )
         self.scene_desc_edit.setToolTip(
-            "Brief description of the scene — e.g. 'tense standoff in the throne room' "
-            "or 'quiet morning after the battle'. Helps the AI understand context."
+            "What's happening around the passage. Filled in from your chapter notes and "
+            "the text before it — edit anything that's wrong; it guides the rephrasing."
         )
         self.scene_desc_edit.setStyleSheet("font-size: 10px; padding: 4px;")
         layout.addWidget(self.scene_desc_edit)
@@ -584,35 +652,22 @@ class RephraseDialog(QDialog):
         results_layout.addWidget(splitter)
         layout.addWidget(self.results_group)
 
-        # Refinement chat — allows conversational follow-up
-        self.refine_group = QGroupBox("Refine Results")
+        # Conversation — talk the results through: ask why, give direction,
+        # or ask for changes (new versions join the top of the list).
+        self.refine_group = QGroupBox("Talk It Through")
         self.refine_group.setVisible(False)
         refine_layout = QVBoxLayout(self.refine_group)
         refine_layout.setContentsMargins(8, 8, 8, 8)
         refine_layout.setSpacing(4)
-
-        self.refine_history = QTextEdit()
-        self.refine_history.setReadOnly(True)
-        self.refine_history.setMaximumHeight(60)
-        self.refine_history.setStyleSheet("background: #f9fafb; font-size: 10px; color: #4b5563;")
-        self.refine_history.setPlaceholderText("Refinement history will appear here...")
-        refine_layout.addWidget(self.refine_history)
-
-        refine_input_layout = QHBoxLayout()
-        self.refine_edit = QLineEdit()
-        self.refine_edit.setPlaceholderText(
-            "e.g.: make it darker, this character wouldn't say that, more archaic..."
-        )
-        self.refine_edit.setStyleSheet("font-size: 11px; padding: 4px;")
-        self.refine_edit.returnPressed.connect(self._refine_results)
-        refine_input_layout.addWidget(self.refine_edit)
-
-        self.refine_btn = QPushButton("Refine")
-        self.refine_btn.setStyleSheet("font-size: 11px; padding: 4px 12px;")
-        self.refine_btn.clicked.connect(self._refine_results)
-        refine_input_layout.addWidget(self.refine_btn)
-
-        refine_layout.addLayout(refine_input_layout)
+        from src.ui.rewrite_chat_panel import ConversationPanel
+        self.chat = ConversationPanel(
+            "e.g.: make it darker · why did 2 drop the beat? · this character wouldn't say that")
+        self.chat.message_sent.connect(self._refine_results)
+        refine_layout.addWidget(self.chat)
+        # Older names, kept for callers that use them.
+        self.refine_history = self.chat.transcript
+        self.refine_edit = self.chat.input
+        self.refine_btn = self.chat.send_btn
         layout.addWidget(self.refine_group)
 
         # Set scroll widget and add scroll area to main layout
@@ -1527,12 +1582,19 @@ class RephraseDialog(QDialog):
                          if self.project else "",
         )
 
-    def _refine_results(self):
-        """Refine the current results with a follow-up instruction."""
-        instruction = self.refine_edit.text().strip()
+    def _refine_results(self, message: Optional[str] = None):
+        """A turn of the conversation: the editor replies, and writes new
+        versions when the author asked for changes. Without a model
+        (Python-libraries mode) the message regenerates the options."""
+        instruction = (message if isinstance(message, str) else self.refine_edit.text()).strip()
         if not instruction:
             return
         if not self.result or not self.result.options:
+            return
+        llm = None if self.agent.use_python_libraries else self._moment_llm()
+        if llm is not None:
+            self.refine_edit.clear()
+            self._converse(llm, instruction)
             return
 
         # Refinement will replace the current options + preview, so
@@ -1553,12 +1615,11 @@ class RephraseDialog(QDialog):
 
         # Log to history
         self._refinement_history.append(instruction)
-        history_lines = [f"> {h}" for h in self._refinement_history]
+        self.chat.add_message("You", instruction)
         if self.agent.use_python_libraries:
-            history_lines.append(
-                "(Python-libraries mode can't follow written feedback — "
-                "switch to a local or cloud model for real refinement.)")
-        self.refine_history.setPlainText("\n".join(history_lines))
+            self.chat.add_message("Editor", "Python-libraries mode can't follow written "
+                                  "feedback — switch to a local or cloud model to talk it "
+                                  "through. Regenerating the options instead.")
         self.refine_edit.clear()
 
         self._generate_options(refinement={
@@ -1566,6 +1627,111 @@ class RephraseDialog(QDialog):
             "current_draft": current_text,
             "previous_options": previous_options,
         })
+
+    def _chat_context(self, message: str):
+        blocks = []
+        scene = self.scene_desc_edit.text().strip()
+        if scene:
+            blocks.append(("THE SCENE", scene))
+        if self.surrounding_before:
+            blocks.append(("TEXT JUST BEFORE THE PASSAGE (already written — don't rewrite it)",
+                           self.surrounding_before[-600:]))
+        if self.surrounding_after:
+            blocks.append(("TEXT JUST AFTER THE PASSAGE", self.surrounding_after[:300]))
+        voice = self._get_writer_voice()
+        if not voice.is_empty:
+            blocks.append(("THE AUTHOR'S VOICE", voice.to_prompt()))
+        for extra in (self._order_guidance(), self._dialogue_guidance()):
+            if extra:
+                head, _, body = extra.partition("\n")
+                blocks.append((head.rstrip(":"), body))
+        rag = self._get_rag_for_refinement({"instructions": self._refinement_history + [message],
+                                           "current_draft": self.preview_edit.toPlainText()})
+        if rag:
+            blocks.append(("RELEVANT PROJECT NOTES", rag))
+        rules = ("Each version replaces only the passage: keep the point of view, tense, "
+                 "the author's voice, the order events happen in, and who says each line.")
+        try:
+            from src.ai.rewrite_quality import avoid_phrases, avoid_prompt
+            rules += " " + avoid_prompt(avoid_phrases())
+        except Exception:
+            pass
+        return blocks, rules
+
+    def _check_versions(self, message: str):
+        """Tidy and check new versions like any rephrase option."""
+        from src.ai import dialogue_craft as dc
+        from src.ai.rewrite_quality import check_rewrite, known_names_for
+        original, before, after = self.original_text, self.surrounding_before, self.surrounding_after
+        voice = self._get_writer_voice()
+        names = [c.name for c in getattr(self.project, "characters", None) or []]
+        known = known_names_for(self.project)
+        dialogue = dc.is_dialogue(original)
+        speakers = dc.speakers_in(before[before.rfind("\n") + 1:] + original, names) \
+            if dialogue and self.project else []
+        profiles = dc.speech_profiles(self.project, only=speakers) if speakers else {}
+
+        def check(found):
+            checks = []
+            for v in found:
+                v.text = dc.tidy_paragraphs(original, v.text, names)
+                c = check_rewrite(original, v.text, voice=voice, known_names=known,
+                                  before=before, after=after, focus=message)
+                if dialogue:
+                    serious, minor = dc.rewrite_dialogue_problems(original, v.text, names,
+                                                                  profiles)
+                    c.serious += serious
+                    c.minor += minor
+                checks.append(c)
+            return checks
+        return check
+
+    def _converse(self, llm, message: str) -> None:
+        from src.ai.rewrite_chat import ChatTurn, chat_turn
+        from src.ui.rewrite_chat_panel import run_turn
+        if self._pending_rating:
+            self._save_timer.stop()
+            self._flush_pending_rating_save()
+        self.chat.add_message("You", message)
+        self.chat.set_busy(True, "Thinking…")
+        blocks, rules = self._chat_context(message)
+        versions = [(o.style, o.text) for o in self.result.options]
+        turns = list(self._chat_turns)
+        check = self._check_versions(message)
+        passage = self.original_text
+
+        def turn():
+            return chat_turn(llm, system=RephrasingAgent.REPHRASE_SYSTEM, context=blocks,
+                             passage=passage, versions=versions, turns=turns, message=message,
+                             check=check, rules=rules)
+
+        self._chat_turns.append(ChatTurn("author", message))
+        self._refinement_history.append(message)
+        run_turn(self, turn, self._on_reply)
+
+    def _on_reply(self, result, error: str) -> None:
+        from src.ai.rewrite_chat import ChatTurn
+        self.chat.set_busy(False, "")
+        if result is None:
+            self.chat.add_message("Editor", error)
+            return
+        self.chat.add_message("Editor", result.reply)
+        note = result.reply
+        if result.versions:
+            tone = self.result.options[0].tone if self.result.options else "neutral"
+            new = [RephraseOption(
+                text=v.text, style="revised" + (f": {v.angle}" if v.angle else ""), tone=tone,
+                explanation=(v.why + (" ⚠ This version " + "; ".join(v.notes) + "."
+                                      if v.notes else "")).strip())
+                for v in result.versions]
+            self._on_generation_complete(RephraseResult(
+                original=self.result.original, options=new + list(self.result.options),
+                model_used=self.result.model_used, cost_estimate=self.result.cost_estimate))
+            count = len(new)
+            self.chat.status.setText(f"{count} new version{'s' if count != 1 else ''} at the top "
+                                     f"of the list.")
+            note += "\n" + "\n".join(f"(new version: {v.text[:120]})" for v in result.versions)
+        self._chat_turns.append(ChatTurn("editor", note))
 
     def _detect_speaker_for_rephrase(self) -> str:
         """Detect the speaker from chapter context and return character details.
@@ -2069,6 +2235,87 @@ class RephraseDialog(QDialog):
                 from src.ai.writer_voice import WriterVoice
                 self._writer_voice = WriterVoice()
         return self._writer_voice
+
+    # ── Scene description ────────────────────────────────────────────
+
+    def _fill_scene_description(self, moment: str = "") -> None:
+        from src.ai.scene_brief import cached_moment, compose, scene_brief
+        try:
+            self._scene_brief = scene_brief(self.project, self.chapter, self.text_before,
+                                            self.original_text)
+        except Exception as e:
+            print(f"[scene] brief unavailable: {e}")
+            self._scene_brief = ""
+        moment = moment or cached_moment(self.chapter, self.text_before) or ""
+        self._auto_scene = compose(moment, self._scene_brief, self._instruction)
+        self.scene_desc_edit.setText(self._auto_scene)
+
+    def _moment_llm(self):
+        """The model rephrasing would use (shared weights for local models)."""
+        agent = getattr(self, "agent", None)
+        if agent is None or getattr(agent, "use_python_libraries", False):
+            return None
+        if self.local_radio.isChecked() or agent.llm is None:
+            model_id = agent.local_model_id or ""
+            if not model_id:
+                return None
+            if can_use_mlx():
+                model_id = agent._convert_to_mlx_model_id(model_id)
+            from src.ai.task_llm import _build_local_llm
+            return _build_local_llm(model_id)
+        return agent.llm
+
+    def _start_moment_summary(self, refresh: bool = False) -> None:
+        from src.ai.scene_brief import cached_moment, lead_up, _MIN_LEAD_UP_WORDS
+        if refresh:
+            self._fill_scene_description()
+        if len(lead_up(self.text_before).split()) < _MIN_LEAD_UP_WORDS:
+            self.scene_status_label.setText("")
+            return
+        if not refresh and cached_moment(self.chapter, self.text_before):
+            self.scene_status_label.setText("Filled in from your notes and the scene so far — "
+                                            "edit if anything's off.")
+            return
+        if self._moment_worker is not None and self._moment_worker.isRunning():
+            return
+        names = [c.name for c in getattr(self.project, "characters", None) or []]
+        worker = _MomentWorker(self._moment_llm, self.chapter, self.text_before, names, refresh)
+        worker.done.connect(self._on_moment)
+        _RUNNING_MOMENTS.add(worker)
+        worker.finished.connect(lambda w=worker: _RUNNING_MOMENTS.discard(w))
+        self._moment_worker = worker
+        self.scene_status_label.setText("Summarising the scene so far…")
+        worker.start()
+
+    def _on_moment(self, moment: str) -> None:
+        try:
+            if not moment:
+                self.scene_status_label.setText("")
+                return
+            from src.ai.scene_brief import compose
+            if self.scene_desc_edit.text() == (self._auto_scene or ""):
+                self._auto_scene = compose(moment, self._scene_brief, self._instruction)
+                self.scene_desc_edit.setText(self._auto_scene)
+                self.scene_status_label.setText(
+                    "Filled in from your notes and the scene so far — edit if anything's off.")
+            else:
+                self.scene_status_label.setText(
+                    "Scene summary ready — ↻ Refresh to put it in (replaces your edits).")
+        except Exception as e:          # an exception escaping a slot aborts PyQt6
+            print(f"[scene] could not show the summary: {e}")
+
+    def done(self, code: int) -> None:
+        if self._chat_worker is not None:
+            try:
+                self._chat_worker.done.disconnect()
+            except TypeError:
+                pass
+        if self._moment_worker is not None:
+            try:
+                self._moment_worker.done.disconnect(self._on_moment)
+            except TypeError:
+                pass
+        super().done(code)
 
     def _order_guidance(self) -> str:
         """The passage's actions in order, so options don't reverse them."""

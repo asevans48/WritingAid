@@ -783,7 +783,8 @@ class DraftEditorPanel(QWidget):
                 selected, self.project, self,
                 surrounding_context=(ctx_before, ctx_after),
                 chapter_content=doc_text,
-                chapter=self._current_chapter)
+                chapter=self._current_chapter,
+                text_before=doc_text[:s])
             if dialog.exec() == _QDialog.DialogCode.Accepted:
                 replacement = dialog.get_selected_text()
                 if replacement:

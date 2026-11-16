@@ -198,7 +198,7 @@ def test_overuse_suggestions_resolved_on_demand(qapp):
     stored = [e for e in highlighter._errors[0] if e.error_type == ErrorType.OVERUSE]
     assert stored and stored[0].suggestions is None
     error = highlighter.get_error_at(0, 1)
-    assert error.suggestions == OveruseDetector.SYNONYMS["walked"]
+    assert error.suggestions == OveruseDetector.SYNONYMS["walked"][:7]
 
 
 def test_thesaurus_import_does_not_load_nltk():

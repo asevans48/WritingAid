@@ -23,3 +23,11 @@ def _no_personal_avoid_list(monkeypatch):
     """The writer's own avoided phrases live in their settings; tests use none."""
     import src.ai.rewrite_quality as rq
     monkeypatch.setattr(rq, "avoid_phrases", lambda: [])
+
+
+@pytest.fixture(autouse=True)
+def _no_model_for_background_review(monkeypatch):
+    """Editors review light repeats with the configured model in the
+    background; tests never load the writer's real model."""
+    import src.ai.word_suggest as ws
+    monkeypatch.setattr(ws, "get_llm", lambda: None)
