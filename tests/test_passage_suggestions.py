@@ -359,7 +359,9 @@ def test_rewrite_that_retells_earlier_text_is_flagged():
     fixed = "A shot cracked across the water. Mara flinched and pressed lower behind the crates."
     bad = check_rewrite(ctx.passage, retold, before=ctx.before, after=ctx.after)
     assert any("retells" in p for p in bad.serious), bad.serious
-    assert check_rewrite(ctx.passage, fixed, before=ctx.before, after=ctx.after).ok
+    # Leading with the shot is the order fix the critique asks for ([3] before [2]).
+    assert check_rewrite(ctx.passage, fixed, before=ctx.before, after=ctx.after,
+                         allowed_reorders={frozenset((2, 3))}).ok
 
 
 def test_similarity_catches_paraphrase_not_just_copying():
@@ -375,3 +377,52 @@ def test_sharing_names_and_places_is_not_retelling():
     earlier = "Mara crouched behind the crates and held her breath until the light passed."
     assert restated_sentences("Mara pressed against the crates, listening.", earlier) == []
     assert restated_sentences("Tobin and Mara argued about the crates for an hour.", earlier) == []
+
+
+# ── Passage markers never reach the writer ────────────────────────
+
+@pytest.mark.parametrize("marker_start,marker_end", [
+    ("⟦PASSAGE START⟧", "⟦PASSAGE END⟧"), ("⟦PASSAGE START⟧", "⟦PASSAGE END]"),
+    ("[PASSAGE START]", "[PASSAGE END]"), ("**[Passage Start]**", "**[Passage End]**"),
+    ("<passage start>", "<passage end>"), ("⟦ PASSAGE_BEGIN ⟧", "⟦ PASSAGE_END ⟧"),
+])
+def test_echoed_scene_keeps_only_the_marked_rewrite(marker_start, marker_end):
+    reply = ("WHAT WORKS:\n- The rhythm of " + marker_start + " is good.\n\n"
+             "WHAT DOESN'T WORK:\n- Nothing between " + marker_end + " and the end.\n\n"
+             "SUGGESTION 1 (tightened):\nThe storm broke at dusk. " + marker_start
+             + " Mara ran for the pier. " + marker_end + " \"Too late,\" he said.\nWHY: a\n\n"
+             "SUGGESTION 2 (restructured):\n" + marker_start + "\nMara sprinted to the pier.\n"
+             + marker_end + "\nWHY: b\n\n"
+             "SUGGESTION 3 (new focus):\nMara reached the pier. " + marker_end + "\nWHY: c")
+    r = pc.parse_critique(reply)
+    assert [s.text for s in r.suggestions] == [
+        "Mara ran for the pier.", "Mara sprinted to the pier.", "Mara reached the pier."]
+    everything = " ".join(r.works + r.issues + [s.text for s in r.suggestions] + [r.raw])
+    assert "PASSAGE" not in everything.upper()
+
+
+def test_markers_stripped_before_insertion_and_by_the_sanitiser():
+    from src.ai.dialogue_craft import tidy_paragraphs
+    from src.ai.output_sanitizer import strip_meta_tokens
+    assert tidy_paragraphs("Mara ran.", "⟦PASSAGE START⟧ Mara ran hard. ⟦PASSAGE END]") == \
+        "Mara ran hard."
+    assert strip_meta_tokens("Mara ran. ⟦PASSAGE END⟧") == "Mara ran."
+
+
+def test_words_that_merely_mention_a_passage_are_kept():
+    from src.ai.output_sanitizer import strip_passage_markers
+    text = "The passage end was blocked; she found the start of the passage."
+    assert strip_passage_markers(text) == text
+
+
+def test_dialog_never_shows_markers(app, project, chapter):
+    from src.ui.passage_critique_dialog import PassageCritiqueDialog
+    reply = ("WHAT WORKS:\n- ⟦PASSAGE START⟧ opens well.\n\nSUGGESTION 1 (tightened):\n"
+             "Before. ⟦PASSAGE START⟧ Mara sprinted for the pier. ⟦PASSAGE END⟧ After.\nWHY: a")
+    s, e = pc.expand_to_sentences(TEXT, *span("ran to the pier"))
+    dlg = PassageCritiqueDialog(TEXT, s, e, project, chapter,
+                                worker_factory=run_now(FakeLLM(reply, "", "")))
+    assert "PASSAGE" not in dlg.discussion.toPlainText().upper()
+    assert dlg.preview_edit.toPlainText() == "Mara sprinted for the pier."
+    dlg._use_selected()
+    assert "PASSAGE" not in dlg.replacement.upper()

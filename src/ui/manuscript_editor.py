@@ -1521,7 +1521,8 @@ class ChapterEditor(QWidget):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             replacement = dialog.get_selected_text()
             if replacement:
-                cursor.insertText(replacement)
+                cursor.insertText(self._tidy_replacement(cursor.selectedText(), replacement,
+                                                         doc_text))
 
     def _recheck_writing(self):
         """Rerun all on-demand checks on the chapter."""
@@ -1589,7 +1590,16 @@ class ChapterEditor(QWidget):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             replacement = dialog.get_selected_text()
             if replacement:
-                cursor.insertText(replacement)
+                cursor.insertText(self._tidy_replacement(cursor.selectedText(), replacement,
+                                                         doc_text))
+
+    def _tidy_replacement(self, original: str, replacement: str, doc_text: str) -> str:
+        """Paragraph a rewrite like the chapter (blank line between paragraphs
+        in Markdown) with one speaker per paragraph."""
+        from src.ai.dialogue_craft import paragraph_separator, tidy_paragraphs
+        names = [c.name for c in getattr(self.project, "characters", None) or []]
+        return tidy_paragraphs(original, replacement, names,
+                               paragraph_separator(original, doc_text))
 
     def _suggest_for_selection(self):
         """Critique the highlighted text (widened to whole sentences) and
@@ -1620,7 +1630,8 @@ class ChapterEditor(QWidget):
         replace = QTextCursor(self.editor.document())
         replace.setPosition(py_to_qt_index(doc_text, start))
         replace.setPosition(py_to_qt_index(doc_text, end), QTextCursor.MoveMode.KeepAnchor)
-        replace.insertText(dialog.replacement)
+        replace.insertText(self._tidy_replacement(doc_text[start:end], dialog.replacement,
+                                                  doc_text))
         self.editor.setTextCursor(replace)
 
     def _world_word_selection(self):
@@ -5966,6 +5977,41 @@ class ManuscriptEditor(QWidget):
             found = editor.find(text, flags)
 
         return found
+
+    def count_matches(self, text: str, case_sensitive: bool = False,
+                      whole_word: bool = False) -> tuple:
+        """``(total, current)``: how many times ``text`` appears in the chapter
+        in focus, and which of them is selected (1-based; 0 when none is).
+
+        Uses the same matching as ``find_text`` (and its options), so the
+        count always agrees with what Find Next steps through.
+        """
+        editor = self.get_current_editor()
+        if not editor or not text:
+            return 0, 0
+        from PyQt6.QtGui import QTextDocument
+        flags = QTextDocument.FindFlag(0)
+        if case_sensitive:
+            flags |= QTextDocument.FindFlag.FindCaseSensitively
+        if whole_word:
+            flags |= QTextDocument.FindFlag.FindWholeWords
+        doc = editor.document()
+        selected = editor.textCursor()
+        total, current = 0, 0
+        cursor = QTextCursor(doc)
+        while True:
+            cursor = doc.find(text, cursor, flags)
+            if cursor.isNull():
+                break
+            total += 1
+            if (selected.hasSelection() and cursor.selectionStart() == selected.selectionStart()
+                    and cursor.selectionEnd() == selected.selectionEnd()):
+                current = total
+        return total, current
+
+    def current_chapter_title(self) -> str:
+        ce = self.current_chapter_editor
+        return (getattr(getattr(ce, "chapter", None), "title", "") or "") if ce else ""
 
     def replace_text(self, find_text: str, replace_text: str,
                      case_sensitive: bool = False, whole_word: bool = False) -> bool:

@@ -39,6 +39,8 @@ class Line:
     speaker: str = ""          # canonical character name, or ""
     certainty: str = ""        # "tag", "beat", "likely" or ""
     addressed: str = ""        # a character named inside the quote as addressee
+    start: int = -1            # offset of the opening quote mark in the text
+    paragraph: int = -1        # index of the paragraph it's in
 
     def label(self) -> str:
         who = (self.speaker if self.certainty in ("tag", "beat") else
@@ -79,7 +81,9 @@ def attribute_lines(text: str, names: Iterable[str]) -> List[Line]:
     """Every quoted line in ``text`` with its most likely speaker."""
     index = _name_index(names)
     if not index:
-        return [Line(q.group(1) or q.group(2)) for q in _QUOTE_RX.finditer(text or "")]
+        return [Line(q.group(1) or q.group(2), start=q.start(),
+                     paragraph=(text or "").count("\n", 0, q.start()))
+                for q in _QUOTE_RX.finditer(text or "")]
     alts = _alternation(index)
     rx = re.compile(rf"\b({alts})\b")
     tag_after = re.compile(rf"^\s*,?\s*(?:(?P<n1>{alts})\s+(?:{SPEECH_VERBS})"
@@ -90,13 +94,15 @@ def attribute_lines(text: str, names: Iterable[str]) -> List[Line]:
     lines: List[Line] = []
     paragraphs = (text or "").split("\n")
     recent: List[str] = []                       # names mentioned, latest last
-    for para in paragraphs:
+    offset = 0
+    for p_index, para in enumerate(paragraphs):
+        para_offset, offset = offset, offset + len(para) + 1
         prose = _QUOTE_RX.sub(" ", para)
         mentioned = [index[m.group(1)] for m in rx.finditer(prose)]
         in_paragraph: List[Line] = []
         for q in _QUOTE_RX.finditer(para):
             quote = q.group(1) or q.group(2)
-            line = Line(quote)
+            line = Line(quote, start=para_offset + q.start(), paragraph=p_index)
             inside = [m for m in rx.finditer(quote)]
             for m in inside:
                 around = quote[max(0, m.start() - 2):m.end() + 1]
@@ -129,7 +135,27 @@ def attribute_lines(text: str, names: Iterable[str]) -> List[Line]:
             in_paragraph.append(line)
             lines.append(line)
         recent += mentioned
+    _alternate(lines)
     return lines
+
+
+def _alternate(lines: List[Line]) -> None:
+    """Untagged lines in a two-person exchange alternate: a line on its own
+    paragraph with no evidence goes to the other person in the exchange."""
+    for i, line in enumerate(lines):
+        if line.speaker or i == 0:
+            continue
+        prev = lines[i - 1]
+        if not prev.speaker or line.paragraph == prev.paragraph:
+            continue
+        recent = lines[max(0, i - 4):i + 3]        # the exchange around this line
+        people = {l.speaker for l in recent if l.speaker} | {l.addressed for l in recent
+                                                             if l.addressed}
+        if len(people) != 2:
+            continue
+        other = next(p for p in people if p != prev.speaker)
+        if other != line.addressed:
+            line.speaker, line.certainty = other, "likely"
 
 
 def speaker_notes(text: str, names: Iterable[str], limit: int = 12) -> str:

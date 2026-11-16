@@ -125,7 +125,10 @@ class RephraseDialog(QDialog):
             chapter: Chapter object (for arc context)
         """
         super().__init__(parent)
-        self.original_text = text
+        # Qt marks paragraph breaks in a selection with U+2029; keep them as
+        # real line breaks so dialogue stays one speaker per paragraph.
+        from src.ai.dialogue_craft import normalize_breaks
+        self.original_text = normalize_breaks(text)
         self.project = project
         self.surrounding_before = surrounding_context[0] if surrounding_context else ""
         self.surrounding_after = surrounding_context[1] if surrounding_context else ""
@@ -1111,7 +1114,9 @@ class RephraseDialog(QDialog):
             surrounding_after=self.surrounding_after,
             refinement=refinement,
             writer_voice=writer_voice,
-            examples_note=self._rated_examples(),
+            examples_note="\n\n".join(b for b in (self._rated_examples(),
+                                                   self._order_guidance(),
+                                                   self._dialogue_guidance()) if b),
         )
         self.worker.finished.connect(self._on_generation_complete)
         self.worker.error.connect(self._on_generation_error)
@@ -2064,6 +2069,49 @@ class RephraseDialog(QDialog):
                 from src.ai.writer_voice import WriterVoice
                 self._writer_voice = WriterVoice()
         return self._writer_voice
+
+    def _order_guidance(self) -> str:
+        """The passage's actions in order, so options don't reverse them."""
+        try:
+            from src.ai.event_order import ORDER_RULE, events_prompt
+            timeline = events_prompt(self.original_text)
+            return f"{timeline}\n{ORDER_RULE}" if timeline else ""
+        except Exception as e:
+            print(f"[rephrase] order guidance unavailable: {e}")
+            return ""
+
+    def _dialogue_guidance(self) -> str:
+        """For dialogue: how the speakers talk, what's between them, and the
+        dialogue checklist."""
+        try:
+            from src.ai import dialogue_craft as dc
+            if not self.project or not dc.is_dialogue(self.original_text):
+                return ""
+            names = [c.name for c in getattr(self.project, "characters", None) or []]
+            para = self.surrounding_before[self.surrounding_before.rfind("\n") + 1:]
+            speakers = dc.speakers_in(para + self.original_text, names)
+            profiles = dc.speech_profiles(self.project, only=speakers) if speakers else {}
+            parts = [dc.DIALOGUE_CHECKLIST]
+            from src.ai.dialogue_speakers import attribute_lines
+            start = len(para)
+            labels = [l for l in attribute_lines(para + self.original_text, names)
+                      if l.start >= start]
+            if labels:
+                parts.append("WHO SPEAKS EACH LINE (from the dialogue tags — keep each line "
+                             "with its speaker):\n" + "\n".join(f"- {l.label()}" for l in labels))
+            speech = "\n".join(p.to_prompt() for p in profiles.values() if p.to_prompt())
+            if speech:
+                parts.append("HOW THESE CHARACTERS TALK:\n" + speech)
+            exchange = dc.exchange_context(self.project, self.chapter, speakers)
+            if exchange:
+                parts.append("WHAT'S BETWEEN THE SPEAKERS (use it for subtext):\n" + exchange)
+            found = dc.dialogue_issues(self.original_text, names, profiles=profiles)
+            if found:
+                parts.append("ALREADY NOTICED — fix these:\n" + "\n".join(f"- {i}" for i in found))
+            return "\n\n".join(parts)
+        except Exception as e:
+            print(f"[rephrase] dialogue guidance unavailable: {e}")
+            return ""
 
     def _rated_examples(self) -> str:
         """The author's best-rated past rewrites, closest to this text."""

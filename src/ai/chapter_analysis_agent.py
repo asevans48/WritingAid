@@ -2379,6 +2379,7 @@ class DialogAnalyzer(_BaseAnalyzer):
             section.findings.append(
                 "Said-bookisms (declared / barked / hissed) outnumber "
                 "neutral 'said' tags — calls attention to the tag.")
+        self._speaker_analysis(text, section)
         if not section.findings:
             section.findings.append(
                 "Dialog density and tag hygiene look healthy for "
@@ -2388,6 +2389,114 @@ class DialogAnalyzer(_BaseAnalyzer):
             f"(genre {lo:.0f}–{hi:.0f}%); "
             f"{section.metrics['dialog_tag_total']} tag tokens; "
             f"{len(tag_adverbs)} tag adverbs.")
+
+    # How far apart two speakers' measured speech must be to sound distinct,
+    # and how far a speaker can move from their earlier chapters.
+    ALIKE_DISTANCE = 0.12
+    DRIFT_DISTANCE = 0.35
+
+    def _chapter_planning(self, section):
+        for ch in getattr(self.manuscript, "chapters", None) or []:
+            if ch.title == section.chapter_title:
+                return getattr(ch, "planning", None)
+        return None
+
+    def _speaker_analysis(self, text, section) -> None:
+        """Per-speaker voices in this chapter against each other and against
+        the rest of the book, plus the deterministic dialogue checks."""
+        self._speech_block = ""
+        project = self.project
+        if project is None or not getattr(project, "characters", None):
+            return
+        from src.ai import dialogue_craft as dc
+        from src.ai.dialogue_speakers import attribute_lines
+        names = [c.name for c in project.characters if c.name]
+        lines = attribute_lines(text, names)
+        if not lines:
+            return
+        here = dc.speech_profiles(project, text=text)
+        rest = [t for t in dc._chapter_texts(project) if t != text and t.strip()]
+        book = dc.speech_profiles(project, texts=rest) if rest else {}
+
+        counts = {n: len(p.lines) for n, p in here.items() if p.lines}
+        attributed = sum(counts.values())
+        section.metrics["lines_by_speaker"] = counts
+        section.metrics["unattributed_lines"] = len(lines) - attributed
+        if section.extra_lists is None:
+            section.extra_lists = {}
+
+        measured = [p for p in here.values() if len(p.lines) >= 4]
+        alike = []
+        for i, a in enumerate(measured):
+            for b in measured[i + 1:]:
+                d = sum((x - y) ** 2 for x, y in zip(a.features(), b.features())) ** 0.5
+                if d < self.ALIKE_DISTANCE:
+                    alike.append(f"{a.name} and {b.name} — similar line length, contractions "
+                                 f"and questions (e.g. “{a.lines[0][:50]}” / “{b.lines[0][:50]}”)")
+        if alike:
+            section.extra_lists["Speakers who sound alike"] = alike
+            section.findings.append(
+                f"{len(alike)} pair(s) of speakers sound alike on the page "
+                f"({alike[0].split(' —')[0]}).")
+
+        drift = []
+        for p in measured:
+            earlier = book.get(p.name)
+            if earlier is None or not earlier.measured:
+                continue
+            d = sum((x - y) ** 2 for x, y in zip(p.features(), earlier.features())) ** 0.5
+            if d > self.DRIFT_DISTANCE:
+                drift.append(
+                    f"{p.name}: lines average {p.words_per_line:.0f} words here vs "
+                    f"{earlier.words_per_line:.0f} elsewhere; contractions "
+                    f"{p.contractions_per_100:.1f} vs {earlier.contractions_per_100:.1f} per 100 "
+                    f"words; {p.question_pct:.0f}% vs {earlier.question_pct:.0f}% questions "
+                    f"(e.g. “{p.lines[0][:60]}”)")
+        if drift:
+            section.extra_lists["Voice drift from earlier chapters"] = drift
+            section.findings.append(
+                f"Voice drift: {', '.join(d.split(':')[0] for d in drift)} "
+                f"sound different from earlier chapters.")
+
+        balance = []
+        if attributed >= 8:
+            top, top_n = max(counts.items(), key=lambda kv: kv[1])
+            if top_n / attributed > 0.65 and len(counts) > 1:
+                balance.append(f"{top} has {top_n} of {attributed} lines — the others mostly "
+                               f"listen.")
+        plan = self._chapter_planning(section)
+        for name in getattr(plan, "characters_featured", None) or []:
+            canonical = next((n for n in names if n.lower() == str(name).lower()
+                              or n.split()[0].lower() == str(name).lower()), None)
+            if canonical and not counts.get(canonical) and canonical.split()[0] in text:
+                balance.append(f"{canonical} is featured in this chapter but never speaks.")
+        if balance:
+            section.extra_lists["Who talks"] = balance
+            section.findings.extend(balance)
+
+        issues = dc.dialogue_issues(text, names, lines=lines, profiles=dc.speech_profiles(
+            project, texts=dc._chapter_texts(project)))
+        if issues:
+            section.extra_lists["Dialogue checks"] = [str(i) for i in issues[:15]]
+            kinds = Counter(i.kind for i in issues)
+            if kinds.get("lost_speaker"):
+                section.findings.append(
+                    f"{kinds['lost_speaker']} stretch(es) of dialogue with no clear speaker — "
+                    f"risk of losing the reader.")
+            for kind, label in (("names", "characters naming each other"),
+                                ("exposition", "“as you know” exposition"),
+                                ("long_turn", "long uninterrupted speeches"),
+                                ("filler", "filler openers"),
+                                ("stage_directions", "heavy stage directions")):
+                if kinds.get(kind):
+                    section.findings.append(f"Dialogue check: {label} ({kinds[kind]}).")
+        self._speech_block = "\n".join(p.to_prompt() for p in here.values()
+                                       if p.lines and p.to_prompt())
+        if attributed:
+            people = sorted(counts, key=counts.get, reverse=True)[:4]
+            exchange = dc.exchange_context(project, None, people)
+            if exchange:
+                self._speech_block += "\n\nWHAT'S BETWEEN THEM:\n" + exchange
 
     def _build_prompt(self, text, section, genre, manuscript_context,
                       rag_context, critique_context):
@@ -2416,6 +2525,9 @@ DIALOG METRICS:
 
 DETERMINISTIC FINDINGS:
 {chr(10).join(f'- {f}' for f in section.findings) or '- (none)'}
+
+HOW THE SPEAKERS TALK (measured from the lines the text gives them):
+{getattr(self, "_speech_block", "") or "(no attributed dialogue)"}
 
 {ctx}
 

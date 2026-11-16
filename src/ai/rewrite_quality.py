@@ -347,7 +347,8 @@ def _style_counts(text: str) -> Counter:
 def check_rewrite(original: str, candidate: str, *, voice: Any = None,
                   known_names: Iterable[str] = (), before: str = "", after: str = "",
                   focus: str = "", notes: str = "",
-                  avoid: Optional[Iterable[str]] = None) -> RewriteCheck:
+                  avoid: Optional[Iterable[str]] = None,
+                  allowed_reorders: Optional[set] = None) -> RewriteCheck:
     """Problems with ``candidate`` as a replacement for ``original``.
 
     ``notes`` is the story-bible text the model was given (new concrete
@@ -388,6 +389,11 @@ def check_rewrite(original: str, candidate: str, *, voice: Any = None,
             check.serious.append(f"retells “{_short(retold[0][1])}”, which comes before the passage")
         elif restated_sentences(candidate, after[:1500], against=original):
             check.serious.append("retells what comes after the passage")
+
+    from src.ai.event_order import asks_for_reorder, order_problems
+    reordered = order_problems(original, candidate, allowed_reorders)
+    if reordered:
+        (check.minor if asks_for_reorder(focus) else check.serious).extend(reordered)
 
     scene = f"{before}\n{original}\n{after}"
     invented = new_facts(candidate, f"{scene}\n{notes}\n{focus}")

@@ -273,6 +273,7 @@ class PassageCritiqueDialog(QDialog):
             return f"<h3 style='color:{color}'>{mark} {title}</h3><ul>{rows}</ul>"
         body = (section("What works", result.works, "#2e7d32", "✓")
                 + section("What doesn't work", result.issues, "#c62828", "✗")
+                + section("Dialogue", getattr(result, "dialogue", []), "#7c3aed", "💬")
                 + section("Order and flow", result.order, "#1d4ed8", "⇅"))
         return body or "<p><i>No discussion — see the suggestions below.</i></p>"
 

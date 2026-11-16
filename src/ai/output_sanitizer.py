@@ -112,6 +112,37 @@ _MULTIBLANK_RE = re.compile(r"\n{3,}")
 # ── Public API ──────────────────────────────────────────────────────
 
 
+# The markers Suggestions puts around the passage in its prompt, in any
+# bracket style a model might echo them back in: ⟦PASSAGE START⟧,
+# ⟦PASSAGE END], [PASSAGE START], **[Passage End]**, <passage start>…
+_PASSAGE_MARKER = (r"(?:\*\*|__)?[⟦\[<(【〚]{1,2}\s*PASSAGE[\s_-]*(?P<which>START|BEGIN|END)\s*"
+                   r"[⟧\]>)】〛]{1,2}(?:\*\*|__)?")
+_PASSAGE_MARKER_RX = re.compile(_PASSAGE_MARKER, re.IGNORECASE)
+
+
+def extract_marked_passage(text: str) -> str:
+    """If ``text`` echoes the marked scene, keep only what lies between the
+    passage markers; then drop any stray marker."""
+    if not text:
+        return ""
+    marks = list(_PASSAGE_MARKER_RX.finditer(text))
+    starts = [m for m in marks if m.group("which").upper() != "END"]
+    ends = [m for m in marks if m.group("which").upper() == "END"]
+    if starts and ends and ends[-1].start() > starts[-1].end():
+        text = text[starts[-1].end():next(e.start() for e in ends
+                                          if e.start() > starts[-1].end())]
+    elif starts and starts[-1].end() < len(text) and text[:starts[-1].start()].strip():
+        text = text[starts[-1].end():]
+    return strip_passage_markers(text)
+
+
+def strip_passage_markers(text: str) -> str:
+    """Remove any passage marker, wherever it appears."""
+    out = _PASSAGE_MARKER_RX.sub("", text or "")
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    return re.sub(r"[ \t]+\n", "\n", out).strip()
+
+
 def strip_meta_tokens(text: str) -> str:
     """Remove model-specific channel / chat-format tokens from ``text``.
 
@@ -124,7 +155,7 @@ def strip_meta_tokens(text: str) -> str:
     """
     if not text:
         return ""
-    out = text
+    out = strip_passage_markers(text) if _PASSAGE_MARKER_RX.search(text) else text
 
     # Strip block-form thinking tags (and their content) first so the
     # token-form pass below doesn't trip on inner ``<|x|>`` markers.

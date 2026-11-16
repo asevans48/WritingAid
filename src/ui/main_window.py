@@ -13885,22 +13885,30 @@ class MainWindow(QMainWindow):
     def _on_find_next(self, text: str, case_sensitive: bool, whole_word: bool):
         """Handle find next from dialog."""
         found = self.manuscript_editor.find_text(text, case_sensitive, whole_word)
-        dialog = self.find_dialog or self.replace_dialog
+        dialog = self.sender() if isinstance(self.sender(), FindReplaceDialog) else (
+            self.find_dialog or self.replace_dialog)
         if dialog:
-            if found:
-                dialog.set_status("")
-            else:
-                dialog.set_status(f"'{text}' not found")
+            dialog.set_status(self._match_status(text, case_sensitive, whole_word, found))
+
+    def _match_status(self, text: str, case_sensitive: bool, whole_word: bool,
+                      found: bool) -> str:
+        """"3 of 7 in “Chapter 4”" — how often the text appears in the chapter
+        in focus, and which match is selected."""
+        total, current = self.manuscript_editor.count_matches(text, case_sensitive, whole_word)
+        title = self.manuscript_editor.current_chapter_title()
+        where = f" in “{title}”" if title else " in this chapter"
+        if not found or total == 0:
+            return f"“{text}” not found{where} (0 matches)"
+        times = "1 match" if total == 1 else f"{total} matches"
+        return f"{current} of {times}{where}" if current else f"{times}{where}"
 
     def _on_replace_next(self, find_text: str, replace_text: str,
                          case_sensitive: bool, whole_word: bool):
         """Handle replace from dialog."""
         found = self.manuscript_editor.replace_text(find_text, replace_text, case_sensitive, whole_word)
         if self.replace_dialog:
-            if not found:
-                self.replace_dialog.set_status(f"'{find_text}' not found")
-            else:
-                self.replace_dialog.set_status("")
+            self.replace_dialog.set_status(
+                self._match_status(find_text, case_sensitive, whole_word, found))
 
     def _on_replace_all(self, find_text: str, replace_text: str,
                         case_sensitive: bool, whole_word: bool):

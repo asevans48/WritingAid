@@ -3135,6 +3135,8 @@ For each option, briefly explain what makes it different from the original."""
         Returns:
             RephraseResult with multiple options
         """
+        from src.ai.dialogue_craft import normalize_breaks
+        text = normalize_breaks(text)
         # Normalise: tones list takes priority; fall back to legacy single tone arg
         if tones is None:
             tones = [tone] if tone is not None else [RephraseTone.NEUTRAL]
@@ -3500,8 +3502,12 @@ Format your response as:
         if model_used is None:
             model_used = self.llm.model if hasattr(self.llm, 'model') else "unknown"
 
-        # Parse response
-        options = self._parse_response(response, styles, tone)
+        # Parse response (multi-paragraph passages keep their paragraphs)
+        from src.ai.dialogue_craft import normalize_breaks
+        text = normalize_breaks(text)
+        self._keep_paragraphs = "\n" in (text or "").strip()
+        self._paragraph_source = text
+        options = self._tidy_options(self._parse_response(response, styles, tone))
 
         if refinement:
             options = self._enforce_refinement_novelty(
@@ -3651,6 +3657,23 @@ Format your response as:
                                      before=before or "", after=after or "", focus=focus,
                                      notes=extra_names)
 
+            from src.ai import dialogue_craft as dc
+            people = [c.name for c in getattr(self.project, "characters", None) or []]
+            profiles = {}
+            if self.project is not None and dc.is_dialogue(text):
+                para = (before or "")[(before or "").rfind("\n") + 1:]
+                speakers = dc.speakers_in(para + text, people)
+                profiles = dc.speech_profiles(self.project, only=speakers) if speakers else {}
+            plain_check = check
+
+            def check(o):                              # noqa: F811 — adds dialogue checks
+                c = plain_check(o)
+                if dc.is_dialogue(text):
+                    serious, minor = dc.rewrite_dialogue_problems(text, o.text, people, profiles)
+                    c.serious += serious
+                    c.minor += minor
+                return c
+
             checks = [check(o) for o in options]
             failed = [(o, c) for o, c in zip(options, checks) if not c.ok]
             if failed:
@@ -3660,8 +3683,8 @@ Format your response as:
                          + ". Keep the same point of view and tense, spell names exactly as "
                            "in the story, keep a similar length, and don't copy the "
                            "surrounding text.\n")
-                fresh = [(o, check(o)) for o in self._parse_response(
-                    call_model(retry, temperature=0.8), styles, tone)]
+                fresh = [(o, check(o)) for o in self._tidy_options(self._parse_response(
+                    call_model(retry, temperature=0.8), styles, tone))]
                 fresh = sorted((oc for oc in fresh if oc[1].ok), key=lambda oc: oc[1].rank())
                 for i, c in enumerate(checks):
                     if not c.ok and fresh:
@@ -3739,6 +3762,27 @@ Format your response as:
                              + (o.explanation or ""))
         return fallback
 
+    def _tidy_options(self, options: List["RephraseOption"]) -> List["RephraseOption"]:
+        """Each option paragraphed like the passage: one speaker per paragraph,
+        the passage's separator between paragraphs."""
+        source = getattr(self, "_paragraph_source", "")
+        if not source:
+            return options
+        try:
+            from src.ai.dialogue_craft import tidy_paragraphs
+            names = [c.name for c in getattr(self.project, "characters", None) or []]
+            for o in options:
+                o.text = tidy_paragraphs(source, o.text, names)
+        except Exception as e:
+            print(f"[rephrase] could not tidy paragraphs: {e}")
+        return options
+
+    def _join_option_lines(self, lines: List[str]) -> str:
+        """An option's lines: kept as paragraphs when the passage had them
+        (dialogue is one speaker per paragraph), else joined (wrapped prose)."""
+        sep = "\n" if getattr(self, "_keep_paragraphs", False) else " "
+        return sep.join(l.strip() for l in lines if l.strip()).strip()
+
     def _parse_response(self, response: str, styles: List[RephraseStyle], tone: RephraseTone = RephraseTone.NEUTRAL) -> List[RephraseOption]:
         """Parse LLM response into structured options."""
         options = []
@@ -3788,7 +3832,7 @@ Format your response as:
                 # Save previous option if exists
                 if current_option and current_text:
                     options.append(RephraseOption(
-                        text=' '.join(current_text).strip(),
+                        text=self._join_option_lines(current_text),
                         style=current_style or "general",
                         tone=tone_value,
                         explanation=current_explanation
@@ -3819,7 +3863,7 @@ Format your response as:
         # Add last option
         if current_option and current_text:
             options.append(RephraseOption(
-                text=' '.join(current_text).strip(),
+                text=self._join_option_lines(current_text),
                 style=current_style or "general",
                 tone=tone_value,
                 explanation=current_explanation

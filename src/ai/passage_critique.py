@@ -125,7 +125,15 @@ class PassageContext:
     examples: str = ""          # rewrites the author rated before
     known_names: List[str] = field(default_factory=list)   # for spelling checks
     observations: List[str] = field(default_factory=list)  # found without the model
+    allowed_reorders: set = field(default_factory=set)     # sentence pairs the critique flagged
     speakers: str = ""          # who says each line of dialogue in the passage
+    # Dialogue mode (the passage is mostly conversation)
+    dialogue_mode: bool = False
+    speech: str = ""            # how the speakers talk (profiles)
+    exchange: str = ""          # what's between them: wants, secrets, tensions, beats
+    dialogue_notes: List[str] = field(default_factory=list)   # scan findings
+    character_names: List[str] = field(default_factory=list)
+    profiles: Dict[str, Any] = field(default_factory=dict)
 
     def notes_text(self) -> str:
         """Everything from the story bible the model was shown."""
@@ -134,6 +142,8 @@ class PassageContext:
 
     def sections(self) -> List[Tuple[str, str]]:
         return [("STORY OUTLINE", self.story_outline), ("PLOT", self.plot),
+                ("HOW THESE CHARACTERS TALK", self.speech),
+                ("WHAT'S BETWEEN THE SPEAKERS", self.exchange),
                 ("EARLIER CHAPTERS", self.earlier),
                 ("THIS CHAPTER", self.chapter), ("CHARACTERS IN THIS PASSAGE", self.characters),
                 ("WORLDBUILDING IN THIS PASSAGE", self.world),
@@ -350,6 +360,20 @@ def build_context(project: Any, chapter: Any, text: str, start: int, end: int, *
         lines = attribute_lines(text[para_start:end], people)
         skip = len(attribute_lines(text[para_start:start], people))
         ctx.speakers = "\n".join(f"- {l.label()}" for l in lines[skip:][:12])
+    from src.ai import dialogue_craft as dc
+    if dc.is_dialogue(passage):
+        ctx.dialogue_mode = True
+        ctx.character_names = [c.name for c in getattr(project, "characters", None) or []]
+        para_start = text.rfind("\n", 0, start) + 1
+        speakers = dc.speakers_in(text[para_start:end], ctx.character_names)
+        if project is not None and speakers:
+            ctx.profiles = dc.speech_profiles(project, only=speakers)
+            ctx.speech = _clip("\n".join(p.to_prompt() for p in ctx.profiles.values()
+                                         if p.to_prompt()), size(1800))
+            ctx.exchange = _clip(dc.exchange_context(project, chapter, speakers), size(1200))
+        ctx.dialogue_notes = [str(i) for i in dc.dialogue_issues(
+            text[para_start:end], ctx.character_names, profiles=ctx.profiles)
+            if i.start < 0 or i.start >= start - para_start]
     return ctx
 
 
@@ -395,7 +419,11 @@ _REWRITE_RULES = (
     "- Add no new facts: no objects, weapons, injuries, people, places or events that "
     "aren't in the passage, the scene or the notes. You may cut, reorder and sharpen what "
     "is there, and add sensory detail that fits the scene.\n"
-    "- Keep each line of dialogue with the speaker given above.\n")
+    "- Keep each line of dialogue with the speaker given above.\n"
+    "- Keep events in the order they happen (see the numbered events). Never move an "
+    "action before something that has to happen first — someone goes to the bathroom "
+    "before they return to their room. Reorder only to fix an order problem you named; "
+    "\"After X, Y\" and \"Before Y, X\" both mean X happens first.\n")
 
 _SCOPE_RULES = (
     "Your rewrites REPLACE ONLY the text between ⟦PASSAGE START⟧ and ⟦PASSAGE END⟧. "
@@ -413,12 +441,19 @@ def build_prompt(ctx: PassageContext, focus: str = "") -> str:
     parts.append("=== THE SCENE (already written — the passage to critique is marked) ===\n"
                  + ctx.scene())
     parts.append("=== PASSAGE TO CRITIQUE, SENTENCE BY SENTENCE ===\n" + ctx.numbered_passage())
+    from src.ai.event_order import events_prompt
+    timeline = events_prompt(ctx.passage)
+    if timeline:
+        parts.append("=== " + timeline)
     if ctx.speakers:
         parts.append("=== WHO SPEAKS EACH LINE (from the dialogue tags — trust this; a name "
                      "inside the quotes is who is being spoken to) ===\n" + ctx.speakers)
-    if ctx.observations:
+    if ctx.observations or ctx.dialogue_notes:
         parts.append("=== ALREADY NOTICED (confirm and include these) ===\n"
-                     + "\n".join(f"- {o}" for o in ctx.observations))
+                     + "\n".join(f"- {o}" for o in ctx.observations + ctx.dialogue_notes))
+    if ctx.dialogue_mode:
+        from src.ai.dialogue_craft import DIALOGUE_CHECKLIST
+        parts.append(DIALOGUE_CHECKLIST)
     if focus.strip():
         parts.append(f"=== THE AUTHOR WANTS YOU TO FOCUS ON ===\n{focus.strip()}")
     parts.append(
@@ -428,7 +463,10 @@ def build_prompt(ctx: PassageContext, focus: str = "") -> str:
         "that actions happen in a physically possible order, that information isn't used "
         "before it is revealed, that nothing repeats what the text before already said, "
         "and that the passage connects to the text before and after it. Refer to "
-        "sentences by number, e.g. \"[3] should come before [2]\".\n"
+        "sentences by number, e.g. \"[3] should come before [2]\". The author's order is "
+        "the default: call something out of order only when it truly can't happen in that "
+        "sequence, and never suggest moving an action before something that must happen "
+        "first.\n"
         "- Consistency with the characters (personality, voice, motivation, arc), the "
         "worldbuilding, the plot and the story outline.\n"
         "- The prose: clarity, rhythm, showing vs telling, tension. The author's measured "
@@ -437,6 +475,8 @@ def build_prompt(ctx: PassageContext, focus: str = "") -> str:
         "Answer in exactly this format:\n\n"
         "WHAT WORKS:\n- <a specific strength>\n- <another>\n\n"
         "WHAT DOESN'T WORK:\n- <a specific problem and why>\n- <another>\n\n"
+        + ("DIALOGUE:\n- <voice, subtext, exposition, tags and beats, purpose — quote the "
+           "line each point is about>\n\n" if ctx.dialogue_mode else "") +
         "ORDER AND FLOW:\n- <what's out of order, repeated or disconnected, by sentence "
         "number — or \"In order.\" if the sequence is right>\n\n"
         + "".join(f"SUGGESTION {i} ({name}):\n<a complete rewrite — {how}>\n"
@@ -489,12 +529,14 @@ class PassageCritique:
     works: List[str] = field(default_factory=list)
     issues: List[str] = field(default_factory=list)
     order: List[str] = field(default_factory=list)      # sequence / repetition / flow
+    dialogue: List[str] = field(default_factory=list)   # dialogue craft
     suggestions: List[Suggestion] = field(default_factory=list)
     raw: str = ""
 
     @property
     def empty(self) -> bool:
-        return not (self.works or self.issues or self.order or self.suggestions)
+        return not (self.works or self.issues or self.order or self.dialogue
+                    or self.suggestions)
 
 
 _HEAD = r"^\s*(?:#+\s*)?(?:\*\*|__)?\s*"
@@ -503,6 +545,8 @@ _WORKS_RX = re.compile(_HEAD + r"(?:what\s+works|works|strengths?)" + _HEAD_TAIL
 _ISSUES_RX = re.compile(
     _HEAD + r"(?:what\s+(?:doesn['’]?t|does\s+not|isn['’]?t)\s+work(?:ing)?|doesn['’]?t\s+work"
     r"|weaknesses|issues|problems)" + _HEAD_TAIL, re.I | re.M)
+_DIALOGUE_RX = re.compile(_HEAD + r"(?:dialogue|dialog)(?:\s+(?:craft|notes))?" + _HEAD_TAIL,
+                          re.I | re.M)
 _ORDER_RX = re.compile(
     _HEAD + r"(?:order(?:\s*(?:and|&|/)\s*flow)?|sequence|flow(?:\s*(?:and|&|/)\s*order)?"
     r"|order\s+of\s+events)" + _HEAD_TAIL, re.I | re.M)
@@ -534,7 +578,8 @@ def _bullets(block: str) -> List[str]:
 
 
 def _clean_rewrite(text: str) -> str:
-    text = text.strip().strip("`").strip()
+    from src.ai.output_sanitizer import extract_marked_passage
+    text = extract_marked_passage(text).strip().strip("`").strip()
     lines = [l for l in text.splitlines() if l.strip() not in ("---", "***")]
     text = "\n".join(lines).strip()
     if len(text) > 1 and text[0] in "\"“" and text[-1] in "\"”" and text.count(text[0]) == 2:
@@ -543,23 +588,39 @@ def _clean_rewrite(text: str) -> str:
 
 
 def parse_critique(raw: str) -> PassageCritique:
-    from src.ai.output_sanitizer import strip_meta_tokens
-    text = strip_meta_tokens(raw or "")
-    out = PassageCritique(raw=text)
+    from src.ai.output_sanitizer import _PASSAGE_MARKER_RX, strip_meta_tokens
+    raw = raw or ""
+    # Markers are removed per rewrite (a rewrite that echoes the scene keeps
+    # only the marked part), so hide them from the meta-token pass here.
+    held = {}
+
+    def hold(m):
+        key = f"\x00{len(held)}\x00"
+        held[key] = m.group(0)
+        return key
+
+    text = strip_meta_tokens(_PASSAGE_MARKER_RX.sub(hold, raw))
+    for key, marker in held.items():
+        text = text.replace(key, marker)
+    from src.ai.output_sanitizer import strip_passage_markers
+    out = PassageCritique(raw=strip_passage_markers(text))
     marks = sorted(
         [(m.start(), m.end(), "works", None) for m in _WORKS_RX.finditer(text)]
         + [(m.start(), m.end(), "issues", None) for m in _ISSUES_RX.finditer(text)]
         + [(m.start(), m.end(), "order", None) for m in _ORDER_RX.finditer(text)]
+        + [(m.start(), m.end(), "dialogue", None) for m in _DIALOGUE_RX.finditer(text)]
         + [(m.start(), m.end(), "suggestion", m) for m in _SUGGESTION_RX.finditer(text)],
         key=lambda x: x[0])
     for i, (s, e, kind, m) in enumerate(marks):
         body = text[e:marks[i + 1][0] if i + 1 < len(marks) else len(text)]
         if kind == "works":
-            out.works += _bullets(body)
+            out.works += _bullets(strip_passage_markers(body))
         elif kind == "issues":
-            out.issues += _bullets(body)
+            out.issues += _bullets(strip_passage_markers(body))
+        elif kind == "dialogue":
+            out.dialogue += _bullets(strip_passage_markers(body))
         elif kind == "order":
-            out.order += _bullets(body)
+            out.order += _bullets(strip_passage_markers(body))
         else:
             rest = (m.group("rest") or "").strip()
             body = rest + body
@@ -586,7 +647,10 @@ def build_fix_prompt(ctx: PassageContext, failed: List[Tuple["Suggestion", List[
     kept = "\n\n".join(s.text for s in keep or [])
     angles = ([ANGLES[i % len(ANGLES)] for i in slots] if slots
               else _angles_for(len(failed), [s.angle for s in keep or []]))
+    from src.ai.event_order import events_prompt
+    timeline = events_prompt(ctx.passage)
     return ("=== THE SCENE (the passage is marked) ===\n" + ctx.scene(1500) + "\n\n"
+            + (f"=== {timeline}\n\n" if timeline else "")
             + (f"=== WHO SPEAKS EACH LINE ===\n{ctx.speakers}\n\n" if ctx.speakers else "")
             + (f"=== REWRITES ALREADY KEPT (yours must differ from these in opening and "
                f"approach) ===\n{kept}\n\n" if kept else "")
@@ -603,11 +667,24 @@ def build_fix_prompt(ctx: PassageContext, failed: List[Tuple["Suggestion", List[
 
 
 def _check_all(ctx: PassageContext, suggestions: List["Suggestion"], voice: Any, focus: str):
+    from src.ai.dialogue_craft import paragraph_separator, tidy_paragraphs
     from src.ai.rewrite_quality import check_rewrite
+    # Paragraphs as the manuscript has them, one speaker per paragraph.
+    sep = paragraph_separator(ctx.passage, ctx.before[-600:], ctx.after[:600])
+    for s in suggestions:
+        s.text = tidy_paragraphs(ctx.passage, s.text, ctx.character_names or ctx.known_names,
+                                 sep)
     checks = [check_rewrite(ctx.passage, s.text, voice=voice, known_names=ctx.known_names,
                             before=ctx.before, after=ctx.after, focus=focus,
-                            notes=ctx.notes_text())
+                            notes=ctx.notes_text(), allowed_reorders=ctx.allowed_reorders)
               for s in suggestions]
+    if ctx.dialogue_mode:
+        from src.ai.dialogue_craft import rewrite_dialogue_problems
+        for s, c in zip(suggestions, checks):
+            serious, minor = rewrite_dialogue_problems(ctx.passage, s.text,
+                                                       ctx.character_names, ctx.profiles)
+            c.serious += serious
+            c.minor += minor
     _mark_twins(suggestions, checks)
     return checks
 
@@ -638,6 +715,9 @@ def critique_passage(llm: Any, ctx: PassageContext, focus: str = "",
     raw = llm.generate_text(build_prompt(ctx, focus), SYSTEM_PROMPT,
                             max_tokens=1800, temperature=0.7)
     result = parse_critique(raw)
+    # Rewrites may reorder only what the critique found out of order.
+    from src.ai.event_order import allowed_swaps
+    ctx.allowed_reorders = allowed_swaps(result.order + result.issues + ctx.observations)
     wanted = NUM_SUGGESTIONS - len(result.suggestions)
     if wanted > 0 and not result.empty:
         say("Writing more suggestions…")
@@ -653,6 +733,9 @@ def critique_passage(llm: Any, ctx: PassageContext, focus: str = "",
         if not any(note[:14] in o or "restat" in o.lower() or "repeat" in o.lower()
                    for o in result.order):
             result.order.append(note)
+    for note in ctx.dialogue_notes:
+        if note not in result.dialogue:
+            result.dialogue.append(note)
     if not result.suggestions:
         return result
 
