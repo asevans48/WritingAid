@@ -45,6 +45,7 @@ KINDS: Dict[str, Tuple[str, str, bool]] = {
     "cliche": ("Clichés", "#9333ea", False),
     "repeated_start": ("Repeated sentence starts", "#0284c7", False),
     "echo": ("Echoes", "#0d9488", False),
+    "preference": ("Your style sheet", "#be185d", False),
     "long_sentence": ("Long sentences", "#dbeafe", True),
     "hard_sentence": ("Hard-to-read sentences", "#fee2e2", True),
     "sticky_sentence": ("Sticky sentences", "#fef3c7", True),

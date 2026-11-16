@@ -1625,6 +1625,8 @@ Cap at TWO ``<create_*>`` blocks per reply. Talk through your reasoning in prose
         # chapter section in chapter-focused modes — supplementing
         # the chapter's own data, not competing with it.
         story_parts: list = []
+        if self.context.get('story_memory'):
+            story_parts.append(f"\n{self.context['story_memory']}")
 
         # Which manuscript chats/edits target (only with novellas).
         if self.context.get('manuscript_scope'):
@@ -3820,6 +3822,7 @@ class MainWindow(QMainWindow):
 
         # Connect chat to AI assistance
         self.chat_widget.message_sent.connect(self._handle_chat_message)
+        self.chat_widget.remember_requested.connect(self._remember_from_chat)
         self.chat_widget.passage_link_clicked.connect(self._navigate_to_passage)
         self.chat_widget.clear_requested.connect(self._clear_chat_history)
         self.chat_widget.mode_changed.connect(lambda _: self._clear_chat_history())
@@ -8358,6 +8361,50 @@ class MainWindow(QMainWindow):
             research_brief=research_brief,
             conversation_history=history)
 
+    # ── Story memory from the AI chat ─────────────────────────────
+
+    def _remember_from_chat(self, text: str) -> None:
+        from src.ai import story_memory
+        if not self.current_project:
+            return
+        if story_memory.add(self.current_project, text, source="chat"):
+            self._story_memory_changed("Remembered in Story memory.")
+        else:
+            self.statusBar().showMessage("Already in Story memory.", 3000)
+
+    def _propose_story_memory(self, message: str, reply: str) -> None:
+        """When the writer settles something in the chat, offer it for the
+        Story memory (one quick model call, in the background)."""
+        from src.ai import story_memory
+        if not self.current_project or not story_memory.has_decision(message):
+            return
+        from src.ui.companion_panel import run_background
+        project = self.current_project
+
+        def work():
+            from src.ai.word_suggest import get_llm
+            return story_memory.extract_decisions(get_llm(), message, reply)
+
+        def done(decisions, _error):
+            added = [d for d in decisions or []
+                     if story_memory.add(project, d, source="chat", suggested=True)]
+            if added and project is self.current_project:
+                self._story_memory_changed(
+                    f"💡 Suggested for Story memory: {added[0]}" +
+                    (f" (+{len(added) - 1} more)" if len(added) > 1 else "") +
+                    " — keep it in the chapter's Companion tab.")
+
+        run_background(work, done)
+
+    def _story_memory_changed(self, message: str = "") -> None:
+        if message:
+            self.statusBar().showMessage(message, 6000)
+        ce = getattr(self.manuscript_editor, "current_chapter_editor", None)
+        companion = getattr(ce, "companion", None)
+        if companion is not None:
+            companion.panel.refresh_memory()
+        self._on_content_changed()
+
     def _handle_chat_message(self, message: str, mode: str = "general", insert_mode: str = ""):
         """Handle chat message from user.
 
@@ -9298,6 +9345,11 @@ class MainWindow(QMainWindow):
         """
         context = {}
         context['mode'] = mode
+        try:
+            from src.ai.story_memory import prompt_block
+            context['story_memory'] = prompt_block(self.current_project, user_message)
+        except Exception as e:
+            print(f"[memory] {e}")
         # Worldbuilding chat reads every manuscript; all other chat modes
         # target the manuscript in focus (see _apply_rag_scope).
         self._rag_all_manuscripts = (mode == "worldbuilding")
@@ -10440,6 +10492,8 @@ class MainWindow(QMainWindow):
                 self._chat_history.append({"role": "user", "content": pending_msg})
                 self._chat_history.append({"role": "assistant", "content": display_response})
                 self._compact_chat_history()
+            if pending_msg:
+                self._propose_story_memory(pending_msg, display_response)
             self._pending_chat_message = ""
 
             # If elements were created, show confirmation and refresh UI

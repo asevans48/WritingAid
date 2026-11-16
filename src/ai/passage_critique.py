@@ -128,6 +128,8 @@ class PassageContext:
     allowed_reorders: set = field(default_factory=set)     # sentence pairs the critique flagged
     speakers: str = ""          # who says each line of dialogue in the passage
     where: str = ""             # who's present, location, beats done / next
+    memory: str = ""            # Story memory: decisions the writer settled
+    style_sheet: str = ""       # the writer's personal style rules
     # Dialogue mode (the passage is mostly conversation)
     dialogue_mode: bool = False
     speech: str = ""            # how the speakers talk (profiles)
@@ -142,7 +144,8 @@ class PassageContext:
                           self.characters, self.world, self.related))
 
     def sections(self) -> List[Tuple[str, str]]:
-        return [("STORY OUTLINE", self.story_outline), ("PLOT", self.plot),
+        return [("STORY MEMORY", self.memory), ("STYLE SHEET", self.style_sheet),
+                ("STORY OUTLINE", self.story_outline), ("PLOT", self.plot),
                 ("HOW THESE CHARACTERS TALK", self.speech),
                 ("WHAT'S BETWEEN THE SPEAKERS", self.exchange),
                 ("EARLIER CHAPTERS", self.earlier),
@@ -345,6 +348,10 @@ def build_context(project: Any, chapter: Any, text: str, start: int, end: int, *
         ctx.earlier = _earlier_chapters(project, chapter, size(1200))
         from src.ai.scene_brief import scene_brief
         ctx.where = scene_brief(project, chapter, before, passage, chapter_notes=False)
+        from src.ai.story_memory import prompt_block
+        ctx.memory = prompt_block(project, window)
+        from src.ai.style_sheet import prompt_block as style_sheet_block
+        ctx.style_sheet = style_sheet_block(project)
         from src.ai.rewrite_quality import known_names_for
         ctx.known_names = known_names_for(project)
     if voice is not None and not getattr(voice, "is_empty", True):

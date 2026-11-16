@@ -1249,6 +1249,31 @@ class AgentContact(BaseModel):
     submissions: List[Dict] = Field(default_factory=list)  # submission history
 
 
+class StoryMemoryEntry(BaseModel):
+    """A decision the writer settled ("Tobin doesn't know about the
+    schedule"), shown to every AI tool so it isn't forgotten."""
+    id: str = Field(default_factory=lambda: __import__("uuid").uuid4().hex[:10])
+    text: str
+    pinned: bool = False               # always included in AI prompts
+    status: str = "active"             # active | suggested (proposed, not yet accepted)
+    source: str = ""                   # chat | suggestions | rephrase | critique | manual
+    created_at: datetime = Field(default_factory=datetime.now)
+
+
+class StyleRule(BaseModel):
+    """One line of the writer's personal style sheet ("always cuts *very*",
+    "*grey*, not *gray*", "*vethari* is a word"). The checks and the AI
+    judges read it so the same false alarm doesn't come back."""
+    id: str = Field(default_factory=lambda: __import__("uuid").uuid4().hex[:10])
+    text: str                          # as shown to the writer
+    kind: str = "note"                 # allow | prefer | avoid | keep | note
+    subject: str = ""                  # the word, phrase or style kind it's about
+    replacement: str = ""              # prefer: use this instead of ``subject``
+    status: str = "active"             # active | suggested
+    source: str = ""                   # manual | learned | ask
+    created_at: datetime = Field(default_factory=datetime.now)
+
+
 class ProjectDictionary(BaseModel):
     """Custom dictionary for project-specific terms."""
     words: List[str] = Field(default_factory=list)
@@ -1307,6 +1332,12 @@ class WriterProject(BaseModel):
     generated_images: List[GeneratedImage] = Field(default_factory=list)
     agent_contacts: List[AgentContact] = Field(default_factory=list)
     dictionary: ProjectDictionary = Field(default_factory=ProjectDictionary)
+
+    # Decisions the writer settled, used by every AI tool (Story memory).
+    story_memory: List[StoryMemoryEntry] = Field(default_factory=list)
+
+    # The writer's personal style sheet, learned and edited (see StyleRule).
+    style_sheet: List[StyleRule] = Field(default_factory=list)
 
     # Alternate manuscript drafts (the main `manuscript` field stays the
     # live working copy). Each draft is a self-contained snapshot the

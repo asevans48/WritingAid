@@ -663,6 +663,9 @@ class RephraseDialog(QDialog):
         self.chat = ConversationPanel(
             "e.g.: make it darker · why did 2 drop the beat? · this character wouldn't say that")
         self.chat.message_sent.connect(self._refine_results)
+        from src.ui.rewrite_chat_panel import remember
+        self.chat.remember_requested.connect(
+            lambda text: remember(self.chat, self.project, text, "rephrase"))
         refine_layout.addWidget(self.chat)
         # Older names, kept for callers that use them.
         self.refine_history = self.chat.transcript
@@ -1169,7 +1172,8 @@ class RephraseDialog(QDialog):
             surrounding_after=self.surrounding_after,
             refinement=refinement,
             writer_voice=writer_voice,
-            examples_note="\n\n".join(b for b in (self._rated_examples(),
+            examples_note="\n\n".join(b for b in (self._memory_block(),
+                                                   self._rated_examples(),
                                                    self._order_guidance(),
                                                    self._dialogue_guidance()) if b),
         )
@@ -1630,6 +1634,10 @@ class RephraseDialog(QDialog):
 
     def _chat_context(self, message: str):
         blocks = []
+        memory = self._memory_block()
+        if memory:
+            head, _, body = memory.partition("\n")
+            blocks.append((head.rstrip(":"), body))
         scene = self.scene_desc_edit.text().strip()
         if scene:
             blocks.append(("THE SCENE", scene))
@@ -1716,6 +1724,10 @@ class RephraseDialog(QDialog):
             self.chat.add_message("Editor", error)
             return
         self.chat.add_message("Editor", result.reply)
+        from src.ui.rewrite_chat_panel import propose_memory
+        author = next((t.text for t in reversed(self._chat_turns) if t.role == "author"), "")
+        propose_memory(self.chat, self.project, self._moment_llm(), author, result.reply,
+                       "rephrase")
         note = result.reply
         if result.versions:
             tone = self.result.options[0].tone if self.result.options else "neutral"
@@ -2316,6 +2328,16 @@ class RephraseDialog(QDialog):
             except TypeError:
                 pass
         super().done(code)
+
+    def _memory_block(self) -> str:
+        try:
+            from src.ai.story_memory import prompt_block
+            from src.ai.style_sheet import prompt_block as style_sheet_block
+            return "\n\n".join(b for b in (
+                prompt_block(self.project, f"{self.surrounding_before[-600:]} {self.original_text}"),
+                style_sheet_block(self.project)) if b)
+        except Exception:
+            return ""
 
     def _order_guidance(self) -> str:
         """The passage's actions in order, so options don't reverse them."""

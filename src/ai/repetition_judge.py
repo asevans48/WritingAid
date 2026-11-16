@@ -41,13 +41,14 @@ def cached_verdicts(items: Iterable[Dict[str, Any]]) -> Dict[str, Tuple[bool, st
                 if (i["key"], _fingerprint(i)) in _CACHE}
 
 
-def build_prompt(items: List[Dict[str, Any]]) -> str:
+def build_prompt(items: List[Dict[str, Any]], context: str = "") -> str:
     lines = []
     for n, item in enumerate(items, 1):
         kind = "phrase" if item["key"].startswith("p:") else "word"
         quotes = " ".join(f"«{s}»" for s in item.get("sentences") or [])
         lines.append(f"{n}. {kind} “{item['text']}” ({item['count']} times): {quotes}")
-    return ("Below are words and phrases a writer repeats in one chapter, each with the "
+    return ((f"{context.strip()}\n\n" if context.strip() else "")
+            + "Below are words and phrases a writer repeats in one chapter, each with the "
             "sentences it appears in.\n\n" + "\n".join(lines) + "\n\n"
             "For each one decide: does the repetition make the writing LESS POWERFUL — a "
             "noticeable echo, a vague or lazy default word, a pet word, a monotonous pattern "
@@ -71,7 +72,7 @@ def parse(reply: str, items: List[Dict[str, Any]]) -> Dict[str, Tuple[bool, str]
     return out
 
 
-def judge(llm: Any, items: List[Dict[str, Any]]) -> Dict[str, Tuple[bool, str]]:
+def judge(llm: Any, items: List[Dict[str, Any]], context: str = "") -> Dict[str, Tuple[bool, str]]:
     """Verdicts ``key → (weakens the writing, reason)`` for ``items``; items
     the model skipped are left out (the caller's fallback applies)."""
     verdicts = cached_verdicts(items)
@@ -79,7 +80,8 @@ def judge(llm: Any, items: List[Dict[str, Any]]) -> Dict[str, Tuple[bool, str]]:
     for start in range(0, len(todo), BATCH):
         batch = todo[start:start + BATCH]
         try:
-            reply = llm.generate_text(build_prompt(batch), SYSTEM, max_tokens=60 + 30 * len(batch),
+            reply = llm.generate_text(build_prompt(batch, context), SYSTEM,
+                                      max_tokens=60 + 30 * len(batch),
                                       temperature=0.2)
         except Exception as e:
             print(f"[repetition] judge failed: {e}")

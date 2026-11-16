@@ -961,9 +961,18 @@ class OveruseDetector:
             return True, "A distinctive word — readers notice it coming back."
         return False, ""
 
+    def _close_echo(self, word: str) -> int:
+        """Words between the two closest uses (0 if none are close)."""
+        positions = self._word_index.get(word, [])
+        gaps = [b - a for a, b in zip(positions, positions[1:])]
+        return min(gaps) if gaps and min(gaps) <= self.ECHO_WORDS else 0
+
     def word_verdict(self, word: str, count: int) -> Tuple[bool, str]:
         if count >= self._strong():
             return True, ""
+        gap = self._close_echo(word)
+        if gap:                       # a reader hears it — no model can talk it away
+            return True, f"Two uses within {gap} words of each other."
         if f"w:{word}" in self._verdicts:
             return self._verdicts[f"w:{word}"]
         return self.heuristic_verdict(word, count)
@@ -971,11 +980,11 @@ class OveruseDetector:
     def phrase_verdict(self, phrase: str, positions: List[Tuple[int, int]]) -> Tuple[bool, str]:
         if len(positions) >= self.phrase_strong_threshold:
             return True, ""
-        if f"p:{phrase}" in self._verdicts:
-            return self._verdicts[f"p:{phrase}"]
         gaps = [b[0] - a[1] for a, b in zip(positions, positions[1:])]
         if gaps and min(gaps) <= self.PHRASE_ECHO_CHARS:
             return True, "Repeated close together."
+        if f"p:{phrase}" in self._verdicts:
+            return self._verdicts[f"p:{phrase}"]
         return False, ""
 
     def verdict_reason(self, key: str) -> str:
@@ -994,13 +1003,17 @@ class OveruseDetector:
         for word, count in self._cached_counts.items():
             if (self.threshold <= count < strong and len(word) > 2
                     and word not in self.IGNORE_WORDS and word not in self._ignored_words
-                    and word not in self._names and word not in self._FUNCTION_WORDS):
+                    and word not in self._names and word not in self._FUNCTION_WORDS
+                    and not self._close_echo(word)):          # already decided: shown
                 items.append({"key": f"w:{word}", "text": word, "count": count,
                               "sentences": _sentences_with(text, word),
                               "suspicion": self.heuristic_verdict(word, count)[0]})
         light = dict(self._review_pending_phrases)
         light.update(self._cached_phrase_positions)
         for phrase, positions in light.items():
+            gaps = [b[0] - a[1] for a, b in zip(positions, positions[1:])]
+            if gaps and min(gaps) <= self.PHRASE_ECHO_CHARS:
+                continue                                      # already decided: shown
             if len(positions) < self.phrase_strong_threshold:
                 items.append({"key": f"p:{phrase}", "text": phrase, "count": len(positions),
                               "sentences": [_sentence_at(text, s) for s, _ in positions[:3]],
@@ -1962,9 +1975,9 @@ class _RepetitionWorker(QThread):
     """Asks the model which light repeats weaken the writing."""
     done = pyqtSignal(object, bool)          # verdicts, no model available
 
-    def __init__(self, items):
+    def __init__(self, items, context: str = ""):
         super().__init__()
-        self.items = items
+        self.items, self.context = items, context
 
     def run(self):
         try:
@@ -1974,13 +1987,75 @@ class _RepetitionWorker(QThread):
             if llm is None:
                 self.done.emit({}, True)
                 return
-            self.done.emit(rj.judge(llm, self.items), False)
+            self.done.emit(rj.judge(llm, self.items, self.context), False)
         except Exception as e:
             print(f"[repetition] review failed: {e}")
             self.done.emit({}, False)
 
 
 _RUNNING_REVIEWERS: Set["_RepetitionWorker"] = set()
+
+
+class _FlagReviewWorker(QThread):
+    """Asks the model which style / grammar / spelling flags are real."""
+    done = pyqtSignal(object, bool)          # verdicts, no model available
+
+    def __init__(self, items, spelling_context: str = "", style_context: str = ""):
+        super().__init__()
+        self.items, self.spelling_context = items, spelling_context
+        self.style_context = style_context
+
+    def run(self):
+        try:
+            from src.ai import flag_judge as fj
+            from src.ai import word_suggest as ws
+            llm = ws.get_llm()
+            if llm is None:
+                self.done.emit({}, True)
+                return
+            verdicts = {}
+            for category, items in self.items.items():
+                context = self.spelling_context if category == "spelling" else self.style_context
+                verdicts.update(fj.judge(llm, category, items, context))
+            self.done.emit(verdicts, False)
+        except Exception as e:
+            print(f"[flags] review failed: {e}")
+            self.done.emit({}, False)
+
+
+# How much fixing an issue tends to improve the page (Focus view, and the
+# fallback for "Today's three fixes").
+_STYLE_WEIGHTS = {"preference": 70, "cliche": 50, "wordy": 35, "passive": 30, "intensifier": 30,
+                  "adverb": 25, "echo": 25, "repeated_start": 20, "long_sentence": 20,
+                  "hard_sentence": 20, "sticky_sentence": 15}
+
+
+def issue_weight(error, paragraph: str = "") -> float:
+    if error.error_type == ErrorType.SPELLING:
+        w = 100
+    elif error.error_type == ErrorType.GRAMMAR:
+        w = 80
+    elif error.error_type == ErrorType.OVERUSE:
+        w = 45
+    elif error.error_type == ErrorType.OVERUSED_PHRASE:
+        w = 40
+    else:
+        w = _STYLE_WEIGHTS.get(getattr(error, "style_kind", ""), 20)
+    try:
+        from src.ai import flag_judge as fj
+        from src.ai.word_suggest import sentence_around
+        category = {ErrorType.STYLE: "style", ErrorType.GRAMMAR: "grammar",
+                    ErrorType.SPELLING: "spelling"}.get(error.error_type)
+        if category:
+            kind = getattr(error, "style_kind", "") if category == "style" else ""
+            v = fj.verdict(category, error.word,
+                           sentence_around(paragraph, error.start, error.end).text if paragraph else "",
+                           kind)
+            if v is not None and v[0]:
+                w += 10                       # a model confirmed it matters
+    except Exception:
+        pass
+    return w
 
 
 class WritingHighlighter(QSyntaxHighlighter):
@@ -2071,6 +2146,13 @@ class WritingHighlighter(QSyntaxHighlighter):
         self.phrase_format = self._mark_format("#ddd6fe", QColor(148, 0, 211))      # purple
         # Master switch: hide every check mark without turning checks off.
         self._highlights_visible = True
+        self.project = None             # for the writer's style sheet
+        # Drafting shows spelling and grammar only (style and overuse wait);
+        # revising shows every check. Focus keeps each paragraph's top issues.
+        self.phase = "revising"
+        self.focus = False
+        self.focus_per_paragraph = 2
+        self.learn_callback = None      # (signal, subject) — what the writer does
         self._suspended = False
 
         # Markdown heading formats
@@ -2283,6 +2365,8 @@ class WritingHighlighter(QSyntaxHighlighter):
 
     def ignore_style_issue(self, kind: str, text: str) -> None:
         self._style_ignored.add((kind, _apos((text or "").strip().lower())))
+        if self.learn_callback is not None:
+            self.learn_callback("ignore_style", kind)
         if self._style_mode != CheckMode.OFF:
             self.rehighlight()
 
@@ -2296,8 +2380,33 @@ class WritingHighlighter(QSyntaxHighlighter):
             if len(self._style_cache) > 4000:
                 self._style_cache.clear()
             self._style_cache[key] = issues
-        return [i for i in issues
-                if (i.kind, _apos(i.text.strip().lower())) not in self._style_ignored]
+        from src.ai import flag_judge as fj
+        from src.ai import style_sheet as ss
+        from src.ai.word_suggest import sentence_around
+        project = self.project
+        kept_kinds = ss.kept_kinds(project) if project is not None else set()
+        allowed = ss.allowed_words(project) if project is not None else set()
+        kept = []
+        for i in issues:
+            if (i.kind, _apos(i.text.strip().lower())) in self._style_ignored:
+                continue
+            if i.kind == "echo" and i.text.strip().lower() in allowed:
+                continue                     # a word of the story's world, like a name
+            if fj.quick_style_ok(i.kind, text, i.start, i.end):
+                continue                     # dialogue: the character's voice
+            sentence = sentence_around(text, i.start, i.end).text
+            if fj.dropped("style", i.text, sentence, i.kind):
+                continue                     # the model judged it a false alarm
+            if i.kind in kept_kinds:
+                # The writer keeps these on purpose: only a model-confirmed problem shows.
+                v = fj.verdict("style", i.text, sentence, i.kind)
+                if v is None or not v[0]:
+                    continue
+            kept.append(i)
+        if project is not None:
+            kept += [i for i in ss.preference_issues(project, text)
+                     if (i.kind, _apos(i.text.strip().lower())) not in self._style_ignored]
+        return kept
 
     def set_overuse_mode(self, mode: CheckMode):
         """Set overuse detection mode (takes effect immediately)."""
@@ -2531,6 +2640,28 @@ class WritingHighlighter(QSyntaxHighlighter):
         overuse statistics refresh.)"""
         return mode != CheckMode.OFF
 
+    def _word_intended(self, word: str) -> bool:
+        """In the style sheet's allowed words; or a capitalised word (a name)
+        the model judged intentional, or (quick rule) used three or more
+        times and not one slip from a common word. A lowercase misspelling
+        is always marked — the writer can allow it."""
+        from src.ai import flag_judge as fj
+        if self.project is not None:
+            from src.ai.style_sheet import allowed_words
+            if _apos(word.lower()) in allowed_words(self.project):
+                return True
+        if not word[:1].isupper():
+            return False
+        if fj.dropped("spelling", word):
+            return True
+        cache = self.__dict__.setdefault("_intended_cache", {})
+        k = (word, len(self._full_text or ""))
+        if k not in cache:
+            if len(cache) > 5000:
+                cache.clear()
+            cache[k] = fj.quick_word_intended(word, self._full_text or "", self.spell_checker)
+        return cache[k]
+
     def _probably_a_name(self, word: str) -> bool:
         """Is a capitalised, sentence-initial unknown word a proper noun?
 
@@ -2669,7 +2800,8 @@ class WritingHighlighter(QSyntaxHighlighter):
 
         # Style checks — drawn first so the error underlines below layer
         # on top of the sentence tints.
-        if self._should_check(self._style_mode):
+        drafting = self.phase == "drafting"
+        if self._should_check(self._style_mode) and not drafting:
             from src.utils.style_checks import KINDS
             for issue in self.style_issues_for(text):
                 fmt_add = self._style_formats.get(issue.kind)
@@ -2712,6 +2844,8 @@ class WritingHighlighter(QSyntaxHighlighter):
                 if (not is_correct and sentence_start and word[:1].isupper()
                         and self._probably_a_name(word)):
                     is_correct = True
+                if not is_correct and self._word_intended(word):
+                    is_correct = True        # a name or a word of the story's world
                 if not is_correct:
                     # Get existing format and merge with our underline format
                     # This preserves font size, weight, etc.
@@ -2733,12 +2867,20 @@ class WritingHighlighter(QSyntaxHighlighter):
             from src.utils.proofing import builtin_grammar, merge_issues
             issues = merge_issues(self._lt_issues_for_block(text), builtin_grammar(text))
             grammar_errors = [i.as_tuple() for i in issues]
+            from src.ai import flag_judge as fj
+            from src.ai.word_suggest import sentence_around
             for start, end, error_text, message, suggestions in grammar_errors:
                 if start < 0 or end > len(text) or end <= start:
                     continue
                 # Skip if ignored
                 if self.is_word_ignored(error_text, ErrorType.GRAMMAR):
                     continue
+                if fj.quick_grammar_ok(message, text, start, end):
+                    continue                 # a fragment in dialogue is the character's voice
+                # Grammar always shows; a model that thinks it's fine says so on the card.
+                v = fj.verdict("grammar", error_text, sentence_around(text, start, end).text)
+                if v is not None and not v[0] and v[1]:
+                    message = f"{message} (Editor's view: may be fine — {v[1].rstrip('.')}.)"
 
                 # A span already flagged as a spelling error isn't
                 # re-flagged; a longer grammar issue that merely overlaps
@@ -2771,7 +2913,8 @@ class WritingHighlighter(QSyntaxHighlighter):
                     ))
 
         # Overuse detection - respects mode
-        if self._should_check(self._overuse_mode) and self._full_text and self.overuse_detector:
+        if (self._should_check(self._overuse_mode) and self._full_text and self.overuse_detector
+                and not drafting):
             from src.utils.proofing import COMPOUND_TOKEN_RX, normalize_apostrophes
             flagged_spans = {(e.start, e.end) for e in self._errors[block_number]}
             for match in COMPOUND_TOKEN_RX.finditer(normalize_apostrophes(text)):
@@ -2845,6 +2988,32 @@ class WritingHighlighter(QSyntaxHighlighter):
                                    or "Consider rephrasing.")),
                         suggestions=None,   # computed on demand (get_error_at)
                     ))
+
+        # Focus: only this paragraph's most important issues stay marked.
+        errors = self._errors.get(block_number, [])
+        must = [e for e in errors if e.error_type in (ErrorType.SPELLING, ErrorType.GRAMMAR)]
+        others = [e for e in errors if e not in must]
+        if self.focus and not drafting and len(others) > max(0, self.focus_per_paragraph - len(must)):
+            # Spelling and grammar always stay; the rest compete for what's left.
+            ranked = sorted(others, key=lambda e: -issue_weight(e, text))
+            keep = must + ranked[:max(0, self.focus_per_paragraph - len(must))]
+            self._errors[block_number] = [e for e in errors if e in keep]
+            self.setFormat(0, len(text), QTextCharFormat())
+            self._apply_markdown_formatting(text)
+            for e in keep:
+                fmt = self._format_for(e)
+                if fmt is None or e.end <= e.start:
+                    continue
+                merged = get_existing_format(e.start)
+                merged.merge(fmt)
+                self.setFormat(e.start, e.end - e.start, merged)
+
+    def _format_for(self, error):
+        if error.error_type == ErrorType.STYLE:
+            return self._style_formats.get(getattr(error, "style_kind", ""))
+        return {ErrorType.SPELLING: self.spelling_format, ErrorType.GRAMMAR: self.grammar_format,
+                ErrorType.OVERUSE: self.overuse_format,
+                ErrorType.OVERUSED_PHRASE: self.phrase_format}.get(error.error_type)
 
 
 class ContextLookupDialog(QDialog):
@@ -3005,6 +3174,7 @@ class ErrorCard(QWidget):
         if kind in ("overuse", "overused_phrase"):
             self._action(actions, "✨ Suggest in context",
                          lambda _=False, e=error: self._suggest_in_context(e))
+        self._action(actions, "💬 Ask", lambda _=False, e=error: self._ask(e))
         if kind == "style":
             self._action(actions, "✨ Rewrite with AI", self._rewrite)
         if kind == "spelling":
@@ -3056,6 +3226,12 @@ class ErrorCard(QWidget):
             row.addWidget(btn)
         row.addStretch()
         self._layout.addLayout(row)
+
+    def _ask(self, error) -> None:
+        block = getattr(self, "_block", None)
+        self.hide()
+        if block is not None and block.isValid():
+            self.editor.ask_about(block, error)
 
     def _suggest_in_context(self, error) -> None:
         block = getattr(self, "_block", None)
@@ -3110,7 +3286,7 @@ class ErrorCard(QWidget):
         if suggestion and error.error_type == ErrorType.SPELLING:
             suggestion = _match_word_case(error.word, suggestion)
         self.hide()
-        self.editor._replace_word(cur, suggestion)
+        self.editor._apply_fix(cur, suggestion, error)
         self.editor.setFocus()
 
     def _add_word(self) -> None:
@@ -3195,6 +3371,9 @@ class EnhancedTextEditor(QTextEdit):
     tts_progress = pyqtSignal(str)  # Progress updates for VibeVoice
     # "✨ Rewrite with AI" on a style issue: (doc start, doc end, hint).
     style_rewrite_requested = pyqtSignal(int, int, str)
+    # A style-sheet rule was learned (suggested) — message for the writer.
+    style_sheet_changed = pyqtSignal(str)
+    phase_changed = pyqtSignal(str)          # "drafting" | "revising"
 
     # Heading style definitions for display and export
     # Format: (font_size, bold, top_margin, bottom_margin, heading_level)
@@ -3238,6 +3417,8 @@ class EnhancedTextEditor(QTextEdit):
         self.overuse_detector = OveruseDetector()
         # Light repeats are only marked when they weaken the writing.
         self.overuse_detector.review_low_counts = True
+        self._project = None
+        self.phase_setting = "revising"     # every check unless the writer chooses otherwise
 
         # Initialize combined highlighter
         self.writing_highlighter = WritingHighlighter(
@@ -3260,11 +3441,13 @@ class EnhancedTextEditor(QTextEdit):
         self._update_timer.setSingleShot(True)
         self._update_timer.timeout.connect(self._update_realtime_analysis)
         # Model review of light repeats, a moment after the text settles.
+        self.writing_highlighter.learn_callback = self._learn
         self._review_timer = QTimer(self)
         self._review_timer.setSingleShot(True)
         self._review_timer.setInterval(2500)
         self._review_timer.timeout.connect(self._start_repetition_review)
         self._review_worker = None
+        self._flag_worker = None
         self._review_rerun = False
         self._no_repetition_judge = False
         self._last_text_hash = 0
@@ -3331,6 +3514,55 @@ class EnhancedTextEditor(QTextEdit):
             if hl.get_overuse_mode() == CheckMode.REALTIME:
                 hl.rehighlight()
             self._review_timer.start()
+        self._update_phase()
+
+    # ── Drafting / revising ───────────────────────────────────────
+
+    DRAFT_GROWTH_WORDS = 12          # words added at the end within the window
+    PHASE_WINDOW_S = 180
+
+    def set_phase_setting(self, setting: str) -> None:
+        """"auto" (switch as you write), "drafting" or "revising"."""
+        self.phase_setting = setting
+        self._apply_phase(setting if setting != "auto" else "revising", force=True)
+
+    def _apply_phase(self, phase: str, force: bool = False) -> None:
+        hl = self.writing_highlighter
+        if hl.phase == phase and not force:
+            return
+        hl.phase = phase
+        hl.rehighlight()
+        if phase == "revising":
+            self._review_timer.start()
+        self.phase_changed.emit(phase)
+
+    def set_focus(self, on: bool) -> None:
+        self.writing_highlighter.focus = on
+        self.writing_highlighter.rehighlight()
+
+    def _update_phase(self) -> None:
+        """Auto: adding words at the end → drafting; editing inside the text
+        or a pause in new writing → revising."""
+        import time
+        setting = getattr(self, "phase_setting", "auto")
+        if setting != "auto":
+            return
+        now = time.monotonic()
+        words = len(self.toPlainText().split())
+        samples = self.__dict__.setdefault("_phase_samples", [])
+        samples.append((now, words))
+        while samples and now - samples[0][0] > self.PHASE_WINDOW_S:
+            samples.pop(0)
+        growth = words - samples[0][1]
+        # Near the end: in the last paragraphs and the last few hundred characters
+        # (one long paragraph must not count as "the end" everywhere).
+        cursor = self.textCursor()
+        near_end = (cursor.blockNumber() >= self.document().blockCount() - 2
+                    and cursor.position() >= self.document().characterCount() - 400)
+        if near_end and growth >= self.DRAFT_GROWTH_WORDS:
+            self._apply_phase("drafting")
+        elif not near_end or growth <= 2:
+            self._apply_phase("revising")
 
     def set_project_vocabulary(self, project) -> None:
         """Teach the spell checker the project's names and dictionary."""
@@ -3351,17 +3583,66 @@ class EnhancedTextEditor(QTextEdit):
             names += [e.name for e in collect_world_entities(getattr(project, "worldbuilding", None))]
         except Exception:
             pass
-        self.overuse_detector.set_names(names)
+        self._project = project
+        self.writing_highlighter.project = project
+        self.overuse_detector.set_names(names + self._allowed_words())
         text = self.toPlainText()
         self.overuse_detector.update_cache(text)
         self.writing_highlighter.update_full_text(text)
+        self.writing_highlighter.rehighlight()
+
+    # ── Personal style sheet ──────────────────────────────────────
+
+    def _style_sheet_prompt(self) -> str:
+        from src.ai.style_sheet import prompt_block
+        project = getattr(self, "_project", None)
+        return prompt_block(project) if project is not None else ""
+
+    def _allowed_words(self) -> List[str]:
+        from src.ai.style_sheet import allowed_words
+        return sorted(allowed_words(getattr(self, "_project", None))) \
+            if getattr(self, "_project", None) is not None else []
+
+    def _learn(self, signal: str, subject: str) -> None:
+        """Count what the writer does; a repeated pattern proposes a rule."""
+        project = getattr(self, "_project", None)
+        if project is None or not subject:
+            return
+        from src.ai import style_sheet as ss
+        rule = ss.record(project, signal, subject)
+        if rule is not None:
+            self.style_sheet_changed.emit(f"💡 Suggested for your style sheet: {rule.text}")
+
+    def _apply_fix(self, cursor: QTextCursor, suggestion: str, error) -> None:
+        """Apply a suggested fix, and learn from which words get cut."""
+        self._replace_word(cursor, suggestion)
+        if error is not None and error.error_type in (ErrorType.OVERUSE, ErrorType.STYLE) \
+                and len((error.word or "").split()) == 1:
+            self._learn("fix_word", error.word)
+
+    def refresh_style_sheet(self) -> None:
+        """The style sheet changed: re-read it and redraw."""
+        project = getattr(self, "_project", None)
+        if project is not None:
+            names = [c.name for c in getattr(project, "characters", None) or []]
+            self.overuse_detector.set_names(names + self._allowed_words())
+            text = self.toPlainText()
+            self.overuse_detector.update_cache(text)
+            self.writing_highlighter.update_full_text(text)
+        self.writing_highlighter.__dict__.pop("_intended_cache", None)
+        self.writing_highlighter._style_cache.clear()
         self.writing_highlighter.rehighlight()
 
     # ── Model review of light repeats ─────────────────────────────
 
     def _start_repetition_review(self) -> None:
         """Ask the model which light repeats weaken the writing (background);
-        until it answers — or with no model — the quick rules apply."""
+        until it answers — or with no model — the quick rules apply. Then the
+        same for the style, grammar and spelling flags."""
+        try:
+            self._start_flag_review()
+        except Exception as e:
+            print(f"[flags] {e}")
         hl = self.writing_highlighter
         if hl.get_overuse_mode() == CheckMode.OFF or self._no_repetition_judge:
             return
@@ -3385,12 +3666,47 @@ class EnhancedTextEditor(QTextEdit):
             return
         import gc
         gc.collect()      # never let the worker's allocations collect Qt objects
-        worker = _RepetitionWorker(items)
+        worker = _RepetitionWorker(items, self._style_sheet_prompt())
         worker.done.connect(self._on_repetition_verdicts)
         _RUNNING_REVIEWERS.add(worker)
         worker.finished.connect(lambda w=worker: _RUNNING_REVIEWERS.discard(w))
         self._review_worker = worker
         worker.start()
+
+    def _start_flag_review(self) -> None:
+        """Send the style / grammar / spelling flags near the writer to the
+        model; hide the ones it judges false alarms."""
+        from src.ai import flag_judge as fj
+        if self._no_repetition_judge or not fj.enabled():
+            return
+        if self._flag_worker is not None and self._flag_worker.isRunning():
+            return
+        items = fj.collect(self.writing_highlighter, self.document(),
+                           self.textCursor().blockNumber())
+        if not items:
+            return
+        import gc
+        gc.collect()
+        sheet = self._style_sheet_prompt()
+        worker = _FlagReviewWorker(items, "\n\n".join(
+            b for b in (fj.spelling_context(getattr(self, "_project", None)), sheet) if b), sheet)
+        worker.done.connect(self._on_flag_verdicts)
+        _RUNNING_REVIEWERS.add(worker)
+        worker.finished.connect(lambda w=worker: _RUNNING_REVIEWERS.discard(w))
+        self._flag_worker = worker
+        worker.start()
+
+    def _on_flag_verdicts(self, verdicts, no_model: bool) -> None:
+        try:
+            if no_model:
+                self._no_repetition_judge = True
+                return
+            if verdicts and any(not keep for keep, _ in verdicts.values()):
+                self.__dict__.pop("_intended_cache", None)
+                self.writing_highlighter.__dict__.pop("_intended_cache", None)
+                self.writing_highlighter.rehighlight()
+        except Exception as e:          # an exception escaping a slot aborts PyQt6
+            print(f"[flags] could not apply verdicts: {e}")
 
     def _on_repetition_verdicts(self, verdicts, no_model: bool) -> None:
         try:
@@ -3766,14 +4082,16 @@ class EnhancedTextEditor(QTextEdit):
                     label = f"  {suggestion}" if suggestion else f"  Delete “{replaced}”"
                     action = menu.addAction(label)
                     action.triggered.connect(
-                        lambda checked, s=suggestion, c=QTextCursor(span_cursor):
-                            self._replace_word(c, s)
+                        lambda checked, s=suggestion, c=QTextCursor(span_cursor), e=error:
+                            self._apply_fix(c, s, e)
                     )
 
                 menu.addSeparator()
 
             if error.error_type == ErrorType.OVERUSE and error.replace_span and not error.suggestions:
                 menu.addAction(f"Part of a set phrase — try ✨ Suggest in context").setEnabled(False)
+            menu.addAction("💬 Ask about this…").triggered.connect(
+                lambda checked=False, e=error, b=block: self.ask_about(b, e))
             if error.error_type in (ErrorType.OVERUSE, ErrorType.OVERUSED_PHRASE):
                 in_context = menu.addAction("✨ Suggest in context…")
                 in_context.setToolTip("Words that fit this sentence, and rewrites that avoid "
@@ -3962,6 +4280,47 @@ class EnhancedTextEditor(QTextEdit):
 
     # ── Context-aware suggestions for overused words ──────────────
 
+    _ASK_CATEGORIES = {ErrorType.SPELLING: "spelling", ErrorType.GRAMMAR: "grammar",
+                       ErrorType.STYLE: "style", ErrorType.OVERUSE: "overuse",
+                       ErrorType.OVERUSED_PHRASE: "overuse"}
+
+    def ask_about(self, block, error) -> None:
+        """💬 Ask: talk about this flag, get a better sentence, or mark it
+        deliberate (it goes into the style sheet)."""
+        self.open_ask_dialog(block.text(), block.position(), error.start, error.end,
+                             self._ASK_CATEGORIES.get(error.error_type, "note"), error.word,
+                             error.reason, getattr(error, "style_kind", ""))
+
+    def open_ask_dialog(self, paragraph: str, block_position: int, start: int, end: int,
+                        category: str, word: str, reason: str, kind: str = "") -> None:
+        from src.ai.passage_critique import py_to_qt_index
+        from src.ui.flag_chat_dialog import FlagChatDialog
+
+        def replace(sentence: str, new_text: str) -> bool:
+            block = self.document().findBlock(block_position)
+            if not block.isValid() or block.text() != paragraph:
+                return False
+            at = paragraph.find(sentence)
+            if at < 0:
+                return False
+            cursor = QTextCursor(self.document())
+            cursor.setPosition(block_position + py_to_qt_index(paragraph, at))
+            cursor.setPosition(block_position + py_to_qt_index(paragraph, at + len(sentence)),
+                               QTextCursor.MoveMode.KeepAnchor)
+            cursor.insertText(new_text)
+            return True
+
+        def rule_added(rule) -> None:
+            self.refresh_style_sheet()
+            self.style_sheet_changed.emit(f"Added to your style sheet: {rule.text}")
+
+        dialog = FlagChatDialog(paragraph=paragraph, start=start, end=end, category=category,
+                                word=word, reason=reason, kind=kind,
+                                project=getattr(self, "_project", None),
+                                on_replace=replace, on_rule=rule_added, parent=self)
+        self._ask_dialog = dialog
+        dialog.exec()
+
     def suggest_in_context(self, block, error) -> None:
         """Ask the model for words that fit this sentence (and rewrites that
         avoid the word), then offer them in a menu at the word."""
@@ -4085,6 +4444,8 @@ class EnhancedTextEditor(QTextEdit):
     def _ignore_error(self, block_number: int, start: int, word: str, error_type: ErrorType):
         """Ignore a specific error."""
         self.writing_highlighter.ignore_error(block_number, start, word, error_type)
+        if error_type in (ErrorType.SPELLING, ErrorType.OVERUSE):
+            self._learn("ignore_word", word)
 
         # For overuse errors, also ignore the word in the overuse detector
         if error_type == ErrorType.OVERUSE:

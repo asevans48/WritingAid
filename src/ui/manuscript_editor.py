@@ -342,6 +342,33 @@ class ChapterEditor(QWidget):
         self._realtime_action.toggled.connect(lambda _on: self._apply_check_modes())
         self.checks_menu.addAction("⟳ Re-check now", self._recheck_writing)
         self.checks_menu.addSeparator()
+        # Revising (default): every check. Drafting: spelling and grammar
+        # only. Auto switches as you write.
+        mode_menu = self.checks_menu.addMenu("Mode")
+        from PyQt6.QtGui import QActionGroup
+        self._phase_group = QActionGroup(self)
+        self._phase_actions = {}
+        for key, label, tip in (
+                ("auto", "Switch as I write", "Drafting while you add new text at the end; "
+                                              "revising when you edit inside the chapter."),
+                ("drafting", "Drafting — spelling and grammar", "Spelling, grammar and the "
+                                                                  "quiet margin notes; style "
+                                                                  "and overuse wait."),
+                ("revising", "Revising — every check", "All checks, all the time.")):
+            act = mode_menu.addAction(label)
+            act.setCheckable(True)
+            act.setToolTip(tip)
+            self._phase_group.addAction(act)
+            act.triggered.connect(lambda _=False, k=key: self._set_phase_setting(k))
+            self._phase_actions[key] = act
+        mode_menu.setToolTipsVisible(True)
+        self._phase_actions["revising"].setChecked(True)
+        self._focus_action = self.checks_menu.addAction("Focus: top issues per paragraph")
+        self._focus_action.setCheckable(True)
+        self._focus_action.setToolTip("While revising, mark only each paragraph's two most "
+                                      "important issues (spelling and grammar first).")
+        self._focus_action.toggled.connect(self._set_focus)
+        self.checks_menu.addSeparator()
         self.checks_menu.addAction("Style issues panel…", self._open_style_panel)
         self.checks_menu.addAction("Check consistency (names, spellings)…",
                                    self.consistency_requested.emit)
@@ -464,6 +491,10 @@ class ChapterEditor(QWidget):
         editor_container.addWidget(self.annotation_margin)
         editor_container.addWidget(self.editor)
 
+        # "Where you left off" — one line above the text (see Companion tab).
+        from src.ui.companion_panel import CompanionBanner
+        self.companion_banner = CompanionBanner()
+        editor_layout.addWidget(self.companion_banner)
         editor_layout.addLayout(editor_container)
 
         # Bottom toolbar - compact buttons for small screens
@@ -594,12 +625,18 @@ class ChapterEditor(QWidget):
         self.style_panel.consistency_requested.connect(self.consistency_requested.emit)
         self.right_panel.addTab(self.style_panel, "Style")
         self.editor.style_rewrite_requested.connect(self._rewrite_span_with_ai)
+        self.editor.phase_changed.connect(lambda _p: self._update_checks_button())
 
         from src.ui.feedback_widget import FeedbackWidget
         self.feedback_widget = FeedbackWidget()
         self.feedback_widget.feedback_changed.connect(self._on_plan_changed)
         self.feedback_widget.set_chapter_content_provider(lambda: self.editor.toPlainText())
         self.right_panel.addTab(self.feedback_widget, "Feedback")
+
+        # Companion: where you left off, notes as you write, reader's eye,
+        # story memory.
+        from src.ui.companion_panel import CompanionController
+        self.companion = CompanionController(self)
 
         self.main_splitter.addWidget(self.right_panel)
 
@@ -1180,6 +1217,10 @@ class ChapterEditor(QWidget):
         # Perform initial writing check (for on-demand mode)
         self.editor.do_initial_check()
         self._update_readability()
+        try:
+            self.companion.chapter_loaded()
+        except Exception as e:
+            print(f"[companion] {e}")
 
     def _populate_chapter_fields(self):
         # Load plain text content (now with Markdown formatting)
@@ -1471,13 +1512,23 @@ class ChapterEditor(QWidget):
         self.editor.set_highlights_visible(visible)
         self._update_checks_button()
 
+    def _set_phase_setting(self, setting: str) -> None:
+        self.editor.set_phase_setting(setting)
+        self._update_checks_button()
+
+    def _set_focus(self, on: bool) -> None:
+        self.editor.set_focus(on)
+
     def _update_checks_button(self) -> None:
         on = [a.text() for a in self._check_actions.values() if a.isChecked()]
         hidden = not self._show_highlights_action.isChecked()
+        phase = getattr(getattr(getattr(self, "editor", None), "writing_highlighter", None),
+                        "phase", "revising")
+        mark = " · ✍ drafting" if phase == "drafting" else ""
         if hidden:
             self.checks_btn.setText("✓ Checks · hidden ▾")
         else:
-            self.checks_btn.setText(f"✓ Checks · {len(on)} ▾" if on else "✓ Checks · off ▾")
+            self.checks_btn.setText(f"✓ Checks · {len(on)}{mark} ▾" if on else "✓ Checks · off ▾")
         self.checks_btn.setToolTip(
             "Writing checks — " + (", ".join(on) if on else "all off")
             + (" (re-checking as you type)" if self._realtime_action.isChecked() else ""))
@@ -3637,6 +3688,12 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
         Content is stored as plain text with Markdown formatting.
         Planning data is saved separately and NOT exported with manuscript.
         """
+        companion = getattr(self, "companion", None)
+        if companion is not None:
+            try:
+                companion.chapter_saved()
+            except Exception as e:
+                print(f"[companion] {e}")
         # Read content from editor — guard each widget individually so a
         # deleted planner widget doesn't prevent saving chapter content.
         try:

@@ -1556,6 +1556,11 @@ class _BaseAnalyzer:
                       if self.writer_voice is not None else "")
         if voice_line:
             parts.append(voice_line)
+        if getattr(self, "project", None) is not None:
+            from src.ai.story_memory import prompt_block
+            memory = prompt_block(self.project, f"{chapter_title} {manuscript_context}", limit=6)
+            if memory:
+                parts.append(memory)
 
         plot_block = self._format_plot_anchor_block(chapter_index)
         if plot_block:

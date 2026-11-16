@@ -31,3 +31,11 @@ def _no_model_for_background_review(monkeypatch):
     background; tests never load the writer's real model."""
     import src.ai.word_suggest as ws
     monkeypatch.setattr(ws, "get_llm", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_companion_state(tmp_path, monkeypatch):
+    """The writing companion remembers sessions; keep that out of the
+    user's home folder."""
+    import src.data.companion_state as cs
+    monkeypatch.setattr(cs, "state_path", lambda project: tmp_path / "companion_state.json")

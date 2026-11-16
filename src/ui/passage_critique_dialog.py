@@ -203,6 +203,9 @@ class PassageCritiqueDialog(QDialog):
         self.chat = ConversationPanel("e.g. why is [2] out of order? · combine 1 and 3 · "
                                       "keep Tobin rambling")
         self.chat.message_sent.connect(self._send_message)
+        from src.ui.rewrite_chat_panel import remember
+        self.chat.remember_requested.connect(
+            lambda text: remember(self.chat, self.project, text, "suggestions"))
         self.chat.set_busy(True, "")
         chat_layout.addWidget(self.chat)
         splitter.addWidget(chat_box)
@@ -348,6 +351,9 @@ class PassageCritiqueDialog(QDialog):
             self.chat.add_message("Editor", error)
             return
         self.chat.add_message("Editor", result.reply)
+        from src.ui.rewrite_chat_panel import propose_memory
+        author = next((t.text for t in reversed(self.turns) if t.role == "author"), "")
+        propose_memory(self.chat, self.project, self._llm, author, result.reply, "suggestions")
         note = result.reply
         if result.versions:
             for v in result.versions:

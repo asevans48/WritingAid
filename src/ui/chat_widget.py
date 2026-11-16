@@ -302,6 +302,8 @@ class ChatWidget(QWidget):
     # into the chapter planner's public ``add_event_from_external``
     # API.
     add_as_arc_event_requested = pyqtSignal(str)
+    # "📌 Remember": text for the Story memory (a selection, else your last message).
+    remember_requested = pyqtSignal(str)
     # A "go to text" link in a message was clicked: (chapter_id, passage).
     passage_link_clicked = pyqtSignal(str, str)
 
@@ -402,6 +404,15 @@ class ChatWidget(QWidget):
         self.add_event_btn.clicked.connect(
             self._on_add_last_as_event)
         header_layout.addWidget(self.add_event_btn)
+
+        self.remember_btn = QPushButton("📌 Remember")
+        self.remember_btn.setToolTip(
+            "Save a decision to Story memory so every AI tool respects it: select text in "
+            "the conversation first, or it saves your last message.")
+        self.remember_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.remember_btn.setStyleSheet(self.clear_btn.styleSheet())
+        self.remember_btn.clicked.connect(self._on_remember)
+        header_layout.addWidget(self.remember_btn)
 
         layout.addWidget(self.header_frame)
 
@@ -1598,6 +1609,18 @@ class ChatWidget(QWidget):
             if entry.get("role") == "assistant":
                 return (entry.get("content") or "").strip()
         return ""
+
+    def last_user_message(self) -> str:
+        for entry in reversed(self._current_conversation):
+            if entry.get("role") == "user":
+                return (entry.get("content") or "").strip()
+        return ""
+
+    def _on_remember(self) -> None:
+        text = self.chat_history.textCursor().selectedText().replace("\u2029", " ").strip()
+        text = text or self.last_user_message()
+        if text:
+            self.remember_requested.emit(text)
 
     def _on_add_last_as_event(self) -> None:
         """Emit ``add_as_arc_event_requested`` with the last AI
