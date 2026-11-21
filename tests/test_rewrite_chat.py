@@ -128,6 +128,7 @@ FIRST = ("WHAT WORKS:\n- Clear sequence.\n\nWHAT DOESN'T WORK:\n- Flat verbs.\n\
 
 def test_suggestions_conversation(app):
     llm = FakeLLM(FIRST,
+                  "",           # the overly-descriptive review (nothing readable: scan only)
                   "Suggestion 2 splits the beats so the lock lands as its own moment.",
                   "Here's 1 and 3 together.\n\nVERSION 1 (combined):\nCold water on her face "
                   "in the bathroom; then the long hall back to her room, and the lock.\nWHY: "
@@ -151,7 +152,7 @@ def test_suggestions_conversation(app):
 
 
 def test_new_critique_starts_a_new_conversation(app):
-    llm = FakeLLM(FIRST, "Because it's tighter.", FIRST)
+    llm = FakeLLM(FIRST, "", "Because it's tighter.", FIRST)   # "": overly-descriptive review
     dlg = suggestions_dialog(app, llm)
     dlg._send_message("why?")
     wait(dlg, app)

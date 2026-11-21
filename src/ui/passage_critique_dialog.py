@@ -9,11 +9,14 @@ from typing import Any, Optional, Set
 from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QPushButton, QSplitter, QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
+    QPushButton, QSplitter, QTabWidget, QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
 )
 from PyQt6.QtCore import Qt
 
-from src.ai.passage_critique import PassageCritique, build_context, critique_passage
+from src.ai.passage_critique import (
+    PassageCritique, Suggestion, build_context, critique_passage)
+
+EXPANDED_ANGLE = "your text, expanded"
 
 # A QThread destroyed while running aborts the app, so running workers are
 # kept here until they finish even if their dialog is closed.
@@ -47,6 +50,9 @@ def _project_search(project: Any):
 class SuggestionWorker(QThread):
     progress = pyqtSignal(str)
     done = pyqtSignal(object, str)          # PassageCritique | None, error
+    # Overly descriptive statements (overdescription.Review), sent after
+    # ``done``; the word scan alone when there's no model.
+    overdescribed = pyqtSignal(object)
 
     def __init__(self, project, chapter, text: str, start: int, end: int, focus: str,
                  llm_factory=_build_llm, search_factory=_project_search):
@@ -54,8 +60,29 @@ class SuggestionWorker(QThread):
         self.args = (project, chapter, text, start, end)
         self.focus = focus
         self.llm_factory, self.search_factory = llm_factory, search_factory
+        self.llm = self.ctx = self.voice = None
 
     def run(self):
+        try:
+            self._critique()
+        finally:
+            self._overdescription()
+
+    def _overdescription(self):
+        from src.ai import overdescription as od
+        project, chapter, text, start, end = self.args
+        try:
+            if self.ctx is None or self.llm is None:
+                review = od.Review(od.scan(text[start:end]), error="no model")
+            else:
+                review = od.review_passage(self.llm, self.ctx, self.voice,
+                                           progress=self.progress.emit)
+        except Exception as e:
+            print(f"[suggestions] overly-descriptive review failed: {e}")
+            review = od.Review(od.scan(text[start:end]), error=str(e))
+        self.overdescribed.emit(review)
+
+    def _critique(self):
         try:
             project, chapter, text, start, end = self.args
             self.progress.emit("Loading the model…")
@@ -73,9 +100,10 @@ class SuggestionWorker(QThread):
             ctx = build_context(project, chapter, text, start, end,
                                 compact=is_local_llm(llm), related=search,
                                 voice=voice, examples=examples)
-            result = critique_passage(llm, ctx, self.focus, self.progress.emit, voice=voice)
-            # Kept for the conversation that follows.
+            # Kept for the conversation that follows (and the
+            # overly-descriptive review, even if the critique fails).
             self.llm, self.ctx, self.voice = llm, ctx, voice
+            result = critique_passage(llm, ctx, self.focus, self.progress.emit, voice=voice)
             if result.empty:
                 self.done.emit(None, "The model's reply couldn't be read as a critique. "
                                      "Try again, or pick another model in Settings.")
@@ -103,6 +131,11 @@ class PassageCritiqueDialog(QDialog):
         self.result: Optional[PassageCritique] = None
         self._worker_factory = worker_factory
         self._worker: Optional[SuggestionWorker] = None
+        self.over_review = None                 # overdescription.Review
+        self._expansions = None                 # overdescription_panel.ExpansionState
+        self._more_worker = None
+        self._over_llm = self._over_ctx = self._over_voice = None
+        self._result_status = ""
         self.setWindowTitle("Suggestions")
         self.resize(900, 720)
         self._build_ui(selection)
@@ -142,7 +175,19 @@ class PassageCritiqueDialog(QDialog):
         splitter = QSplitter(Qt.Orientation.Vertical)
         self.discussion = QTextBrowser()
         self.discussion.setOpenExternalLinks(False)
-        splitter.addWidget(self.discussion)
+        from src.ui.overdescription_panel import OverdescriptionPanel
+        self.over_panel = OverdescriptionPanel()
+        self.over_panel.set_busy("Looking for overly descriptive statements…")
+        self.over_panel.accepted.connect(self._accept_expansion)
+        self.over_panel.more_requested.connect(self._more_expansions)
+        self.top_tabs = QTabWidget()
+        self.top_tabs.addTab(self.discussion, "Critique")
+        self.top_tabs.addTab(self.over_panel, "Overly descriptive")
+        self.top_tabs.setTabToolTip(
+            1, "Statements that tell instead of show (words like “too” and “almost” are "
+               "clues), with ways to expand them in your voice. Accepted expansions build "
+               "the version at the top of the suggestions.")
+        splitter.addWidget(self.top_tabs)
 
         lower = QWidget()
         lower_layout = QHBoxLayout(lower)
@@ -251,6 +296,9 @@ class PassageCritiqueDialog(QDialog):
                                       self.end, self.focus_edit.text())
         worker.progress.connect(self.status_label.setText)
         worker.done.connect(self._on_done)
+        if hasattr(worker, "overdescribed"):
+            worker.overdescribed.connect(self._on_overdescribed)
+        self.over_panel.set_busy("Looking for overly descriptive statements…")
         _RUNNING.add(worker)
         worker.finished.connect(lambda w=worker: _RUNNING.discard(w))
         self._worker = worker
@@ -265,6 +313,7 @@ class PassageCritiqueDialog(QDialog):
             self._voice = getattr(worker, "voice", None)
             if result is None:
                 self.status_label.setText("")
+                self._result_status = ""
                 self.discussion.setHtml(f"<p style='color:#b00020'>{html.escape(error)}</p>")
                 return
             self._show_result(result)
@@ -274,8 +323,11 @@ class PassageCritiqueDialog(QDialog):
     def _show_result(self, result: PassageCritique):
         self.result = result
         count = len(result.suggestions)
-        self.status_label.setText(
+        self._result_status = (
             "" if count >= 3 else f"The model gave {count} suggestion(s) — Regenerate for more.")
+        self.status_label.setText(self._result_status)
+        if self._expansions is not None and self._expansions.changed:
+            self._put_expanded_version()
         self.discussion.setHtml(self._discussion_html(result))
         self._fill_suggestion_list(0)
         # A fresh critique starts a fresh conversation.
@@ -290,11 +342,83 @@ class PassageCritiqueDialog(QDialog):
             fit = f" · voice {s.voice_fit:.0%}" if s.voice_fit is not None else ""
             flag = " ⚠" if s.notes else ""
             tag = " · revised" if s.angle.startswith("revised") else ""
-            item = QListWidgetItem(f"Suggestion {i}{tag}{fit}{flag}\n{_short(s.text, 70)}")
+            label = "Your text, expanded" if s.angle == EXPANDED_ANGLE else f"Suggestion {i}"
+            item = QListWidgetItem(f"{label}{tag}{fit}{flag}\n{_short(s.text, 70)}")
             item.setToolTip(s.why or s.text[:300])
             self.suggestion_list.addItem(item)
         if self.result.suggestions:
             self.suggestion_list.setCurrentRow(select)
+
+    # ── Overly descriptive statements ───────────────────────────────
+
+    def _on_overdescribed(self, review) -> None:
+        try:
+            from src.ui.overdescription_panel import ExpansionState, highlight_flags
+            if self._expansions is not None and self._expansions.changed:
+                # Regenerate: keep the expansions the writer already accepted.
+                if self.status_label.text().startswith("Looking for overly"):
+                    self.status_label.setText(self._result_status)
+                return
+            self.over_review = review
+            self._expansions = ExpansionState(self.passage)
+            worker = self._worker
+            self._over_llm = getattr(worker, "llm", None)
+            self._over_ctx = getattr(worker, "ctx", None)
+            self._over_voice = getattr(worker, "voice", None)
+            self.over_panel.set_review(review, can_ask_ai=self._over_llm is not None
+                                       and self._over_ctx is not None)
+            highlight_flags(self.passage_view, self.passage, review.flags)
+            count = len(review.flags)
+            self.top_tabs.setTabText(1, f"Overly descriptive ({count})" if count
+                                     else "Overly descriptive")
+            if self.status_label.text().startswith("Looking for overly"):
+                self.status_label.setText(self._result_status)
+            if self.result is None and count:
+                self.top_tabs.setCurrentIndex(1)     # no critique to show
+        except Exception as e:      # an exception escaping a slot aborts PyQt6
+            print(f"[suggestions] could not show overly descriptive statements: {e}")
+
+    def _accept_expansion(self, index: int, text: str) -> None:
+        from src.ui.overdescription_panel import log_accepted
+        if self.over_review is None or not (0 <= index < len(self.over_review.flags)):
+            return
+        flag = self.over_review.flags[index]
+        if not self._expansions.apply(index, flag, text):
+            self.over_panel.status.setText("That statement isn't in the passage any more.")
+            return
+        if text != flag.text:
+            log_accepted(self.project, flag.text, text)
+        self.over_panel.mark_applied(
+            index, None if text == flag.text else text,
+            "Accepted — see “Your text, expanded” at the top of the suggestions.")
+        self._put_expanded_version()
+
+    def _put_expanded_version(self) -> None:
+        """Keep one suggestion holding the passage with every accepted
+        expansion, at the top of the list."""
+        if self.result is None:
+            self.result = PassageCritique()
+        rest = [s for s in self.result.suggestions if s.angle != EXPANDED_ANGLE]
+        if self._expansions.changed:
+            self.result.suggestions = [Suggestion(
+                self._expansions.text, "Your passage with the expansions you accepted.",
+                angle=EXPANDED_ANGLE)] + rest
+        else:
+            self.result.suggestions = rest
+        self._fill_suggestion_list(0)
+        if not self.result.suggestions:
+            self.preview_edit.clear()
+            self.use_btn.setEnabled(False)
+
+    def _more_expansions(self, index: int, note: str) -> None:
+        from src.ui.overdescription_panel import MoreWorker, start_worker
+        if self._over_llm is None or self.over_review is None:
+            return
+        worker = MoreWorker(self._over_llm, self._over_ctx, self.over_review.flags[index],
+                            index, self._over_voice, note)
+        worker.done.connect(self.over_panel.add_expansions)
+        self._more_worker = worker
+        start_worker(worker)
 
     # ── Conversation ─────────────────────────────────────────────────
 
@@ -454,11 +578,17 @@ class PassageCritiqueDialog(QDialog):
                 self._worker.done.disconnect(self._on_done)
             except TypeError:
                 pass
-        if self._chat_worker is not None:
+        if self._worker is not None and hasattr(self._worker, "overdescribed"):
             try:
-                self._chat_worker.done.disconnect()
+                self._worker.overdescribed.disconnect(self._on_overdescribed)
             except TypeError:
                 pass
+        for w in (self._chat_worker, self._more_worker):
+            if w is not None:
+                try:
+                    w.done.disconnect()
+                except TypeError:
+                    pass
         super().done(code)
 
 

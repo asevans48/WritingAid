@@ -3274,6 +3274,7 @@ class MainWindow(QMainWindow):
         # Connect grader widget signals
         self.grader_widget.go_to_line_requested.connect(self._go_to_critique_line)
         self.grader_widget.ask_about_suggestion.connect(self._ask_about_critique_suggestion)
+        self.grader_widget.expand_statement_requested.connect(self._expand_critique_statement)
 
         # Connect attributions tab jump signal
         self.attributions_tab.jump_to_annotation.connect(self._jump_to_annotation)
@@ -15106,6 +15107,40 @@ class MainWindow(QMainWindow):
 
         # Show a brief status message
         self.statusBar().showMessage(status_msg, 3000)
+
+    def _expand_critique_statement(self, chapter_id: str, title: str, sentence: str,
+                                   offset: int):
+        """Open an overly descriptive statement from the Critique tab in the
+        editor, with ways to expand it."""
+        import re
+        me = self.manuscript_editor
+        self.tab_widget.setCurrentWidget(me)
+        project = getattr(me, "project", None) or getattr(self, "current_project", None)
+        if not chapter_id and title and project is not None:
+            ce = me.current_chapter_editor
+            if ce is None or getattr(ce.chapter, "title", "") != title:
+                chapter_id = next((c.id for _, ms in project.iter_manuscripts()
+                                   for c in ms.chapters if c.title == title), "")
+        if chapter_id:
+            me.open_chapter(chapter_id)
+        ce = me.current_chapter_editor
+        if ce is None:
+            return
+        text = ce.editor.toPlainText()
+        hits = [m.start() for m in re.finditer(re.escape(sentence), text)] if sentence else []
+        if not hits:
+            self.statusBar().showMessage(
+                "That statement has changed since the critique — run it again.", 5000)
+            return
+        start = min(hits, key=lambda i: abs(i - offset))
+        from src.ai.passage_critique import py_to_qt_index
+        cursor = ce.editor.textCursor()
+        cursor.setPosition(py_to_qt_index(text, start))
+        cursor.setPosition(py_to_qt_index(text, start + len(sentence)),
+                           cursor.MoveMode.KeepAnchor)
+        ce.editor.setTextCursor(cursor)
+        ce.editor.ensureCursorVisible()
+        ce.expand_statement(start, start + len(sentence))
 
     def _ask_about_critique_suggestion(self, suggestion_type: str, original_text: str,
                                         suggestion: str, explanation: str):

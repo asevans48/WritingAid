@@ -430,6 +430,8 @@ class CritiqueWorker(QThread):
             except Exception as e:
                 print(f"[critique] style stats failed: {e}")
                 report.style_stats = {}
+            report.overdescribed = self._overdescription(
+                llm, getattr(orchestrator, "writer_voice", None), progress_cb)
             if self.include_continuity and self.project is not None:
                 progress_cb("Checking continuity across the novellas…")
                 from src.ai.continuity_analysis import ContinuityAnalyzer
@@ -452,6 +454,32 @@ class CritiqueWorker(QThread):
             self.error.emit(str(e))
 
     MAX_PROMISE_CHECK_CHAPTERS = 5
+    # Chapters whose overly-descriptive candidates the model judges; the
+    # rest get the word scan alone (one extra model call per chapter).
+    MAX_OVERDESCRIPTION_AI_CHAPTERS = 5
+
+    def _overdescription(self, llm, voice, progress_cb) -> Dict[str, Dict[str, Any]]:
+        """Overly descriptive statements per chapter title."""
+        from src.ai import overdescription as od
+        out: Dict[str, Dict[str, Any]] = {}
+        for i, ch in enumerate(self.chapters):
+            text = ch.get("text", "") or ""
+            use = llm if i < self.MAX_OVERDESCRIPTION_AI_CHAPTERS else None
+            if use is not None:
+                progress_cb(f"  {ch.get('title')}: overly descriptive statements…")
+            try:
+                review = od.review_chapter(text, use, voice)
+            except Exception as e:
+                print(f"[critique] overly-descriptive check failed for {ch.get('title')}: {e}")
+                continue
+            out[ch.get("title", "")] = {
+                "id": ch.get("id", "") or "",
+                "custom": ch.get("title") == "Custom Text",
+                "used_ai": review.used_ai,
+                "cleared": len(review.cleared),
+                "flags": [f.to_dict() for f in review.flags],
+            }
+        return out
 
     def _run_promise_checks(self, llm, progress_cb) -> list:
         """Promise / character-consistency check per chapter."""
@@ -501,6 +529,8 @@ class GraderWidget(QWidget):
     content_changed = pyqtSignal()
     go_to_line_requested = pyqtSignal(int)  # Emits line number to navigate to
     ask_about_suggestion = pyqtSignal(str, str, str, str)  # type, original_text, suggestion, explanation
+    # chapter id ("" = the current chapter), chapter title, statement, offset in the chapter
+    expand_statement_requested = pyqtSignal(str, str, str, int)
 
     def __init__(self):
         """Initialize grader widget."""
@@ -1461,6 +1491,7 @@ class GraderWidget(QWidget):
                         "text": content,
                         "index": idx,
                         "scope": scope,
+                        "id": getattr(ch, "id", ""),
                     })
         return results
 
@@ -1791,6 +1822,66 @@ class GraderWidget(QWidget):
             self._report_tabs[rt] = (browser, sections, report, rating_bar)
 
             self.results_tabs.addTab(tab, self.REPORT_TAB_LABELS[rt])
+        self._add_overdescription_tab(report)
+
+    def _add_overdescription_tab(self, report: CritiqueReport) -> None:
+        """Overly descriptive statements, each with ways to expand it and a
+        link that opens it in the editor."""
+        data = getattr(report, "overdescribed", None) or {}
+        self._overdesc_links: Dict[int, tuple] = {}
+        if not data:
+            return
+        browser = QTextBrowser()
+        browser.setOpenExternalLinks(False)
+        browser.setOpenLinks(False)
+        browser.anchorClicked.connect(self._handle_link_click)
+        html_text, total = self._format_overdescription_html(data)
+        browser.setHtml(html_text)
+        self.results_tabs.addTab(browser, f"Overly descriptive ({total})")
+
+    def _format_overdescription_html(self, data: Dict[str, Dict[str, Any]]) -> tuple:
+        import html as _html
+        from src.ai import overdescription as od
+        from src.ui.overdescription_panel import flag_html
+        if not hasattr(self, "_overdesc_links"):
+            self._overdesc_links = {}
+        parts = ["<p style='color:#555'>Statements that tell the reader how something is "
+                 "instead of showing it. Words like “too” and “almost” are clues, not proof"
+                 " — open one in the editor for expansions written in your voice, and "
+                 "accept the ones you like.</p>"]
+        total = 0
+        for title, entry in data.items():
+            flags = [od.Flag.from_dict(f) for f in entry.get("flags", [])]
+            total += len(flags)
+            source = ("judged by the AI" if entry.get("used_ai")
+                      else "word scan (no AI)")
+            cleared = entry.get("cleared", 0)
+            parts.append(f"<h3>{_html.escape(title)} — {len(flags)} "
+                         f"<span style='color:#666;font-weight:normal;font-size:11px'>"
+                         f"({source}{f'; {cleared} cleared as fine' if cleared else ''})"
+                         f"</span></h3>")
+            if not flags:
+                parts.append("<p><i>Nothing reads as overly descriptive.</i></p>")
+                continue
+            rows = []
+            for f in flags:
+                link = ""
+                if not entry.get("custom"):
+                    k = len(self._overdesc_links)
+                    self._overdesc_links[k] = (entry.get("id", ""), title, f.text, f.start)
+                    link = f" <a href='overdesc:{k}'>Expand in the editor →</a>"
+                hints = "".join(f"<li style='color:#555'>{_html.escape(h)}</li>"
+                                for h in f.hints)
+                trims = "".join(
+                    f"<li style='color:#555'>Or cut the qualifiers: "
+                    f"“{_html.escape(x.text)}”</li>" for x in f.expansions if not x.by_ai)
+                ai = " <span style='color:#7c3aed'>· AI</span>" if f.source in ("ai", "both") \
+                    else ""
+                rows.append(f"<li><span style='background:#fde68a'>{flag_html(f)}</span>{ai}"
+                            f"<br><small>{_html.escape(f.reason)}</small>{link}"
+                            f"<ul>{hints}{trims}</ul></li>")
+            parts.append("<ul>" + "".join(rows) + "</ul>")
+        return "".join(parts), total
 
     def _refresh_summary_tab(self, report: CritiqueReport):
         """Replace the Summary tab content with browser + overall rating bar."""
@@ -2796,6 +2887,14 @@ class GraderWidget(QWidget):
 
         elif url_str.startswith(("rate-item:", "rate-part:", "rate-section:")):
             self._handle_rating_link(url_str)
+
+        elif url_str.startswith("overdesc:"):
+            try:
+                link = getattr(self, "_overdesc_links", {}).get(int(url_str.split(":")[1]))
+            except ValueError:
+                link = None
+            if link:
+                self.expand_statement_requested.emit(*link)
 
         # Handle crafttip:TYPE links — show educational dialog
         elif url_str.startswith("crafttip:"):

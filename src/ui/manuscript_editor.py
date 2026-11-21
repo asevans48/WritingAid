@@ -1677,16 +1677,47 @@ class ChapterEditor(QWidget):
                                        self, selection=(sel_start, sel_end))
         if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.replacement:
             return
-        if self.editor.toPlainText() != doc_text:
-            QMessageBox.information(self, "Suggestions",
-                                    "The chapter changed while the dialog was open, so the "
-                                    "suggestion wasn't inserted. Run Suggestions again.")
+        self._replace_span(doc_text, start, end, dialog.replacement, "Suggestions")
+
+    def _expand_selection(self):
+        """Overly descriptive statements in the highlighted text (widened
+        to whole sentences), with ways to expand them."""
+        cursor = self.editor.textCursor()
+        if not cursor.hasSelection() or len(cursor.selectedText().strip()) < 3:
+            QMessageBox.information(self, "No Selection",
+                                    "Highlight the text you'd like checked.")
             return
+        from src.ai.passage_critique import expand_to_sentences, qt_to_py_index
+        doc_text = self.editor.toPlainText()
+        start, end = expand_to_sentences(doc_text,
+                                         qt_to_py_index(doc_text, cursor.selectionStart()),
+                                         qt_to_py_index(doc_text, cursor.selectionEnd()))
+        self.expand_statement(start, end)
+
+    def expand_statement(self, start: int, end: int) -> None:
+        """Open the overly-descriptive sub-module on ``doc[start:end]``
+        (Python indices); accepted expansions replace that text."""
+        doc_text = self.editor.toPlainText()
+        if not doc_text[start:end].strip():
+            return
+        from src.ui import overdescription_panel as op
+        dialog = op.ExpandStatementDialog(doc_text, start, end, self.project, self.chapter, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.replacement:
+            return
+        self._replace_span(doc_text, start, end, dialog.replacement, "Overly descriptive")
+
+    def _replace_span(self, doc_text: str, start: int, end: int, replacement: str,
+                      tool: str) -> None:
+        if self.editor.toPlainText() != doc_text:
+            QMessageBox.information(self, tool,
+                                    "The chapter changed while the dialog was open, so the "
+                                    f"change wasn't inserted. Run {tool} again.")
+            return
+        from src.ai.passage_critique import py_to_qt_index
         replace = QTextCursor(self.editor.document())
         replace.setPosition(py_to_qt_index(doc_text, start))
         replace.setPosition(py_to_qt_index(doc_text, end), QTextCursor.MoveMode.KeepAnchor)
-        replace.insertText(self._tidy_replacement(doc_text[start:end], dialog.replacement,
-                                                  doc_text))
+        replace.insertText(self._tidy_replacement(doc_text[start:end], replacement, doc_text))
         self.editor.setTextCursor(replace)
 
     def _world_word_selection(self):
@@ -1864,6 +1895,11 @@ class ChapterEditor(QWidget):
                 "Critique the highlighted sentences against your characters, world, "
                 "plot and outline, with three rewrites")
             suggest_action.triggered.connect(self._suggest_for_selection)
+            expand_action = menu.addAction("🔍 Overly descriptive? (ways to expand)...")
+            expand_action.setToolTip(
+                "Find statements that tell instead of show (words like “too” and “almost” "
+                "are clues) and expand them in your voice")
+            expand_action.triggered.connect(self._expand_selection)
 
             # Heading style submenu
             heading_menu = menu.addMenu("Heading Style")
