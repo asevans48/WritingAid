@@ -60,7 +60,7 @@ class VideoGenerationAgent:
         provider_map = {
             "claude": LLMProvider.CLAUDE,
             "chatgpt": LLMProvider.OPENAI,
-            "gemini": LLMProvider.GEMINI,
+            "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
         }
         provider = provider_map.get(provider_str)
         if provider:

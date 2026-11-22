@@ -91,3 +91,25 @@ def dismiss(project: Any, key: str) -> None:
         keys.append(key)
         del keys[:-2000]
     save(project, data)
+
+
+# Companion sections the writer collapsed (or opened), by key.
+DEFAULT_COLLAPSED = {"memory", "style_sheet"}       # whole-book sections start closed
+
+
+def collapsed_sections(project: Any) -> set:
+    ui = load(project).get("ui", {}) if project is not None else {}
+    if "collapsed" not in ui:
+        return set(DEFAULT_COLLAPSED)
+    return set(ui.get("collapsed") or [])
+
+
+def set_section_collapsed(project: Any, key: str, collapsed: bool) -> None:
+    if project is None:
+        return
+    data = load(project)
+    ui = data.setdefault("ui", {})
+    keys = set(ui.get("collapsed", DEFAULT_COLLAPSED))
+    (keys.add if collapsed else keys.discard)(key)
+    ui["collapsed"] = sorted(keys)
+    save(project, data)

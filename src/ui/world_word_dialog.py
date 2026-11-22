@@ -501,7 +501,7 @@ class WorldWordDialog(QDialog):
                 if api_key:
                     provider_enum = {
                         "claude": LLMProvider.CLAUDE, "chatgpt": LLMProvider.CHATGPT,
-                        "openai": LLMProvider.CHATGPT, "gemini": LLMProvider.GEMINI,
+                        "openai": LLMProvider.CHATGPT, "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
                     }.get(provider_name, LLMProvider.CLAUDE)
                     self.llm_client = LLMClient(
                         provider=provider_enum, api_key=api_key,

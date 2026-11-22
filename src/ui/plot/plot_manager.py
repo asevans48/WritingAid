@@ -686,7 +686,7 @@ def _ask_plot_ai(question: str, history: list, ctx: dict) -> str:
                 "claude": LLMProvider.CLAUDE,
                 "chatgpt": LLMProvider.CHATGPT,
                 "openai": LLMProvider.CHATGPT,
-                "gemini": LLMProvider.GEMINI,
+                "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
             }.get(provider_name.lower(), LLMProvider.CLAUDE)
             llm = LLMClient(provider=provider, api_key=api_key,
                             model=cfg.get_model(provider_name))

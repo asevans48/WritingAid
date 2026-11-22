@@ -763,7 +763,7 @@ def _llm_refine(base: TrainingRecipe, description: str,
             "claude": LLMProvider.CLAUDE,
             "chatgpt": LLMProvider.CHATGPT,
             "openai": LLMProvider.CHATGPT,
-            "gemini": LLMProvider.GEMINI,
+            "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
         }
         provider_name = s.get("default_llm", "claude")
         api_key = (s.get("claude_api_key") if provider_name == "claude"

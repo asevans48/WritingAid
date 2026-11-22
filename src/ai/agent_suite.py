@@ -174,7 +174,7 @@ class AgentSuite:
             "claude": LLMProvider.CLAUDE,
             "chatgpt": LLMProvider.CHATGPT,
             "openai": LLMProvider.CHATGPT,
-            "gemini": LLMProvider.GEMINI
+            "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER
         }.get(provider.lower(), LLMProvider.CLAUDE)
 
         self.primary_llm = LLMClient(

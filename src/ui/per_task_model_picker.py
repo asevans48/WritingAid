@@ -108,6 +108,7 @@ def build_task_picker_options() -> List[Tuple[str, Optional[str], bool]]:
         "chatgpt": "ChatGPT (OpenAI)",
         "openai": "OpenAI",
         "gemini": "Gemini (Google)",
+        "server": "My model server",
     }
     for prov in TASK_CLOUD_PROVIDERS:
         items.append((
@@ -251,7 +252,7 @@ def open_custom_spec_dialog(state: Dict, parent: QWidget) -> None:
         "  • mlx:<id>      →  Apple-Silicon MLX model\n"
         "  • hf:<id>       →  HuggingFace transformer\n"
         "  • trained:<n>   →  Training Studio name\n"
-        "  • cloud:<prov>  →  cloud (claude / chatgpt / gemini)\n"
+        "  • cloud:<prov>  →  cloud (claude / chatgpt / gemini / server)\n"
         "  • cloud:<prov>:<model>   →  cloud + explicit model",
         text=state.get("custom_spec") or state.get("saved_spec") or "")
 

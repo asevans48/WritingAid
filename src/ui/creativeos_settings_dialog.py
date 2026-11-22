@@ -61,6 +61,7 @@ class CreativeOSSettingsDialog(QDialog):
         self.provider_combo.addItem("Claude (Anthropic)", "claude")
         self.provider_combo.addItem("ChatGPT (OpenAI)", "chatgpt")
         self.provider_combo.addItem("Gemini (Google)", "gemini")
+        self.provider_combo.addItem("My model server", "server")
         for i in range(self.provider_combo.count()):
             if self.provider_combo.itemData(i) == self.config.get("default_llm", "claude"):
                 self.provider_combo.setCurrentIndex(i)
@@ -94,6 +95,18 @@ class CreativeOSSettingsDialog(QDialog):
         self.gemini_model = QLineEdit(self.config.get(
             "gemini_model", "gemini-pro"))
         cloud_form.addRow("Gemini model:", self.gemini_model)
+        self.server_url = QLineEdit(self.config.get("server_url", ""))
+        self.server_url.setPlaceholderText("e.g. http://192.168.1.50:8080/v1")
+        self.server_url.setToolTip("Your own OpenAI-compatible model server (llama.cpp, "
+                                   "vLLM, Ollama, LM Studio…)")
+        cloud_form.addRow("Model server address:", self.server_url)
+        self.server_model = QLineEdit(self.config.get("server_model", ""))
+        self.server_model.setPlaceholderText("blank = the server's default model")
+        cloud_form.addRow("Model server model:", self.server_model)
+        self.server_key = QLineEdit(self.config.get("server_api_key", ""))
+        self.server_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.server_key.setPlaceholderText("optional")
+        cloud_form.addRow("Model server API key:", self.server_key)
 
         tabs.addTab(cloud_tab, "Cloud Models")
 
@@ -420,6 +433,9 @@ class CreativeOSSettingsDialog(QDialog):
             claude_model=self.claude_model.text().strip() or "claude-opus-4-7",
             openai_model=self.openai_model.text().strip() or "gpt-4-turbo-preview",
             gemini_model=self.gemini_model.text().strip() or "gemini-pro",
+            server_url=self.server_url.text().strip(),
+            server_model=self.server_model.text().strip(),
+            server_api_key=self.server_key.text().strip(),
             enable_local_models=self.enable_local_cb.isChecked(),
             prefer_local_model=self.prefer_local_cb.isChecked(),
             local_model_id=self.local_model_id.text().strip(),

@@ -4,12 +4,14 @@ a reader's-eye pass, and the story memory."""
 from __future__ import annotations
 
 import html
+import re
 from typing import Any, Callable, List, Optional, Set
 
 from PyQt6.QtCore import QThread, Qt, QUrl, pyqtSignal
 from PyQt6.QtWidgets import (
-    QCheckBox, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QPushButton, QScrollArea, QTextBrowser, QVBoxLayout, QWidget,
+    QCheckBox, QFrame, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QListWidgetItem, QPushButton, QScrollArea, QSizePolicy, QTextBrowser, QTextEdit,
+    QToolButton, QVBoxLayout, QWidget,
 )
 
 # A QThread destroyed while running aborts the app; keep them until done.
@@ -46,19 +48,98 @@ def run_background(fn: Callable[[], Any], on_done: Callable[[Any, str], None]) -
     return task
 
 
-def _group(title: str) -> QGroupBox:
-    box = QGroupBox(title)
-    box.setStyleSheet("QGroupBox { font-weight: bold; font-size: 11px; margin-top: 8px; }"
-                      "QGroupBox::title { subcontrol-origin: margin; left: 6px; }")
-    return box
+class CollapsibleSection(QWidget):
+    """A section of the Companion that opens and closes from its header."""
+    toggled = pyqtSignal(str, bool)          # key, collapsed
+
+    def __init__(self, title: str, key: str, parent=None):
+        super().__init__(parent)
+        self.key, self.title = key, title
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 2, 0, 2)
+        outer.setSpacing(0)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        self.header = QPushButton()
+        self.header.setCheckable(True)
+        self.header.setChecked(True)
+        self.header.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.header.setToolTip("Click to open or close")
+        self.header.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.header.setStyleSheet(
+            "QPushButton { text-align: left; border: none; border-radius: 4px;"
+            " background: #f3f4f6; color: #1f2937; font-weight: bold; font-size: 11px;"
+            " padding: 5px 8px; min-height: 0; }"
+            "QPushButton:hover, QPushButton:checked:hover { background: #e5e7eb; }"
+            "QPushButton:checked { background: #eef2ff; color: #312e81; }")
+        self.header.toggled.connect(self._on_toggled)
+        outer.addWidget(self.header)
+        self.body = QWidget()
+        self.body_layout = QVBoxLayout(self.body)
+        self.body_layout.setContentsMargins(6, 4, 2, 6)
+        outer.addWidget(self.body)
+        self._count = ""
+        self._label()
+
+    def _label(self):
+        arrow = "▾" if self.header.isChecked() else "▸"
+        self.header.setText(f"{arrow}  {self.title}{self._count}")
+
+    def set_count(self, n: Optional[int]) -> None:
+        self._count = f"  ({n})" if n else ""
+        self._label()
+
+    def is_open(self) -> bool:
+        return self.header.isChecked()
+
+    def set_open(self, is_open: bool, *, quiet: bool = True) -> None:
+        if quiet:
+            self.header.blockSignals(True)
+        self.header.setChecked(is_open)
+        self._show_body(is_open)
+        if quiet:
+            self.header.blockSignals(False)
+
+    def _show_body(self, is_open: bool) -> None:
+        self.body.setVisible(is_open)
+        self._label()
+        # Closed sections shrink to their header right away.
+        self.updateGeometry()
+        parent = self.parentWidget()
+        if parent is not None and parent.layout() is not None:
+            parent.layout().invalidate()
+            parent.layout().activate()
+            parent.adjustSize()
+
+    def _on_toggled(self, is_open: bool):
+        self._show_body(is_open)
+        self.toggled.emit(self.key, not is_open)
+
+
+def _divider(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setStyleSheet("color: #6b7280; font-size: 10px; font-weight: bold; "
+                        "letter-spacing: 1px; padding: 8px 2px 2px 2px;")
+    return label
+
+
+def _small(text: str = "", color: str = "#6b7280") -> QLabel:
+    label = QLabel(text)
+    label.setWordWrap(True)
+    label.setStyleSheet(f"color: {color}; font-size: 10px;")
+    return label
 
 
 class CompanionPanel(QWidget):
     jump_requested = pyqtSignal(str)            # text to find and select
     note_action = pyqtSignal(object)            # companion.Note with an action
     note_dismissed = pyqtSignal(object)         # companion.Note
+    note_fix_requested = pyqtSignal(object)     # companion.Note → Suggestions
     reader_pass_requested = pyqtSignal()
     fixes_requested = pyqtSignal()
+    fix_accepted = pyqtSignal(object, str)      # companion.Fix, replacement sentence
+    fix_more_requested = pyqtSignal(object)     # companion.Fix → Suggestions
+    overdescribed_requested = pyqtSignal()      # check this chapter (with the model if any)
+    expand_requested = pyqtSignal(object)       # overdescription.Flag → Expand dialog
     ask_requested = pyqtSignal(object)          # companion.Note
     style_sheet_changed = pyqtSignal()
     memory_changed = pyqtSignal()
@@ -66,20 +147,49 @@ class CompanionPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.project = None
+        self.chapter_text = ""
         self.notes: list = []
+        self.fixes: list = []
+        self.flags: list = []
+        self.sections: dict = {}
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(2)
+
+        # Which chapter this is about, and open/close all.
+        top = QHBoxLayout()
+        top.setContentsMargins(6, 4, 4, 0)
+        self.chapter_label = QLabel("")
+        self.chapter_label.setWordWrap(True)
+        self.chapter_label.setStyleSheet("font-weight: bold; color: #312e81; font-size: 12px;")
+        top.addWidget(self.chapter_label, 1)
+        for label, tip, is_open in (("▾ all", "Open every section", True),
+                                    ("▸ all", "Close every section", False)):
+            btn = QToolButton()
+            btn.setText(label)
+            btn.setToolTip(tip)
+            btn.setAutoRaise(True)
+            btn.setStyleSheet("QToolButton { border: none; color: #4b5563; font-size: 10px;"
+                              " padding: 1px 4px; } QToolButton:hover { background: #e5e7eb;"
+                              " border-radius: 3px; }")
+            btn.clicked.connect(lambda _=False, o=is_open: self.set_all_open(o))
+            top.addWidget(btn)
+        outer.addLayout(top)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
         body = QWidget()
         layout = QVBoxLayout(body)
-        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setContentsMargins(6, 0, 6, 6)
+        layout.setSpacing(2)
         scroll.setWidget(body)
         outer.addWidget(scroll)
 
+        layout.addWidget(_divider("THIS CHAPTER"))
+
         # Where you left off
-        box = _group("Where you left off")
-        v = QVBoxLayout(box)
+        v = self._section(layout, "Where you left off", "left_off")
         self.left_off_label = QLabel("")
         self.left_off_label.setWordWrap(True)
         self.left_off_label.setTextFormat(Qt.TextFormat.RichText)
@@ -88,14 +198,10 @@ class CompanionPanel(QWidget):
         self.recap_label.setWordWrap(True)
         self.recap_label.setStyleSheet("color: #4338ca;")
         v.addWidget(self.recap_label)
-        layout.addWidget(box)
 
         # Notes
-        box = _group("Notes as you write")
-        v = QVBoxLayout(box)
-        self.notes_status = QLabel("Notes appear here when you finish a paragraph.")
-        self.notes_status.setWordWrap(True)
-        self.notes_status.setStyleSheet("color: #6b7280; font-size: 10px;")
+        v = self._section(layout, "Notes as you write", "notes")
+        self.notes_status = _small("Notes appear here when you finish a paragraph.")
         v.addWidget(self.notes_status)
         self.notes_list = QListWidget()
         self.notes_list.setWordWrap(True)
@@ -105,39 +211,96 @@ class CompanionPanel(QWidget):
         row = QHBoxLayout()
         self.go_btn = QPushButton("Go to")
         self.go_btn.clicked.connect(self._go_to_note)
+        self.fix_note_btn = QPushButton("💡 Suggest fix")
+        self.fix_note_btn.setToolTip("Open Suggestions on this sentence, focused on the note")
+        self.fix_note_btn.clicked.connect(self._fix_note)
         self.act_btn = QPushButton("Mark beat done")
         self.act_btn.clicked.connect(self._act_on_note)
         self.dismiss_btn = QPushButton("Dismiss")
         self.dismiss_btn.clicked.connect(self._dismiss_note)
         self.ask_btn = QPushButton("💬 Ask")
         self.ask_btn.clicked.connect(self._ask_note)
-        for b in (self.go_btn, self.act_btn, self.ask_btn, self.dismiss_btn):
+        for b in (self.go_btn, self.fix_note_btn, self.act_btn, self.ask_btn, self.dismiss_btn):
             row.addWidget(b)
         row.addStretch()
         v.addLayout(row)
         self.notes_list.currentRowChanged.connect(self._update_note_buttons)
-        layout.addWidget(box)
 
         # Today's three fixes
-        box = _group("Today's three fixes")
-        v = QVBoxLayout(box)
+        v = self._section(layout, "Today's three fixes", "fixes")
         self.fixes_btn = QPushButton("🎯 Find the three fixes that matter most")
         self.fixes_btn.clicked.connect(self.fixes_requested.emit)
         v.addWidget(self.fixes_btn)
+        self.fixes_status = _small("")
+        v.addWidget(self.fixes_status)
         self.fixes_list = QListWidget()
         self.fixes_list.setWordWrap(True)
-        self.fixes_list.setMaximumHeight(140)
+        self.fixes_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.fixes_list.setMaximumHeight(110)
         self.fixes_list.itemDoubleClicked.connect(lambda _i: self._go_to_fix())
+        self.fixes_list.currentRowChanged.connect(self._show_fix)
         v.addWidget(self.fixes_list)
+        # The chosen fix: suggested rewrites, an editable preview, Accept.
+        self.fix_detail = QWidget()
+        outer_v, v = v, QVBoxLayout(self.fix_detail)
+        v.setContentsMargins(0, 0, 0, 0)
+        outer_v.addWidget(self.fix_detail)
+        self.fix_options = QListWidget()
+        self.fix_options.setWordWrap(True)
+        self.fix_options.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.fix_options.setMaximumHeight(80)
+        self.fix_options.currentRowChanged.connect(self._show_fix_option)
+        v.addWidget(self.fix_options)
+        self.fix_option_notes = _small("", "#b45309")
+        v.addWidget(self.fix_option_notes)
+        self.fix_preview = QTextEdit()
+        self.fix_preview.setMaximumHeight(80)
+        self.fix_preview.setPlaceholderText("The sentence — pick a suggestion or edit it here, "
+                                            "then Accept.")
+        v.addWidget(self.fix_preview)
+        row = QHBoxLayout()
+        self.fix_accept_btn = QPushButton("✓ Accept")
+        self.fix_accept_btn.setToolTip("Put this in place of the sentence in the chapter")
+        self.fix_accept_btn.clicked.connect(self._accept_fix)
+        self.fix_more_btn = QPushButton("💡 More options…")
+        self.fix_more_btn.setToolTip("Open Suggestions on this sentence, focused on the problem")
+        self.fix_more_btn.clicked.connect(self._more_fix)
         go = QPushButton("Go to")
         go.clicked.connect(self._go_to_fix)
-        v.addWidget(go)
-        self.fixes = []
-        layout.addWidget(box)
+        for b in (self.fix_accept_btn, self.fix_more_btn, go):
+            row.addWidget(b)
+        row.addStretch()
+        v.addLayout(row)
+        self._show_fix(-1)
+
+        # Overly descriptive statements
+        v = self._section(layout, "Overly descriptive", "overdescribed")
+        self.over_status = _small("Statements that tell instead of show — “too” and “almost” "
+                                  "are clues, not proof.")
+        v.addWidget(self.over_status)
+        self.over_btn = QPushButton("🔍 Check this chapter")
+        self.over_btn.clicked.connect(self.overdescribed_requested.emit)
+        v.addWidget(self.over_btn)
+        self.over_list = QListWidget()
+        self.over_list.setWordWrap(True)
+        self.over_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.over_list.setMaximumHeight(140)
+        self.over_list.itemDoubleClicked.connect(lambda _i: self._expand_flag())
+        v.addWidget(self.over_list)
+        row = QHBoxLayout()
+        self.expand_btn = QPushButton("Expand…")
+        self.expand_btn.setToolTip("Ways to expand it in your voice; accept one to put it in "
+                                   "the chapter")
+        self.expand_btn.clicked.connect(self._expand_flag)
+        go = QPushButton("Go to")
+        go.clicked.connect(self._go_to_flag)
+        row.addWidget(self.expand_btn)
+        row.addWidget(go)
+        row.addStretch()
+        v.addLayout(row)
 
         # Reader's eye
-        box = _group("Reader's eye")
-        v = QVBoxLayout(box)
+        v = self._section(layout, "Reader's eye", "reader")
         self.reader_btn = QPushButton("👁 Read this chapter as a reader")
         self.reader_btn.clicked.connect(self.reader_pass_requested.emit)
         v.addWidget(self.reader_btn)
@@ -148,16 +311,13 @@ class CompanionPanel(QWidget):
         self.reader_view.setPlaceholderText(
             "Where attention dips, what a reader is wondering, and which emotional beats land.")
         v.addWidget(self.reader_view)
-        layout.addWidget(box)
+
+        layout.addWidget(_divider("WHOLE BOOK"))
 
         # Story memory
-        box = _group("Story memory")
-        v = QVBoxLayout(box)
-        hint = QLabel("Decisions you've settled. Every AI tool reads these; 📌 pinned ones "
-                      "are always included.")
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: #6b7280; font-size: 10px;")
-        v.addWidget(hint)
+        v = self._section(layout, "Story memory", "memory")
+        v.addWidget(_small("Decisions you've settled. Every AI tool reads these; 📌 pinned ones "
+                           "are always included; “· this chapter” ones are about this chapter."))
         self.memory_list = QListWidget()
         self.memory_list.setWordWrap(True)
         self.memory_list.setMinimumHeight(110)
@@ -182,19 +342,13 @@ class CompanionPanel(QWidget):
             row.addWidget(b)
         row.addStretch()
         v.addLayout(row)
-        layout.addWidget(box)
+
         # Personal style sheet
-        box = _group("Your style sheet")
-        v = QVBoxLayout(box)
-        hint = QLabel("Your own rules — learned from what you ignore and fix, or typed in: "
-                      "“allow vethari” · “prefer grey over gray” · “avoid very” · "
-                      "“keep passive voice” · or any note.")
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: #6b7280; font-size: 10px;")
-        v.addWidget(hint)
-        self.style_status = QLabel("")
-        self.style_status.setWordWrap(True)
-        self.style_status.setStyleSheet("color: #be185d; font-size: 10px;")
+        v = self._section(layout, "Your style sheet", "style_sheet")
+        v.addWidget(_small("Your own rules — learned from what you ignore and fix, or typed in: "
+                           "“allow vethari” · “prefer grey over gray” · “avoid very” · "
+                           "“keep passive voice” · or any note."))
+        self.style_status = _small("", "#be185d")
         v.addWidget(self.style_status)
         self.sheet_list = QListWidget()
         self.sheet_list.setWordWrap(True)
@@ -218,9 +372,53 @@ class CompanionPanel(QWidget):
         row.addWidget(delete)
         row.addStretch()
         v.addLayout(row)
-        layout.addWidget(box)
         layout.addStretch()
+        self._apply_collapsed()
         self._update_note_buttons()
+
+    # ── Sections ─────────────────────────────────────────────────────
+
+    def _section(self, layout, title: str, key: str) -> QVBoxLayout:
+        section = CollapsibleSection(title, key)
+        section.toggled.connect(self._section_toggled)
+        self.sections[key] = section
+        layout.addWidget(section)
+        return section.body_layout
+
+    def _apply_collapsed(self) -> None:
+        from src.data import companion_state as cs
+        closed = cs.collapsed_sections(self.project) if self.project is not None \
+            else set(cs.DEFAULT_COLLAPSED)
+        for key, section in self.sections.items():
+            section.set_open(key not in closed)
+
+    def _section_toggled(self, key: str, collapsed: bool) -> None:
+        from src.data import companion_state as cs
+        cs.set_section_collapsed(self.project, key, collapsed)
+
+    def set_all_open(self, is_open: bool) -> None:
+        for section in self.sections.values():
+            if section.is_open() != is_open:
+                section.header.setChecked(is_open)       # saves, like a click
+
+    def open_section(self, key: str) -> None:
+        section = self.sections.get(key)
+        if section is not None and not section.is_open():
+            section.header.setChecked(True)
+
+    def set_chapter(self, chapter, text: str = "") -> None:
+        """The chapter everything above “Whole book” is about."""
+        self.chapter_text = text or ""
+        if chapter is None:
+            self.chapter_label.setText("")
+            return
+        number = getattr(chapter, "number", "") or ""
+        title = getattr(chapter, "title", "") or ""
+        words = len(self.chapter_text.split())
+        name = " — ".join(p for p in (f"Chapter {number}" if number else "", title) if p)
+        self.chapter_label.setText(f"📖 {html.escape(name or 'This chapter')}"
+                                   f"<span style='color:#6b7280;font-weight:normal;"
+                                   f"font-size:10px'> · {words:,} words</span>")
 
     # ── Where you left off ───────────────────────────────────────────
 
@@ -248,6 +446,7 @@ class CompanionPanel(QWidget):
         self.notes_status.setText(status or ("No notes — all clear." if not self.notes else
                                              f"{len(self.notes)} note"
                                              f"{'s' if len(self.notes) != 1 else ''}."))
+        self.sections["notes"].set_count(len(self.notes))
         self._update_note_buttons()
 
     def _current_note(self):
@@ -257,6 +456,7 @@ class CompanionPanel(QWidget):
     def _update_note_buttons(self, *_):
         note = self._current_note()
         self.go_btn.setEnabled(note is not None)
+        self.fix_note_btn.setEnabled(note is not None)
         self.ask_btn.setEnabled(note is not None)
         self.dismiss_btn.setEnabled(note is not None)
         self.act_btn.setVisible(note is not None and bool(note.action))
@@ -265,6 +465,11 @@ class CompanionPanel(QWidget):
         note = self._current_note()
         if note is not None and note.excerpt:
             self.jump_requested.emit(note.excerpt)
+
+    def _fix_note(self):
+        note = self._current_note()
+        if note is not None:
+            self.note_fix_requested.emit(note)
 
     def _act_on_note(self):
         note = self._current_note()
@@ -327,17 +532,20 @@ class CompanionPanel(QWidget):
 
     def set_project(self, project) -> None:
         self.project = project
+        self._apply_collapsed()
         self.refresh_memory()
         self.refresh_style_sheet()
 
     # ── Today's three fixes ─────────────────────────────────────────
 
-    def set_fixes_busy(self) -> None:
+    def set_fixes_busy(self, message: str = "Looking…") -> None:
         self.fixes_btn.setEnabled(False)
         self.fixes_list.clear()
-        self.fixes_list.addItem("Looking…")
+        self.fixes_list.addItem(message)
+        self.fixes_status.setText("")
+        self._show_fix(-1)
 
-    def set_fixes(self, fixes) -> None:
+    def set_fixes(self, fixes, status: str = "") -> None:
         self.fixes_btn.setEnabled(True)
         self.fixes = list(fixes or [])
         self.fixes_list.clear()
@@ -345,13 +553,117 @@ class CompanionPanel(QWidget):
             item = QListWidgetItem(f"{n}. {f.text}" + (f"\n   → {f.why}" if f.why else ""))
             item.setToolTip(f.excerpt)
             self.fixes_list.addItem(item)
-        if not self.fixes:
+        if not self.fixes and fixes is not None:
             self.fixes_list.addItem("Nothing flagged — nice work.")
+        self.sections["fixes"].set_count(len(self.fixes))
+        self.fixes_status.setText(status)
+        if self.fixes:
+            self.fixes_list.setCurrentRow(0)
+        else:
+            self._show_fix(-1)
+
+    def set_fix_options(self, options_by_fix: dict, status: str = "") -> None:
+        """Suggested rewrites arrived (fix index → [FixOption])."""
+        for i, options in (options_by_fix or {}).items():
+            if 0 <= i < len(self.fixes) and options:
+                self.fixes[i].options = options
+        self.fixes_status.setText(status)
+        self._show_fix(self.fixes_list.currentRow())
+
+    def current_fix(self):
+        row = self.fixes_list.currentRow()
+        return self.fixes[row] if 0 <= row < len(self.fixes) else None
+
+    def _show_fix(self, row: int) -> None:
+        fix = self.fixes[row] if 0 <= row < len(self.fixes) else None
+        self.fix_options.clear()
+        self.fix_preview.clear()
+        self.fix_option_notes.setText("")
+        for o in (fix.options if fix else []):
+            fit = f" · voice {o.voice_fit:.0%}" if o.voice_fit is not None else ""
+            tag = "✨ suggested" if o.by_ai else "quick fix (no AI)"
+            item = QListWidgetItem(f"{tag}{fit}{' ⚠' if o.notes else ''}: {o.text}")
+            item.setToolTip(o.why or o.text)
+            self.fix_options.addItem(item)
+        has = fix is not None
+        self.fix_detail.setVisible(has)
+        self.fixes_list.setVisible(bool(self.fixes) or self.fixes_list.count() > 0)
+        self.fix_options.setVisible(bool(fix and fix.options))
+        self.fix_preview.setEnabled(has)
+        self.fix_accept_btn.setEnabled(has)          # your own edit counts too
+        self.fix_more_btn.setEnabled(has)
+        if fix and fix.options:
+            self.fix_options.setCurrentRow(0)
+        elif fix:
+            self.fix_preview.setPlainText(fix.sentence or "")
+
+    def _show_fix_option(self, row: int) -> None:
+        fix = self.current_fix()
+        if fix is None or not (0 <= row < len(fix.options)):
+            return
+        o = fix.options[row]
+        self.fix_preview.setPlainText(o.text)
+        self.fix_accept_btn.setEnabled(True)
+        self.fix_option_notes.setText("⚠ This rewrite " + "; ".join(o.notes) + "."
+                                      if o.notes else "")
+
+    def _accept_fix(self) -> None:
+        fix = self.current_fix()
+        text = self.fix_preview.toPlainText().strip()
+        if fix is not None and text:
+            self.fix_accepted.emit(fix, text)
+
+    def _more_fix(self) -> None:
+        fix = self.current_fix()
+        if fix is not None:
+            self.fix_more_requested.emit(fix)
+
+    def remove_fix(self, fix, message: str = "") -> None:
+        if fix in self.fixes:
+            self.fixes.remove(fix)
+        self.set_fixes(self.fixes, message)
 
     def _go_to_fix(self):
         row = self.fixes_list.currentRow()
         if 0 <= row < len(self.fixes) and self.fixes[row].excerpt:
             self.jump_requested.emit(self.fixes[row].excerpt)
+
+    # ── Overly descriptive ─────────────────────────────────────────
+
+    def set_overdescribed(self, flags, status: str = "", busy: bool = False) -> None:
+        self.over_btn.setEnabled(not busy)
+        if busy:
+            self.over_status.setText(status or "Checking…")
+            return
+        self.flags = list(flags or [])
+        self.over_list.clear()
+        for f in self.flags:
+            cues = ", ".join(c.phrase.strip() for c in f.cues[:2])
+            mark = "✨ " if f.source in ("ai", "both") else ""
+            item = QListWidgetItem(f"{mark}{_short_text(f.text, 90)}"
+                                   + (f"\n   ({cues})" if cues else ""))
+            item.setToolTip(f.reason or f.text)
+            self.over_list.addItem(item)
+        self.sections["overdescribed"].set_count(len(self.flags))
+        self.expand_btn.setEnabled(bool(self.flags))
+        self.over_status.setText(status or ("Nothing reads as overly descriptive." if not
+                                            self.flags else ""))
+
+    def _current_flag(self):
+        row = self.over_list.currentRow()
+        if not (0 <= row < len(self.flags)):
+            row = 0 if self.flags else -1
+        return self.flags[row] if row >= 0 else None
+
+    def _expand_flag(self) -> None:
+        flag = self._current_flag()
+        if flag is not None:
+            self.expand_requested.emit(flag)
+
+    def _go_to_flag(self) -> None:
+        flag = self._current_flag()
+        if flag is not None:
+            self.jump_requested.emit(flag.text)
 
     def _ask_note(self):
         note = self._current_note()
@@ -411,15 +723,31 @@ class CompanionPanel(QWidget):
     def refresh_memory(self) -> None:
         self.memory_list.clear()
         entries = list(getattr(self.project, "story_memory", None) or [])
-        entries.sort(key=lambda e: (e.status != "suggested", not e.pinned))
+        here = self._memory_in_chapter(entries)
+        entries.sort(key=lambda e: (e.status != "suggested", e.id not in here, not e.pinned))
         self._memory_ids = []
         for e in entries:
             mark = "📌 " if e.pinned else ("💡 suggested: " if e.status == "suggested" else "")
-            item = QListWidgetItem(mark + e.text)
+            item = QListWidgetItem(mark + e.text + (" · this chapter" if e.id in here else ""))
             if e.status == "suggested":
                 item.setForeground(Qt.GlobalColor.darkYellow)
             self.memory_list.addItem(item)
             self._memory_ids.append(e.id)
+
+    def _memory_in_chapter(self, entries) -> set:
+        """Entries that share a name or two words with this chapter."""
+        if not self.chapter_text.strip():
+            return set()
+        from src.ai.story_memory import _words
+        words = _words(self.chapter_text)
+        names = {w.lower() for c in getattr(self.project, "characters", None) or []
+                 for w in (c.name or "").split() if len(w) > 2}
+        out = set()
+        for e in entries:
+            shared = _words(e.text) & words
+            if len(shared) >= 2 or shared & names:
+                out.add(e.id)
+        return out
 
     def _current_memory(self):
         row = self.memory_list.currentRow()
@@ -460,10 +788,34 @@ class CompanionPanel(QWidget):
             self._changed()
 
 
+def _short_text(text: str, n: int) -> str:
+    text = " ".join((text or "").split())
+    return text if len(text) <= n else text[:n - 1] + "…"
+
+
 # ── Banner + controller (wired into ChapterEditor) ───────────────────
 
 from PyQt6.QtCore import QObject, QTimer
-from PyQt6.QtWidgets import QFrame
+from PyQt6.QtWidgets import QFrame, QToolButton
+
+
+def close_button(tooltip: str, color: str = "#4b5563", hover: str = "#e5e7eb",
+                 label: str = "✕") -> QToolButton:
+    """A small, always-visible ✕. A QToolButton, so the app-wide
+    QPushButton style (padding, blue fill) can't squeeze the glyph out."""
+    btn = QToolButton()
+    btn.setText(label)
+    btn.setToolTip(tooltip)
+    btn.setAutoRaise(True)
+    btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    if label == "✕":
+        btn.setFixedSize(22, 22)
+    else:
+        btn.setFixedHeight(22)
+    btn.setStyleSheet(f"QToolButton {{ border: none; background: transparent; color: {color};"
+                      f" font-size: 12px; font-weight: bold; padding: 0 4px; }}"
+                      f"QToolButton:hover {{ background: {hover}; border-radius: 3px; }}")
+    return btn
 
 
 class CompanionBanner(QFrame):
@@ -480,16 +832,20 @@ class CompanionBanner(QFrame):
         self.label.setStyleSheet("color: #3730a3; font-size: 11px;")
         self.label.setWordWrap(False)
         row.addWidget(self.label, 1)
-        more = QPushButton("Details")
-        more.setStyleSheet("font-size: 10px; padding: 1px 6px;")
-        more.clicked.connect(self.open_requested.emit)
-        row.addWidget(more)
-        close = QPushButton("×")
-        close.setFixedWidth(22)
-        close.setStyleSheet("font-size: 12px; border: none;")
-        close.clicked.connect(self.hide)
-        row.addWidget(close)
+        self.details_btn = QPushButton("Details")
+        self.details_btn.setToolTip("Show or hide the Companion tab in the side panel")
+        self.details_btn.setStyleSheet("QPushButton { font-size: 10px; padding: 1px 8px;"
+                                       " min-height: 18px; }")
+        self.details_btn.clicked.connect(self.open_requested.emit)
+        row.addWidget(self.details_btn)
+        self.close_btn = close_button("Hide this line (it comes back next time you open "
+                                      "the chapter)", "#3730a3", "#c7d2fe")
+        self.close_btn.clicked.connect(self.hide)
+        row.addWidget(self.close_btn)
         self.hide()
+
+    def set_details_open(self, is_open: bool) -> None:
+        self.details_btn.setText("Hide details" if is_open else "Details")
 
     def show_text(self, text: str, tooltip: str = "") -> None:
         self.label.setText(text)
@@ -532,6 +888,11 @@ class CompanionController(QObject):
         self.panel.reader_pass_requested.connect(self.run_reader_pass)
         self.panel.fixes_requested.connect(self.find_three_fixes)
         self.panel.ask_requested.connect(self.ask_about_note)
+        self.panel.note_fix_requested.connect(self.suggest_note_fix)
+        self.panel.fix_accepted.connect(self.accept_fix)
+        self.panel.fix_more_requested.connect(self.more_fix_options)
+        self.panel.overdescribed_requested.connect(self.check_overdescribed)
+        self.panel.expand_requested.connect(self.expand_flag)
         self.panel.style_sheet_changed.connect(self._style_sheet_edited)
         chapter_editor.editor.style_sheet_changed.connect(self._style_sheet_learned)
         self.panel.memory_changed.connect(chapter_editor.content_changed.emit)
@@ -568,8 +929,11 @@ class CompanionController(QObject):
         self._seen = {i: hash(p) for i, p in enumerate(text.split("\n"))}
         self._notes = {}
         self._voice = self._profiles = None
+        self.panel.set_chapter(self.chapter, text)
         self.panel.set_project(self.project)
         self.panel.set_notes([], "Notes appear here when you finish a paragraph.")
+        self.panel.set_fixes(None, "")           # nothing searched yet
+        self._quick_overdescribed(text)
         if self.project is None or self.chapter is None:
             return
         before = cs.mark_opened(self.project, self.chapter.id)
@@ -591,7 +955,11 @@ class CompanionController(QObject):
                           self._word_count(), sentences[-1] if sentences else block)
 
     def open_panel(self) -> None:
-        self.ce._show_right_panel(self.panel)
+        """Details: show the Companion tab, or hide the panel if it's showing."""
+        if self.ce.side_panel_open() and self.ce.right_panel.currentWidget() is self.panel:
+            self.ce._hide_right_panel()
+        else:
+            self.ce._show_right_panel(self.panel)
 
     # ── model helpers ────────────────────────────────────────────────
 
@@ -631,6 +999,7 @@ class CompanionController(QObject):
         if self.project is None or self.chapter is None:
             return
         text = self.ce.editor.toPlainText()
+        self.panel.set_chapter(self.chapter, text)
         paragraphs = text.split("\n")
         current = self.ce.editor.textCursor().blockNumber()
         changed = [i for i, p in enumerate(paragraphs)
@@ -756,28 +1125,185 @@ class CompanionController(QObject):
 
     # ── Today's three fixes, 💬 Ask from a note, style sheet ────────────
 
+    def _voice_for(self, text: str):
+        if self._voice is None and self.project is not None:
+            from src.ai.writer_voice import project_voice
+            self._voice = project_voice(self.project, self.chapter, text)
+        return self._voice
+
+    def _taste(self, text: str) -> str:
+        """Rewrites the writer rated in Suggestions and Rephrase."""
+        try:
+            from src.ai.rewrite_quality import examples_prompt
+            path = str(getattr(self.project, "project_path", "") or "")
+            return examples_prompt(text[:2000], path)
+        except Exception:
+            return ""
+
     def find_three_fixes(self) -> None:
-        from src.ai import companion
+        """The three fixes that matter most, each with suggested rewrites:
+        the model (local, server or cloud) picks them with the writer's
+        taste and voice and writes the rewrites like Suggestions does;
+        without one, the heaviest flags with the editor's own fixes."""
+        from src.ai import companion, overdescription as od
         hl = self.ce.editor.writing_highlighter
         if hl.phase == "drafting":
             self.ce.editor._apply_phase("revising")       # asking for fixes = revising
         else:
             hl.rehighlight()
-        candidates = companion.fix_candidates(hl, self.ce.editor.document(), self.panel.notes)
+        text = self.ce.editor.toPlainText()
+        flags = self.panel.flags or od.scan(text)
+        candidates = companion.fix_candidates(hl, self.ce.editor.document(), self.panel.notes,
+                                              flags, text)
         if not candidates:
             self.panel.set_fixes([])
             return
         project, chapter = self.project, self.chapter
-        context = companion.judge_context(project, chapter, self.ce.editor.toPlainText()[:4000]) \
+        context = companion.judge_context(project, chapter, text[:4000]) \
             if project is not None else ""
+        voice = self._voice_for(text)
+        if voice is not None and hasattr(voice, "to_critique_prompt"):
+            context = (context + "\n\n" + voice.to_critique_prompt()).strip()
+        taste = self._taste(text)
         self.panel.set_fixes_busy()
 
         def work():
             llm = self._llm()
-            return (companion.three_fixes(llm, candidates, context) if llm
-                    else companion.three_fixes_quick(candidates))
+            if llm is None:
+                return companion.three_fixes_quick(candidates), False
+            return companion.three_fixes(llm, candidates, context, taste), True
 
-        run_background(work, lambda fixes, _e: self.panel.set_fixes(fixes))
+        def done(result, error):
+            if not result:
+                self.panel.set_fixes([], error or "")
+                return
+            fixes, used_model = result
+            self.panel.set_fixes(fixes, "Writing suggested fixes in your voice…"
+                                 if used_model and fixes else
+                                 "" if used_model else
+                                 "Quick picks (no AI) — set up a local, server or cloud model "
+                                 "for suggested rewrites.")
+            if used_model and fixes:
+                self._suggest_fix_rewrites(fixes, text)
+
+        run_background(work, done)
+
+    def _suggest_fix_rewrites(self, fixes, text: str) -> None:
+        from src.ai import companion
+        project, chapter = self.project, self.chapter
+        voice = self._voice
+
+        def work():
+            llm = self._llm()
+            if llm is None:
+                return {}
+            from src.ai.chapter_analysis_agent import is_local_llm
+            compact = is_local_llm(llm)
+            out = {}
+            for i, fix in enumerate(fixes):
+                try:
+                    out[i] = companion.suggest_fix_options(llm, project, chapter, text, fix,
+                                                           voice, compact)
+                except Exception as e:
+                    print(f"[companion] fix rewrite failed: {e}")
+            return out
+
+        def done(options, error):
+            for i, found in (options or {}).items():
+                if found:
+                    fixes[i].options = found        # by object: accepted fixes may be gone
+            if not any(f is p for f in fixes for p in self.panel.fixes):
+                return                    # a newer search replaced these
+            got = sum(1 for o in (options or {}).values() if any(x.by_ai for x in o))
+            self.panel.set_fix_options({}, (
+                "Suggested fixes are ready — pick one, edit it if you like, then Accept."
+                if got else (error or "No suggested rewrites — try 💡 More options…")))
+
+        run_background(work, done)
+
+    def _span_for(self, paragraph: int, excerpt: str, sentence: str = ""):
+        from src.ai import companion
+        return companion.locate_sentence(self.ce.editor.toPlainText(), paragraph, excerpt,
+                                         sentence)
+
+    def accept_fix(self, fix, replacement: str) -> None:
+        span = self._span_for(fix.paragraph, fix.excerpt, fix.sentence)
+        if span is None:
+            self.panel.fixes_status.setText("That sentence has changed — find the fixes again.")
+            return
+        text = self.ce.editor.toPlainText()
+        original = text[span[0]:span[1]]
+        if " ".join(original.split()) == " ".join(replacement.split()):
+            self.panel.fixes_status.setText("No change — edit the sentence above or pick a "
+                                            "suggestion first.")
+            return
+        if not self.ce._replace_span(text, span[0], span[1], replacement, "Companion"):
+            return
+        from src.ai.rewrite_quality import log_rated_rewrite
+        log_rated_rewrite(original, replacement, "good", accepted=True,
+                          project_path=str(getattr(self.project, "project_path", "") or ""),
+                          style="fix")
+        self.panel.remove_fix(fix, "Fixed. Your choice teaches future suggestions.")
+
+    def more_fix_options(self, fix) -> None:
+        span = self._span_for(fix.paragraph, fix.excerpt, fix.sentence)
+        if span is None:
+            self.panel.fixes_status.setText("That sentence has changed — find the fixes again.")
+            return
+        if self.ce.suggest_for_span(span[0], span[1], focus=fix.text):
+            self.panel.remove_fix(fix, "Fixed with Suggestions.")
+
+    def suggest_note_fix(self, note) -> None:
+        span = self._span_for(note.paragraph, note.excerpt)
+        if span is None:
+            self.panel.notes_status.setText("That text has changed since the note.")
+            return
+        if self.ce.suggest_for_span(span[0], span[1], focus=note.text):
+            self._on_note_dismissed(note)
+
+    # ── overly descriptive ───────────────────────────────────────────
+
+    def _quick_overdescribed(self, text: str) -> None:
+        from src.ai import overdescription as od
+        review = od.review_chapter(text, None)
+        self.panel.set_overdescribed(
+            review.flags, "Word scan (no AI)." + (" Check this chapter to have the model "
+                                                  "judge them and look for subtler ones."
+                                                  if _companion_ai_enabled() else "")
+            if review.flags else "")
+
+    def check_overdescribed(self) -> None:
+        from src.ai import overdescription as od
+        text = self.ce.editor.toPlainText()
+        voice = self._voice_for(text)
+        self.panel.set_overdescribed([], "Checking…", busy=True)
+
+        def work():
+            llm = self._llm()
+            return od.review_chapter(text, llm, voice)
+
+        def done(review, error):
+            if review is None:
+                self.panel.set_overdescribed([], error or "Couldn't check the chapter.")
+                return
+            note = ("Judged by the AI" + (f"; {len(review.cleared)} word-scan hits were fine."
+                                         if review.cleared else ".")) if review.used_ai else \
+                "Word scan (no AI) — set up a local, server or cloud model for judgement."
+            self.panel.set_overdescribed(review.flags, note if review.flags or review.used_ai
+                                         else "")
+
+        run_background(work, done)
+
+    def expand_flag(self, flag) -> None:
+        text = self.ce.editor.toPlainText()
+        hits = [m.start() for m in re.finditer(re.escape(flag.text), text)] if flag.text else []
+        if not hits:
+            self.panel.over_status.setText("That statement has changed — check again.")
+            return
+        start = min(hits, key=lambda i: abs(i - flag.start))
+        if self.ce.expand_statement(start, start + len(flag.text)):
+            self.panel.set_overdescribed([f for f in self.panel.flags if f is not flag],
+                                         "Expanded.")
 
     def ask_about_note(self, note) -> None:
         text = self.ce.editor.toPlainText()

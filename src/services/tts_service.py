@@ -183,7 +183,7 @@ def enhance_text_for_speech(text: str, genre_key: str = "") -> str:
                 "claude": LLMProvider.CLAUDE,
                 "chatgpt": LLMProvider.CHATGPT,
                 "openai": LLMProvider.CHATGPT,
-                "gemini": LLMProvider.GEMINI,
+                "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
             }
             provider = provider_map.get(default_provider, LLMProvider.CLAUDE)
             llm = LLMClient(

@@ -515,7 +515,7 @@ class _ExportWorker(QThread):
                     "claude": LLMProvider.CLAUDE,
                     "chatgpt": LLMProvider.CHATGPT,
                     "openai": LLMProvider.CHATGPT,
-                    "gemini": LLMProvider.GEMINI
+                    "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER
                 }
                 provider = provider_map.get(default_provider, LLMProvider.CLAUDE)
                 llm = LLMClient(

@@ -9,7 +9,8 @@ from typing import Any, Optional, Set
 from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QPushButton, QSplitter, QTabWidget, QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
+    QFrame, QPushButton, QScrollArea, QSplitter, QTabWidget, QTextBrowser, QTextEdit,
+    QVBoxLayout, QWidget,
 )
 from PyQt6.QtCore import Qt
 
@@ -118,7 +119,8 @@ class PassageCritiqueDialog(QDialog):
     holds the chosen (possibly edited) rewrite after Accept."""
 
     def __init__(self, text: str, start: int, end: int, project=None, chapter=None,
-                 parent=None, selection: tuple = None, worker_factory=SuggestionWorker):
+                 parent=None, selection: tuple = None, worker_factory=SuggestionWorker,
+                 focus: str = ""):
         super().__init__(parent)
         self.text, self.start, self.end = text, start, end
         self.turns: list = []               # the conversation (rewrite_chat.ChatTurn)
@@ -137,14 +139,36 @@ class PassageCritiqueDialog(QDialog):
         self._over_llm = self._over_ctx = self._over_voice = None
         self._result_status = ""
         self.setWindowTitle("Suggestions")
-        self.resize(900, 720)
         self._build_ui(selection)
+        self._fit_to_screen(900, 760)
+        if focus:
+            self.focus_edit.setText(focus)   # e.g. the Companion's fix or note
         self._generate()
 
     # ── UI ───────────────────────────────────────────────────────────
 
+    def _fit_to_screen(self, width: int, height: int):
+        screen = self.screen() if hasattr(self, "screen") else None
+        if screen is not None:
+            avail = screen.availableGeometry()
+            width = min(width, avail.width() - 40)
+            height = min(height, avail.height() - 60)
+        self.resize(max(width, 480), max(height, 360))
+
     def _build_ui(self, selection):
-        layout = QVBoxLayout(self)
+        # Everything but the Close / Use buttons scrolls, so a small window
+        # (or a laptop screen) never squeezes the sections to nothing.
+        outer = QVBoxLayout(self)
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        content = QWidget()
+        self.scroll_area.setWidget(content)
+        outer.addWidget(self.scroll_area, 1)
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 6, 0)
         layout.addWidget(QLabel("<b>Passage</b>"))
         self.passage_view = QTextEdit()
         self.passage_view.setReadOnly(True)
@@ -172,7 +196,7 @@ class PassageCritiqueDialog(QDialog):
         self.status_label.setStyleSheet("color: #555; font-style: italic;")
         layout.addWidget(self.status_label)
 
-        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter = self.main_splitter = QSplitter(Qt.Orientation.Vertical)
         self.discussion = QTextBrowser()
         self.discussion.setOpenExternalLinks(False)
         from src.ui.overdescription_panel import OverdescriptionPanel
@@ -187,6 +211,7 @@ class PassageCritiqueDialog(QDialog):
             1, "Statements that tell instead of show (words like “too” and “almost” are "
                "clues), with ways to expand them in your voice. Accepted expansions build "
                "the version at the top of the suggestions.")
+        self.top_tabs.currentChanged.connect(self._make_room_for_tab)
         splitter.addWidget(self.top_tabs)
 
         lower = QWidget()
@@ -254,6 +279,11 @@ class PassageCritiqueDialog(QDialog):
         self.chat.set_busy(True, "")
         chat_layout.addWidget(self.chat)
         splitter.addWidget(chat_box)
+        # Each part keeps a usable height; below that the dialog scrolls.
+        self.top_tabs.setMinimumHeight(200)
+        lower.setMinimumHeight(280)
+        chat_box.setMinimumHeight(180)
+        splitter.setChildrenCollapsible(False)
         splitter.setSizes([240, 300, 200])
         layout.addWidget(splitter, 1)
 
@@ -267,7 +297,20 @@ class PassageCritiqueDialog(QDialog):
         self.use_btn.setEnabled(False)
         self.use_btn.clicked.connect(self._use_selected)
         buttons.addWidget(self.use_btn)
-        layout.addLayout(buttons)
+        outer.addLayout(buttons)
+
+    def _make_room_for_tab(self, index: int):
+        """The Overly descriptive tab holds a list, a statement, ways to
+        expand it and an editor — give it the room it needs while it's open
+        (the window scrolls rather than squeezing it)."""
+        over = self.top_tabs.widget(index) is self.over_panel
+        want = (self.over_panel.minimumHeight() + self.top_tabs.tabBar().sizeHint().height()
+                + 8) if over else 200
+        self.top_tabs.setMinimumHeight(want)
+        sizes = self.main_splitter.sizes()
+        if over and sizes and sizes[0] < want:
+            sizes[0] = want
+            self.main_splitter.setSizes(sizes)
 
     def _expansion_note(self, selection) -> str:
         if not selection:

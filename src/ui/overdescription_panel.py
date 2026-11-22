@@ -19,7 +19,7 @@ from PyQt6.QtCore import QThread, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QTextCharFormat, QTextCursor
 from PyQt6.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QPushButton,
-    QSplitter, QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
+    QFrame, QScrollArea, QSplitter, QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from src.ai import overdescription as od
@@ -61,6 +61,12 @@ def highlight_flags(edit: QTextEdit, text: str, flags: List[od.Flag], offset: in
     edit.setExtraSelections(selections)
 
 
+def _heading(text: str) -> QLabel:
+    label = QLabel(f"<b>{text}</b>")
+    label.setStyleSheet("color: #333;")
+    return label
+
+
 class OverdescriptionPanel(QWidget):
     accepted = pyqtSignal(int, str)         # flag index, replacement for that statement
     more_requested = pyqtSignal(int, str)   # flag index, the writer's direction
@@ -82,16 +88,26 @@ class OverdescriptionPanel(QWidget):
         self.status.setStyleSheet("color: #555; font-style: italic;")
         layout.addWidget(self.status)
         split = QSplitter(Qt.Orientation.Horizontal)
+        split.setChildrenCollapsible(False)
         self.flag_list = QListWidget()
         self.flag_list.setMinimumWidth(200)
+        self.flag_list.setWordWrap(True)
+        self.flag_list.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self.flag_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.flag_list.setSpacing(2)
         self.flag_list.currentRowChanged.connect(self._show_flag)
         split.addWidget(self.flag_list)
 
+        # The detail side scrolls on its own, so every part keeps a readable
+        # height even when the tab is short.
         right = QWidget()
         rl = QVBoxLayout(right)
-        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setContentsMargins(4, 0, 8, 0)
+        rl.setSpacing(6)
+        rl.addWidget(_heading("The statement"))
         self.statement = QTextBrowser()
-        self.statement.setMaximumHeight(70)
+        self.statement.setMinimumHeight(48)
+        self.statement.setMaximumHeight(64)
         rl.addWidget(self.statement)
         self.reason = QLabel("")
         self.reason.setWordWrap(True)
@@ -101,19 +117,28 @@ class OverdescriptionPanel(QWidget):
         self.hints.setWordWrap(True)
         self.hints.setStyleSheet("color: #555; font-size: 11px;")
         rl.addWidget(self.hints)
-        rl.addWidget(QLabel("<b>Ways to expand it</b>"))
+        rl.addSpacing(4)
+        rl.addWidget(_heading("Ways to expand it"))
         self.expansion_list = QListWidget()
-        self.expansion_list.setMaximumHeight(110)
+        self.expansion_list.setWordWrap(True)
+        self.expansion_list.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self.expansion_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.expansion_list.setSpacing(2)
+        self.expansion_list.setMinimumHeight(110)
+        self.expansion_list.setMaximumHeight(170)
         self.expansion_list.currentRowChanged.connect(self._show_expansion)
         rl.addWidget(self.expansion_list)
         self.notes = QLabel("")
         self.notes.setWordWrap(True)
         self.notes.setStyleSheet("color: #b45309; font-size: 11px;")
         rl.addWidget(self.notes)
+        rl.addSpacing(4)
+        rl.addWidget(_heading("Your version (edit before accepting)"))
         self.preview = QTextEdit()
         self.preview.setPlaceholderText("Pick a way to expand it — or write your own — then "
                                         "Accept.")
-        self.preview.setMaximumHeight(110)
+        self.preview.setMinimumHeight(80)
+        self.preview.setMaximumHeight(140)
         rl.addWidget(self.preview)
         row = QHBoxLayout()
         self.accept_btn = QPushButton("✓ Accept")
@@ -124,17 +149,30 @@ class OverdescriptionPanel(QWidget):
         self.revert_btn.clicked.connect(self._revert)
         row.addWidget(self.revert_btn)
         row.addStretch()
+        rl.addLayout(row)
+        more_row = QHBoxLayout()
         self.more_edit = QLineEdit()
         self.more_edit.setPlaceholderText("direction (optional), e.g. more sound, less sight")
         self.more_edit.returnPressed.connect(self._more)
-        row.addWidget(self.more_edit, 1)
+        more_row.addWidget(self.more_edit, 1)
         self.more_btn = QPushButton("More ideas")
         self.more_btn.clicked.connect(self._more)
-        row.addWidget(self.more_btn)
-        rl.addLayout(row)
-        split.addWidget(right)
+        more_row.addWidget(self.more_btn)
+        rl.addLayout(more_row)
+        rl.addStretch(1)
+        right_scroll = QScrollArea()
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        right_scroll.setWidget(right)
+        split.addWidget(right_scroll)
+        split.setStretchFactor(0, 0)
+        split.setStretchFactor(1, 1)
         split.setSizes([240, 560])
         layout.addWidget(split, 1)
+        # Enough room to read a statement and its expansions without
+        # scrolling; the Suggestions window scrolls if it's smaller.
+        self.setMinimumHeight(360)
         self._enable(False)
 
     def _enable(self, on: bool):
@@ -174,7 +212,7 @@ class OverdescriptionPanel(QWidget):
         for i, f in enumerate(self.review.flags):
             mark = "✓ " if i in self.applied else ""
             src = {"ai": " · AI", "both": " · AI"}.get(f.source, "")
-            item = QListWidgetItem(f"{mark}{_short(f.text, 60)}{src}")
+            item = QListWidgetItem(f"{mark}{_short(f.text, 140)}{src}")
             item.setToolTip(f.reason or f.text)
             self.flag_list.addItem(item)
         if self.review.flags:
@@ -211,7 +249,7 @@ class OverdescriptionPanel(QWidget):
             fit = f" · voice {x.voice_fit:.0%}" if x.voice_fit is not None else ""
             warn = " ⚠" if x.notes else ""
             item = QListWidgetItem(f"{tag}{'' if x.by_ai else ' (no AI)'}{fit}{warn}: "
-                                   f"{_short(x.text, 70)}")
+                                   f"{_short(x.text, 240)}")
             item.setToolTip(x.why or x.text)
             self.expansion_list.addItem(item)
         self._enable(True)

@@ -2495,7 +2495,7 @@ Cap at TWO ``<create_*>`` blocks per reply. Talk through your reasoning in prose
                     "claude": LLMProvider.CLAUDE,
                     "chatgpt": LLMProvider.CHATGPT,
                     "openai": LLMProvider.CHATGPT,
-                    "gemini": LLMProvider.GEMINI
+                    "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER
                 }
                 provider = provider_map.get(default_provider, LLMProvider.CLAUDE)
 
@@ -2745,7 +2745,7 @@ class LongFormWriterWorker(QThread):
             "claude": LLMProvider.CLAUDE,
             "chatgpt": LLMProvider.CHATGPT,
             "openai": LLMProvider.CHATGPT,
-            "gemini": LLMProvider.GEMINI,
+            "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
         }
         return LLMClient(
             provider=provider_map.get(default_provider, LLMProvider.CLAUDE))
@@ -2866,7 +2866,7 @@ class _InsertionEditWorker(QThread):
             "claude": LLMProvider.CLAUDE,
             "chatgpt": LLMProvider.CHATGPT,
             "openai": LLMProvider.CHATGPT,
-            "gemini": LLMProvider.GEMINI,
+            "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
         }
         return LLMClient(
             provider=provider_map.get(
@@ -7402,7 +7402,7 @@ class MainWindow(QMainWindow):
                 "claude": LLMProvider.CLAUDE,
                 "chatgpt": LLMProvider.CHATGPT,
                 "openai": LLMProvider.CHATGPT,
-                "gemini": LLMProvider.GEMINI,
+                "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
             }
             return LLMClient(
                 provider=provider_map.get(
@@ -7439,7 +7439,7 @@ class MainWindow(QMainWindow):
                             "claude": LLMProvider.CLAUDE,
                             "chatgpt": LLMProvider.CHATGPT,
                             "openai": LLMProvider.CHATGPT,
-                            "gemini": LLMProvider.GEMINI
+                            "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER
                         }
                         provider = provider_map.get(default_provider, LLMProvider.CLAUDE)
                         llm_client = LLMClient(
@@ -7515,7 +7515,7 @@ class MainWindow(QMainWindow):
                             return ""
                         provider_enum = {
                             "claude": LLMProvider.CLAUDE, "chatgpt": LLMProvider.CHATGPT,
-                            "openai": LLMProvider.CHATGPT, "gemini": LLMProvider.GEMINI,
+                            "openai": LLMProvider.CHATGPT, "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
                         }.get(provider_name, LLMProvider.CLAUDE)
                         client = LLMClient(
                             provider=provider_enum, api_key=api_key,
@@ -8222,7 +8222,7 @@ class MainWindow(QMainWindow):
                     return ""
                 provider_enum = {
                     "claude": LLMProvider.CLAUDE, "chatgpt": LLMProvider.CHATGPT,
-                    "openai": LLMProvider.CHATGPT, "gemini": LLMProvider.GEMINI,
+                    "openai": LLMProvider.CHATGPT, "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
                 }.get(provider_name, LLMProvider.CLAUDE)
                 client = LLMClient(
                     provider=provider_enum, api_key=api_key,

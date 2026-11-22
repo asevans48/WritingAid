@@ -149,6 +149,7 @@ class LLMProvider(Enum):
     HUGGINGFACE = "huggingface"
     HUGGINGFACE_LOCAL = "huggingface_local"  # Local model via transformers
     MLX_LOCAL = "mlx_local"  # Local model via MLX (Apple Silicon)
+    SERVER = "server"  # Your own OpenAI-compatible model server (see model_server.py)
 
 
 class HuggingFaceConfig:
@@ -223,6 +224,15 @@ class LLMClient:
         elif provider == LLMProvider.GEMINI:
             from google import genai
             self.client = genai.Client(api_key=api_key)
+        elif provider == LLMProvider.SERVER:
+            from src.ai import model_server
+            conf = model_server.settings()
+            self.server_url = model_server.normalize_url(conf["url"])
+            if not self.server_url:
+                raise ValueError("No model server address is set (Settings › Model "
+                                 "Configuration › Model server).")
+            if not api_key or api_key == model_server.NO_KEY:
+                self.api_key = conf["api_key"] or model_server.NO_KEY
         elif provider == LLMProvider.HUGGINGFACE:
             self._init_huggingface_api()
         elif provider == LLMProvider.HUGGINGFACE_LOCAL:
@@ -557,6 +567,8 @@ class LLMClient:
                 return self._generate_huggingface_local(p, system_prompt, max_tokens, temperature, hist)
             elif self.provider == LLMProvider.MLX_LOCAL:
                 return self._generate_mlx_local(p, system_prompt, max_tokens, temperature, hist)
+            elif self.provider == LLMProvider.SERVER:
+                return self._generate_server(p, system_prompt, max_tokens, temperature, hist)
             return f"Error: Unknown provider {self.provider}"
 
         try:
@@ -860,6 +872,26 @@ class LLMClient:
             temperature=temperature
         )
         return response.choices[0].message.content
+
+    def _generate_server(
+        self,
+        prompt: str,
+        system_prompt: Optional[str],
+        max_tokens: int,
+        temperature: float,
+        history: List[Dict[str, str]] = None
+    ) -> str:
+        """Generate text on the user's own OpenAI-compatible server."""
+        from src.ai import model_server
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        if history:
+            messages.extend(history)
+        messages.append({"role": "user", "content": prompt})
+        return model_server.chat(self.server_url, self.model, messages,
+                                 api_key=self.api_key, max_tokens=max_tokens,
+                                 temperature=temperature)
 
     def _generate_gemini(
         self,

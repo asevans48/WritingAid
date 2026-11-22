@@ -32,6 +32,12 @@ class AIConfig:
         "openai_model": "gpt-4-turbo-preview",
         "gemini_model": "gemini-pro",
 
+        # Your own model server (OpenAI-compatible: llama.cpp, vLLM,
+        # Ollama, LM Studio…). Pick it with default_llm = "server".
+        "server_url": "",
+        "server_model": "",
+        "server_api_key": "",
+
         # Generation Parameters
         "temperature": 0.7,
         "max_tokens": 2000,
@@ -170,6 +176,13 @@ class AIConfig:
             "openai": "chatgpt_api_key",
             "gemini": "gemini_api_key"
         }
+        if provider.lower() == "server":
+            # Self-hosted servers rarely need a key; a stand-in lets callers
+            # that check for one go ahead whenever an address is set.
+            from src.ai.model_server import NO_KEY
+            if not (self.settings.get("server_url", "") or "").strip():
+                return ""
+            return self.settings.get("server_api_key", "") or NO_KEY
         key_name = key_map.get(provider.lower(), "")
         return self.settings.get(key_name, "")
 
@@ -186,7 +199,8 @@ class AIConfig:
             "claude": "claude_model",
             "chatgpt": "openai_model",
             "openai": "openai_model",
-            "gemini": "gemini_model"
+            "gemini": "gemini_model",
+            "server": "server_model",
         }
         model_key = model_map.get(provider.lower(), "")
         return self.settings.get(model_key, "")

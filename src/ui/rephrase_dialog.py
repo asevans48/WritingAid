@@ -813,7 +813,7 @@ class RephraseDialog(QDialog):
                     "claude": LLMProvider.CLAUDE,
                     "chatgpt": LLMProvider.CHATGPT,
                     "openai": LLMProvider.CHATGPT,
-                    "gemini": LLMProvider.GEMINI
+                    "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER
                 }.get(provider.lower(), LLMProvider.CLAUDE)
 
                 llm = LLMClient(
@@ -1796,7 +1796,7 @@ class RephraseDialog(QDialog):
                     if api_key:
                         provider_enum = {
                             "claude": LLMProvider.CLAUDE, "chatgpt": LLMProvider.CHATGPT,
-                            "openai": LLMProvider.CHATGPT, "gemini": LLMProvider.GEMINI,
+                            "openai": LLMProvider.CHATGPT, "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
                         }.get(provider_name, LLMProvider.CLAUDE)
                         llm = LLMClient(
                             provider=provider_enum, api_key=api_key,
@@ -2096,7 +2096,7 @@ class RephraseDialog(QDialog):
             "claude": LLMProvider.CLAUDE,
             "chatgpt": LLMProvider.CHATGPT,
             "openai": LLMProvider.CHATGPT,
-            "gemini": LLMProvider.GEMINI,
+            "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
         }.get(provider_name, LLMProvider.CLAUDE)
         return LLMClient(
             provider=provider_enum, api_key=api_key,

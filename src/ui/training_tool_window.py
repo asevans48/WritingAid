@@ -6970,7 +6970,7 @@ class TrainingToolWindow(QMainWindow):
                     "claude": LLMProvider.CLAUDE,
                     "chatgpt": LLMProvider.CHATGPT,
                     "openai": LLMProvider.CHATGPT,
-                    "gemini": LLMProvider.GEMINI,
+                    "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
                 }
                 provider_name = s.get("default_llm", "claude")
                 api_key = (
@@ -14221,7 +14221,7 @@ class _PacingPairsDialog(QDialog):
                     "claude": LLMProvider.CLAUDE,
                     "chatgpt": LLMProvider.CHATGPT,
                     "openai": LLMProvider.CHATGPT,
-                    "gemini": LLMProvider.GEMINI,
+                    "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
                 }
                 provider_name = s.get("default_llm", "claude")
                 api_key = (

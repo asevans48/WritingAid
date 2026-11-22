@@ -715,6 +715,69 @@ class SettingsDialog(QDialog):
         scroll_area.setWidget(widget)
         return scroll_area
 
+    def _create_model_server_group(self) -> QGroupBox:
+        """Your own OpenAI-compatible server (llama.cpp, vLLM, Ollama, LM
+        Studio…), used like any other model."""
+        group = QGroupBox("Model server")
+        form = QFormLayout()
+        intro = QLabel("A machine running a model server (llama.cpp, vLLM, Ollama, LM Studio "
+                       "or anything OpenAI-compatible). Choose <b>Server</b> as the Primary "
+                       "AI to use it everywhere, or pick “My model server” for single tasks "
+                       "under Per-Task Models.")
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color: #6b7280; font-size: 11px;")
+        form.addRow(intro)
+        self.server_url_edit = QLineEdit(self.settings.get("server_url", ""))
+        self.server_url_edit.setPlaceholderText("e.g. http://192.168.1.50:8080/v1  or  "
+                                                "minipc.local:11434")
+        form.addRow("Address:", self.server_url_edit)
+        self.server_model_combo = QComboBox()
+        self.server_model_combo.setEditable(True)
+        self.server_model_combo.setCurrentText(self.settings.get("server_model", ""))
+        self.server_model_combo.lineEdit().setPlaceholderText(
+            "model name — Test fills this list (blank = the server's default)")
+        form.addRow("Model:", self.server_model_combo)
+        self.server_key_edit = QLineEdit(self.settings.get("server_api_key", ""))
+        self.server_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.server_key_edit.setPlaceholderText("optional — only if the server asks for one")
+        form.addRow("API key:", self.server_key_edit)
+        row = QHBoxLayout()
+        self.server_test_btn = QPushButton("Test connection")
+        self.server_test_btn.clicked.connect(self._test_model_server)
+        row.addWidget(self.server_test_btn)
+        self.server_status = QLabel("")
+        self.server_status.setWordWrap(True)
+        self.server_status.setStyleSheet("font-size: 11px;")
+        row.addWidget(self.server_status, 1)
+        form.addRow(row)
+        group.setLayout(form)
+        return group
+
+    def _test_model_server(self):
+        from src.ui.companion_panel import run_background
+        from src.ai import model_server
+        url = self.server_url_edit.text().strip()
+        key = self.server_key_edit.text().strip()
+        model = self.server_model_combo.currentText().strip()
+        self.server_test_btn.setEnabled(False)
+        self.server_status.setStyleSheet("font-size: 11px; color: #6b7280;")
+        self.server_status.setText("Connecting… (a large model can take a minute to answer)")
+
+        def done(result, error):
+            self.server_test_btn.setEnabled(True)
+            ok, message, models = result if result else (False, error, [])
+            self.server_status.setStyleSheet(
+                f"font-size: 11px; color: {'#15803d' if ok else '#b91c1c'};")
+            self.server_status.setText(("✓ " if ok else "✗ ") + message)
+            if models:
+                current = self.server_model_combo.currentText()
+                self.server_model_combo.clear()
+                self.server_model_combo.addItems(models)
+                self.server_model_combo.setCurrentText(current or models[0])
+
+        self._server_test_task = run_background(
+            lambda: model_server.test_connection(url, key, model), done)
+
     def _create_model_config_tab(self) -> QWidget:
         """Create model configuration tab."""
         # Create scroll area wrapper
@@ -732,14 +795,20 @@ class SettingsDialog(QDialog):
         default_layout = QFormLayout()
 
         self.default_llm_combo = QComboBox()
-        self.default_llm_combo.addItems(["Claude", "ChatGPT", "Gemini"])
+        self.default_llm_combo.addItems(["Claude", "ChatGPT", "Gemini", "Server"])
+        self.default_llm_combo.setItemData(
+            3, "Your own model server — set its address under Model server below",
+            Qt.ItemDataRole.ToolTipRole)
         current_llm = self.settings.get("default_llm", "claude")
         if current_llm:
-            self.default_llm_combo.setCurrentText(current_llm.capitalize())
+            self.default_llm_combo.setCurrentText(
+                {"chatgpt": "ChatGPT"}.get(current_llm, current_llm.capitalize()))
         default_layout.addRow("Primary AI:", self.default_llm_combo)
 
         default_group.setLayout(default_layout)
         layout.addWidget(default_group)
+
+        layout.addWidget(self._create_model_server_group())
 
         # Model Selection
         model_group = QGroupBox("Model Selection")
@@ -3827,6 +3896,11 @@ class SettingsDialog(QDialog):
             "claude_model": self.claude_model_combo.currentText(),
             "openai_model": self.openai_model_combo.currentText(),
             "gemini_model": self.gemini_model_combo.currentText(),
+
+            # Your own model server
+            "server_url": self.server_url_edit.text().strip(),
+            "server_model": self.server_model_combo.currentText().strip(),
+            "server_api_key": self.server_key_edit.text().strip(),
 
             # Generation Parameters
             "temperature": self.temperature_slider.value() / 100,

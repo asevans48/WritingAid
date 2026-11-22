@@ -434,14 +434,71 @@ def reader_pass_quick(project: Any, chapter: Any, text: str) -> ReaderReport:
 # ── Today's three fixes ──────────────────────────────────────────────
 
 @dataclass
+class FixOption:
+    """One way to fix it: replaces ``Fix.sentence``."""
+    text: str
+    why: str = ""
+    by_ai: bool = True
+    notes: List[str] = field(default_factory=list)      # problems the rewrite checks found
+    voice_fit: Optional[float] = None
+
+
+@dataclass
 class Fix:
     text: str                 # what to change
     why: str = ""
     excerpt: str = ""         # where (for Go to)
+    paragraph: int = -1
+    sentence: str = ""        # the whole sentence a fix replaces
+    kind: str = ""            # spelling | grammar | style | note | overdescribed …
+    options: List[FixOption] = field(default_factory=list)
 
 
-def fix_candidates(highlighter: Any, document: Any, notes: Sequence[Note] = ()) -> List[Dict[str, Any]]:
-    """Every current flag and margin note, with a sentence and a weight."""
+def paragraph_offset(text: str, paragraph: int) -> int:
+    """Offset where paragraph (line) ``paragraph`` starts in ``text``."""
+    pos = 0
+    for _ in range(max(0, paragraph)):
+        nl = text.find("\n", pos)
+        if nl < 0:
+            return len(text)
+        pos = nl + 1
+    return pos
+
+
+def locate_sentence(text: str, paragraph: int, excerpt: str,
+                    sentence: str = "") -> Optional[Tuple[int, int]]:
+    """(start, end) of the whole sentence a flag or note points at, looked
+    up in paragraph ``paragraph`` first, then anywhere."""
+    from src.ai.passage_critique import expand_to_sentences
+    for probe in (sentence, excerpt):
+        probe = (probe or "").strip()
+        if not probe:
+            continue
+        lo = paragraph_offset(text, paragraph) if paragraph >= 0 else 0
+        hi = text.find("\n", lo)
+        hi = len(text) if hi < 0 else hi
+        at = text.find(probe, lo, hi) if paragraph >= 0 else -1
+        if at < 0:
+            at = text.find(probe)
+        if at >= 0:
+            return expand_to_sentences(text, at, at + len(probe))
+    return None
+
+
+def _replaced(paragraph: str, span: Tuple[int, int], sentence, replacement: str) -> str:
+    """The sentence with ``paragraph[span]`` swapped for ``replacement``
+    ("" deletes it)."""
+    s, e = span
+    out = paragraph[sentence.start:s] + replacement + paragraph[e:sentence.end]
+    out = re.sub(r"[ \t]{2,}", " ", out).replace(" ,", ",").replace(" .", ".")
+    return out.strip()
+
+
+def fix_candidates(highlighter: Any, document: Any, notes: Sequence[Note] = (),
+                   overdescribed: Sequence[Any] = (), text: str = "") -> List[Dict[str, Any]]:
+    """Every current flag, margin note and overly descriptive statement,
+    with its sentence, a weight, and a fix that needs no model when the
+    flag carries one."""
     from src.ai.word_suggest import sentence_around
     from src.ui.enhanced_text_editor import ErrorType, issue_weight
     labels = {ErrorType.SPELLING: "Spelling", ErrorType.GRAMMAR: "Grammar",
@@ -454,16 +511,41 @@ def fix_candidates(highlighter: Any, document: Any, notes: Sequence[Note] = ()) 
             continue
         paragraph = block.text()
         for e in errors:
-            sentence = sentence_around(paragraph, e.start, e.end).text
+            sent = sentence_around(paragraph, e.start, e.end)
+            fixed = ""
+            suggestions = getattr(e, "suggestions", None)
+            if suggestions:
+                span = getattr(e, "replace_span", None) or (e.start, e.end)
+                fixed = _replaced(paragraph, span, sent, suggestions[0])
+                if fixed == sent.text.strip():
+                    fixed = ""
             out.append({"label": f"{labels.get(e.error_type, 'Issue')}: “{_short(e.word, 40)}” — "
                                  f"{_short(e.reason, 90)}",
-                        "excerpt": sentence, "weight": issue_weight(e, paragraph),
-                        "paragraph": number})
+                        "excerpt": sent.text, "sentence": sent.text,
+                        "weight": issue_weight(e, paragraph), "paragraph": number,
+                        "kind": e.error_type.value, "fixed": fixed})
     for n in notes:
-        out.append({"label": n.text, "excerpt": n.excerpt, "weight": 75 if n.kind == "ai" else 60,
-                    "paragraph": n.paragraph})
+        out.append({"label": n.text, "excerpt": n.excerpt, "sentence": "",
+                    "weight": 75 if n.kind == "ai" else 60, "paragraph": n.paragraph,
+                    "kind": "note", "fixed": ""})
+    for f in overdescribed:
+        cue = ", ".join(f"“{c.phrase.strip()}”" for c in f.cues[:2])
+        trim = next((x.text for x in f.expansions if not x.by_ai), "")
+        out.append({"label": "Overly descriptive" + (f" ({cue})" if cue else "") + " — "
+                             + _short(f.reason or "tells instead of showing", 90),
+                    "excerpt": f.text, "sentence": f.text,
+                    "weight": (62 if f.verdict == "over" else 30 + 12 * min(f.score, 2.0)),
+                    "paragraph": text.count("\n", 0, f.start) if text else -1,
+                    "kind": "overdescribed", "fixed": trim})
     out.sort(key=lambda c: -c["weight"])
     return out
+
+
+def _fix_from(c: Dict[str, Any], why: str = "") -> Fix:
+    options = ([FixOption(c["fixed"], "Applies the editor's suggestion.", by_ai=False)]
+               if c.get("fixed") else [])
+    return Fix(c["label"], why, c.get("excerpt", ""), c.get("paragraph", -1),
+               c.get("sentence", ""), c.get("kind", ""), options)
 
 
 def three_fixes_quick(candidates: List[Dict[str, Any]]) -> List[Fix]:
@@ -473,7 +555,7 @@ def three_fixes_quick(candidates: List[Dict[str, Any]]) -> List[Fix]:
         if c["paragraph"] in used:
             continue
         used.add(c["paragraph"])
-        out.append(Fix(c["label"], "", c["excerpt"]))
+        out.append(_fix_from(c))
         if len(out) == 3:
             break
     return out
@@ -483,21 +565,24 @@ FIXES_SYSTEM = ("You are a trusted editor choosing what a writer should fix firs
                 "(story, character, clarity) beats polish.")
 
 
-def fixes_prompt(candidates: List[Dict[str, Any]], context: str = "") -> str:
+def fixes_prompt(candidates: List[Dict[str, Any]], context: str = "", taste: str = "") -> str:
     lines = [f"{n}. {c['label']}  «{_short(c['excerpt'], 140)}»" for n, c in enumerate(candidates, 1)]
     return ((f"{context.strip()}\n\n" if context.strip() else "")
+            + (f"THE AUTHOR'S TASTE (rewrites they rated before — weigh what they care "
+               f"about):\n{taste.strip()}\n\n" if taste.strip() else "")
             + "These are the open issues in a chapter:\n\n" + "\n".join(lines) + "\n\n"
             "Pick the THREE that would most improve the chapter for a reader if fixed today. "
             "Answer exactly three lines:\nPICK <number> — <why it matters, under 15 words>")
 
 
-def three_fixes(llm: Any, candidates: List[Dict[str, Any]], context: str = "") -> List[Fix]:
+def three_fixes(llm: Any, candidates: List[Dict[str, Any]], context: str = "",
+                taste: str = "") -> List[Fix]:
     shown = candidates[:25]
     if not shown:
         return []
     try:
-        reply = llm.generate_text(fixes_prompt(shown, context), FIXES_SYSTEM, max_tokens=160,
-                                  temperature=0.2)
+        reply = llm.generate_text(fixes_prompt(shown, context, taste), FIXES_SYSTEM,
+                                  max_tokens=160, temperature=0.2)
     except Exception as e:
         print(f"[companion] fixes failed: {e}")
         return three_fixes_quick(candidates)
@@ -508,5 +593,65 @@ def three_fixes(llm: Any, candidates: List[Dict[str, Any]], context: str = "") -
         n = int(m.group(1)) - 1
         if 0 <= n < len(shown) and n not in used:
             used.add(n)
-            out.append(Fix(shown[n]["label"], m.group(2).strip(), shown[n]["excerpt"]))
+            out.append(_fix_from(shown[n], m.group(2).strip()))
     return out[:3] or three_fixes_quick(candidates)
+
+
+# Suggested rewrites for a fix — the Suggestions engine aimed at one problem.
+FIX_REWRITE_RULES = (
+    "Rewrite ONLY the text between ⟦PASSAGE START⟧ and ⟦PASSAGE END⟧ so the problem above is "
+    "fixed. Change as little else as you can: keep the point of view, tense, voice, rhythm and "
+    "every line of dialogue with its speaker. Add no new objects, people, places or events "
+    "that aren't in the scene or the notes. Don't retell the text around it.")
+
+
+def fix_rewrite_prompt(ctx: Any, problem: str, why: str = "") -> str:
+    parts = []
+    for title, body in (("STORY MEMORY", ctx.memory), ("STYLE SHEET", ctx.style_sheet),
+                        ("CHARACTERS IN THIS PASSAGE", ctx.characters),
+                        ("THE AUTHOR'S VOICE", ctx.voice), ("THE AUTHOR'S TASTE", ctx.examples)):
+        if (body or "").strip():
+            parts.append(f"=== {title} ===\n{body.strip()}")
+    if ctx.speakers:
+        parts.append(f"=== WHO SPEAKS EACH LINE ===\n{ctx.speakers}")
+    parts.append("=== THE SCENE (the passage to fix is marked) ===\n" + ctx.scene(1200))
+    parts.append(f"=== THE PROBLEM TO FIX ===\n{problem}" + (f"\n(Why it matters: {why})"
+                                                             if why else ""))
+    from src.ai.passage_critique import _avoid_line
+    parts.append(FIX_REWRITE_RULES + "\n- " + _avoid_line() + "\n\n"
+                 "Answer in exactly this format:\n\n"
+                 "SUGGESTION 1 (fix):\n<the fixed passage>\nWHY: <one sentence>\n\n"
+                 "SUGGESTION 2 (alternative):\n<another way to fix it>\nWHY: <one sentence>")
+    return "\n\n".join(parts)
+
+
+def suggest_fix_options(llm: Any, project: Any, chapter: Any, text: str, fix: Fix,
+                        voice: Any = None, compact: bool = False) -> List[FixOption]:
+    """Rewrites of the fix's sentence that fix the problem, in the author's
+    voice, checked like Suggestions' rewrites; the no-model option (if
+    any) stays last."""
+    from src.ai import passage_critique as pc
+    from src.ai.rewrite_quality import best_first, check_rewrite, examples_prompt
+    span = locate_sentence(text, fix.paragraph, fix.excerpt, fix.sentence)
+    if span is None:
+        return fix.options
+    start, end = span
+    path = str(getattr(project, "project_path", "") or "") if project is not None else ""
+    ctx = pc.build_context(project, chapter, text, start, end, compact=compact, voice=voice,
+                           examples=examples_prompt(text[start:end], path))
+    if not fix.sentence:
+        fix.sentence = ctx.passage
+    raw = llm.generate_text(fix_rewrite_prompt(ctx, fix.text, fix.why), pc.SYSTEM_PROMPT,
+                            max_tokens=700, temperature=0.6)
+    found = [s for s in pc.parse_critique(raw).suggestions
+             if " ".join(s.text.split()) != " ".join(ctx.passage.split())]
+    if not found:
+        return fix.options
+    checks = [check_rewrite(ctx.passage, s.text, voice=voice, known_names=ctx.known_names,
+                            before=ctx.before, after=ctx.after, focus=fix.text,
+                            notes=ctx.notes_text()) for s in found]
+    order = [i for i in best_first(found, checks)]
+    good = [i for i in order if checks[i].ok] or order[:1]
+    ai = [FixOption(found[i].text, found[i].why, True, checks[i].notes, checks[i].voice_fit)
+          for i in good]
+    return ai + [o for o in fix.options if not o.by_ai]

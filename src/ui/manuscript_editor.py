@@ -574,7 +574,7 @@ class ChapterEditor(QWidget):
         self.toggle_planner_btn = QPushButton("◧ Panel")
         self.toggle_planner_btn.setCheckable(True)
         self.toggle_planner_btn.setToolTip(
-            "Show/hide the side panel — Planner, Style issues and Feedback tabs")
+            "Show/hide the side panel — Planner, Style issues, Feedback and Companion tabs")
         self.toggle_planner_btn.setStyleSheet("""
             QPushButton { background-color: #8b5cf6; color: white; font-weight: bold;
                           padding: 3px 10px; border-radius: 3px; font-size: 11px; }
@@ -593,6 +593,15 @@ class ChapterEditor(QWidget):
         self.right_panel.setVisible(False)
         self.right_panel.setMinimumWidth(300)
         self.right_panel.setStyleSheet("QTabWidget::pane { border: none; } QTabBar::tab { font-size: 11px; padding: 4px 10px; }")
+        # A ✕ on the tab bar closes the panel; ◧ Panel (bottom right) and the
+        # "Where you left off" Details button bring it back.
+        from src.ui.companion_panel import close_button
+        self.close_panel_btn = close_button(
+            "Hide the side panel — reopen it with ◧ Panel at the bottom right",
+            label="Hide ✕")
+        self.close_panel_btn.clicked.connect(self._hide_right_panel)
+        self.right_panel.setCornerWidget(self.close_panel_btn, Qt.Corner.TopRightCorner)
+        self.right_panel.currentChanged.connect(lambda _i: self._sync_panel_state())
 
         self.planner_widget = ChapterPlannerWidget()
         self.planner_widget.plan_changed.connect(self._on_plan_changed)
@@ -642,8 +651,30 @@ class ChapterEditor(QWidget):
 
         # Set initial splitter sizes (100% editor when panel hidden)
         self.main_splitter.setSizes([1000, 0])
+        # Dragging the divider all the way closes the panel properly, so
+        # ◧ Panel and Details still know to reopen it.
+        self.main_splitter.splitterMoved.connect(lambda _p, _i: self._on_splitter_moved())
 
         layout.addWidget(self.main_splitter)
+
+    def side_panel_open(self) -> bool:
+        return self.right_panel.isVisible()
+
+    def _on_splitter_moved(self) -> None:
+        """Dragged all the way shut counts as closed."""
+        sizes = self.main_splitter.sizes()
+        if self.right_panel.isVisible() and len(sizes) > 1 and sizes[1] == 0:
+            self.right_panel.setVisible(False)
+        self._sync_panel_state()
+
+    def _sync_panel_state(self) -> None:
+        is_open = self.side_panel_open()
+        self.toggle_planner_btn.setChecked(is_open)
+        companion = getattr(self, "companion", None)
+        banner = getattr(self, "companion_banner", None)
+        if banner is not None and companion is not None:
+            banner.set_details_open(is_open and self.right_panel.currentWidget()
+                                    is companion.panel)
 
     def _show_right_panel(self, tab=None):
         """Show the side panel, optionally switching to ``tab`` (a widget,
@@ -654,30 +685,30 @@ class ChapterEditor(QWidget):
         elif tab is not None:
             self.right_panel.setCurrentWidget(tab)
         self.main_splitter.setSizes([600, 400])
-        self.toggle_planner_btn.setChecked(True)
+        self._sync_panel_state()
 
     def _hide_right_panel(self):
         """Hide the right panel."""
         self.right_panel.setVisible(False)
         self.main_splitter.setSizes([1000, 0])
-        self.toggle_planner_btn.setChecked(False)
+        self._sync_panel_state()
 
     def _toggle_side_panel(self):
-        if self.right_panel.isVisible():
+        if self.side_panel_open():
             self._hide_right_panel()
         else:
             self._show_right_panel()
 
     def _toggle_planner(self):
         """Show the Planner tab (or hide the panel if it's showing)."""
-        if self.right_panel.isVisible() and self.right_panel.currentWidget() is self.planner_widget:
+        if self.side_panel_open() and self.right_panel.currentWidget() is self.planner_widget:
             self._hide_right_panel()
         else:
             self._show_right_panel(self.planner_widget)
 
     def _toggle_feedback(self):
         """Show the Feedback tab (or hide the panel if it's showing)."""
-        if self.right_panel.isVisible() and self.right_panel.currentWidget() is self.feedback_widget:
+        if self.side_panel_open() and self.right_panel.currentWidget() is self.feedback_widget:
             self._hide_right_panel()
         else:
             self._show_right_panel(self.feedback_widget)
@@ -897,7 +928,7 @@ class ChapterEditor(QWidget):
                     "claude": LLMProvider.CLAUDE,
                     "chatgpt": LLMProvider.CHATGPT,
                     "openai": LLMProvider.CHATGPT,
-                    "gemini": LLMProvider.GEMINI
+                    "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER
                 }.get(provider.lower(), LLMProvider.CLAUDE)
 
                 self._llm_client = LLMClient(
@@ -1670,14 +1701,21 @@ class ChapterEditor(QWidget):
         sel_start = qt_to_py_index(doc_text, cursor.selectionStart())
         sel_end = qt_to_py_index(doc_text, cursor.selectionEnd())
         start, end = expand_to_sentences(doc_text, sel_start, sel_end)
+        self.suggest_for_span(start, end, selection=(sel_start, sel_end))
+
+    def suggest_for_span(self, start: int, end: int, focus: str = "",
+                         selection: tuple = None) -> bool:
+        """Suggestions on ``doc[start:end]`` (Python indices), optionally
+        focused on a problem; True when a suggestion was put in place."""
+        doc_text = self.editor.toPlainText()
         if not doc_text[start:end].strip():
-            return
+            return False
         from src.ui.passage_critique_dialog import PassageCritiqueDialog
         dialog = PassageCritiqueDialog(doc_text, start, end, self.project, self.chapter,
-                                       self, selection=(sel_start, sel_end))
+                                       self, selection=selection, focus=focus)
         if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.replacement:
-            return
-        self._replace_span(doc_text, start, end, dialog.replacement, "Suggestions")
+            return False
+        return self._replace_span(doc_text, start, end, dialog.replacement, "Suggestions")
 
     def _expand_selection(self):
         """Overly descriptive statements in the highlighted text (widened
@@ -1694,31 +1732,32 @@ class ChapterEditor(QWidget):
                                          qt_to_py_index(doc_text, cursor.selectionEnd()))
         self.expand_statement(start, end)
 
-    def expand_statement(self, start: int, end: int) -> None:
+    def expand_statement(self, start: int, end: int) -> bool:
         """Open the overly-descriptive sub-module on ``doc[start:end]``
         (Python indices); accepted expansions replace that text."""
         doc_text = self.editor.toPlainText()
         if not doc_text[start:end].strip():
-            return
+            return False
         from src.ui import overdescription_panel as op
         dialog = op.ExpandStatementDialog(doc_text, start, end, self.project, self.chapter, self)
         if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.replacement:
-            return
-        self._replace_span(doc_text, start, end, dialog.replacement, "Overly descriptive")
+            return False
+        return self._replace_span(doc_text, start, end, dialog.replacement, "Overly descriptive")
 
     def _replace_span(self, doc_text: str, start: int, end: int, replacement: str,
-                      tool: str) -> None:
+                      tool: str) -> bool:
         if self.editor.toPlainText() != doc_text:
             QMessageBox.information(self, tool,
                                     "The chapter changed while the dialog was open, so the "
                                     f"change wasn't inserted. Run {tool} again.")
-            return
+            return False
         from src.ai.passage_critique import py_to_qt_index
         replace = QTextCursor(self.editor.document())
         replace.setPosition(py_to_qt_index(doc_text, start))
         replace.setPosition(py_to_qt_index(doc_text, end), QTextCursor.MoveMode.KeepAnchor)
         replace.insertText(self._tidy_replacement(doc_text[start:end], replacement, doc_text))
         self.editor.setTextCursor(replace)
+        return True
 
     def _world_word_selection(self):
         """Open world-appropriate word dialog for selected text."""

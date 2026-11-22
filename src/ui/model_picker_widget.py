@@ -27,7 +27,7 @@ from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QGroupBox, QVBoxLayout, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QProgressBar, QPushButton, QMessageBox,
-    QDialog, QDialogButtonBox, QCheckBox, QWidget, QScrollArea,
+    QDialog, QDialogButtonBox, QCheckBox, QWidget, QScrollArea, QLineEdit,
 )
 
 from src.ai.mlx_utils import can_use_mlx
@@ -929,6 +929,9 @@ class ModelPickerWidget(QGroupBox):
             details += "<br><i>(Requires 'trust remote code' enabled)</i>"
         self.details_label.setText(details)
         self.download_btn.setEnabled(True)
+        self.update_btn.setEnabled(model.model_id in self._downloaded_ids())
+        self.custom_remove_btn.setEnabled(
+            any(m.model_id == model.model_id for m in load_custom_models()))
         self.model_selected.emit(model.model_id)
 
     # ── download flow ──
@@ -941,13 +944,16 @@ class ModelPickerWidget(QGroupBox):
         except Exception:
             return ""
 
-    def _download_selected(self) -> None:
+    def _selected_model(self) -> Optional[LocalModelInfo]:
         row = self.model_list.currentRow()
         if row < 0:
-            return
-        item = self.model_list.item(row)
-        model: LocalModelInfo = item.data(Qt.ItemDataRole.UserRole)
+            return None
+        return self.model_list.item(row).data(Qt.ItemDataRole.UserRole)
 
+    def _download_selected(self) -> None:
+        model = self._selected_model()
+        if model is None:
+            return
         reply = QMessageBox.question(
             self, "Download Model",
             f"Download {model.display_name}?\n\n"
@@ -957,12 +963,51 @@ class ModelPickerWidget(QGroupBox):
             QMessageBox.StandardButton.No)
         if reply != QMessageBox.StandardButton.Yes:
             return
+        self._start_download(model)
+
+    def _update_selected(self) -> None:
+        """Re-fetch a downloaded model: unchanged files stay cached, files
+        changed upstream are pulled fresh."""
+        model = self._selected_model()
+        if model is not None:
+            self._start_download(model, "Checking for updates…")
+
+    def _add_and_download_custom(self) -> None:
+        model_id = self.custom_id_edit.text().strip()
+        if not model_id:
+            return
+        if "/" not in model_id:
+            QMessageBox.warning(self, "Add custom model",
+                                "Use the full HuggingFace id, e.g. owner/model-name.")
+            return
+        model = LocalModelInfo(model_id=model_id, display_name=model_id.split("/")[-1],
+                               size_gb=0.0, description="User-added model.",
+                               ram_required="Unknown", best_for="Writer-curated.")
+        try:
+            save_custom_model(model)
+        except Exception as e:
+            QMessageBox.warning(self, "Add custom model", f"Couldn't save it: {e}")
+            return
+        self.custom_id_edit.clear()
+        self._populate_model_list()
+        self.select_model_by_id(model_id)
+        self._start_download(model)
+
+    def _remove_selected_custom(self) -> None:
+        model = self._selected_model()
+        if model is None:
+            return
+        if delete_custom_model(model.model_id):
+            self._populate_model_list()
+        self.custom_remove_btn.setEnabled(False)
+
+    def _start_download(self, model: LocalModelInfo, status: str = "Starting download…") -> None:
 
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.status_label.setVisible(True)
-        self.status_label.setText("Starting download…")
+        self.status_label.setText(status)
         self.download_btn.setEnabled(False)
 
         self._download_worker = ModelDownloadWorker(

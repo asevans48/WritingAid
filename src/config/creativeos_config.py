@@ -46,10 +46,15 @@ SHARED_LLM_DEFAULTS: Dict[str, Any] = {
     "huggingface_token": "",
 
     # Provider preference
-    "default_llm": "claude",  # claude | chatgpt | gemini
+    "default_llm": "claude",  # claude | chatgpt | gemini | server
     "claude_model": "claude-opus-4-7",
     "openai_model": "gpt-4-turbo-preview",
     "gemini_model": "gemini-pro",
+
+    # Your own OpenAI-compatible model server (default_llm = "server")
+    "server_url": "",
+    "server_model": "",
+    "server_api_key": "",
 
     # Local model preferences
     "prefer_local_model": False,
@@ -178,7 +183,7 @@ TASK_MODEL_KINDS = (
 )
 
 # Cloud providers we know how to construct LLMClient for.
-TASK_CLOUD_PROVIDERS = ("claude", "chatgpt", "openai", "gemini")
+TASK_CLOUD_PROVIDERS = ("claude", "chatgpt", "openai", "gemini", "server")
 
 
 def parse_task_model_spec(spec: str) -> Dict[str, Any]:

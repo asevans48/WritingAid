@@ -102,7 +102,7 @@ def _build_cloud_llm(provider_name: str,
         "claude": LLMProvider.CLAUDE,
         "chatgpt": LLMProvider.CHATGPT,
         "openai": LLMProvider.CHATGPT,
-        "gemini": LLMProvider.GEMINI,
+        "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
     }
     provider = provider_map.get(name)
     if provider is None:

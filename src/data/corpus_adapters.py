@@ -264,7 +264,7 @@ def _parse_with_llm(text: str, *, title: str = "", **_) -> List[str]:
                 "claude": LLMProvider.CLAUDE,
                 "chatgpt": LLMProvider.CHATGPT,
                 "openai": LLMProvider.CHATGPT,
-                "gemini": LLMProvider.GEMINI,
+                "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
             }
             provider_name = s.get("default_llm", "claude")
             api_key = (s.get("claude_api_key") if provider_name == "claude"
