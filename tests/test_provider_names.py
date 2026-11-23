@@ -77,10 +77,38 @@ def _provider_map_literals():
 
 
 def test_no_copied_maps_left():
-    # The two image/video maps name LLMProvider.OPENAI, which does not exist,
-    # so they raise when reached. Replacing them would change behaviour, so
-    # they are left for a separate fix (see R.1 Outcome).
-    assert sorted(_provider_map_literals()) == [
-        "src/ai/image_generation_agent.py",
-        "src/ai/video_generation_agent.py",
-    ]
+    assert _provider_map_literals() == []
+
+
+# The image and video prompt helpers had their own maps naming
+# LLMProvider.OPENAI, which does not exist, so they raised AttributeError
+# every time. They now use the one list (finishing R.1).
+
+class _FakeClient:
+    def __init__(self, provider=None, **kw):
+        self.provider = provider
+
+
+@pytest.mark.parametrize("name, expected", [
+    ("claude", LLMProvider.CLAUDE), ("chatgpt", LLMProvider.CHATGPT),
+    ("openai", LLMProvider.CHATGPT), ("gemini", LLMProvider.GEMINI),
+    ("server", LLMProvider.SERVER), ("unknown", LLMProvider.CLAUDE),
+])
+def test_image_prompt_llm_uses_the_one_list(monkeypatch, name, expected):
+    import src.ai.image_generation_agent as iga
+    monkeypatch.setattr(iga, "LLMClient", _FakeClient)
+    agent = iga.ImageGenerationAgent.__new__(iga.ImageGenerationAgent)
+    agent.settings = {"use_prompt_enhancement": True, "prompt_llm_provider": name}
+    agent._prompt_llm = None
+    assert agent._get_prompt_llm().provider is expected
+
+
+def test_video_prompt_llm_uses_the_one_list():
+    # src/ai/video_generation_agent.py cannot be imported today (it imports
+    # VideoScene, which src.models.project no longer defines), and the only
+    # module that imports it, src/ui/video_studio_widget.py, is not used by
+    # the app. So check the source: the lookup goes through the one list and
+    # keeps its "unknown name means no client" default.
+    src = (ROOT / "src/ai/video_generation_agent.py").read_text()
+    assert "provider_for_name(provider_str, None)" in src
+    assert "LLMProvider.OPENAI" not in src

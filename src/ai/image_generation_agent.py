@@ -118,12 +118,8 @@ class ImageGenerationAgent:
                 self._prompt_llm = LLMClient(provider=LLMProvider.HUGGINGFACE, hf_config=hf_config)
             else:
                 # Use cloud provider
-                provider_map = {
-                    "claude": LLMProvider.CLAUDE,
-                    "chatgpt": LLMProvider.OPENAI,
-                    "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER
-                }
-                provider = provider_map.get(provider_str, LLMProvider.CLAUDE)
+                from src.ai.provider_names import provider_for_name
+                provider = provider_for_name(provider_str)
                 self._prompt_llm = LLMClient(provider=provider)
 
         return self._prompt_llm

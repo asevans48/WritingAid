@@ -4,6 +4,12 @@ The aim is a calmer app than today's: fewer places to look, one obvious next
 step, and nothing on screen that the writer does not need at that moment.
 Every point below either replaces something or removes something.
 
+**Agreed with the writer in 0.2:** the simplest interface possible that is
+still intuitive, **without cutting any feature.** Every merge keeps every
+ability, and its piece carries a capability checklist. Menu entries that open
+a merged screen stay as shortcuts. Backwards compatibility (rule 11) comes
+first. The measured baseline is in [screens.md](screens.md).
+
 **Fewer places**
 
 1. **Three roles, three places.** The scorecard says *where* the work is, the
@@ -14,12 +20,23 @@ Every point below either replaces something or removes something.
    editable preview, the changes, a rating. They become one window with the
    kinds of help as tabs (D.2).
 3. **One issues list instead of two.** The Style tab and the Companion both list
-   problems in the chapter. The list moves into the Companion's queue; the
-   Style tab's on and off switches become a small control on the editor (D.3).
-4. **A shorter right-click menu.** One "Improve this…" entry opens the Improve
-   window. Everything else is grouped (D.1).
-5. **Fewer top-level tabs.** Ten today. A proposal to group them into about six
-   is made in 0.2 and built in D.4.
+   problems in the chapter. The list moves into the Companion's queue, and the
+   side panel goes from four tabs to three (Planner, Companion, Feedback). The
+   Style tab's switches for each check move into the existing **✓ Checks ▾**
+   menu on the editor toolbar as a submenu; no new control is added (D.3).
+4. **A shorter right-click menu.** Today: 12 items, or 22 with a selection. One
+   "Improve this…" entry replaces the three entries that open Rephrase,
+   Suggestions and Overly descriptive?. A flagged word's fixes show at the top,
+   as the hover card shows them. Cut and Copy, which never appear today,
+   are fixed (D.1).
+5. **Fewer top-level tabs: ten into five.** **Write** · **Story** (Plot,
+   Characters, World) · **Revise** (Critique with the scorecard, Prose Profile,
+   Attributions) · **Publish** (Publishing) · **Studio** (Visuals, Video
+   Studio). A group holding one screen shows no inner tab bar. Every screen
+   can still be detached on its own (D.4).
+5a. **Analyses live in one place.** The six items in the editor's 🔍 Analyze ▾
+   menu run as Critique reports, so their results are saved, rated and kept in
+   history. The menu items stay as shortcuts (D.5).
 
 **One obvious next step**
 

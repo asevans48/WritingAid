@@ -57,12 +57,8 @@ class VideoGenerationAgent:
         ai_settings = get_ai_config().get_settings()
         provider_str = ai_settings.get("default_llm", "claude")
 
-        provider_map = {
-            "claude": LLMProvider.CLAUDE,
-            "chatgpt": LLMProvider.OPENAI,
-            "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
-        }
-        provider = provider_map.get(provider_str)
+        from src.ai.provider_names import provider_for_name
+        provider = provider_for_name(provider_str, None)
         if provider:
             self._prompt_llm = LLMClient(provider=provider)
         return self._prompt_llm

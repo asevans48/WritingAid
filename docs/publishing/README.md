@@ -6,7 +6,7 @@ and what should I do next?** It also lacks any measure of how good its own
 checks are. This plan fixes both, and leaves the app with fewer screens and less
 duplicated code than it has now.
 
-It is 66 pieces. Each is one file in [pieces/](pieces/), sized for one
+It is 67 pieces (D.5 was added in 0.2). Each is one file in [pieces/](pieces/), sized for one
 coding session, reviewed before it is coded, and leaves the app working when it
 is finished.
 
@@ -252,7 +252,7 @@ ways:
   - [R.3](pieces/08-R.3-move-the-checkers-out-of-the-editor-file.md) Move the checkers out of the 5,700-line editor file
   - [R.4](pieces/11-R.4-one-style-analyser-not-two.md) One style analyser, not two
   - [R.5](pieces/22-R.5-take-the-revision-wiring-out-of-the-main-window.md) Take the revision wiring out of the 15,000-line main window
-- **The declutter pieces** (D.1 to D.4) are the equivalent for screens.
+- **The declutter pieces** (D.1 to D.5) are the equivalent for screens.
 
 A general split of the main window and the settings dialog is not in the plan
 (open decision 4).
@@ -293,7 +293,7 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 
 **Foundations, in order**
 - [ ] [0.1](pieces/01-0.1-confirm-the-inventory.md) Confirm the inventory (S, no code)
-- [ ] [0.2](pieces/02-0.2-map-the-screens-count-the-clutter-decide-what-me.md) Map the screens, count the clutter, decide what merges (S, no code)
+- [x] [0.2](pieces/02-0.2-map-the-screens-count-the-clutter-decide-what-me.md) Map the screens, count the clutter, decide what merges (S, no code)
 - [~] [0.3](pieces/03-0.3-safety-net-for-your-two-projects.md) Safety net for your two projects (S) — check built, both projects pass; screen check to follow
 - [ ] [0.4](pieces/03b-0.4-harden-saving.md) Harden saving (M, before any piece that stores data)
 - [ ] [U.1](pieces/04-U.1-shared-interface-parts.md) Shared interface parts (M)
@@ -350,6 +350,7 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 - [ ] [D.2c](pieces/47-D.2c-one-improve-window-rephrase-joins.md) One Improve window: Rephrase joins (M)
 - [ ] [D.3](pieces/48-D.3-one-issues-list-in-the-side-panel.md) One issues list in the side panel (M, after 3.2)
 - [ ] [D.4](pieces/49-D.4-fewer-top-level-tabs.md) Fewer top-level tabs (M, after 0.2)
+- [ ] [D.5](pieces/49b-D.5-analyses-run-as-critique-reports.md) Analyses run as Critique reports (M, after 2.1; added in 0.2)
 
 **Interface sweep (after U.2)**
 - [ ] [U.3a](pieces/50-U.3a-fit-and-scroll-sweep-the-screens-used-most.md) Fit-and-scroll sweep: the screens used most (M)
@@ -404,6 +405,19 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 8. **Ratings.** Shared across projects and grouped by voice. (Phase V)
 9. **What publishable means.** The professional editing stages, in order, as
    defined by the Editorial Freelancers Association and Editors Canada.
+10. **The simplest interface, nothing cut.** Agreed in 0.2: the simplest
+    interface that is still intuitive and easy to understand, **without
+    cutting any feature**, and backwards compatible (rule 11). Menu entries
+    that open a merged screen stay as shortcuts.
+11. **Tab grouping.** Ten top-level tabs become five: Write · Story (Plot,
+    Characters, World) · Revise (Critique, Prose Profile, Attributions) ·
+    Publish (Publishing) · Studio (Visuals, Video Studio). Every screen can
+    still be detached on its own. (D.4)
+12. **Side panel and Improve window.** The Style tab folds into the Companion,
+    and its switches for each check go into the ✓ Checks ▾ menu (D.3). Feedback
+    stays its own tab. Rephrase, Suggestions and Overly descriptive? become one
+    Improve window, while AI Thesaurus and Ask stay separate (D.2). The six
+    Analyze ▾ analyses run as Critique reports (D.5).
 
 ### Open
 
