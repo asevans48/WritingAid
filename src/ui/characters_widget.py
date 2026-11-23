@@ -1101,12 +1101,8 @@ class CharacterWidget(QWidget):
             api_key = config.get_api_key(provider)
 
             if api_key:
-                provider_enum = {
-                    "claude": LLMProvider.CLAUDE,
-                    "chatgpt": LLMProvider.CHATGPT,
-                    "openai": LLMProvider.CHATGPT,
-                    "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
-                }.get(provider, LLMProvider.CLAUDE)
+                from src.ai.provider_names import provider_for_name
+                provider_enum = provider_for_name(provider)
                 llm_client = LLMClient(
                     provider=provider_enum, api_key=api_key,
                     model=settings.get(f"{provider}_model", None)
@@ -1907,10 +1903,8 @@ class _SingleCharacterWorker(QThread):
                     provider_name = settings.get("default_llm", "claude").lower()
                     api_key = ai_config.get_api_key(provider_name)
                     if api_key:
-                        provider_enum = {
-                            "claude": LLMProvider.CLAUDE, "chatgpt": LLMProvider.CHATGPT,
-                            "openai": LLMProvider.CHATGPT, "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
-                        }.get(provider_name, LLMProvider.CLAUDE)
+                        from src.ai.provider_names import provider_for_name
+                        provider_enum = provider_for_name(provider_name)
                         llm = LLMClient(
                             provider=provider_enum, api_key=api_key,
                             model=ai_config.get_model(provider_name)

@@ -682,12 +682,8 @@ def _ask_plot_ai(question: str, history: list, ctx: dict) -> str:
                 return ("⚠️ No AI is configured. Add an API key in "
                         "Settings → AI, or pick a plot-task trained "
                         "model in Settings → CreativeOS.")
-            provider = {
-                "claude": LLMProvider.CLAUDE,
-                "chatgpt": LLMProvider.CHATGPT,
-                "openai": LLMProvider.CHATGPT,
-                "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
-            }.get(provider_name.lower(), LLMProvider.CLAUDE)
+            from src.ai.provider_names import provider_for_name
+            provider = provider_for_name(provider_name.lower())
             llm = LLMClient(provider=provider, api_key=api_key,
                             model=cfg.get_model(provider_name))
         except Exception as e:

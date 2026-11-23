@@ -809,12 +809,8 @@ class RephraseDialog(QDialog):
             api_key = config.get_api_key(provider)
 
             if api_key:
-                provider_enum = {
-                    "claude": LLMProvider.CLAUDE,
-                    "chatgpt": LLMProvider.CHATGPT,
-                    "openai": LLMProvider.CHATGPT,
-                    "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER
-                }.get(provider.lower(), LLMProvider.CLAUDE)
+                from src.ai.provider_names import provider_for_name
+                provider_enum = provider_for_name(provider.lower())
 
                 llm = LLMClient(
                     provider=provider_enum,
@@ -1794,10 +1790,8 @@ class RephraseDialog(QDialog):
                     provider_name = settings.get("default_llm", "claude").lower()
                     api_key = config.get_api_key(provider_name)
                     if api_key:
-                        provider_enum = {
-                            "claude": LLMProvider.CLAUDE, "chatgpt": LLMProvider.CHATGPT,
-                            "openai": LLMProvider.CHATGPT, "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
-                        }.get(provider_name, LLMProvider.CLAUDE)
+                        from src.ai.provider_names import provider_for_name
+                        provider_enum = provider_for_name(provider_name)
                         llm = LLMClient(
                             provider=provider_enum, api_key=api_key,
                             model=config.get_model(provider_name)
@@ -2092,12 +2086,8 @@ class RephraseDialog(QDialog):
         api_key = cfg.get_api_key(provider_name)
         if not api_key:
             return None
-        provider_enum = {
-            "claude": LLMProvider.CLAUDE,
-            "chatgpt": LLMProvider.CHATGPT,
-            "openai": LLMProvider.CHATGPT,
-            "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
-        }.get(provider_name, LLMProvider.CLAUDE)
+        from src.ai.provider_names import provider_for_name
+        provider_enum = provider_for_name(provider_name)
         return LLMClient(
             provider=provider_enum, api_key=api_key,
             model=cfg.get_model(provider_name))

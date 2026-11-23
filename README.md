@@ -37,6 +37,8 @@ Create and manage every aspect of your fictional world:
 - **OpenAI**: GPT-4, GPT-4 Turbo, GPT-3.5
 - **Google Gemini**: Gemini Pro and advanced models
 - **Local Models**: Run models locally via Hugging Face Transformers (Llama, Mistral, Gemma, etc.)
+- **Your Own Model Server**: Point the app at a machine on your network that serves a model over the OpenAI-compatible API (llama.cpp, vLLM, Ollama, LM Studio and others). Set its address in Settings → AI Settings, then use it as the default model or for any single task
+- **No AI Required**: The checking and revision tools all work without a model; a model, when set up, improves their judgement
 
 #### AI Agents
 - **General AI Assistant**: Conversational AI that can create worldbuilding elements, answer questions, and provide feedback
@@ -72,12 +74,20 @@ The AI can create worldbuilding elements directly through conversation:
 - **Consistency Checking**: Find plot holes and inconsistencies across chapters
 - **Readability Metrics**: Analyze reading level and complexity
 
+### ✍️ Revision Tools
+- **Suggestions and Critique**: Highlight a passage for a critique and rewrites in your own voice, which you can edit, rate and accept
+- **Rephrase**: Alternative wordings for a sentence, matched to your voice and learning from your ratings
+- **Overly Descriptive Statements**: Finds statements that tell instead of show and offers ways to expand them
+- **Style Checks**: Passive voice, adverbs, clichés, echoes, sticky sentences and more, with one-click fixes
+- **Writing Companion**: A side panel for the current chapter with where you left off, your notes, the next fixes to make, a reader's-eye view, story memory and your style sheet
+- **Chapter and Manuscript Critique**: Graded critiques with progress tracked across revisions
+- **Path to Publishable** (planned): see [docs/publishing/](docs/publishing/README.md)
+
 ### 🎯 Additional Features
 - **Find & Replace**: Advanced search across entire manuscript
 - **Auto-Save**: Never lose your work with automatic saving
 - **Project Organization**: All project files stored in a single folder
 - **Import/Export**: Import from various formats, export to multiple formats
-- **Dark Mode Support**: Easy on the eyes for long writing sessions
 - **Cross-Platform**: Works on Windows, macOS, and Linux
 
 ## 🚀 Installation
@@ -200,7 +210,7 @@ python main.py
 
 ### Using AI Features
 
-**📘 For detailed AI usage guide with 100+ example queries, see [AI_AGENTS_GUIDE.md](AI_AGENTS_GUIDE.md)**
+**📘 For detailed AI usage guide with 100+ example queries, see [AI_AGENTS_GUIDE.md](docs/AI_AGENTS_GUIDE.md)**
 
 #### Configure AI Provider
 1. Go to **Settings** → **AI Settings**
@@ -286,6 +296,19 @@ If you see this warning, you're using Python 3.14t (free-threaded build):
 - **Solution**: Use Python 3.10-3.13 instead
 - Create a new venv: `python3.12 -m venv venv`
 
+### Local Models Fail to Load, or Stack Overflow Errors
+The app is probably running under the wrong Python. Always start it from the
+virtual environment:
+- Run `./run.sh` (macOS/Linux) or `run.bat` (Windows), or activate the venv first
+- Check with `python --version` (3.10 to 3.13) and
+  `python -c "import sys; print(hasattr(sys, '_is_gil_enabled'))"` (should print `False`)
+- In an IDE, select the interpreter at `venv/bin/python`
+
+### Apple Silicon: Checking MLX
+Local models use MLX on Apple Silicon and fall back to PyTorch elsewhere. On
+start-up the console prints `MLX available` when it is in use. Standard model
+names are converted to their MLX versions automatically.
+
 ### "Missing required packages" Error
 ```bash
 # Activate virtual environment first
@@ -328,9 +351,20 @@ sudo apt-get install default-jre
 
 ## 📖 Documentation
 
+| Document | What it covers |
+|---|---|
+| [DESIGN.md](DESIGN.md) | Architecture, configuration model and product principles |
+| [docs/AI_AGENTS_GUIDE.md](docs/AI_AGENTS_GUIDE.md) | The AI assistant's modes, with example requests |
+| [docs/IMAGE_GENERATION_SETUP.md](docs/IMAGE_GENERATION_SETUP.md) | Setting up image generation |
+| [docs/HUGGINGFACE_SETUP.md](docs/HUGGINGFACE_SETUP.md) | Hugging Face token for gated models |
+| [docs/multi_window_architecture.md](docs/multi_window_architecture.md) | How detachable tabs and secondary windows work |
+| [docs/FREEHAND_DRAWING.md](docs/FREEHAND_DRAWING.md) | Freehand drawing in the map builder |
+| [docs/MAP_BUILDER_IMPROVEMENTS.md](docs/MAP_BUILDER_IMPROVEMENTS.md) | Proposed map builder improvements (a backlog, not a description of what exists) |
+| [docs/publishing/](docs/publishing/README.md) | The plan for taking a manuscript to a publishable state |
+
 ### AI Agents Guide
 
-**📘 See [AI_AGENTS_GUIDE.md](AI_AGENTS_GUIDE.md) for comprehensive documentation on:**
+**📘 See [AI_AGENTS_GUIDE.md](docs/AI_AGENTS_GUIDE.md) for comprehensive documentation on:**
 - All AI modes (General, Chapter Focus, Writer, Planning)
 - Example queries for every agent
 - Best practices and troubleshooting

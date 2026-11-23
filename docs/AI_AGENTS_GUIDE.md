@@ -900,7 +900,7 @@ For intensive writing sessions:
 
 For issues or questions:
 - Check this guide first
-- Review main [README.md](README.md) for installation/setup
+- Review main [README.md](../README.md) for installation/setup
 - Open GitHub issue for bugs or feature requests
 - Check Settings → AI Configuration for API key issues
 

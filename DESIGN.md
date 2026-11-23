@@ -28,6 +28,41 @@ the OS without breaking existing tools.
 - **Easy to extend.** Adding a new tool is a registration entry, an icon,
   and a launcher callback.
 
+### Product principles
+
+These come from the original brief for the Writing Tool and still bind every
+feature.
+
+- **AI is a guide first.** It gives honest, direct criticism and
+  recommendations. Where it writes or rewrites prose (Writer mode, Rephrase,
+  Suggestions), the result is offered in the writer's voice and the writer
+  decides what goes into the manuscript.
+- **Works without AI.** Deterministic tools (spelling, grammar, style checks)
+  are used wherever they exist; a model improves on them when one is set up.
+- **The chapter is the core unit.** A project holds manuscripts (a main
+  manuscript and novellas), and each is worked on chapter by chapter.
+- **Characters and world elements are objects** that story planning connects.
+- **Each project has its own dictionary.**
+- **Writing rules for any prompt that writes or judges prose:**
+  - mostly show, not tell;
+  - compelling, emotional stories;
+  - never violate established plot points;
+  - natural transitions only;
+  - detect and help remove tropes;
+  - readable sentences with variety.
+- **Privacy.** Do not allow providers to train on the writer's text where a
+  provider offers that control.
+- **Screens.** The UI works from small laptops to large screens. Buttons are
+  never squeezed together or sized so that they run into each other. Scrollbars
+  are used wherever content can outgrow its space.
+
+### Planned work
+
+Changes to the Writing Tool's revision features follow the plan in
+[docs/publishing/](docs/publishing/README.md). Where that plan's rules are
+stricter than this document (backwards compatibility, screen sizes,
+decluttering, code size), the plan's rules apply to new work.
+
 ## 2. High-level architecture
 
 ```
@@ -99,7 +134,9 @@ users see their LLM access seamlessly carry over.
 
 ### Shared LLM keys (owned by `creativeos_config.SHARED_LLM_DEFAULTS`)
 
-- `default_llm` — claude / chatgpt / gemini
+- `default_llm` — claude / chatgpt / gemini / server
+- `server_url`, `server_model`, `server_api_key` — your own model server
+  (any OpenAI-compatible endpoint; see `src/ai/model_server.py`)
 - `claude_api_key`, `chatgpt_api_key`, `gemini_api_key`
 - `huggingface_token`
 - `claude_model`, `openai_model`, `gemini_model`
@@ -472,8 +509,9 @@ setting, so the Writing Tool's Rephrase / Thesaurus / Chat all use
 the trained model on the next launch.
 
 For finer control there is a **Per-Task Models** tab. Each row
-(rephrase, plot, worldbuilding, character, general) is a combo box
-listing every registered trained model. Empty selection means "use
+(rephrase, plot, worldbuilding, character, critique, general) is a combo
+box listing every registered trained model, plus local, cloud and server
+models. Empty selection means "use
 the global model." At call time the writing tool resolves the right
 model via `CreativeOSConfig.resolve_task_model(task)` — so a user can
 have a horror-trained voice model for rephrasing while a structured

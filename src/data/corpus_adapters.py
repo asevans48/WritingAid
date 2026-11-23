@@ -260,12 +260,7 @@ def _parse_with_llm(text: str, *, title: str = "", **_) -> List[str]:
             provider = LLMProvider.MLX_LOCAL if is_mlx else LLMProvider.HUGGINGFACE_LOCAL
             llm = LLMClient(provider=provider, hf_config=hf_config)
         else:
-            provider_map = {
-                "claude": LLMProvider.CLAUDE,
-                "chatgpt": LLMProvider.CHATGPT,
-                "openai": LLMProvider.CHATGPT,
-                "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
-            }
+            from src.ai.provider_names import provider_for_name
             provider_name = s.get("default_llm", "claude")
             api_key = (s.get("claude_api_key") if provider_name == "claude"
                        else s.get("chatgpt_api_key") if provider_name in ("chatgpt", "openai")
@@ -273,7 +268,7 @@ def _parse_with_llm(text: str, *, title: str = "", **_) -> List[str]:
             if not api_key:
                 return _parse_plain(text)
             llm = LLMClient(
-                provider=provider_map.get(provider_name, LLMProvider.CLAUDE),
+                provider=provider_for_name(provider_name),
                 api_key=api_key)
     except Exception as e:
         print(f"[corpus_adapter:llm] LLM init failed: {e}")

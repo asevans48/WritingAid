@@ -170,12 +170,8 @@ class AgentSuite:
                 "Please configure in Settings > AI Configuration."
             )
 
-        provider_enum = {
-            "claude": LLMProvider.CLAUDE,
-            "chatgpt": LLMProvider.CHATGPT,
-            "openai": LLMProvider.CHATGPT,
-            "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER
-        }.get(provider.lower(), LLMProvider.CLAUDE)
+        from src.ai.provider_names import provider_for_name
+        provider_enum = provider_for_name(provider.lower())
 
         self.primary_llm = LLMClient(
             provider=provider_enum,

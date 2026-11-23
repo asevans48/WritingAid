@@ -98,13 +98,8 @@ def _build_cloud_llm(provider_name: str,
         print(f"[task_llm] cloud LLM imports failed: {e}")
         return None
     name = (provider_name or "").strip().lower()
-    provider_map = {
-        "claude": LLMProvider.CLAUDE,
-        "chatgpt": LLMProvider.CHATGPT,
-        "openai": LLMProvider.CHATGPT,
-        "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
-    }
-    provider = provider_map.get(name)
+    from src.ai.provider_names import provider_for_name
+    provider = provider_for_name(name, None)
     if provider is None:
         print(f"[task_llm] unknown cloud provider '{provider_name}'")
         return None

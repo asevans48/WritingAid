@@ -2491,13 +2491,8 @@ Cap at TWO ``<create_*>`` blocks per reply. Talk through your reasoning in prose
                     return
 
                 # Map provider name to enum
-                provider_map = {
-                    "claude": LLMProvider.CLAUDE,
-                    "chatgpt": LLMProvider.CHATGPT,
-                    "openai": LLMProvider.CHATGPT,
-                    "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER
-                }
-                provider = provider_map.get(default_provider, LLMProvider.CLAUDE)
+                from src.ai.provider_names import provider_for_name
+                provider = provider_for_name(default_provider)
 
                 llm = LLMClient(
                     provider=provider,
@@ -2741,14 +2736,9 @@ class LongFormWriterWorker(QThread):
         api_key = ai_config.get_api_key(default_provider)
         if not api_key:
             return None
-        provider_map = {
-            "claude": LLMProvider.CLAUDE,
-            "chatgpt": LLMProvider.CHATGPT,
-            "openai": LLMProvider.CHATGPT,
-            "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
-        }
+        from src.ai.provider_names import provider_for_name
         return LLMClient(
-            provider=provider_map.get(default_provider, LLMProvider.CLAUDE))
+            provider=provider_for_name(default_provider))
 
     def run(self):
         try:
@@ -2862,15 +2852,9 @@ class _InsertionEditWorker(QThread):
         api_key = ai_config.get_api_key(default_provider)
         if not api_key:
             return None
-        provider_map = {
-            "claude": LLMProvider.CLAUDE,
-            "chatgpt": LLMProvider.CHATGPT,
-            "openai": LLMProvider.CHATGPT,
-            "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
-        }
+        from src.ai.provider_names import provider_for_name
         return LLMClient(
-            provider=provider_map.get(
-                default_provider, LLMProvider.CLAUDE))
+            provider=provider_for_name(default_provider))
 
     def run(self):
         try:
@@ -7398,15 +7382,9 @@ class MainWindow(QMainWindow):
             api_key = ai_config.get_api_key(default_provider)
             if not api_key:
                 return None
-            provider_map = {
-                "claude": LLMProvider.CLAUDE,
-                "chatgpt": LLMProvider.CHATGPT,
-                "openai": LLMProvider.CHATGPT,
-                "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
-            }
+            from src.ai.provider_names import provider_for_name
             return LLMClient(
-                provider=provider_map.get(
-                    default_provider, LLMProvider.CLAUDE),
+                provider=provider_for_name(default_provider),
                 api_key=api_key,
                 model=ai_config.get_model(default_provider),
             )
@@ -7435,13 +7413,8 @@ class MainWindow(QMainWindow):
                     api_key = ai_config.get_api_key(default_provider)
 
                     if api_key:
-                        provider_map = {
-                            "claude": LLMProvider.CLAUDE,
-                            "chatgpt": LLMProvider.CHATGPT,
-                            "openai": LLMProvider.CHATGPT,
-                            "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER
-                        }
-                        provider = provider_map.get(default_provider, LLMProvider.CLAUDE)
+                        from src.ai.provider_names import provider_for_name
+                        provider = provider_for_name(default_provider)
                         llm_client = LLMClient(
                             provider=provider, api_key=api_key,
                             model=ai_config.get_model(default_provider)
@@ -7513,10 +7486,8 @@ class MainWindow(QMainWindow):
                         api_key = ai_config.get_api_key(provider_name)
                         if not api_key:
                             return ""
-                        provider_enum = {
-                            "claude": LLMProvider.CLAUDE, "chatgpt": LLMProvider.CHATGPT,
-                            "openai": LLMProvider.CHATGPT, "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
-                        }.get(provider_name, LLMProvider.CLAUDE)
+                        from src.ai.provider_names import provider_for_name
+                        provider_enum = provider_for_name(provider_name)
                         client = LLMClient(
                             provider=provider_enum, api_key=api_key,
                             model=ai_config.get_model(provider_name)
@@ -8220,10 +8191,8 @@ class MainWindow(QMainWindow):
                 api_key = ai_config.get_api_key(provider_name)
                 if not api_key:
                     return ""
-                provider_enum = {
-                    "claude": LLMProvider.CLAUDE, "chatgpt": LLMProvider.CHATGPT,
-                    "openai": LLMProvider.CHATGPT, "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
-                }.get(provider_name, LLMProvider.CLAUDE)
+                from src.ai.provider_names import provider_for_name
+                provider_enum = provider_for_name(provider_name)
                 client = LLMClient(
                     provider=provider_enum, api_key=api_key,
                     model=ai_config.get_model(provider_name)

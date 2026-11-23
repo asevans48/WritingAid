@@ -179,13 +179,8 @@ def enhance_text_for_speech(text: str, genre_key: str = "") -> str:
             api_key = ai_config.get_api_key(default_provider)
             if not api_key:
                 return text
-            provider_map = {
-                "claude": LLMProvider.CLAUDE,
-                "chatgpt": LLMProvider.CHATGPT,
-                "openai": LLMProvider.CHATGPT,
-                "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
-            }
-            provider = provider_map.get(default_provider, LLMProvider.CLAUDE)
+            from src.ai.provider_names import provider_for_name
+            provider = provider_for_name(default_provider)
             llm = LLMClient(
                 provider=provider, api_key=api_key,
                 model=ai_config.get_model(default_provider),

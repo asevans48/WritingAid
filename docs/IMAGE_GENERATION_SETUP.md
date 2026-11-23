@@ -216,8 +216,8 @@ Set to `-1` for random seeds.
 ## Getting Help
 
 - Check logs for detailed error messages
-- Report issues: https://github.com/anthropics/claude-code/issues
-- See `MODEL_CATALOG.md` for complete model list
+- Models are chosen in Settings; the app lists the ones that suit your machine
+- Gated FLUX models need a Hugging Face token: see [HUGGINGFACE_SETUP.md](HUGGINGFACE_SETUP.md)
 
 ---
 

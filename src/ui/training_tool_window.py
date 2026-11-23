@@ -6966,12 +6966,7 @@ class TrainingToolWindow(QMainWindow):
                             else LLMProvider.HUGGINGFACE_LOCAL)
                 llm = LLMClient(provider=provider, hf_config=hf_config)
             else:
-                provider_map = {
-                    "claude": LLMProvider.CLAUDE,
-                    "chatgpt": LLMProvider.CHATGPT,
-                    "openai": LLMProvider.CHATGPT,
-                    "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
-                }
+                from src.ai.provider_names import provider_for_name
                 provider_name = s.get("default_llm", "claude")
                 api_key = (
                     s.get("claude_api_key")
@@ -6982,8 +6977,7 @@ class TrainingToolWindow(QMainWindow):
                 if not api_key:
                     return None
                 llm = LLMClient(
-                    provider=provider_map.get(
-                        provider_name, LLMProvider.CLAUDE),
+                    provider=provider_for_name(provider_name),
                     api_key=api_key)
             return lambda prompt, system: llm.generate_text(
                 prompt, system, max_tokens=600, temperature=0.3)
@@ -14217,12 +14211,7 @@ class _PacingPairsDialog(QDialog):
                             else LLMProvider.HUGGINGFACE_LOCAL)
                 llm = LLMClient(provider=provider, hf_config=hf_config)
             else:
-                provider_map = {
-                    "claude": LLMProvider.CLAUDE,
-                    "chatgpt": LLMProvider.CHATGPT,
-                    "openai": LLMProvider.CHATGPT,
-                    "gemini": LLMProvider.GEMINI, "server": LLMProvider.SERVER,
-                }
+                from src.ai.provider_names import provider_for_name
                 provider_name = s.get("default_llm", "claude")
                 api_key = (
                     s.get("claude_api_key")
@@ -14233,8 +14222,7 @@ class _PacingPairsDialog(QDialog):
                 if not api_key:
                     return None
                 llm = LLMClient(
-                    provider=provider_map.get(provider_name,
-                                              LLMProvider.CLAUDE),
+                    provider=provider_for_name(provider_name),
                     api_key=api_key)
             return lambda prompt, sys: llm.generate_text(
                 prompt=prompt, system_prompt=sys,
