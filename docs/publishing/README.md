@@ -295,7 +295,7 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 - [x] [0.1](pieces/01-0.1-confirm-the-inventory.md) Confirm the inventory (S, no code)
 - [x] [0.2](pieces/02-0.2-map-the-screens-count-the-clutter-decide-what-me.md) Map the screens, count the clutter, decide what merges (S, no code)
 - [~] [0.3](pieces/03-0.3-safety-net-for-your-two-projects.md) Safety net for your two projects (S) — check built, both projects pass; screen check to follow
-- [ ] [0.4](pieces/03b-0.4-harden-saving.md) Harden saving (M, before any piece that stores data)
+- [x] [0.4](pieces/03b-0.4-harden-saving.md) Harden saving (M, before any piece that stores data)
 - [ ] [U.1](pieces/04-U.1-shared-interface-parts.md) Shared interface parts (M)
 - [ ] [U.2](pieces/05-U.2-screenshot-and-clutter-count-harness.md) Screenshot and clutter-count harness (S)
 - [x] [R.1](pieces/06-R.1-one-list-of-model-providers.md) One list of model providers (S)

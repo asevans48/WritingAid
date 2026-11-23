@@ -2996,6 +2996,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         """Initialize main window."""
         super().__init__()
+        from src.ui.store_notice import install as _install_store_notice
+        _install_store_notice(self)  # tell the writer if a stored file is unreadable
 
         self.current_project: Optional[WriterProject] = None
         self._loading_project = False  # Guard against auto-save during load

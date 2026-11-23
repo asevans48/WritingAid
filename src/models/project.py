@@ -8,6 +8,8 @@ import json
 import os
 import re
 
+from src.data import safe_store
+
 # Folder (relative to the project dir) holding the main manuscript's
 # chapter folders. Subprojects get their own root under SUBPROJECTS_DIR
 # so their chapter_NNN folders can never collide with the main ones.
@@ -685,7 +687,7 @@ class Chapter(BaseModel):
         if project_dir and rev_file:
             self.ensure_folder(project_dir)
             full_path = project_dir / rev_file
-            full_path.write_text(rev_content, encoding='utf-8')
+            safe_store.write_text(full_path, rev_content)
 
         return revision
 
@@ -746,7 +748,7 @@ class Chapter(BaseModel):
                 rev.content = self.content
                 rev.html_content = self.html_content
                 rev.word_count = len(self.content.split()) if self.content else 0
-                full_path.write_text(self.content, encoding='utf-8')
+                safe_store.write_text_if_changed(full_path, self.content)
                 return True
         return False
 
@@ -755,8 +757,10 @@ class Chapter(BaseModel):
     def _save_working_backup(self, project_dir: Path, current_file: Path):
         """Copy the existing revision file to a timestamped backup.
 
-        Keeps the most recent _MAX_BACKUPS copies. Files are named
-        ``backup_YYYYMMDD_HHMMSS.md`` inside the chapter folder.
+        Keeps the most recent _MAX_BACKUPS copies, the first copy of each
+        of the last fourteen days, and the last copy with text when the
+        chapter is being blanked (``chapter_backups.to_remove``). Files are
+        named ``backup_YYYYMMDD_HHMMSS.md`` inside the chapter folder.
         Also migrates the old single ``working_backup.md`` if present.
         """
         if not current_file.exists():
@@ -789,9 +793,12 @@ class Chapter(BaseModel):
 
             shutil.copy2(str(current_file), str(backup_path))
 
-            # Prune old backups beyond the limit
+            # Prune: keep the newest few, the first of each recent day, and
+            # the last copy with text when the chapter is being blanked.
+            from src.models.chapter_backups import to_remove
             all_backups = self._list_backups(project_dir)
-            for _, old_path in all_backups[self._MAX_BACKUPS:]:
+            for old_path in to_remove(all_backups,
+                                      saving_empty=not (self.content or "").strip()):
                 try:
                     old_path.unlink()
                 except OSError:
@@ -906,14 +913,14 @@ class Chapter(BaseModel):
         plan_path = project_dir / self.folder_path / "plan.md"
         if outline_text:
             self.plan = outline_text  # keep legacy field in sync
-            plan_path.write_text(outline_text, encoding='utf-8')
+            safe_store.write_text_if_changed(plan_path, outline_text)
         elif self.plan:
-            plan_path.write_text(self.plan, encoding='utf-8')
+            safe_store.write_text_if_changed(plan_path, self.plan)
         else:
             # Explicit clear — write an empty file so the on-disk
             # state matches the in-memory cleared state.
             if plan_path.exists():
-                plan_path.write_text("", encoding='utf-8')
+                safe_store.write_text_if_changed(plan_path, "")
 
         # Update legacy file_path to point to active revision for compat
         active_rev = self._get_active_revision()
@@ -1005,14 +1012,14 @@ class Chapter(BaseModel):
         if self.folder_path:
             self.ensure_folder(project_dir)
             plan_path = project_dir / self.folder_path / "plan.md"
-            plan_path.write_text(self.plan, encoding='utf-8')
+            safe_store.write_text_if_changed(plan_path, self.plan)
             return True
 
         # Legacy fallback
         self.plan_file_path = f"{self._chapter_root()}/plans/chapter_{self.number:03d}_plan.md"
         full_path = project_dir / self.plan_file_path
         full_path.parent.mkdir(parents=True, exist_ok=True)
-        full_path.write_text(self.plan, encoding='utf-8')
+        safe_store.write_text_if_changed(full_path, self.plan)
         return True
 
     def _get_active_revision(self) -> Optional[ChapterRevision]:
@@ -1150,7 +1157,7 @@ class Chapter(BaseModel):
                 rev.file_path = rev_file
                 full_path = project_dir / rev_file
                 if not full_path.exists() and rev.content:
-                    full_path.write_text(rev.content, encoding='utf-8')
+                    safe_store.write_text(full_path, rev.content)
                 rev.word_count = len(rev.content.split()) if rev.content else 0
 
         self.active_revision_number = max(r.revision_number for r in self.revisions)
@@ -2611,3 +2618,11 @@ class WriterProject(BaseModel):
             project.activate_subproject(active)
 
         return project
+
+
+# Every nested part of the project file keeps fields it does not recognise,
+# as the top level already does, so a newer version's data survives a save
+# by this one (piece 0.4).
+from src.models.keep_unknown_fields import keep_unknown_fields  # noqa: E402
+
+keep_unknown_fields(WriterProject)

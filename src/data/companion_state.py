@@ -9,11 +9,12 @@ the project file (``companion_state.json``), or under
 
 from __future__ import annotations
 
-import json
 import re
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict
+
+from src.data import safe_store
 
 
 def state_path(project: Any) -> Path:
@@ -25,18 +26,19 @@ def state_path(project: Any) -> Path:
 
 
 def load(project: Any) -> Dict[str, Any]:
+    # Missing → {}. Unreadable → set aside and the writer told, then {}
+    # (never saved over: see safe_store).
     try:
-        data = json.loads(state_path(project).read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except Exception:
+        return safe_store.load(state_path(project), {}, expect=dict)
+    except Exception as e:
+        print(f"[companion] could not load state: {e}")
         return {}
 
 
 def save(project: Any, data: Dict[str, Any]) -> None:
-    path = state_path(project)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=1), encoding="utf-8")
+        if not safe_store.save(state_path(project), data, indent=1):
+            print("[companion] could not save state")
     except Exception as e:
         print(f"[companion] could not save state: {e}")
 

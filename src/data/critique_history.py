@@ -12,11 +12,12 @@ under ``~/.creativeos/critique_history/`` for unsaved projects.
 
 from __future__ import annotations
 
-import json
 import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from src.data import safe_store
 
 MAX_RUNS_PER_SCOPE = 20
 _STOP = set("""the a an and or but of to in on at by for with from as is was were be been are it
@@ -161,10 +162,12 @@ def compare(prev: Dict[str, Any], cur: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def load(project: Any) -> Dict[str, List[Dict[str, Any]]]:
-    path = history_path(project)
+    # Missing → {}. Unreadable → set aside and the writer told, then {}
+    # (never saved over: see safe_store).
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+        return safe_store.load(history_path(project), {}, expect=dict)
+    except Exception as e:
+        print(f"[critique-history] could not load: {e}")
         return {}
 
 
@@ -185,10 +188,9 @@ def record(project: Any, report: Any) -> Optional[Dict[str, Any]]:
         progress["trend"] = trend(runs + [cur])
     runs.append(cur)
     del runs[:-MAX_RUNS_PER_SCOPE]
-    path = history_path(project)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=1), encoding="utf-8")
+        if not safe_store.save(history_path(project), data, indent=1):
+            print("[critique-history] could not save")
     except Exception as e:
         print(f"[critique-history] could not save: {e}")
     return progress

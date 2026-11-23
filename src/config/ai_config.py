@@ -144,9 +144,10 @@ class AIConfig:
             # Update current settings
             self.settings.update(settings)
 
-            # Save to file
-            with open(self.config_file, 'w', encoding='utf-8') as f:
-                json.dump(self.settings, f, indent=2)
+            # Save to file: temporary file, then swap, so an interrupted
+            # save leaves the old settings whole (piece 0.4).
+            from src.data.safe_store import write_text
+            write_text(self.config_file, json.dumps(self.settings, indent=2))
 
             return True
         except Exception as e:

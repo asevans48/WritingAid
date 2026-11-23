@@ -559,8 +559,11 @@ class CreativeOSConfig:
     def save(self) -> bool:
         try:
             self.config_dir.mkdir(parents=True, exist_ok=True)
-            with open(self.config_file, 'w', encoding='utf-8') as f:
-                json.dump(self.settings, f, indent=2, ensure_ascii=False)
+            # Temporary file, then swap: an interrupted save leaves the old
+            # settings whole (piece 0.4).
+            from src.data.safe_store import write_text
+            write_text(self.config_file,
+                       json.dumps(self.settings, indent=2, ensure_ascii=False))
             return True
         except Exception as e:
             print(f"[CreativeOS] Could not save config: {e}")
