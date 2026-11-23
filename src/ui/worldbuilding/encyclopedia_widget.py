@@ -377,13 +377,41 @@ class EncyclopediaWidget(QWidget):
 
     def load_custom_entries(self, entries: List[Dict[str, str]]):
         """Load project-specific custom entries."""
-        self._custom_entries = list(entries) if entries else []
+        self._custom_entries = [_from_stored(e) for e in (entries or []) if isinstance(e, dict)]
         self._rebuild_entries()
 
     def get_custom_entries(self) -> List[Dict[str, str]]:
-        """Get custom entries for project save."""
-        return self._custom_entries
+        """Get custom entries for project save: every value as text, as the
+        project file stores them (tags joined with commas). A list or a
+        true/false value here used to make the World fail to save."""
+        return [_to_stored(e) for e in self._custom_entries]
 
     def get_all_entries_for_rag(self) -> List[dict]:
         """Get all entries (base + custom) for RAG indexing."""
         return list(self._all_entries)
+
+
+def _to_stored(entry: Dict) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for k, v in entry.items():
+        if isinstance(v, bool):
+            out[k] = "true" if v else "false"
+        elif isinstance(v, (list, tuple)):
+            out[k] = ", ".join(str(x) for x in v)
+        elif v is None:
+            continue
+        else:
+            out[k] = str(v)
+    return out
+
+
+def _from_stored(entry: Dict) -> Dict:
+    out = dict(entry)
+    if isinstance(out.get("tags"), str):
+        out["tags"] = [t.strip() for t in out["tags"].split(",") if t.strip()]
+    if isinstance(out.get("examples"), str):
+        out["examples"] = [x.strip() for x in out["examples"].split(",") if x.strip()]
+    if isinstance(out.get("is_custom"), str):
+        out["is_custom"] = out["is_custom"].strip().lower() != "false"
+    return out
+

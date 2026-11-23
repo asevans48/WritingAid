@@ -30,17 +30,16 @@ Layout (``format_version`` 1)::
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from src.data import safe_store
+from src.data import readiness_state
 
 FORMAT_VERSION = 1
 ROUTES: Dict[str, str] = {"agent": "Agent submission", "self": "Self-publishing"}
 DEFAULT_ROUTE = "agent"
-MAIN = "main"
+MAIN = readiness_state.MAIN
 
 # Typical length in words: a rough guide drawn from commonly cited agent and
 # self-publishing guidance. Publishers and markets vary; never a target.
@@ -66,33 +65,25 @@ DEFAULT_NOVEL = {"agent": (70_000, 100_000), "self": (60_000, 90_000)}
 TYPICAL_NOVELLA = (17_500, 40_000)          # the usual definition of a novella
 
 
-# ── The readiness file ─────────────────────────────────────────────────
+# ── The readiness file (owned by readiness_state since 1.2b) ───────────
 
 def readiness_path(project: Any) -> Path:
-    pp = getattr(project, "project_path", "") or ""
-    if pp:
-        return Path(pp).parent / "readiness.json"
-    name = re.sub(r"[^\w-]+", "_", getattr(project, "name", "") or "untitled")
-    return Path.home() / ".creativeos" / "readiness" / f"{name}.json"
+    return readiness_state.readiness_path(project)
 
 
 def load(project: Any) -> Dict[str, Any]:
     """The readiness file, or an empty one. Missing → empty, quietly;
     unreadable → set aside, the writer told, then empty (safe_store)."""
-    data = safe_store.load(readiness_path(project), {}, expect=dict)
-    data.setdefault("format_version", FORMAT_VERSION)
-    if not isinstance(data.get("manuscripts"), dict):
-        data["manuscripts"] = {}
-    return data
+    return readiness_state.load(project)
 
 
 def save(project: Any, data: Dict[str, Any]) -> bool:
-    return safe_store.save(readiness_path(project), data, indent=1)
+    return readiness_state.save(project, data)
 
 
 def scope_key(scope: Optional[str]) -> str:
     """The file's key for a manuscript: "main", or the novella's id."""
-    return scope or MAIN
+    return readiness_state.scope_key(scope)
 
 
 # ── Route ──────────────────────────────────────────────────────────────
@@ -107,12 +98,8 @@ def set_route(project: Any, scope: Optional[str], route: str) -> bool:
     """Set a manuscript's route. Everything else in the file is kept."""
     if route not in ROUTES:
         raise ValueError(f"unknown route {route!r}")
-    data = load(project)
-    entry = data["manuscripts"].setdefault(scope_key(scope), {})
-    if not isinstance(entry, dict):
-        entry = data["manuscripts"][scope_key(scope)] = {}
-    entry["route"] = route
-    return save(project, data)
+    return readiness_state.update(
+        project, lambda data: readiness_state.manuscript_entry(data, scope).__setitem__("route", route))
 
 
 # ── The goal ───────────────────────────────────────────────────────────

@@ -45,7 +45,7 @@ a difference of one or two as noise, not as a change.
 | Attributions | 1 | 0 | 1 | 0 |
 | Visuals | 8 | 0 | 2 | 0 |
 | Prose Profile | 0 | 0 | 1 | 0 |
-| Critique | 11 | 0 | 4 | results tabs, one per report run |
+| Critique | 11 | 0 | 4 | results tabs, one per report run (since 2.1: **6** buttons, **2** sections; the set-up folds under the scorecard) |
 | Video Studio | 12 | 0 | 2 | 0 |
 | Publishing | 4 | 0 | 1 | 0 |
 | Sidebar: AI Assistant | 8 | 0 | 0 | 0 |

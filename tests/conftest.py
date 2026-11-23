@@ -55,15 +55,29 @@ def _isolated_window_geometry(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolated_critique_resume(tmp_path, monkeypatch):
+    """A stopped critique's finished reports: beside a saved project (a
+    temporary folder in tests); an unsaved one's go to a temporary folder."""
+    import src.data.critique_resume as cr
+    original = cr.resume_path
+
+    def path(project):
+        if getattr(project, "project_path", ""):
+            return original(project)
+        return tmp_path / "critique_resume" / "unsaved.json"
+    monkeypatch.setattr(cr, "resume_path", path)
+
+
+@pytest.fixture(autouse=True)
 def _isolated_readiness_file(tmp_path, monkeypatch):
     """The readiness file (route, and later readiness results) sits beside a
     saved project, which tests keep in temporary folders; an unsaved one
     would go to the home folder, so send it to a temporary one."""
-    import src.data.publishing_goal as pg
-    original = pg.readiness_path
+    import src.data.readiness_state as rs
+    original = rs.readiness_path
 
     def path(project):
         if getattr(project, "project_path", ""):
             return original(project)
         return tmp_path / "readiness" / "unsaved.json"
-    monkeypatch.setattr(pg, "readiness_path", path)
+    monkeypatch.setattr(rs, "readiness_path", path)

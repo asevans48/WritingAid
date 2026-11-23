@@ -311,7 +311,9 @@ def _screen_info(app) -> Dict[str, Any]:
 
 
 def _settle(app, rounds: int = 8) -> None:
+    from src.ui import background
     for _ in range(rounds):
+        background.wait_all(10000)          # results arrive before the picture
         app.processEvents()
 
 

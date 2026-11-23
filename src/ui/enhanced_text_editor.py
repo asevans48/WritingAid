@@ -58,34 +58,11 @@ class BlockData(QTextBlockUserData):
         self.heading_level = heading_level
 
 
-class CheckMode(Enum):
-    """Modes for writing checks."""
-    ON_DEMAND = "on_demand"  # Only runs on recheck button click (green)
-    REALTIME = "realtime"    # Runs automatically as you type (blue)
-    OFF = "off"              # Disabled (white/default)
-
-
-class ErrorType(Enum):
-    """Types of writing errors."""
-    SPELLING = "spelling"
-    GRAMMAR = "grammar"
-    OVERUSE = "overuse"
-    OVERUSED_PHRASE = "overused_phrase"
-    STYLE = "style"
-
-
-@dataclass
-class WritingError:
-    """Represents a writing error with details."""
-    error_type: ErrorType
-    word: str
-    start: int
-    end: int
-    reason: str
-    suggestions: Optional[List[str]]   # None → computed on demand
-    # Span the suggestions replace, when it's wider than the word (the
-    # whole set phrase "mobile home" for an overused "home").
-    replace_span: Optional[Tuple[int, int]] = None
+# CheckMode, ErrorType, WritingError, issue_weight and the rules for which
+# flags to show live in src/utils/editor_flags.py (piece R.6), with no Qt.
+from src.utils.editor_flags import (  # noqa: E402,F401
+    CheckMode, ErrorType, FlagRules, WritingError, _STYLE_WEIGHTS, issue_weight,
+)
 
 
 # The checkers live in src/utils/ (piece R.3), with no Qt, so a chapter can be
@@ -134,35 +111,8 @@ class _GrammarWorker(QThread):
             self.results_ready.emit({})
             return
         self.status.emit("Grammar: checking…")
-        results: Dict[str, list] = {p: [] for p in self.paragraphs}
-        batch: List[str] = []
-        size = 0
-
-        def flush():
-            if not batch:
-                return
-            joined = "\n".join(batch)
-            starts, pos = [], 0
-            for p in batch:
-                starts.append(pos)
-                pos += len(p) + 1
-            for issue in engine.check(joined):
-                for p, st in zip(batch, starts):
-                    if st <= issue.start < st + len(p):
-                        if issue.end <= st + len(p):
-                            issue.start -= st
-                            issue.end -= st
-                            results[p].append(issue)
-                        break
-            batch.clear()
-
-        for p in self.paragraphs:
-            if size + len(p) > self.CHUNK_CHARS:
-                flush()
-                size = 0
-            batch.append(p)
-            size += len(p) + 1
-        flush()
+        from src.utils.editor_flags import languagetool_issues
+        results = languagetool_issues(self.paragraphs, engine, self.CHUNK_CHARS)
         self.status.emit("Grammar: LanguageTool")
         self.results_ready.emit(results)
 
@@ -243,42 +193,7 @@ class _FlagReviewWorker(QThread):
             self.done.emit({}, False)
 
 
-# How much fixing an issue tends to improve the page (Focus view, and the
-# fallback for "Today's three fixes").
-_STYLE_WEIGHTS = {"preference": 70, "cliche": 50, "wordy": 35, "passive": 30, "intensifier": 30,
-                  "adverb": 25, "echo": 25, "repeated_start": 20, "long_sentence": 20,
-                  "hard_sentence": 20, "sticky_sentence": 15}
-
-
-def issue_weight(error, paragraph: str = "") -> float:
-    if error.error_type == ErrorType.SPELLING:
-        w = 100
-    elif error.error_type == ErrorType.GRAMMAR:
-        w = 80
-    elif error.error_type == ErrorType.OVERUSE:
-        w = 45
-    elif error.error_type == ErrorType.OVERUSED_PHRASE:
-        w = 40
-    else:
-        w = _STYLE_WEIGHTS.get(getattr(error, "style_kind", ""), 20)
-    try:
-        from src.ai import flag_judge as fj
-        from src.ai.word_suggest import sentence_around
-        category = {ErrorType.STYLE: "style", ErrorType.GRAMMAR: "grammar",
-                    ErrorType.SPELLING: "spelling"}.get(error.error_type)
-        if category:
-            kind = getattr(error, "style_kind", "") if category == "style" else ""
-            v = fj.verdict(category, error.word,
-                           sentence_around(paragraph, error.start, error.end).text if paragraph else "",
-                           kind)
-            if v is not None and v[0]:
-                w += 10                       # a model confirmed it matters
-    except Exception:
-        pass
-    return w
-
-
-class WritingHighlighter(QSyntaxHighlighter):
+class WritingHighlighter(QSyntaxHighlighter, FlagRules):
     """Syntax highlighter for spelling, grammar, and overuse checking.
 
     Modes per check: OFF, ON_DEMAND (green) and REALTIME (blue). Whenever
@@ -590,44 +505,6 @@ class WritingHighlighter(QSyntaxHighlighter):
         if self._style_mode != CheckMode.OFF:
             self.rehighlight()
 
-    def style_issues_for(self, text: str) -> list:
-        """Style issues for one paragraph (cached, minus ignored ones)."""
-        from src.utils.style_checks import analyze_paragraph
-        key = (text, frozenset(self._style_kinds))
-        issues = self._style_cache.get(key)
-        if issues is None:
-            issues = analyze_paragraph(text, self._style_kinds)
-            if len(self._style_cache) > 4000:
-                self._style_cache.clear()
-            self._style_cache[key] = issues
-        from src.ai import flag_judge as fj
-        from src.ai import style_sheet as ss
-        from src.ai.word_suggest import sentence_around
-        project = self.project
-        kept_kinds = ss.kept_kinds(project) if project is not None else set()
-        allowed = ss.allowed_words(project) if project is not None else set()
-        kept = []
-        for i in issues:
-            if (i.kind, _apos(i.text.strip().lower())) in self._style_ignored:
-                continue
-            if i.kind == "echo" and i.text.strip().lower() in allowed:
-                continue                     # a word of the story's world, like a name
-            if fj.quick_style_ok(i.kind, text, i.start, i.end):
-                continue                     # dialogue: the character's voice
-            sentence = sentence_around(text, i.start, i.end).text
-            if fj.dropped("style", i.text, sentence, i.kind):
-                continue                     # the model judged it a false alarm
-            if i.kind in kept_kinds:
-                # The writer keeps these on purpose: only a model-confirmed problem shows.
-                v = fj.verdict("style", i.text, sentence, i.kind)
-                if v is None or not v[0]:
-                    continue
-            kept.append(i)
-        if project is not None:
-            kept += [i for i in ss.preference_issues(project, text)
-                     if (i.kind, _apos(i.text.strip().lower())) not in self._style_ignored]
-        return kept
-
     def set_overuse_mode(self, mode: CheckMode):
         """Set overuse detection mode (takes effect immediately)."""
         changed = mode != self._overuse_mode
@@ -780,13 +657,6 @@ class WritingHighlighter(QSyntaxHighlighter):
 
         self.rehighlight()
 
-    def is_word_ignored(self, word: str, error_type: ErrorType) -> bool:
-        """Check if a word is ignored for a specific error type."""
-        word_lower = word.lower()
-        if word_lower in self._ignored_words:
-            return error_type in self._ignored_words[word_lower]
-        return False
-
     def clear_ignored(self):
         """Clear all ignored words."""
         self._ignored_words.clear()
@@ -853,70 +723,6 @@ class WritingHighlighter(QSyntaxHighlighter):
             else:
                 error.suggestions = []
         return error
-
-    def _should_check(self, mode: CheckMode) -> bool:
-        """A check draws its underlines whenever it is on. (ON_DEMAND vs
-        REALTIME only changes when the heavy LanguageTool pass and the
-        overuse statistics refresh.)"""
-        return mode != CheckMode.OFF
-
-    def _word_intended(self, word: str) -> bool:
-        """In the style sheet's allowed words; or a capitalised word (a name)
-        the model judged intentional, or (quick rule) used three or more
-        times and not one slip from a common word. A lowercase misspelling
-        is always marked — the writer can allow it."""
-        from src.ai import flag_judge as fj
-        if self.project is not None:
-            from src.ai.style_sheet import allowed_words
-            if _apos(word.lower()) in allowed_words(self.project):
-                return True
-        if not word[:1].isupper():
-            return False
-        if fj.dropped("spelling", word):
-            return True
-        cache = self.__dict__.setdefault("_intended_cache", {})
-        k = (word, len(self._full_text or ""))
-        if k not in cache:
-            if len(cache) > 5000:
-                cache.clear()
-            cache[k] = fj.quick_word_intended(word, self._full_text or "", self.spell_checker)
-        return cache[k]
-
-    def _probably_a_name(self, word: str) -> bool:
-        """Is a capitalised, sentence-initial unknown word a proper noun?
-
-        Evidence from the document first: capitalised mid-sentence
-        elsewhere → a name; written lowercase elsewhere → an ordinary
-        word (so check it). Otherwise it's a name unless its best
-        correction is a common English word ("Tommorow" → tomorrow).
-        """
-        cache = self.__dict__.setdefault("_name_cache", {})
-        key = (word, len(self._full_text))
-        if key in cache:
-            return cache[key]
-        text = self._full_text or ""
-        esc = re.escape(word)
-        if re.search(rf"[a-z,;]\s+{esc}\b", text):
-            result = True
-        elif re.search(rf"(?<![A-Za-z']){re.escape(word.lower())}(?![A-Za-z'])", text):
-            result = False
-        else:
-            result = not self.spell_checker.looks_like_common_word_typo(word)
-        if len(cache) > 5000:
-            cache.clear()
-        cache[key] = result
-        return result
-
-    _SENTENCE_END_RX = re.compile(r"[.!?…:]\s*$|^\s*$")
-
-    _BEFORE_SENTENCE_CHARS = frozenset("\"“”‘'([-—–*_")
-
-    @classmethod
-    def _starts_sentence(cls, text: str, pos: int) -> bool:
-        i = pos
-        while i > 0 and (text[i - 1] in cls._BEFORE_SENTENCE_CHARS or text[i - 1].isspace()):
-            i -= 1
-        return i == 0 or text[i - 1] in ".!?…:"
 
     def _apply_markdown_formatting(self, text: str):
         """Apply visual formatting for Markdown syntax.
@@ -988,15 +794,15 @@ class WritingHighlighter(QSyntaxHighlighter):
             self.setFormat(match.start() + 1, len(match.group(1)), self.md_italic_format)
 
     def highlightBlock(self, text: str):
-        """Highlight errors in a block of text."""
+        """Highlight errors in a block of text. What to flag is decided by
+        ``FlagRules.paragraph_flags`` (no Qt); this only draws it."""
         if self._suspended:
             return
         block = self.currentBlock()
         block_number = block.blockNumber()
 
         # Store current block hash to track changes
-        current_hash = hash(text)
-        self._block_hashes[block_number] = current_hash
+        self._block_hashes[block_number] = hash(text)
 
         # Clear previous errors for this block
         self._errors[block_number] = []
@@ -1006,8 +812,6 @@ class WritingHighlighter(QSyntaxHighlighter):
         if not self._highlights_visible:
             return
 
-        # Helper to get the existing character format at a position in the block
-        # This preserves font size, weight, etc. when we add underlines
         def get_existing_format(pos: int) -> QTextCharFormat:
             """Document format at ``pos`` merged with what this highlighter
             already applied there (so a style tint survives a spelling
@@ -1018,215 +822,39 @@ class WritingHighlighter(QSyntaxHighlighter):
             fmt.merge(self.format(pos))
             return fmt
 
-        # Style checks — drawn first so the error underlines below layer
-        # on top of the sentence tints.
-        drafting = self.phase == "drafting"
-        if self._should_check(self._style_mode) and not drafting:
-            from src.utils.style_checks import KINDS
-            for issue in self.style_issues_for(text):
-                fmt_add = self._style_formats.get(issue.kind)
-                if fmt_add is None or issue.end <= issue.start:
-                    continue
-                pos = issue.start
-                while pos < issue.end:       # merge segment by segment
+        def draw(start: int, length: int, fmt_add: QTextCharFormat) -> None:
+            merged = get_existing_format(start)
+            merged.merge(fmt_add)
+            self.setFormat(start, length, merged)
+
+        errors, focus_keep = self.paragraph_flags(text, block_number, block.position())
+        self._errors[block_number] = errors
+        for e in errors:
+            if e.error_type == ErrorType.STYLE:
+                fmt_add = self._style_formats[e.style_kind]
+                pos = e.start
+                while pos < e.end:           # merge segment by segment
                     seg_end = pos + 1
                     base = self.format(pos)
-                    while seg_end < issue.end and self.format(seg_end) == base:
+                    while seg_end < e.end and self.format(seg_end) == base:
                         seg_end += 1
-                    merged = get_existing_format(pos)
-                    merged.merge(fmt_add)
-                    self.setFormat(pos, seg_end - pos, merged)
+                    draw(pos, seg_end - pos, fmt_add)
                     pos = seg_end
-                self._errors[block_number].append(WritingError(
-                    error_type=ErrorType.STYLE,
-                    word=issue.text,
-                    start=issue.start,
-                    end=issue.end,
-                    reason=f"{KINDS[issue.kind][0]}: {issue.message}",
-                    suggestions=list(issue.suggestions),
-                ))
-                self._errors[block_number][-1].style_kind = issue.kind
+            elif e.error_type == ErrorType.GRAMMAR:
+                for seg_start, seg_end in getattr(e, "draw_segments", [(e.start, e.end)]):
+                    draw(seg_start, seg_end - seg_start, self.grammar_format)
+            else:
+                draw(e.start, e.end - e.start, self._format_for(e))
 
-        # Spell checking - respects mode
-        if self._should_check(self._spell_mode):
-            typing_end = (self._typing[1] if self._typing and self._typing[0] == block_number
-                          else -1)
-            from src.utils.proofing import normalize_apostrophes
-            for match in re.finditer(r"[A-Za-z]+(?:'[A-Za-z]+)*", normalize_apostrophes(text)):
-                word = text[match.start():match.end()]   # as typed (any apostrophe)
-                if match.end() == typing_end:
-                    continue  # still being typed
-                if self.is_word_ignored(word, ErrorType.SPELLING):
-                    continue
-                sentence_start = self._starts_sentence(text, match.start())
-                is_correct, reason = self.spell_checker.check_word(
-                    word, sentence_start=sentence_start)
-                if (not is_correct and sentence_start and word[:1].isupper()
-                        and self._probably_a_name(word)):
-                    is_correct = True
-                if not is_correct and self._word_intended(word):
-                    is_correct = True        # a name or a word of the story's world
-                if not is_correct:
-                    # Get existing format and merge with our underline format
-                    # This preserves font size, weight, etc.
-                    existing_format = get_existing_format(match.start())
-                    existing_format.merge(self.spelling_format)
-                    self.setFormat(match.start(), len(word), existing_format)
-                    self._errors[block_number].append(WritingError(
-                        error_type=ErrorType.SPELLING,
-                        word=word,
-                        start=match.start(),
-                        end=match.end(),
-                        reason=reason,
-                        suggestions=None,   # computed on demand (get_error_at)
-                    ))
-
-        # Grammar checking - respects mode
-        # Use full check only during explicit recheck, otherwise use fast basic rules
-        if self._should_check(self._grammar_mode) and self.grammar_checker:
-            from src.utils.proofing import builtin_grammar, merge_issues
-            issues = merge_issues(self._lt_issues_for_block(text), builtin_grammar(text))
-            grammar_errors = [i.as_tuple() for i in issues]
-            from src.ai import flag_judge as fj
-            from src.ai.word_suggest import sentence_around
-            for start, end, error_text, message, suggestions in grammar_errors:
-                if start < 0 or end > len(text) or end <= start:
-                    continue
-                # Skip if ignored
-                if self.is_word_ignored(error_text, ErrorType.GRAMMAR):
-                    continue
-                if fj.quick_grammar_ok(message, text, start, end):
-                    continue                 # a fragment in dialogue is the character's voice
-                # Grammar always shows; a model that thinks it's fine says so on the card.
-                v = fj.verdict("grammar", error_text, sentence_around(text, start, end).text)
-                if v is not None and not v[0] and v[1]:
-                    message = f"{message} (Editor's view: may be fine — {v[1].rstrip('.')}.)"
-
-                # A span already flagged as a spelling error isn't
-                # re-flagged; a longer grammar issue that merely overlaps
-                # one (e.g. a double negative starting with "dont") is
-                # underlined on the parts the spelling error doesn't cover.
-                taken = sorted((e.start, e.end) for e in self._errors[block_number]
-                               if start < e.end and e.start < end
-                               and e.error_type != ErrorType.STYLE)
-                already_flagged = any(s0 <= start and end <= e0 for s0, e0 in taken)
-                if not already_flagged:
-                    segments, cur = [], start
-                    for s0, e0 in taken:
-                        if s0 > cur:
-                            segments.append((cur, s0))
-                        cur = max(cur, e0)
-                    if cur < end:
-                        segments.append((cur, end))
-                    for seg_start, seg_end in segments:
-                        # Merge with existing format to preserve font size, weight, etc.
-                        existing_format = get_existing_format(seg_start)
-                        existing_format.merge(self.grammar_format)
-                        self.setFormat(seg_start, seg_end - seg_start, existing_format)
-                    self._errors[block_number].append(WritingError(
-                        error_type=ErrorType.GRAMMAR,
-                        word=error_text,
-                        start=start,
-                        end=end,
-                        reason=message,
-                        suggestions=suggestions
-                    ))
-
-        # Overuse detection - respects mode
-        if (self._should_check(self._overuse_mode) and self._full_text and self.overuse_detector
-                and not drafting):
-            from src.utils.proofing import COMPOUND_TOKEN_RX, normalize_apostrophes
-            flagged_spans = {(e.start, e.end) for e in self._errors[block_number]}
-            for match in COMPOUND_TOKEN_RX.finditer(normalize_apostrophes(text)):
-                word = text[match.start():match.end()]   # as typed (whole compound)
-                # Skip if ignored
-                if self.is_word_ignored(word, ErrorType.OVERUSE):
-                    continue
-
-                is_overused, count = self.overuse_detector.is_overused(word, self._full_text)
-                if is_overused:
-                    # Don't double-flag
-                    if match.span() not in flagged_spans:
-                        flagged_spans.add(match.span())
-                        # Merge with existing format to preserve font size, weight, etc.
-                        existing_format = get_existing_format(match.start())
-                        existing_format.merge(self.overuse_format)
-                        self.setFormat(match.start(), len(word), existing_format)
-                        self._errors[block_number].append(WritingError(
-                            error_type=ErrorType.OVERUSE,
-                            word=word,
-                            start=match.start(),
-                            end=match.end(),
-                            reason=(f"Word '{word}' appears {count} times. "
-                                    + (self.overuse_detector.verdict_reason(
-                                        "w:" + (self.overuse_detector._count_key(word.lower()) or ""))
-                                       or "Consider varying your word choice.")),
-                            suggestions=None,   # computed on demand (get_error_at)
-                        ))
-
-            # Overused phrase detection (2, 3, 4, 5-word phrases)
-            # Calculate block start position in full document
-            block_start = block.position()
-            block_end = block_start + len(text)
-
-            # Get overused phrases that overlap with this block
-            phrase_occurrences = (self.overuse_detector.get_overused_phrases_in_range(
-                self._full_text, block_start, block_end
-            ) if self._full_text_fresh else [])
-
-            for phrase, phrase_start, phrase_end, count in phrase_occurrences:
-                # Convert document position to block position
-                local_start = max(0, phrase_start - block_start)
-                local_end = min(len(text), phrase_end - block_start)
-
-                # Skip if the phrase doesn't actually overlap this block's text range
-                if local_start >= len(text) or local_end <= 0:
-                    continue
-
-                # Skip if ignored
-                if self.is_word_ignored(phrase, ErrorType.OVERUSED_PHRASE):
-                    continue
-
-                # Don't double-flag if already flagged
-                if (local_start, local_end) not in flagged_spans:
-                    flagged_spans.add((local_start, local_end))
-                    # Use a different shade of blue for phrases (purple-ish)
-                    phrase_format = self.phrase_format
-
-                    existing_format = get_existing_format(local_start)
-                    existing_format.merge(phrase_format)
-                    self.setFormat(local_start, local_end - local_start, existing_format)
-
-                    word_count = len(phrase.split())
-                    self._errors[block_number].append(WritingError(
-                        error_type=ErrorType.OVERUSED_PHRASE,
-                        word=text[local_start:local_end],   # as typed
-                        start=local_start,
-                        end=local_end,
-                        reason=(f"Phrase '{phrase}' ({word_count} words) appears {count} times. "
-                                + (self.overuse_detector.verdict_reason(f"p:{phrase}")
-                                   or "Consider rephrasing.")),
-                        suggestions=None,   # computed on demand (get_error_at)
-                    ))
-
-        # Focus: only this paragraph's most important issues stay marked.
-        errors = self._errors.get(block_number, [])
-        must = [e for e in errors if e.error_type in (ErrorType.SPELLING, ErrorType.GRAMMAR)]
-        others = [e for e in errors if e not in must]
-        if self.focus and not drafting and len(others) > max(0, self.focus_per_paragraph - len(must)):
-            # Spelling and grammar always stay; the rest compete for what's left.
-            ranked = sorted(others, key=lambda e: -issue_weight(e, text))
-            keep = must + ranked[:max(0, self.focus_per_paragraph - len(must))]
-            self._errors[block_number] = [e for e in errors if e in keep]
+        if focus_keep is not None:
+            # Focus: only this paragraph's most important issues stay marked.
             self.setFormat(0, len(text), QTextCharFormat())
             self._apply_markdown_formatting(text)
-            for e in keep:
+            for e in focus_keep:
                 fmt = self._format_for(e)
                 if fmt is None or e.end <= e.start:
                     continue
-                merged = get_existing_format(e.start)
-                merged.merge(fmt)
-                self.setFormat(e.start, e.end - e.start, merged)
+                draw(e.start, e.end - e.start, fmt)
 
     def _format_for(self, error):
         if error.error_type == ErrorType.STYLE:
@@ -1638,11 +1266,8 @@ class EnhancedTextEditor(QTextEdit):
         self.setAcceptRichText(True)
 
         # Initialize checkers
-        self.spell_checker = SpellChecker()
-        self.grammar_checker = GrammarChecker()
-        self.overuse_detector = OveruseDetector()
-        # Light repeats are only marked when they weaken the writing.
-        self.overuse_detector.review_low_counts = True
+        from src.utils.editor_flags import new_checkers
+        self.spell_checker, self.grammar_checker, self.overuse_detector = new_checkers()
         self._project = None
         self.phase_setting = "revising"     # every check unless the writer chooses otherwise
 
@@ -1792,23 +1417,9 @@ class EnhancedTextEditor(QTextEdit):
 
     def set_project_vocabulary(self, project) -> None:
         """Teach the spell checker the project's names and dictionary."""
-        words: List[str] = []
-        try:
-            words += [c.name for c in getattr(project, "characters", None) or []]
-            from src.ai.canon_index import collect_world_entities
-            words += [e.name for e in collect_world_entities(
-                getattr(project, "worldbuilding", None))]
-            words += list(getattr(getattr(project, "dictionary", None), "words", None) or [])
-        except Exception as e:
-            print(f"[spell] project vocabulary unavailable: {e}")
+        from src.utils.editor_flags import project_vocabulary
+        words, names = project_vocabulary(project)
         self.spell_checker.set_project_words(words)
-        # Names repeat because stories are about people and places.
-        names = [c.name for c in getattr(project, "characters", None) or []]
-        try:
-            from src.ai.canon_index import collect_world_entities
-            names += [e.name for e in collect_world_entities(getattr(project, "worldbuilding", None))]
-        except Exception:
-            pass
         self._project = project
         self.writing_highlighter.project = project
         self.overuse_detector.set_names(names + self._allowed_words())
@@ -1825,9 +1436,8 @@ class EnhancedTextEditor(QTextEdit):
         return prompt_block(project) if project is not None else ""
 
     def _allowed_words(self) -> List[str]:
-        from src.ai.style_sheet import allowed_words
-        return sorted(allowed_words(getattr(self, "_project", None))) \
-            if getattr(self, "_project", None) is not None else []
+        from src.utils.editor_flags import allowed_words
+        return allowed_words(getattr(self, "_project", None))
 
     def _learn(self, signal: str, subject: str) -> None:
         """Count what the writer does; a repeated pattern proposes a rule."""

@@ -124,12 +124,13 @@ def cached(project: Any, scope: Optional[str] = None) -> Optional[Dict[str, Any]
 
 
 def _store(project: Any, scope: Optional[str], entry: Dict[str, Any]) -> None:
-    from src.data import publishing_goal as pg
-    data = pg.load(project)                 # every other key is kept
-    if not isinstance(data.get("voice"), dict):
-        data["voice"] = {}
-    data["voice"][pg.scope_key(scope)] = entry
-    pg.save(project, data)
+    from src.data import readiness_state as rs
+
+    def change(data):                       # every other key is kept
+        if not isinstance(data.get("voice"), dict):
+            data["voice"] = {}
+        data["voice"][rs.scope_key(scope)] = entry
+    rs.update(project, change)
 
 
 # ── Asking the model ───────────────────────────────────────────────────

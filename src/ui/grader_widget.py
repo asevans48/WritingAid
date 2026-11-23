@@ -310,6 +310,8 @@ class CritiqueWorker(QThread):
     finished = pyqtSignal(object)  # CritiqueReport
     error = pyqtSignal(str)
     progress = pyqtSignal(str)
+    partial = pyqtSignal(object)   # the CritiqueReport so far, after each report
+    stop_requested = False         # set by Stop; checked between reports
 
     def __init__(
         self,
@@ -409,14 +411,14 @@ class CritiqueWorker(QThread):
                     ensure(orchestrator.writer_voice, self.project,
                            self.chapters[0]["scope"] or None, llm, progress_cb)
             if self.chapters:
-                report = orchestrator.run(
-                    chapters=self.chapters,
-                    report_types=self.report_types,
-                    genre_key_or_text=self.genre_key,
-                    manuscript_context=self.manuscript_context,
-                    critique_context=self.critique_context,
-                    progress_cb=progress_cb,
-                )
+                from src.ai.critique_parts import run_in_parts   # report by report
+                report = run_in_parts(
+                    orchestrator, self.chapters, self.report_types, self.genre_key,
+                    self.manuscript_context, self.critique_context, progress_cb,
+                    on_part=self.partial.emit, stop=lambda: self.stop_requested,
+                    project=self.project, model=self._describe_llm(llm) if llm else "",
+                    extra={"scope_label": self.scope_label, "scope_id": self.scope_id,
+                           "run_kind": self.run_kind})
             else:
                 report = CritiqueReport(
                     chapters=[], genre=resolve_genre_profile(self.genre_key),
@@ -436,7 +438,7 @@ class CritiqueWorker(QThread):
                 report.style_stats = {}
             report.overdescribed = self._overdescription(
                 llm, getattr(orchestrator, "writer_voice", None), progress_cb)
-            if self.include_continuity and self.project is not None:
+            if self.include_continuity and self.project is not None and not self.stop_requested:
                 progress_cb("Checking continuity across the novellas…")
                 from src.ai.continuity_analysis import ContinuityAnalyzer
                 section = ContinuityAnalyzer(self.project, llm, progress_cb).run()
@@ -452,7 +454,11 @@ class CritiqueWorker(QThread):
             report.promise_results = []
             if self.include_promise_check and llm is not None and self.project is not None:
                 report.promise_results = self._run_promise_checks(llm, progress_cb)
-            self.progress.emit("Complete.")
+            report.stopped = bool(getattr(report, "stopped", False) or self.stop_requested)
+            if self.chapters and not report.stopped:
+                from src.ai.critique_parts import finished as parts_finished
+                parts_finished(self.project, report)       # nothing left to resume
+            self.progress.emit("Stopped." if report.stopped else "Complete.")
             self.finished.emit(report)
         except Exception as e:  # pragma: no cover — defensive
             self.error.emit(str(e))
@@ -468,7 +474,7 @@ class CritiqueWorker(QThread):
         out: Dict[str, Dict[str, Any]] = {}
         for i, ch in enumerate(self.chapters):
             text = ch.get("text", "") or ""
-            use = llm if i < self.MAX_OVERDESCRIPTION_AI_CHAPTERS else None
+            use = llm if i < self.MAX_OVERDESCRIPTION_AI_CHAPTERS and not self.stop_requested else None
             if use is not None:
                 progress_cb(f"  {ch.get('title')}: overly descriptive statements…")
             try:
@@ -495,6 +501,8 @@ class CritiqueWorker(QThread):
         checker = PromiseChecker(llm)
         results = []
         for ch in self.chapters[:self.MAX_PROMISE_CHECK_CHAPTERS]:
+            if self.stop_requested:
+                break
             progress_cb(f"  {ch.get('title')}: promise & consistency check…")
             try:
                 results.append(checker.check_chapter(
@@ -535,6 +543,7 @@ class GraderWidget(QWidget):
     ask_about_suggestion = pyqtSignal(str, str, str, str)  # type, original_text, suggestion, explanation
     # chapter id ("" = the current chapter), chapter title, statement, offset in the chapter
     expand_statement_requested = pyqtSignal(str, str, str, int)
+    create_canon_requested = pyqtSignal(str, dict)   # kind, fields (a new element or character)
 
     def __init__(self):
         """Initialize grader widget."""
@@ -693,9 +702,15 @@ class GraderWidget(QWidget):
         self._analysis_model_state = None
         self._populate_analysis_model_combo()
         model_row.addWidget(self.analysis_model_combo, 1)
-        refresh_models_btn = QPushButton("↻")
+        # A tool button (a 32 px push button loses its "↻" to the app's padding).
+        from PyQt6.QtWidgets import QStyle, QToolButton
+        refresh_models_btn = QToolButton()
+        refresh_models_btn.setText("↻")
+        reload_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
+        if not reload_icon.isNull():
+            refresh_models_btn.setIcon(reload_icon)
         refresh_models_btn.setToolTip("Reload the model list (e.g. after training a new model)")
-        refresh_models_btn.setMaximumWidth(32)
+        refresh_models_btn.setAccessibleName("Reload the model list")
         refresh_models_btn.clicked.connect(self._populate_analysis_model_combo)
         model_row.addWidget(refresh_models_btn)
         reports_outer.addLayout(model_row)
@@ -724,7 +739,7 @@ class GraderWidget(QWidget):
              "chapter matches canon, and where it differs."),
         ]
         for i, (rt, label, tooltip) in enumerate(report_items):
-            cb = QCheckBox(label)
+            cb = QCheckBox(label.replace("&", "&&"))   # a bare & is a shortcut marker
             cb.setChecked(True)
             cb.setToolTip(tooltip)
             self.report_checkboxes[rt] = cb
@@ -882,6 +897,8 @@ class GraderWidget(QWidget):
 
         context_group.setLayout(context_layout)
         layout.addWidget(context_group)
+        from src.ui.scorecard_widget import install_scorecard        # the scorecard (2.1)
+        self.scorecard = install_scorecard(self, layout, [scope_group, reports_group, context_group])
 
         # ── Run row ──────────────────────────────────────────────
         run_row = QHBoxLayout()
@@ -1049,6 +1066,7 @@ class GraderWidget(QWidget):
         combo.blockSignals(False)
         self._update_manuscript_row()
         self._populate_chapter_list()
+        self.scorecard.set_project(self.project)
 
     def _on_manuscript_chosen(self, _index: int = 0) -> None:
         self._update_manuscript_row()
@@ -1623,7 +1641,6 @@ class GraderWidget(QWidget):
         self.progress_bar.setVisible(True)
         self.status_label.setVisible(True)
         self.status_label.setText("Starting critique…")
-        self.critique_btn.setEnabled(False)
 
         story_planning = (
             self.project.story_planning if self.project else None)
@@ -1668,6 +1685,8 @@ class GraderWidget(QWidget):
             self._worker.error.connect(lambda err: _safe(None, err))
         if on_progress is not None:
             self._worker.progress.connect(on_progress)
+        from src.ui.critique_live import watch_run     # results as ready; Stop
+        watch_run(self, self._worker)
         self._worker.start()
 
     def _on_critique_progress(self, message: str):
@@ -1687,7 +1706,7 @@ class GraderWidget(QWidget):
         self._last_report = result
         # Compare with the previous critique of the same scope.
         result.progress = None
-        if self.project is not None:
+        if self.project is not None and not getattr(result, "stopped", False):
             try:
                 from src.data.critique_history import record
                 result.progress = record(self.project, result)
@@ -2154,7 +2173,10 @@ class GraderWidget(QWidget):
             links = ""
             if uid and list_name in list_keys:
                 links = self._item_links(uid, list_keys.index(list_name), idx, text)
-            return f"<li>{self._escape_html(text)}{links}</li>"
+            from src.ui.canon_add_dialog import canon_link   # "＋ Add to World…"
+            links += canon_link(self, list_name, text)
+            ok = " class='ok'" if list_name == "strengths" else ""   # strengths in green
+            return f"<li{ok}>{self._escape_html(text)}{links}</li>"
 
         parts = [
             f"<div class='chapter-block'>"
@@ -2409,6 +2431,7 @@ class GraderWidget(QWidget):
 
     def _serialize_report(self, report: CritiqueReport) -> Dict[str, Any]:
         """Convert a CritiqueReport to a JSON-safe dict."""
+        from src.ai.critique_parts import section_to_dict
         return {
             "schema_version": 2,
             "scope_label": getattr(report, "scope_label", "") or "",
@@ -2425,22 +2448,7 @@ class GraderWidget(QWidget):
                     "chapter_index": c.chapter_index,
                     "word_count": c.word_count,
                     "sections": [
-                        {
-                            "report_type": s.report_type.value,
-                            "summary": s.summary,
-                            "narrative": s.narrative,
-                            "metrics": s.metrics,
-                            "findings": s.findings,
-                            "suggestions": s.suggestions,
-                            "strengths": s.strengths,
-                            "major_issues": s.major_issues,
-                            "minor_issues": s.minor_issues,
-                            "extra_lists": s.extra_lists,
-                            "prompt": s.prompt,
-                            "system_prompt": s.system_prompt,
-                            "calls": s.calls,
-                            "item_sources": s.item_sources,
-                        }
+                        section_to_dict(s)
                         for s in c.sections
                     ],
                 }
@@ -2450,6 +2458,7 @@ class GraderWidget(QWidget):
 
     def _deserialize_report(self, data: Dict[str, Any]) -> CritiqueReport:
         """Rehydrate a CritiqueReport from saved JSON."""
+        from src.ai.critique_parts import section_from_dict
         genre_key = data.get("genre_key", "default")
         genre = (GENRE_PROFILES.get(genre_key)
                  or GENRE_PROFILES["default"])
@@ -2457,28 +2466,8 @@ class GraderWidget(QWidget):
         for c in data.get("chapters", []):
             sections = []
             for s in c.get("sections", []):
-                try:
-                    rt = ReportType(s.get("report_type", "style"))
-                except ValueError:
-                    rt = ReportType.STYLE
-                sections.append(ReportSection(
-                    report_type=rt,
-                    chapter_title=c.get("chapter_title", ""),
-                    chapter_index=c.get("chapter_index", 0),
-                    summary=s.get("summary", ""),
-                    narrative=s.get("narrative", ""),
-                    metrics=s.get("metrics", {}) or {},
-                    findings=s.get("findings", []) or [],
-                    suggestions=s.get("suggestions", []) or [],
-                    strengths=s.get("strengths", []) or [],
-                    major_issues=s.get("major_issues", []) or [],
-                    minor_issues=s.get("minor_issues", []) or [],
-                    extra_lists=s.get("extra_lists", {}) or {},
-                    prompt=s.get("prompt", "") or "",
-                    system_prompt=s.get("system_prompt", "") or "",
-                    calls=s.get("calls", []) or [],
-                    item_sources=s.get("item_sources", {}) or {},
-                ))
+                sections.append(section_from_dict(s, c.get("chapter_title", ""),
+                                                  c.get("chapter_index", 0)))
             chapters.append(ChapterReport(
                 chapter_title=c.get("chapter_title", ""),
                 chapter_index=c.get("chapter_index", 0),
@@ -2891,6 +2880,9 @@ class GraderWidget(QWidget):
 
         elif url_str.startswith(("rate-item:", "rate-part:", "rate-section:")):
             self._handle_rating_link(url_str)
+
+        elif url_str.startswith("addcanon:"):          # add a found element or character
+            __import__("src.ui.canon_add_dialog", fromlist=["x"]).open_from_link(self, url_str)
 
         elif url_str.startswith("overdesc:"):
             try:

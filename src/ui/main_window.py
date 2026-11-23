@@ -3261,6 +3261,9 @@ class MainWindow(QMainWindow):
         self.grader_widget.go_to_line_requested.connect(self._go_to_critique_line)
         self.grader_widget.ask_about_suggestion.connect(self._ask_about_critique_suggestion)
         self.grader_widget.expand_statement_requested.connect(self._expand_critique_statement)
+        from src.ui.canon_add_dialog import add_from_critique      # new elements → World
+        self.grader_widget.create_canon_requested.connect(
+            lambda kind, data: add_from_critique(self, kind, data))
 
         # Connect attributions tab jump signal
         self.attributions_tab.jump_to_annotation.connect(self._jump_to_annotation)
@@ -7307,6 +7310,10 @@ class MainWindow(QMainWindow):
         # Set up grader widget with project reference and content provider
         self.grader_widget.set_project(self.current_project)
         self.grader_widget.set_content_provider(self.manuscript_editor.get_current_chapter_info)
+        self.grader_widget.scorecard.set_live_source(self.manuscript_editor)   # scorecard (2.1)
+        from src.ui.readiness_issues import show_passage
+        self.grader_widget.scorecard.issues.show_requested.connect(
+            lambda cid, passage, offset: show_passage(self, cid, passage, offset))
 
         # Wire the project into the Video Studio. The studio reads
         # project.video_studio (creating it on first use) and uses
@@ -10317,6 +10324,11 @@ class MainWindow(QMainWindow):
             "place": self._create_place_from_json,
             "faction": self._create_faction_from_json,
             "culture": self._create_culture_from_json,
+            "technology": self._create_technology_from_json,
+            "myth": self._create_myth_from_json,
+            "historical_event": self._create_historical_event_from_json,
+            "flora": self._create_flora_from_json,
+            "fauna": self._create_fauna_from_json,
             "chapter": self._create_chapter_from_json,
             # Plot-native kinds — added so the plot AI can propose
             # new beats / subplots / promises / tensions and the user

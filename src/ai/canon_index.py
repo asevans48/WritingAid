@@ -151,7 +151,25 @@ def collect_world_entities(worldbuilding: Any) -> List[CanonEntity]:
         if key not in seen:
             seen.add(key)
             unique.append(e)
+    _connect_terms(worldbuilding, unique)
     return unique
+
+
+def _connect_terms(worldbuilding: Any, entities: List[CanonEntity]) -> None:
+    """An Encyclopedia term connected to an element (``refers_to``, made
+    from the Critique) is also a name for that element: a mention of the
+    term counts as a mention of it."""
+    by_name = {}
+    for e in entities:
+        by_name.setdefault(e.name.lower(), e)
+    for entry in getattr(worldbuilding, "custom_encyclopedia", None) or []:
+        if not isinstance(entry, dict):
+            continue
+        term = (entry.get("name") or entry.get("title") or "").strip()
+        target = by_name.get((entry.get("refers_to") or "").strip().lower())
+        if term and target is not None and term.lower() != target.name.lower() \
+                and term not in target.aliases:
+            target.aliases.append(term)
 
 
 def _name_variants(name: str) -> List[str]:
