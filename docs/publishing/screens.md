@@ -162,7 +162,7 @@ For pieces 1.1, 9.2 and 9.3.
 
 Input to R.4.
 
-| Measure | `ProWritingAnalyzer` (`src/ui/enhanced_text_editor.py`) | `style_checks` (`src/utils/style_checks.py`) |
+| Measure | `ProWritingAnalyzer` (`src/utils/writing_stats.py`, moved by R.3) | `style_checks` (`src/utils/style_checks.py`) |
 |---|---|---|
 | Passive voice | yes (own helper-verb list) | yes (regex plus irregular participles and adjective exceptions) |
 | Adverbs | yes (own `COMMON_ADVERBS` list) | yes (`-ly` rule with exceptions) |

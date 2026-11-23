@@ -344,7 +344,9 @@ def test_card_add_to_dictionary_and_stale_guard(app, monkeypatch):
     cur = QTextCursor(e.document())
     cur.setPosition(e.toPlainText().index("tommorow"))
     cur.setPosition(e.toPlainText().index("tommorow") + 3, QTextCursor.MoveMode.KeepAnchor)
-    e.textChanged.disconnect(card.hide)
+    # (The card no longer hides on every textChanged — that closed it on
+    # each highlight redraw — so there is no such connection to undo here.
+    # _apply is called directly, as a late click would be.)
     cur.insertText("XYZ")
     card._apply("tomorrow")
     assert "XYZmorow" in e.toPlainText()                      # stale fix not applied

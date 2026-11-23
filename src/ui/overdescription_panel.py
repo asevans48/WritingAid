@@ -28,7 +28,11 @@ HIGHLIGHT = "#fde68a"          # flagged statement
 CUE_COLOR = "#b45309"          # the cue words inside it
 
 # A QThread destroyed while running aborts the app; keep running ones here.
-_RUNNING: Set[QThread] = set()
+# Running workers are kept alive by the shared helper (R.2); the name stays
+# for existing imports.
+from src.ui import background  # noqa: E402
+
+_RUNNING = background._RUNNING
 
 
 def flag_html(flag: od.Flag) -> str:
@@ -404,9 +408,7 @@ class MoreWorker(QThread):
 
 
 def start_worker(worker: QThread) -> None:
-    _RUNNING.add(worker)
-    worker.finished.connect(lambda w=worker: _RUNNING.discard(w))
-    worker.start()
+    background.start(worker)
 
 
 # ── Standalone dialog ────────────────────────────────────────────────

@@ -11,7 +11,11 @@ from PyQt6.QtWidgets import (
 )
 
 # A QThread destroyed while running aborts the app; keep turns until done.
-_RUNNING: Set["ChatTurnWorker"] = set()
+# Running workers are kept alive by the shared helper (R.2); the name stays
+# for existing imports.
+from src.ui import background  # noqa: E402
+
+_RUNNING = background._RUNNING
 
 
 class ChatTurnWorker(QThread):
@@ -114,10 +118,8 @@ def run_turn(owner, fn: Callable[[], object], on_done: Callable[[object, str], N
             print(f"[chat] could not show the reply: {e}")
 
     worker.done.connect(safe)
-    _RUNNING.add(worker)
-    worker.finished.connect(lambda w=worker: _RUNNING.discard(w))
     owner._chat_worker = worker
-    worker.start()
+    background.start(worker)
     return worker
 
 

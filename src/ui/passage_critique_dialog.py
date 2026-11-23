@@ -21,7 +21,11 @@ EXPANDED_ANGLE = "your text, expanded"
 
 # A QThread destroyed while running aborts the app, so running workers are
 # kept here until they finish even if their dialog is closed.
-_RUNNING: Set["SuggestionWorker"] = set()
+# Running workers are kept alive by the shared helper (R.2); the name stays
+# for existing imports.
+from src.ui import background  # noqa: E402
+
+_RUNNING = background._RUNNING
 
 
 def _project_path(project: Any) -> str:
@@ -334,10 +338,8 @@ class PassageCritiqueDialog(QDialog):
         if hasattr(worker, "overdescribed"):
             worker.overdescribed.connect(self._on_overdescribed)
         self.over_panel.set_busy("Looking for overly descriptive statements…")
-        _RUNNING.add(worker)
-        worker.finished.connect(lambda w=worker: _RUNNING.discard(w))
         self._worker = worker
-        worker.start()
+        background.start(worker)
 
     def _on_done(self, result, error: str):
         try:

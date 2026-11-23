@@ -301,10 +301,10 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 - [~] [0.3](pieces/03-0.3-safety-net-for-your-two-projects.md) Safety net for your two projects (S) — check built, both projects pass; screen check to follow
 - [x] [0.4](pieces/03b-0.4-harden-saving.md) Harden saving (M, before any piece that stores data)
 - [x] [U.1](pieces/04-U.1-shared-interface-parts.md) Shared interface parts (M)
-- [ ] [U.2](pieces/05-U.2-screenshot-and-clutter-count-harness.md) Screenshot and clutter-count harness (S)
+- [x] [U.2](pieces/05-U.2-screenshot-and-clutter-count-harness.md) Screenshot and clutter-count harness (S)
 - [x] [R.1](pieces/06-R.1-one-list-of-model-providers.md) One list of model providers (S)
-- [ ] [R.2](pieces/07-R.2-one-way-to-run-background-work.md) One way to run background work (M)
-- [ ] [R.3](pieces/08-R.3-move-the-checkers-out-of-the-editor-file.md) Move the checkers out of the editor file (M)
+- [x] [R.2](pieces/07-R.2-one-way-to-run-background-work.md) One way to run background work (M)
+- [x] [R.3](pieces/08-R.3-move-the-checkers-out-of-the-editor-file.md) Move the checkers out of the editor file (M)
 - [ ] [Q.1](pieces/09-Q.1-benchmark-set.md) Benchmark set (M)
 - [ ] [Q.2](pieces/10-Q.2-scoring-the-checks.md) Scoring the checks (M)
 - [ ] [R.4](pieces/11-R.4-one-style-analyser-not-two.md) One style analyser, not two (M)

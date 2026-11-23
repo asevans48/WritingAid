@@ -145,7 +145,11 @@ class _MomentWorker(QThread):
 
 
 # A QThread destroyed while running aborts the app; keep them until done.
-_RUNNING_MOMENTS: set = set()
+# Running workers are kept alive by the shared helper (R.2); the name stays
+# for existing imports.
+from src.ui import background  # noqa: E402
+
+_RUNNING_MOMENTS = background._RUNNING
 
 
 class RephraseDialog(QDialog):
@@ -1175,7 +1179,9 @@ class RephraseDialog(QDialog):
         )
         self.worker.finished.connect(self._on_generation_complete)
         self.worker.error.connect(self._on_generation_error)
-        self.worker.start()
+        # Kept alive by the shared helper (R.2): closing the window while it
+        # runs no longer destroys a running thread.
+        background.start(self.worker)
 
     def _on_generation_complete(self, result: RephraseResult):
         """Handle completed generation."""
@@ -2283,11 +2289,9 @@ class RephraseDialog(QDialog):
         names = [c.name for c in getattr(self.project, "characters", None) or []]
         worker = _MomentWorker(self._moment_llm, self.chapter, self.text_before, names, refresh)
         worker.done.connect(self._on_moment)
-        _RUNNING_MOMENTS.add(worker)
-        worker.finished.connect(lambda w=worker: _RUNNING_MOMENTS.discard(w))
         self._moment_worker = worker
         self.scene_status_label.setText("Summarising the scene so far…")
-        worker.start()
+        background.start(worker)
 
     def _on_moment(self, moment: str) -> None:
         try:
@@ -2307,6 +2311,16 @@ class RephraseDialog(QDialog):
             print(f"[scene] could not show the summary: {e}")
 
     def done(self, code: int) -> None:
+        # A rephrase still running when the window closes finishes in the
+        # background (kept alive); its result is no longer delivered here.
+        worker = getattr(self, "worker", None)
+        if worker is not None:
+            for signal, slot in ((getattr(worker, "finished", None), self._on_generation_complete),
+                                 (getattr(worker, "error", None), self._on_generation_error)):
+                try:
+                    signal.disconnect(slot)
+                except (TypeError, AttributeError, RuntimeError):
+                    pass
         if self._chat_worker is not None:
             try:
                 self._chat_worker.done.disconnect()

@@ -20,9 +20,9 @@ signature shown.
 | LanguageTool grammar | `LanguageToolEngine.get()`, then `.ensure_started()` (blocking: call it from a worker; needs Java), then `.check(text)` | `List[GrammarIssue]`, `[]` when not running | No (Java server) | the server starts once; not timed here |
 | Merge the two grammar sources | `proofing.merge_issues(*groups)` | `List[GrammarIssue]` | No | — |
 | Readability | `proofing.readability(text)` | `Readability` (Flesch-Kincaid grade and reading ease) or `None` | No | 4 ms |
-| Overused words and repeated phrases | `OveruseDetector()` in `src/ui/enhanced_text_editor.py`: `.update_cache(text)`, then `.analyze_text(text)` / `.analyze_phrases(text)` | `{word: count}` / `{phrase: count}` | No | 7 ms |
+| Overused words and repeated phrases | `OveruseDetector()` in `src/utils/overuse.py`: `.update_cache(text)`, then `.analyze_text(text)` / `.analyze_phrases(text)` | `{word: count}` / `{phrase: count}` | No | 7 ms |
 | Which light repeats weaken the writing | `repetition_judge.judge(llm, items, context)` in `src/ai/repetition_judge.py`; items from `OveruseDetector.review_items()` | `{key: (weakens, reason)}`, cached | **Yes** | one model call |
-| Writing statistics: sentence lengths and variety, sticky sentences, echoes, passive, adverbs, clichés, dialogue share and tags, readability | `ProWritingAnalyzer().analyze(text)` in `src/ui/enhanced_text_editor.py` | `WritingStats` (e.g. `sentence_length_score`, `dialogue_percentage`, `dialogue_tags`) | No | 7 ms |
+| Writing statistics: sentence lengths and variety, sticky sentences, echoes, passive, adverbs, clichés, dialogue share and tags, readability | `ProWritingAnalyzer().analyze(text)` in `src/utils/writing_stats.py` | `WritingStats` (e.g. `sentence_length_score`, `dialogue_percentage`, `dialogue_tags`) | No | 7 ms |
 | Model judging of style, grammar and spelling flags | `flag_judge.judge(llm, category, items, context)` in `src/ai/flag_judge.py`; items from `flag_judge.collect(highlighter, document)`; quick no-model rules `quick_style_ok`, `quick_grammar_ok`, `quick_word_intended` | `{key: (keep, reason)}`, cached; `dropped(...)` reads the cache | Judge: **yes**. Quick rules: no | one model call per batch |
 | Names, spellings, hyphenation, capitals, numbers, punctuation across the manuscript | `ConsistencyChecker(chapters, canon_names, is_known_word=None, ignored=()).run()` in `src/utils/consistency_checks.py`; `chapters` is `[(chapter_id, title, text)]`. Canon names as `MainWindow._canon_names` builds them: characters, `canon_index.collect_world_entities(project.worldbuilding)`, the project dictionary | `List[ConsistencyGroup]` | No | 53 ms for one chapter; 440 ms for 20 |
 | Overly descriptive statements | `overdescription.scan(text)` (candidates) or `overdescription.review_chapter(text, llm=None, voice=None)` in `src/ai/overdescription.py` | `List[Flag]` / `Review` (strongest first, at most 25) | Scan: no. With `llm`: the model confirms and suggests expansions | 8 ms scan; 15 ms review without a model |
@@ -97,15 +97,21 @@ for a 4,000-word chapter. It needs a `QApplication`, and LanguageTool's flags
 arrive later, from its own worker (`request_grammar_check`). With them left
 out, it gives spelling, overuse, repeated phrases and style.
 
-Two simpler routes cover most of it without Qt: `style_checks` for style,
-`OveruseDetector` for overuse and phrases, `proofing` for grammar. Spelling
-needs `SpellChecker` from the same file. The readiness engine (1.2a) should
-choose one route, and record whether its counts must match the editor's
-exactly.
+A simpler route covers most of it without Qt (since R.3):
+`style_checks` for style, `OveruseDetector` (`src/utils/overuse.py`) for
+overuse and phrases, `GrammarChecker` (`src/utils/grammar_checker.py`, or
+`proofing` directly) for grammar, and `SpellChecker`
+(`src/utils/spell_checker.py`; teach it the project's words with
+`set_project_words`, as `EnhancedTextEditor.set_project_vocabulary` does)
+for spelling. The readiness engine (1.2a) should choose one route, and
+record whether its counts must match the editor's exactly.
 
-`OveruseDetector`, `SpellChecker` and `ProWritingAnalyzer` live in
-`src/ui/enhanced_text_editor.py`, a file of over 3,000 lines. R.3 moves the
-checkers out; until then, import them from there and add nothing to that file.
+**Since R.3** the checkers live in `src/utils/`, with no Qt:
+`spell_checker.py` (`SpellChecker`), `overuse.py` (`OveruseDetector`),
+`writing_stats.py` (`ProWritingAnalyzer`, `WritingStats`) and
+`grammar_checker.py` (`GrammarChecker`). The old import from
+`src/ui/enhanced_text_editor.py` still works, but new code imports from
+`src/utils/`.
 
 ## Gaps
 

@@ -14,38 +14,16 @@ from PyQt6.QtWidgets import (
     QToolButton, QVBoxLayout, QWidget,
 )
 
-# A QThread destroyed while running aborts the app; keep them until done.
-_RUNNING: Set["BackgroundTask"] = set()
+# Background work runs through the shared helper (R.2). These names are kept
+# so existing imports (and tests that wait on ``_RUNNING``) keep working.
+from src.ui import background as _background  # noqa: E402
+
+_RUNNING = _background._RUNNING
+BackgroundTask = _background.Task
 
 
-class BackgroundTask(QThread):
-    done = pyqtSignal(object, str)          # result, error
-
-    def __init__(self, fn: Callable[[], Any]):
-        super().__init__()
-        self.fn = fn
-
-    def run(self):
-        try:
-            self.done.emit(self.fn(), "")
-        except Exception as e:
-            self.done.emit(None, str(e))
-
-
-def run_background(fn: Callable[[], Any], on_done: Callable[[Any, str], None]) -> BackgroundTask:
-    task = BackgroundTask(fn)
-
-    def safe(result, error):
-        try:
-            on_done(result, error)
-        except Exception as e:          # an exception escaping a slot aborts PyQt6
-            print(f"[companion] {e}")
-
-    task.done.connect(safe)
-    _RUNNING.add(task)
-    task.finished.connect(lambda t=task: _RUNNING.discard(t))
-    task.start()
-    return task
+def run_background(fn: Callable[[], Any], on_done: Callable[[Any, str], None]) -> "BackgroundTask":
+    return _background.run_background(fn, on_done, label="companion")
 
 
 # Moved to the shared kit (U.1); imported here so every existing
