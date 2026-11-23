@@ -325,6 +325,47 @@ def primary_button(text: str, parent: Optional[QWidget] = None) -> QPushButton:
     return btn
 
 
+def relayout(widget: QWidget) -> None:
+    """Tell every container above ``widget`` that its size changed, up to
+    a scroll area's page, which is resized to fit. (A widget that grows
+    after results arrive was otherwise drawn over what follows it.)"""
+    w = widget
+    while w is not None:
+        w.updateGeometry()
+        if w.layout() is not None:
+            w.layout().invalidate()
+            w.layout().activate()
+        parent = w.parentWidget()
+        area = parent.parentWidget() if parent is not None else None
+        if (isinstance(area, QScrollArea) and area.widget() is w) or \
+                (isinstance(parent, QScrollArea) and parent.widget() is w):
+            # The scroll area's page: grow (or shrink) its height to fit;
+            # the width stays the scroll area's.
+            need = max(w.minimumSizeHint().height(), w.minimumHeight())
+            if w.height() != need and (w.height() < need or not (
+                    isinstance(area, QScrollArea) and area.widgetResizable())):
+                w.resize(w.width(), need)
+            break
+        w = parent
+
+
+def compact_button(btn: QPushButton) -> QPushButton:
+    """A narrow button that shows its symbol. The app's style gives every
+    push button 16 px of padding each side, which leaves a 20–40 px button
+    blank; this drops the side padding on this button only. Call it after
+    the button's own ``setStyleSheet``."""
+    rule = "padding-left: 0px; padding-right: 0px; min-width: 0px;"
+    sheet = btn.styleSheet() or ""
+    if rule in sheet:
+        return btn
+    if "{" in sheet:                         # selector rules: add one more, last wins
+        sheet = sheet.rstrip() + "\nQPushButton { " + rule + " }"
+    else:                                     # bare declarations (or none)
+        sheet = (sheet.rstrip().rstrip(";") + "; " if sheet.strip() else "") + rule
+    btn.setStyleSheet(sheet)
+    return btn
+
+
 def empty_state(text: str) -> QLabel:
     """One quiet line that says what to do next when there is nothing to show."""
     label = QLabel(text)

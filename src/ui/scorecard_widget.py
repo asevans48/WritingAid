@@ -29,7 +29,8 @@ from PyQt6.QtWidgets import (
 )
 
 from src.ui.ui_kit import (
-    PALETTE, STAGE_COLOURS, CollapsibleSection, empty_state, primary_button, size_class,
+    PALETTE, STAGE_COLOURS, CollapsibleSection, empty_state, primary_button, relayout,
+    size_class,
 )
 
 HONEST_LINE = ("This measures the mechanics of the writing. It cannot tell you whether the "
@@ -362,9 +363,10 @@ class ScorecardWidget(QWidget):
         from src.ai import readiness as rd
         bits = ["A scan: no model judged these results." if report.tier == "scan"
                 else "Judged by a model."]
-        if report.left_out:
+        left = {n: why for n, why in report.left_out.items() if why != "information only"}
+        if left:
             names = [f"{rd.REGISTRY[n].label} ({why})" if n in rd.REGISTRY else n
-                     for n, why in report.left_out.items()]
+                     for n, why in left.items()]
             bits.append("Left out of the figure: " + "; ".join(names) + ".")
         if not report.cells:
             bits.append("Nothing counts toward the figure yet.")
@@ -418,7 +420,7 @@ class ScorecardWidget(QWidget):
                                for col in columns]
         self.table.clear()
         self.table.setColumnCount(len(columns))
-        self.table.setRowCount(len(report.chapters))
+        self.table.setRowCount(len(g.rows))
         for c, col in enumerate(columns):
             if col[0] == "check":
                 spec = col[1]
@@ -439,12 +441,20 @@ class ScorecardWidget(QWidget):
                 item.setToolTip("Click the stage in the ribbon above to see each check.")
             item.setForeground(QColor(STAGE_COLOURS.get(stage, PALETTE["ink"])))
             self.table.setHorizontalHeaderItem(c, item)
+        self._rows = [ch for ch, _cells in g.rows]
         for r, (ch, cells) in enumerate(g.rows):
             name = f"{ch.number}. {ch.title}" if ch.number else ch.title
             head = QTableWidgetItem(name if len(name) <= 36 else name[:35] + "…")
-            head.setToolTip(f"{name}\n{ch.words:,} words" + (" · the opening chapter" if ch.is_opening
-                                                     else "")
-                            + "\nDouble-click for this chapter's detailed critique.")
+            if ch.chapter_id == rd.BOOK_ROW:
+                font = head.font()
+                font.setItalic(True)
+                head.setFont(font)
+                head.setToolTip(f"Checks of the whole manuscript ({ch.words:,} words). Click "
+                                "to see what they found, chapter by chapter.")
+            else:
+                head.setToolTip(f"{name}\n{ch.words:,} words"
+                                + (" · the opening chapter" if ch.is_opening else "")
+                                + "\nDouble-click for this chapter's detailed critique.")
             self.table.setVerticalHeaderItem(r, head)
             by_name = {spec.name: res for spec, res in zip(g.columns, cells)}
             for c, col in enumerate(columns):
@@ -502,7 +512,16 @@ class ScorecardWidget(QWidget):
             item = QTableWidgetItem("")
             item.setToolTip("Not checked")
             return item
+        if result.status == Status.INFO:            # information: its figure, no colour
+            item = QTableWidgetItem(f"{result.measure:,.0f}" if result.measure is not None else "·")
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            item.setForeground(QColor(PALETTE["ink_soft"]))
+            item.setToolTip(f"{spec.label}: information, not counted.\n{result.message}".strip())
+            return item
         text = "?" if result.status == Status.COULD_NOT_CHECK else str(result.count)
+        if getattr(spec, "display", "count") == "measure" and result.measure is not None \
+                and result.status != Status.COULD_NOT_CHECK:
+            text = f"{result.measure:g}"                  # a score, not a count
         item = QTableWidgetItem(text)
         item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         item.setBackground(tint(STATUS_COLOURS.get(result.status, PALETTE["border"])))
@@ -564,27 +583,35 @@ class ScorecardWidget(QWidget):
         wide = t.horizontalHeader().length() > t.viewport().width()
         bar = t.horizontalScrollBar().sizeHint().height() if wide else 0
         height = header + rows + bar + 2 * t.frameWidth() + 2
-        t.setMinimumHeight(height)
-        t.setMaximumHeight(height)
+        if t.minimumHeight() != height or t.maximumHeight() != height:
+            t.setMinimumHeight(height)
+            t.setMaximumHeight(height)
+            relayout(self)                    # only when it changed (resizes come back here)
 
     # ── Choosing a chapter, and what it found ────────────────────
 
     def _row_of(self, chapter_id: Optional[str]) -> int:
         if self.report is None or not chapter_id:
             return -1
-        return next((r for r, ch in enumerate(self.report.chapters)
+        return next((r for r, ch in enumerate(getattr(self, "_rows", None) or self.report.chapters)
                      if ch.chapter_id == chapter_id), -1)
+
+    def _row_report(self, row: int):
+        rows = getattr(self, "_rows", None) or (self.report.chapters if self.report else [])
+        return rows[row] if 0 <= row < len(rows) else None
 
     def _on_cell(self, row: int, col: int) -> None:
         checks = self._column_checks[col] if 0 <= col < len(self._column_checks) else None
         self._select_row(row, checks)
 
     def _select_row(self, row: int, checks: Optional[List[str]]) -> None:
-        if self.report is None or not (0 <= row < len(self.report.chapters)):
+        from src.ai.readiness import BOOK_ROW
+        ch = self._row_report(row)
+        if ch is None:
             return
-        ch = self.report.chapters[row]
         self._select_chapter(ch.chapter_id, checks)
-        self.chapter_selected.emit(ch.scope, ch.chapter_id)
+        if ch.chapter_id != BOOK_ROW:
+            self.chapter_selected.emit(ch.scope, ch.chapter_id)
 
     def _select_chapter(self, chapter_id: Optional[str], checks: Optional[List[str]]) -> None:
         self._selected, self._selected_checks = chapter_id, checks
@@ -600,8 +627,12 @@ class ScorecardWidget(QWidget):
             return
         if self.table.item(row, 0) is not None:
             self.table.scrollToItem(self.table.item(row, 0))
-        self.issues.show_chapter(self.report.chapters[row], self._selected_checks,
-                                 self._chapter_text(self._selected))
+        from src.ai.readiness import BOOK_ROW
+        titles = {ch.chapter_id: (f"{ch.number}. {ch.title}" if ch.number else ch.title)
+                  for ch in self.report.chapters}
+        self.issues.show_chapter(self._row_report(row), self._selected_checks,
+                                 None if self._selected == BOOK_ROW
+                                 else self._chapter_text(self._selected), titles)
 
     def _mark_row(self, row: int) -> None:
         """The chosen chapter's name in bold on a tint; the others plain."""
@@ -629,10 +660,10 @@ class ScorecardWidget(QWidget):
             return None
 
     def _choose_row(self, row: int) -> None:
-        if self.report is None or not (0 <= row < len(self.report.chapters)):
-            return
-        ch = self.report.chapters[row]
-        self.chapter_chosen.emit(ch.scope, ch.chapter_id)
+        from src.ai.readiness import BOOK_ROW
+        ch = self._row_report(row)
+        if ch is not None and ch.chapter_id != BOOK_ROW:
+            self.chapter_chosen.emit(ch.scope, ch.chapter_id)
 
 
 def _wrap_to(text: str, fm, width: int) -> List[str]:

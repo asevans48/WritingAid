@@ -729,9 +729,10 @@ class CollapsibleSection(QWidget):
 
         # Toggle button
         self.toggle_btn = QToolButton()
-        self.toggle_btn.setStyleSheet("QToolButton { border: none; background: transparent; }")
+        self.toggle_btn.setStyleSheet(
+            "QToolButton { border: none; background: transparent; padding: 0px; }")
         self.toggle_btn.setText("▼")
-        self.toggle_btn.setFixedSize(20, 20)
+        self.toggle_btn.setFixedSize(24, 24)    # room for the arrow at any text size
         self.toggle_btn.clicked.connect(self.toggle)
         header_layout.addWidget(self.toggle_btn)
 

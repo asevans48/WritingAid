@@ -315,9 +315,30 @@ def find_unknown_proper_nouns(
     return out
 
 
+_ALSO_CALLED = re.compile(r"^\s*also called\s*:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+
+
+def character_aliases(character: Any) -> List[str]:
+    """Other names for a character, from an "Also called: Bran, The
+    Captain" line in its notes (written by the Critique's "another name"
+    connection, and editable by hand)."""
+    out: List[str] = []
+    for m in _ALSO_CALLED.finditer(getattr(character, "notes", "") or ""):
+        for name in re.split(r"[,;]", m.group(1)):
+            name = name.strip().strip(".").strip()
+            if name and name not in out:
+                out.append(name)
+    return out
+
+
+def character_alias_names(characters: Iterable[Any]) -> List[str]:
+    return [a for c in characters for a in character_aliases(c)]
+
+
 def character_name_variants(characters: Iterable[Any]) -> Dict[str, List[str]]:
-    return {c.name: _name_variants(c.name) for c in characters
-            if getattr(c, "name", "").strip()}
+    return {c.name: _name_variants(c.name) + [a for a in character_aliases(c)
+                                              if a not in _name_variants(c.name)]
+            for c in characters if getattr(c, "name", "").strip()}
 
 
 def world_name_variants(entities: Iterable[CanonEntity]) -> Dict[str, List[str]]:

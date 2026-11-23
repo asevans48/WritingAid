@@ -365,3 +365,38 @@ def parse_connect_reply(reply: str, candidates: List[Dict[str, str]]) -> Dict[st
         elif value and not (value.startswith("<") and value.endswith(">")):
             out["definition"] = value
     return out
+
+
+# ── Another name for a character ───────────────────────────────────────
+
+def character_targets(project: Any) -> List[Dict[str, str]]:
+    """The project's characters, as targets for a nickname."""
+    out = []
+    for c in getattr(project, "characters", None) or []:
+        summary = (getattr(c, "personality", "") or getattr(c, "notes", "") or "")[:160]
+        out.append({"name": c.name, "category": (c.character_type or "character").title(),
+                    "summary": summary})
+    return out
+
+
+def add_nickname(project: Any, character_name: str, nickname: str) -> str:
+    """Record ``nickname`` as another name for the character, on an
+    "Also called:" line in its notes (visible and editable on the Characters
+    tab). Returns "added", "" when it was already there, or "missing"."""
+    from src.ai.canon_index import character_aliases
+    character = find_record(project, "character", character_name)
+    nickname = (nickname or "").strip()
+    if character is None or not nickname:
+        return "missing"
+    if nickname.lower() in (a.lower() for a in character_aliases(character)) \
+            or nickname.lower() == character.name.lower():
+        return ""
+    notes = character.notes or ""
+    m = re.search(r"^(\s*also called\s*:\s*)(.+)$", notes, re.IGNORECASE | re.MULTILINE)
+    if m:
+        line = m.group(0).rstrip().rstrip(".") + f", {nickname}"
+        character.notes = notes[:m.start()] + line + notes[m.end():]
+    else:
+        character.notes = (notes.rstrip() + "\n\n" if notes.strip() else "") + \
+            f"Also called: {nickname}"
+    return "added"

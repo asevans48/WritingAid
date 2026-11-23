@@ -3540,7 +3540,9 @@ class CharacterAnalyzer(_CanonAnalyzerMixin, _BaseAnalyzer):
 
         world_names = [e.name for e in collect_world_entities(
             getattr(self.project, "worldbuilding", None))]
-        unknown = find_unknown_proper_nouns(text, all_names + world_names)
+        from src.ai.canon_index import character_alias_names     # nicknames count as known
+        unknown = find_unknown_proper_nouns(text, all_names + world_names
+                                            + character_alias_names(characters))
         speech_rx = lambda n: re.compile(
             rf"(\b{re.escape(n)}\s+(?:{_SPEECH_VERBS})\b)|"
             rf"(\b(?:{_SPEECH_VERBS})\s+{re.escape(n)}\b)")

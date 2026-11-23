@@ -59,12 +59,20 @@ class CanonAddDialog(QDialog):
         intro.setWordWrap(True)
         intro.setStyleSheet(f"color: {PALETTE['ink_soft']};")
         outer.addWidget(intro)
-        self.mode_new = QRadioButton("Add as a new element")
-        self.mode_connect = QRadioButton("Connect to something already in your World")
-        self.mode_connect.setToolTip(
-            "For a new name that refers to an element or term you already have: another "
-            "name for it, a part of it, or something that belongs to it. It goes in your "
-            "World's Encyclopedia, linked to that element.")
+        if self.is_character:
+            self.mode_new = QRadioButton("Add as a new character")
+            self.mode_connect = QRadioButton("Another name for someone already in Characters")
+            self.mode_connect.setToolTip(
+                "For a nickname, title or other name of a character you already have. It is "
+                "added to that character's notes (“Also called: …”), and the checks then "
+                "count it as that character.")
+        else:
+            self.mode_new = QRadioButton("Add as a new element")
+            self.mode_connect = QRadioButton("Connect to something already in your World")
+            self.mode_connect.setToolTip(
+                "For a new name that refers to an element or term you already have: another "
+                "name for it, a part of it, or something that belongs to it. It goes in your "
+                "World's Encyclopedia, linked to that element.")
         modes = QButtonGroup(self)
         for b in (self.mode_new, self.mode_connect):
             modes.addButton(b)
@@ -72,11 +80,7 @@ class CanonAddDialog(QDialog):
         mode_row.addWidget(self.mode_new)
         mode_row.addWidget(self.mode_connect)
         mode_row.addStretch()
-        if not self.is_character:
-            outer.addLayout(mode_row)
-        else:
-            self.mode_new.hide()
-            self.mode_connect.hide()
+        outer.addLayout(mode_row)
 
         self.name_edit = QLineEdit(parsed["name"])
         name_row = QFormLayout()
@@ -146,8 +150,7 @@ class CanonAddDialog(QDialog):
         row.addWidget(buttons)
         outer.addLayout(row)
         # Start on "connect" when the name shares a word with something recorded.
-        likely = (not self.is_character and self._ranked
-                  and self._ranked[0][0] >= 3.0)
+        likely = bool(self._ranked) and self._ranked[0][0] >= 3.0
         (self.mode_connect if likely else self.mode_new).setChecked(True)
         self._on_mode()
         if not _ai_available():
@@ -160,11 +163,11 @@ class CanonAddDialog(QDialog):
 
     def kind(self) -> str:
         if self.is_character:
-            return "character"
+            return "nickname" if self.connecting() else "character"
         return "term" if self.connecting() else self.kind_combo.currentData()
 
     def connecting(self) -> bool:
-        return not self.is_character and self.mode_connect.isChecked()
+        return self.mode_connect.isChecked()
 
     # ── Connecting to something already recorded ─────────────────
 
@@ -172,12 +175,14 @@ class CanonAddDialog(QDialog):
         page = QWidget()
         form = QFormLayout(page)
         form.setContentsMargins(0, 0, 0, 0)
-        self._ranked = [] if self.is_character else cc.rank_targets(
-            self.project, parsed["name"], cc.passages(self.project, parsed["name"]))
+        self._ranked = cc.rank_targets(
+            self.project, parsed["name"], cc.passages(self.project, parsed["name"]),
+            cc.character_targets(self.project) if self.is_character else None)
         self.target_search = QLineEdit()
-        self.target_search.setPlaceholderText("Search your World…")
+        self.target_search.setPlaceholderText("Search your Characters…" if self.is_character
+                                              else "Search your World…")
         self.target_search.textChanged.connect(self._fill_targets)
-        form.addRow("Connect to", self.target_search)
+        form.addRow("Who it is" if self.is_character else "Connect to", self.target_search)
         self.target_list = QListWidget()
         self.target_list.setMinimumHeight(self.target_list.fontMetrics().lineSpacing() * 6)
         self.target_list.itemClicked.connect(lambda _i: setattr(self, "_target_by_writer", True))
@@ -199,6 +204,9 @@ class CanonAddDialog(QDialog):
             f"In the text: “{parsed['example']}”" if parsed["example"] else "")
         self.term_notes.setMinimumHeight(self.term_notes.fontMetrics().lineSpacing() * 2 + 12)
         form.addRow("Notes", self.term_notes)
+        if self.is_character:                 # a nickname is simply another name
+            for w in (self.relation_combo, self.definition_edit, self.term_notes):
+                form.setRowVisible(w, False)
         self._target_by_writer = self._relation_by_writer = False
         self._fill_targets()
         return page
@@ -216,8 +224,10 @@ class CanonAddDialog(QDialog):
             item.setToolTip(t.get("summary", "") or label)
             self.target_list.addItem(item)
         if self.target_list.count() == 0:
-            item = QListWidgetItem("Nothing in your World matches yet." if self._ranked
-                                   else "Your World has no elements or terms yet.")
+            where = "Characters" if self.is_character else "World"
+            item = QListWidgetItem(f"Nothing in your {where} matches yet." if self._ranked
+                                   else ("You have no characters yet." if self.is_character
+                                         else "Your World has no elements or terms yet."))
             item.setFlags(Qt.ItemFlag.NoItemFlags)
             self.target_list.addItem(item)
             return
@@ -279,6 +289,9 @@ class CanonAddDialog(QDialog):
     def data(self) -> Dict[str, Any]:
         """What the creators read, plus the extra fields; for a connected
         term, its Encyclopedia entry."""
+        if self.connecting() and self.is_character:
+            target = self.target() or {"name": ""}
+            return {"nickname": self.name_edit.text().strip(), "character": target["name"]}
         if self.connecting():
             target = self.target() or {"name": "", "category": ""}
             return cc.term_entry(self.name_edit.text().strip(), target,
@@ -312,6 +325,13 @@ class CanonAddDialog(QDialog):
         name = self.name_edit.text().strip()
         if not hasattr(self, "add_btn"):
             return                                  # still being built
+        if self.connecting() and self.is_character:
+            t = self.target()
+            self.status.setText(
+                f"“{name}” is added to {t['name']}'s notes as another name (Also called: …). "
+                f"The checks then count it as {t['name']}." if t and name
+                else "Pick who it is.")
+            return
         if self.connecting():
             t = self.target()
             self.status.setText(
@@ -335,7 +355,9 @@ class CanonAddDialog(QDialog):
             self.status.setText("Give it a name first.")
             return
         if self.connecting() and self.target() is None:
-            self.status.setText("Pick what it refers to, or choose “Add as a new element”.")
+            self.status.setText("Pick who it is, or choose “Add as a new character”."
+                                if self.is_character else
+                                "Pick what it refers to, or choose “Add as a new element”.")
             return
         self.accept()
 
@@ -352,9 +374,12 @@ class CanonAddDialog(QDialog):
         kind = self.kind()
         genre = getattr(getattr(self.project, "prose_profile", None), "genre", "") or ""
         found = self._found or cc.passages(self.project, name)
-        if kind == "term":
+        if kind in ("term", "nickname"):
             candidates = [t for _s, t in self._ranked[:15]]
             prompt = cc.build_connect_prompt(name, found, candidates)
+            if kind == "nickname":
+                prompt = prompt.replace("which recorded element of the story's world it refers "
+                                        "to, and how", "which recorded character it names")
         else:
             prompt = cc.build_prompt(kind, name, found, genre, cc.known_names(self.project, kind),
                                      self._seed.get("description", ""))
@@ -368,7 +393,7 @@ class CanonAddDialog(QDialog):
             reply = llm.generate_text(prompt, cc.SYSTEM_PROMPT, max_tokens=700, temperature=0.4)
             if (reply or "").startswith("Error generating text:"):
                 raise RuntimeError(reply.split(":", 1)[1].strip())
-            if kind == "term":
+            if kind in ("term", "nickname"):
                 return {"_connect": True, **cc.parse_connect_reply(reply, candidates)}
             return cc.parse_reply(kind, reply)
 
@@ -415,11 +440,12 @@ class CanonAddDialog(QDialog):
             self.target_search.clear()
             if self.select_target(result["target"]):
                 done.append("what it refers to")
-        if result.get("relation") and not self._relation_by_writer:
+        if result.get("relation") and not self._relation_by_writer and not self.is_character:
             self.relation_combo.setCurrentIndex(self.relation_combo.findData(result["relation"]))
             done.append("how")
         current = self.definition_edit.toPlainText().strip()
-        if result.get("definition") and (not current or current == self._auto.get("definition")):
+        if result.get("definition") and not self.is_character and (
+                not current or current == self._auto.get("definition")):
             self.definition_edit.setPlainText(result["definition"])
             self._auto["definition"] = result["definition"]
             done.append("what it means")
@@ -474,6 +500,8 @@ def add_from_critique(main_window, kind: str, data: Dict[str, Any]) -> bool:
     refresh the World and Characters tabs."""
     if kind == "term":
         return _add_term(main_window, data)
+    if kind == "nickname":
+        return _add_nickname(main_window, data)
     ok = main_window._create_from_plot_ai_suggestion(kind, dict(data))
     name = data.get("name", "")
     if ok:
@@ -507,4 +535,21 @@ def _add_term(main_window, entry: Dict[str, str]) -> bool:
                "": f"“{name}” is already in the Encyclopedia."}[result]
     main_window.statusBar().showMessage(message, 6000)
     return bool(result) or result == ""
+
+
+def _add_nickname(main_window, data: Dict[str, str]) -> bool:
+    """Another name for an existing character goes in its notes."""
+    nick, who = data.get("nickname", ""), data.get("character", "")
+    result = cc.add_nickname(main_window.current_project, who, nick)
+    if result == "added":
+        main_window._on_content_changed()
+        try:
+            main_window._refresh_project_widgets()
+        except Exception as e:
+            print(f"[canon] could not refresh the tabs: {e}")
+    message = {"added": f"“{nick}” is now another name for {who} (in {who}'s notes).",
+               "": f"“{nick}” was already recorded as another name for {who}.",
+               "missing": f"Couldn't find {who} in Characters."}[result]
+    main_window.statusBar().showMessage(message, 6000)
+    return result != "missing"
 

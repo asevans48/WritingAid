@@ -70,7 +70,9 @@ def save(project: Any, data: Dict[str, Any]) -> bool:
         return False
     path = readiness_path(project)
     _copy_aside_before_results(path, data)
-    return safe_store.save(path, data, indent=1)
+    # Compact: the file holds every chapter's results and can run to a few
+    # megabytes; indentation made each save several times slower.
+    return safe_store.save(path, data, indent=None)
 
 
 def update(project: Any, change: Callable[[Dict[str, Any]], Any]) -> bool:
@@ -147,6 +149,45 @@ def store_chapter(project: Any, scope: Optional[str], chapter_id: str,
         results.update(new_results)
         entry.update(fields)
         entry["results"] = results
+    return update(project, change)
+
+
+def store_chapters(project: Any, scope: Optional[str],
+                   fields_by_chapter: Dict[str, Dict[str, Any]]) -> bool:
+    """``store_chapter`` for several chapters in one save."""
+    if not fields_by_chapter:
+        return True
+    prepared = {}
+    for cid, fields in fields_by_chapter.items():
+        fields = dict(fields)
+        prepared[cid] = (fields.pop("results", {}) or {}, fields)
+
+    def change(data):
+        for cid, (new_results, fields) in prepared.items():
+            entry = chapter_entry(data, scope, cid)
+            results = entry.get("results") if isinstance(entry.get("results"), dict) else {}
+            results.update(new_results)
+            entry.update(fields)
+            entry["results"] = results
+    return update(project, change)
+
+
+def stored_book(project: Any, scope: Optional[str]) -> Dict[str, Any]:
+    """The stored whole-book results for a manuscript (a copy; {} when none)."""
+    m = load(project)["manuscripts"].get(scope_key(scope), {})
+    b = m.get("book") if isinstance(m, dict) else None
+    return dict(b) if isinstance(b, dict) else {}
+
+
+def store_book(project: Any, scope: Optional[str], results: Dict[str, Any]) -> bool:
+    """Merge whole-book results (by check name) for a manuscript."""
+    def change(data):
+        m = manuscript_entry(data, scope)
+        book = m.get("book") if isinstance(m.get("book"), dict) else {}
+        merged = book.get("results") if isinstance(book.get("results"), dict) else {}
+        merged.update(results)
+        book["results"] = merged
+        m["book"] = book
     return update(project, change)
 
 

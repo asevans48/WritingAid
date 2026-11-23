@@ -13,6 +13,7 @@ import uuid
 import copy
 
 from src.ui.styles import SYSTEM_FONT
+from src.ui.ui_kit import compact_button  # narrow buttons show their symbol
 
 
 # Common feedback source presets
@@ -245,6 +246,7 @@ class FeedbackWidget(QWidget):
         toggle_btn.setFixedSize(18, 18)
         toggle_btn.setAttribute(wa_no_activate)
         toggle_btn.setStyleSheet("border: none; font-size: 9px; color: #92400e; padding: 0;")
+        compact_button(toggle_btn)  # narrow: show its symbol
         toggle_btn.clicked.connect(lambda _, idx=index: self._toggle_entry_collapsed(idx))
         header_layout.addWidget(toggle_btn)
 
@@ -263,6 +265,7 @@ class FeedbackWidget(QWidget):
         del_btn.setToolTip("Remove feedback")
         del_btn.setAttribute(wa_no_activate)
         del_btn.setStyleSheet("border: none; font-size: 13px; font-weight: bold; color: #92400e; padding: 0;")
+        compact_button(del_btn)  # narrow: show its symbol
         del_btn.clicked.connect(lambda _, idx=index: self._remove_entry(idx))
         header_layout.addWidget(del_btn)
 

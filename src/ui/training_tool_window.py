@@ -43,6 +43,7 @@ from src.data.rephrase_database import (
     SOURCE_CORPUS, SOURCE_AGENT,
     SOURCE_WORLDBUILDING, SOURCE_CHARACTER, SOURCE_PLOT, SOURCE_CRITIQUE,
 )
+from src.ui.ui_kit import compact_button  # narrow buttons show their symbol
 
 
 class _TrainingWorker(QThread):
@@ -2938,6 +2939,7 @@ class TrainingToolWindow(QMainWindow):
         self.manage_presets_btn.setToolTip(
             "Manage saved presets — rename, delete, or reorder them.")
         self.manage_presets_btn.setFixedWidth(36)
+        compact_button(self.manage_presets_btn)  # narrow: show its symbol
         self.manage_presets_btn.clicked.connect(self._open_manage_presets)
         preset_row.addWidget(self.manage_presets_btn)
         layout.addLayout(preset_row)

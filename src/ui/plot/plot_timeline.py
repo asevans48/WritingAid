@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
 )
 
 from src.models.project import PlotEvent
+from src.ui.ui_kit import compact_button  # narrow buttons show their symbol
 
 
 # Colors for the stage chip. Match the existing pyramid color scheme
@@ -167,6 +168,7 @@ class _EventCard(QFrame):
 
         up_btn = QPushButton("↑")
         up_btn.setFixedWidth(32)
+        compact_button(up_btn)  # narrow: show its symbol
         up_btn.setEnabled(can_move_up)
         up_btn.setToolTip(
             "Move up within this act (and stage)"
@@ -178,6 +180,7 @@ class _EventCard(QFrame):
 
         down_btn = QPushButton("↓")
         down_btn.setFixedWidth(32)
+        compact_button(down_btn)  # narrow: show its symbol
         down_btn.setEnabled(can_move_down)
         down_btn.setToolTip(
             "Move down within this act (and stage)"

@@ -41,6 +41,7 @@ from src.data import model_test_store as store
 from src.data.model_test_store import (
     TestResult, ModelStats, CategoryStats, DEFAULT_CATEGORIES,
 )
+from src.ui.ui_kit import compact_button  # narrow buttons show their symbol
 
 
 # ── Star rating widget ─────────────────────────────────────
@@ -69,6 +70,7 @@ class _StarRating(QWidget):
                 "QPushButton { font-size: 18px; "
                 "background: transparent; border: none; }"
                 "QPushButton:hover { color: #f59e0b; }")
+            compact_button(btn)  # narrow: show its symbol
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(
                 lambda _checked=False, idx=i: self._on_click(idx))
@@ -417,6 +419,7 @@ class TestHistoryDialog(QDialog):
             row_lay.setSpacing(2)
             edit_btn = QPushButton("✎")
             edit_btn.setFixedSize(24, 24)
+            compact_button(edit_btn)  # narrow: show its symbol
             edit_btn.setToolTip("Re-rate / re-categorize / edit notes")
             edit_btn.clicked.connect(
                 lambda _checked=False, rid=r.id: self._on_edit(rid))
@@ -426,6 +429,7 @@ class TestHistoryDialog(QDialog):
             del_btn.setToolTip("Delete this test record")
             del_btn.setStyleSheet(
                 "QPushButton { color: #b91c1c; }")
+            compact_button(del_btn)  # narrow: show its symbol
             del_btn.clicked.connect(
                 lambda _checked=False, rid=r.id: self._on_delete(rid))
             row_lay.addWidget(del_btn)

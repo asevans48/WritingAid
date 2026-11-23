@@ -53,6 +53,7 @@ from src.video_studio.models import (
     CHAPTER_TRANSITIONS, SlideDeckProject, SlideGroup, SlidePage,
 )
 from src.video_studio.tts.base import probe_audio_duration_seconds
+from src.ui.ui_kit import compact_button  # narrow buttons show their symbol
 
 
 class _ClipDragList(QListWidget):
@@ -861,6 +862,7 @@ class GroupEditorDialog(QDialog):
             "Ctrl-scroll on the timeline does the same "
             "anchored at the cursor.")
         self._zoom_out_btn.setFixedWidth(36)
+        compact_button(self._zoom_out_btn)  # narrow: show its symbol
         self._zoom_out_btn.clicked.connect(
             lambda: self._on_zoom_button(out=True))
         tracks_bar.addWidget(self._zoom_out_btn)
@@ -877,6 +879,7 @@ class GroupEditorDialog(QDialog):
             "Ctrl-scroll on the timeline does the same "
             "anchored at the cursor.")
         self._zoom_in_btn.setFixedWidth(36)
+        compact_button(self._zoom_in_btn)  # narrow: show its symbol
         self._zoom_in_btn.clicked.connect(
             lambda: self._on_zoom_button(out=False))
         tracks_bar.addWidget(self._zoom_in_btn)

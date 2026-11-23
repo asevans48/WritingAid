@@ -16,6 +16,7 @@ from src.ai.conversation_store import (
     create_conversation_from_messages
 )
 from src.config import get_ai_config
+from src.ui.ui_kit import compact_button  # narrow buttons show their symbol
 
 
 # Visible-row bounds for the prompt box. The user can grow/shrink
@@ -929,6 +930,7 @@ class ChatWidget(QWidget):
             }
             QPushButton:hover { background-color: #e5e7eb; }
         """)
+        compact_button(self.mic_button)  # narrow: show its symbol
         button_row.addWidget(self.mic_button)
 
         content_layout.addLayout(button_row)

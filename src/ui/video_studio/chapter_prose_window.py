@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QPlainTextEdit, QPushButton, QSpinBox,
     QVBoxLayout, QWidget,
 )
+from src.ui.ui_kit import compact_button  # narrow buttons show their symbol
 
 
 class ChapterProseWindow(QDialog):
@@ -176,11 +177,13 @@ class ChapterProseWindow(QDialog):
         find_row.addWidget(self._find_edit, stretch=1)
         self._find_next_btn = QPushButton("↓")
         self._find_next_btn.setMaximumWidth(36)
+        compact_button(self._find_next_btn)  # narrow: show its symbol
         self._find_next_btn.setToolTip("Find next")
         self._find_next_btn.clicked.connect(self._on_find_next)
         find_row.addWidget(self._find_next_btn)
         self._find_prev_btn = QPushButton("↑")
         self._find_prev_btn.setMaximumWidth(36)
+        compact_button(self._find_prev_btn)  # narrow: show its symbol
         self._find_prev_btn.setToolTip("Find previous")
         self._find_prev_btn.clicked.connect(self._on_find_prev)
         find_row.addWidget(self._find_prev_btn)

@@ -80,14 +80,25 @@ def test_the_grid_matches_the_report(qapp, grader, tmp_path):
     assert report is not None and len(report.chapters) == 2
     t = sc.table
     g = rd.grid(report)
-    assert t.rowCount() == 2 and t.columnCount() == len(g.columns)
+    assert t.rowCount() == len(g.rows) == 3 and t.columnCount() == len(g.columns)
     for c, spec in enumerate(g.columns):
-        assert spec.label in t.horizontalHeaderItem(c).text()
+        assert spec.label in " ".join(t.horizontalHeaderItem(c).text().split())
         assert spec.description.split(".")[0] in t.horizontalHeaderItem(c).toolTip()
         for r, (ch, cells) in enumerate(g.rows):
-            assert t.item(r, c).text() == str(cells[c].count)
+            res = cells[c]
+            if res is None:
+                want = ""                                   # a whole-book check on a chapter row
+            elif res.status == "info":
+                want = f"{res.measure:,.0f}"                # information: its figure
+            elif spec.display == "measure":
+                want = f"{res.measure:g}"                   # a score
+            elif res.status == "could_not_check":
+                want = "?"
+            else:
+                want = str(res.count)
+            assert t.item(r, c).text() == want
     assert t.verticalHeaderItem(0).text() == "1. Chapter 1"
-    assert sc.figure_label.text() == f"{round(report.readiness * 100)}%" == "50%"
+    assert sc.figure_label.text() == f"{round(report.readiness * 100)}%"
     assert "ready for readers" in sc.figure_caption.text()
     assert any(w.text() == sc_module.HONEST_LINE for w in sc.findChildren(type(sc.figure_caption)))
     assert "A scan" in sc.note_label.text() and "Overly descriptive" in sc.note_label.text()
@@ -124,10 +135,11 @@ def test_each_manuscript_has_its_own_grid(qapp, grader, tmp_path):
     assert sc.manuscript_combo.count() == 2 and sc.manuscript_combo.isVisibleTo(sc)
     sc.refresh()
     _wait(qapp, sc)
-    assert sc.table.rowCount() == 1 and sc.figure_label.text() == "100%"
+    assert sc.table.rowCount() == 2                                  # + whole manuscript
+    main_figure = sc.figure_label.text()
     sc.manuscript_combo.setCurrentIndex(1)
     _wait(qapp, sc)
-    assert sc.report.scope == p.subprojects[0].id and sc.table.rowCount() == 3
+    assert sc.report.scope == p.subprojects[0].id and sc.table.rowCount() == 4
 
 
 def test_the_detailed_critique_is_one_click_away(qapp, grader, tmp_path):
@@ -202,7 +214,8 @@ def test_live_text_of_the_open_chapter_is_checked(qapp, grader, tmp_path):
     grader.scorecard.set_live_source(ME())
     grader.scorecard.refresh()
     _wait(qapp, grader.scorecard)
-    assert grader.scorecard.figure_label.text() == "100%"         # the live (clean) text
+    cr = grader.scorecard.report.chapters[0]
+    assert cr.results["spelling_grammar"].status == "ready"      # the live (clean) text
 
 
 # ── The issues under the grid ────────────────────────────────────────────

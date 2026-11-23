@@ -33,8 +33,8 @@ STAGES = ("structure", "scene", "line", "copyedit", "proof")
 STAGE_LABELS = {"structure": "Structure", "scene": "Scene", "line": "Line",
                 "copyedit": "Copyedit", "proof": "Proof", "info": "Information"}
 FIGURE_VERSION = 1
-THRESHOLDS_VERSION = 1
-MAX_ITEMS = 200
+THRESHOLDS_VERSION = 2
+MAX_ITEMS = 80                   # kept per check per chapter; the count stays exact
 _UNSET = object()
 
 
@@ -74,9 +74,12 @@ class Item:
     dismissed: bool = False         # set when the report is assembled (3.3)
 
     def to_dict(self) -> Dict[str, Any]:
+        """Only what differs from the defaults (the file stays small)."""
         d = asdict(self)
         d.pop("dismissed", None)
-        return d
+        defaults = {"kind": "", "key": "", "suggestions": [], "verdict": "",
+                    "chapter_id": "", "paragraph": -1}
+        return {k: v for k, v in d.items() if k not in defaults or v != defaults[k]}
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Item":
@@ -126,6 +129,9 @@ class ChapterReport:
     made_at: str = ""
     from_cache: int = 0             # how many results came from the cache
     saved: bool = True              # False when the readiness file could not be written
+    # Results made in this run but not yet written (save=False); the caller
+    # writes them in a batch.
+    pending: Dict[str, Any] = field(default_factory=dict, repr=False)
 
 
 @dataclass
@@ -163,6 +169,43 @@ class Threshold:
         return ""
 
 
+# Every check's threshold, in one place (per 1,000 words unless a count).
+# The line-check figures were set from the Q.1 benchmark's published prose:
+# "needs work" starts a little above what published books show, so a
+# published chapter reads as ready (P.3 replaces these with genre figures,
+# P.5 retunes them as the checks improve). Changing any figure: raise
+# THRESHOLDS_VERSION so cached results are recomputed.
+THRESHOLDS: Dict[str, "Threshold"] = {}
+
+
+def _thresholds() -> Dict[str, "Threshold"]:
+    if not THRESHOLDS:
+        T = Threshold
+        THRESHOLDS.update({
+            # Copyedit
+            "spelling_grammar": T(per_1000=(0.5, 2.0)),   # flags left: fix or add to dictionary
+            "consistency": T(count=(1, 3)),               # inconsistencies, each counted once
+            "style_sheet": T(count=(0, 2)),
+            # Line: "needs work" just above published chapters' 90th
+            # percentile (scripts/calibrate_readiness.py, 29 chapters).
+            "overdescribed": T(per_1000=(7.5, 12.0)),     # model-judged (1.7); scan: not counted
+            "repetition": T(per_1000=(8.0, 16.0)),        # model-judged (1.7); scan: not counted
+            "echoes": T(per_1000=(9.0, 14.0)),
+            "filler": T(per_1000=(6.0, 10.0)),
+            "passive": T(per_1000=(6.5, 10.0)),
+            "adverbs": T(per_1000=(16.0, 24.0)),
+            "cliches": T(per_1000=(0.6, 1.5)),
+            "sticky": T(per_1000=(40.0, 55.0)),
+            # Scene
+            "dialogue_fit": T(count=(1, 4)),
+            "dialogue_problems": T(per_1000=(7.0, 10.0)),
+            # Structure
+            "pacing": T(count=(1, 2)),                    # genre risks: one is common
+            "subplots": T(count=(0, 2)),
+        })
+    return THRESHOLDS
+
+
 @dataclass
 class CheckOutput:
     items: List[Item] = field(default_factory=list)
@@ -184,19 +227,32 @@ class CheckSpec:
     version: int = 1
     description: str = ""
     weight: int = 50                # for the fix queue (3.2)
+    # A chapter check whose result depends on the other chapters too
+    # (consistency across the book): its cache key includes them all. For a
+    # whole-book check, it means it looks across every manuscript
+    # (continuity across novellas): its key includes them all.
+    book_wide: bool = False
+    display: str = "count"          # what a cell shows: "count", or "measure" (a score)
 
 
 REGISTRY: Dict[str, CheckSpec] = {}
+
+# A check returns this when it doesn't apply (no novellas to compare, …):
+# no cell is shown for it.
+NOT_APPLICABLE = object()
 
 
 def check(*, name: str, stage: str, label: str, level: str = "chapter",
           needs_model: bool = False, counts: bool = True,
           threshold: Optional[Threshold] = None, version: int = 1,
-          description: str = "", weight: int = 50):
-    """Register a readiness check: one decorated function."""
+          description: str = "", weight: int = 50, book_wide: bool = False,
+          display: str = "count"):
+    """Register a readiness check: one decorated function. Its threshold
+    normally lives in ``THRESHOLDS`` (one table for every check)."""
     def register(fn):
         REGISTRY[name] = CheckSpec(name, stage, label, fn, level, needs_model, counts,
-                                   threshold, version, description, weight)
+                                   threshold, version, description, weight, book_wide,
+                                   display)
         return fn
     return register
 
@@ -267,14 +323,61 @@ class Scanner:
         return st.flags_for_text(text)
 
 
+class Book:
+    """One manuscript's chapters and texts, shared by every check in a run,
+    with lazily computed scans that look across chapters."""
+
+    def __init__(self, project, scope, texts: Optional[Dict[str, str]] = None):
+        self.project, self.scope = project, scope
+        ms = _manuscript(project, scope)
+        self.chapters = list(getattr(ms, "chapters", None) or [])
+        texts = texts or {}
+        self.texts = {ch.id: (texts.get(ch.id) if texts.get(ch.id) is not None
+                              else (getattr(ch, "content", "") or "")).replace("\r\n", "\n")
+                      for ch in self.chapters}
+        self.hash = _hash("|".join(f"{ch.id}:{text_hash(self.texts[ch.id])}"
+                                   for ch in self.chapters))
+        self._cache: Dict[str, Any] = {}
+
+    def lazy(self, key, make):
+        if key not in self._cache:
+            self._cache[key] = make()
+        return self._cache[key]
+
+    def words(self) -> int:
+        return sum(len(t.split()) for t in self.texts.values())
+
+    def planning_hash(self) -> str:
+        sp = getattr(self.project, "story_planning", None)
+        try:
+            blob = sp.model_dump_json() if hasattr(sp, "model_dump_json") else repr(sp)
+        except Exception:
+            blob = repr(sp)
+        plans = []
+        for ch in self.chapters:
+            pl = getattr(ch, "planning", None)
+            try:
+                plans.append(pl.model_dump_json() if hasattr(pl, "model_dump_json") else repr(pl))
+            except Exception:
+                plans.append(repr(pl))
+        return _hash(blob + "|" + "|".join(plans))
+
+
 class CheckContext:
     def __init__(self, project, scope, chapter, text, *, is_opening, route, genre,
-                 llm=None, scanner: Optional[Scanner] = None):
+                 llm=None, scanner: Optional[Scanner] = None, book: Optional[Book] = None):
         self.project, self.scope, self.chapter, self.text = project, scope, chapter, text
         self.words = len(text.split())
         self.is_opening, self.route, self.genre, self.llm = is_opening, route, genre, llm
         self._scanner = scanner
+        self._book = book
         self._cache: Dict[str, Any] = {}
+
+    @property
+    def book(self) -> Book:
+        if self._book is None:
+            self._book = Book(self.project, self.scope, {self.chapter.id: self.text})
+        return self._book
 
     def _lazy(self, key, make):
         if key not in self._cache:
@@ -292,6 +395,35 @@ class CheckContext:
         from src.utils.style_checks import analyze_document
         return self._lazy("style", lambda: analyze_document(self.text))
 
+    def style_flags(self):
+        """[(absolute start, StyleIssue)]: the style flags the editor shows
+        with every style check on: the writer's ignored flags, allowed
+        words, kept kinds and the dialogue rule applied, preference (style
+        sheet) breaks included."""
+        def make():
+            from src.utils.style_checks import KINDS
+            scanner = self._scanner or Scanner(self.project)
+            st = scanner.state
+            saved = st._style_kinds
+            st._style_kinds = set(KINDS) - {"preference"}
+            out = []
+            try:
+                pos = 0
+                for para in self.text.split("\n"):
+                    if para.strip():
+                        out.extend((pos + i.start, i) for i in st.style_issues_for(para))
+                    pos += len(para) + 1
+            finally:
+                st._style_kinds = saved
+            return out
+        return self._lazy("style_flags", make)
+
+    def names(self):
+        """Characters (with their other names) of the project."""
+        from src.ai.canon_index import character_alias_names
+        chars = getattr(self.project, "characters", None) or []
+        return [c.name for c in chars] + character_alias_names(chars)
+
     def overdescribed(self):
         from src.ai.overdescription import scan
         return self._lazy("overdescribed", lambda: scan(self.text))
@@ -306,8 +438,24 @@ class CheckContext:
     def threshold(self, name: str) -> Optional[Threshold]:
         """A check's threshold for this chapter. Route, the opening chapter
         (1.8) and genre baselines (P.3) adjust it here, and only here."""
+        found = _thresholds().get(name)
+        if found is not None:
+            return found
         spec = REGISTRY.get(name)
         return spec.threshold if spec else None
+
+
+class BookContext(CheckContext):
+    """What a whole-book check sees: the manuscript, its chapter reports,
+    the plan."""
+
+    def __init__(self, project, scope, book: Book, chapter_reports, *, route, genre,
+                 llm=None, scanner: Optional[Scanner] = None):
+        super().__init__(project, scope, None, "", is_opening=False, route=route, genre=genre,
+                         llm=llm, scanner=scanner, book=book)
+        self.chapter_reports = chapter_reports
+        self.words = book.words()
+        self.planning = getattr(project, "story_planning", None)
 
 
 # ── Running checks ─────────────────────────────────────────────────────
@@ -340,11 +488,14 @@ def _status_from(threshold: Optional[Threshold], count: int, words: int) -> str:
     return Status.NEEDS_WORK if rate <= b else Status.PROBLEM
 
 
-def _run_check(spec: CheckSpec, ctx: CheckContext) -> CheckResult:
+def _run_check(spec: CheckSpec, ctx: CheckContext) -> Optional[CheckResult]:
     """Run one check; never raises. The result is "raw": count and status
     before dismissals (applied in ``_finish``)."""
     try:
-        out = spec.fn(ctx) or CheckOutput()
+        out = spec.fn(ctx)
+        if out is NOT_APPLICABLE:
+            return None
+        out = out or CheckOutput()
         items = list(out.items)
         live = [i for i in items if i.verdict != "cleared"]
         if spec.needs_model and ctx.llm is None:
@@ -354,8 +505,10 @@ def _run_check(spec: CheckSpec, ctx: CheckContext) -> CheckResult:
         else:
             status = out.status or _status_from(ctx.threshold(spec.name), len(live), ctx.words)
             message = out.message
+        # Fewer kept where there's little to do (the count stays exact).
+        keep = {Status.READY: 25, Status.NEEDS_MODEL: 40}.get(status, MAX_ITEMS)
         return CheckResult(check=spec.name, stage=spec.stage, status=status, count=len(live),
-                           items=items[:MAX_ITEMS], measure=out.measure, message=message,
+                           items=items[:keep], measure=out.measure, message=message,
                            judged=False, version=spec.version, found=len(items))
     except Exception as e:
         print(f"[readiness] {spec.name} failed: {e}\n{traceback.format_exc(limit=3)}")
@@ -408,7 +561,8 @@ def _manuscript(project, scope):
 
 def chapter_report(project, chapter, *, scope=_UNSET, text=None, llm=None, use_cache=True,
                    checks: Optional[Sequence[str]] = None, scanner: Optional[Scanner] = None,
-                   save: bool = True, _goal=None, _dismissed=None) -> ChapterReport:
+                   save: bool = True, _goal=None, _dismissed=None,
+                   book: Optional[Book] = None) -> ChapterReport:
     """Every chapter-level check for one chapter. ``text`` is the live
     text for the open chapter (else ``chapter.content``)."""
     from src.data import readiness_state as rs
@@ -424,8 +578,10 @@ def chapter_report(project, chapter, *, scope=_UNSET, text=None, llm=None, use_c
         _goal = publishing_goal(project, scope)
     scanner = scanner or Scanner(project)
     dismissed = rs.dismissed_keys(project) if _dismissed is None else _dismissed
+    if book is None:
+        book = Book(project, scope, {chapter.id: text})
     ctx = CheckContext(project, scope, chapter, text, is_opening=is_opening,
-                       route=_goal.route, genre=_goal.genre, llm=llm, scanner=scanner)
+                       route=_goal.route, genre=_goal.genre, llm=llm, scanner=scanner, book=book)
     t_hash = text_hash(text)
     fingerprint = _context_fingerprint(_goal.route, _goal.genre, is_opening, scanner)
     tier = "scan" if llm is None else f"model:{getattr(llm, 'model', '') or 'model'}"
@@ -440,22 +596,28 @@ def chapter_report(project, chapter, *, scope=_UNSET, text=None, llm=None, use_c
     for spec in checks_for(level="chapter"):
         if checks is not None and spec.name not in checks:
             continue
-        key = _hash("|".join([t_hash, spec.name, str(spec.version), fingerprint, tier]))
+        key = _hash("|".join([t_hash, spec.name, str(spec.version), fingerprint, tier]
+                             + ([book.hash, book.planning_hash()] if spec.book_wide else [])))
         cached = stored_results.get(spec.name)
         if use_cache and isinstance(cached, dict) and cached.get("key") == key:
             raw = CheckResult.from_dict(cached)
             report.from_cache += 1
         else:
             raw = _run_check(spec, ctx)
+            if raw is None:
+                continue                                 # doesn't apply here
             if raw.status != Status.COULD_NOT_CHECK:
                 fresh[spec.name] = dict(raw.to_dict(), key=key, tier=tier)
         report.results[spec.name] = _finish(spec, raw, ctx.words, dismissed,
                                             ctx.threshold(spec.name))
     report.judged = any(r.judged for r in report.results.values())
-    if save and fresh:
-        report.saved = rs.store_chapter(project, scope, chapter.id, {
-            "text_hash": t_hash, "context": fingerprint, "made_at": report.made_at,
-            "results": fresh})
+    if fresh:
+        fields = {"text_hash": t_hash, "context": fingerprint, "made_at": report.made_at,
+                  "results": fresh}
+        if save:
+            report.saved = rs.store_chapter(project, scope, chapter.id, fields)
+        else:
+            report.pending = fields
     return report
 
 
@@ -499,9 +661,20 @@ def book_report(project, scope: Optional[str] = None, *, texts: Optional[Dict[st
     report = BookReport(scope=scope, name=name, kind=goal.kind, info={"length": goal},
                         tier="scan" if llm is None else "model", made_at=_now())
     chapters = list(getattr(ms, "chapters", None) or [])
+    book = Book(project, scope, texts)
+    scanner = scanner or (Scanner(project) if chapters else None)
+    dismissed = rs.dismissed_keys(project)
+    pending: Dict[str, Any] = {}
+    last_write = time.monotonic()
+
+    def write_pending():
+        nonlocal last_write
+        if pending:
+            report.saved = rs.store_chapters(project, scope, dict(pending)) and report.saved
+            pending.clear()
+        last_write = time.monotonic()
+
     if chapters:
-        scanner = scanner or Scanner(project)
-        dismissed = rs.dismissed_keys(project)
         for i, ch in enumerate(chapters):
             if stop is not None and stop():
                 report.complete = False
@@ -511,16 +684,26 @@ def book_report(project, scope: Optional[str] = None, *, texts: Optional[Dict[st
             text = (texts or {}).get(ch.id)
             cr = chapter_report(project, ch, scope=scope, text=text, llm=llm,
                                 use_cache=use_cache, scanner=scanner, _goal=goal,
-                                _dismissed=dismissed)
-            report.saved = report.saved and cr.saved
+                                _dismissed=dismissed, book=book, save=False)
+            if cr.pending:
+                pending[ch.id] = cr.pending
+                cr.pending = {}
             report.chapters.append(cr)
+            # Written every couple of seconds, so stopping or closing loses little.
+            if time.monotonic() - last_write > 2.0:
+                write_pending()
+        write_pending()
         if progress is not None and report.complete:
             progress(len(chapters), len(chapters), "")
+    if report.complete:
+        _book_checks(project, scope, book, report, goal, llm, scanner, use_cache, dismissed)
     _load_checks()
-    used = {n for ch in report.chapters for n in ch.results}
+    used = {n for ch in report.chapters for n in ch.results} | set(report.book_results)
     for name in used:
         spec = REGISTRY.get(name)
         statuses = {ch.results[name].status for ch in report.chapters if name in ch.results}
+        if name in report.book_results:
+            statuses.add(report.book_results[name].status)
         if spec is None:
             continue
         if not spec.counts:
@@ -534,6 +717,59 @@ def book_report(project, scope: Optional[str] = None, *, texts: Optional[Dict[st
     report.counted.sort(key=lambda n: list(REGISTRY).index(n) if n in REGISTRY else 999)
     report.readiness, report.cells = _figure(report)
     return report
+
+
+def _book_checks(project, scope, book: Book, report: BookReport, goal, llm, scanner,
+                 use_cache: bool, dismissed) -> None:
+    """Whole-book checks: cached on every chapter's text and the plan."""
+    from src.data import readiness_state as rs
+    specs = checks_for(level="book")
+    if not specs:
+        return
+    bctx = BookContext(project, scope, book, report.chapters, route=goal.route,
+                       genre=goal.genre, llm=llm, scanner=scanner)
+    tier = "scan" if llm is None else f"model:{getattr(llm, 'model', '') or 'model'}"
+    base = "|".join([book.hash, book.planning_hash(), goal.route, goal.genre,
+                     str(THRESHOLDS_VERSION), tier])
+    stored = (rs.stored_book(project, scope).get("results") or {}) if use_cache else {}
+    fresh: Dict[str, Any] = {}
+    project_hash = None
+    for spec in specs:
+        extra = ""
+        if spec.book_wide:                       # looks across every manuscript
+            if project_hash is None:
+                project_hash = _project_hash(project, scope, book)
+            extra = "|" + project_hash
+        key = _hash(f"{base}|{spec.name}|{spec.version}{extra}")
+        cached = stored.get(spec.name)
+        if use_cache and isinstance(cached, dict) and cached.get("key") == key:
+            if cached.get("not_applicable"):
+                continue
+            raw = CheckResult.from_dict(cached)
+        else:
+            raw = _run_check(spec, bctx)
+            if raw is None:
+                fresh[spec.name] = {"key": key, "not_applicable": True}
+                continue
+            if raw.status != Status.COULD_NOT_CHECK:
+                fresh[spec.name] = dict(raw.to_dict(), key=key, tier=tier)
+        report.book_results[spec.name] = _finish(spec, raw, bctx.words, dismissed,
+                                                 bctx.threshold(spec.name))
+    if fresh:
+        report.saved = rs.store_book(project, scope, fresh) and report.saved
+
+
+def _project_hash(project, scope, book: Book) -> str:
+    """Every manuscript's chapters (this one's live texts included)."""
+    parts = []
+    try:
+        for s, ms in project.iter_manuscripts():
+            for ch in ms.chapters:
+                text = book.texts.get(ch.id) if s == scope else (getattr(ch, "content", "") or "")
+                parts.append(f"{s}:{ch.id}:{text_hash(text or '')}")
+    except Exception:
+        pass
+    return _hash("|".join(parts))
 
 
 def project_report(project, **kw) -> List[BookReport]:
@@ -560,11 +796,27 @@ class Grid:
         return out
 
 
+BOOK_ROW = "__book__"            # the chapter id of the "Whole manuscript" row
+
+
+def book_row(book: BookReport) -> ChapterReport:
+    """The whole-book results as one more row (its items name their chapters)."""
+    words = sum(ch.words for ch in book.chapters)
+    row = ChapterReport(scope=book.scope, chapter_id=BOOK_ROW, number=0,
+                        title="Whole manuscript", words=words, text_hash="",
+                        results=dict(book.book_results))
+    return row
+
+
 def grid(book: BookReport) -> Grid:
-    """Chapters down the side, checks across (grouped by stage)."""
-    used = {n for ch in book.chapters for n in ch.results}
-    columns = [s for s in checks_for(level="chapter") if s.name in used]
+    """Chapters down the side, checks across (grouped by stage); whole-book
+    checks have their cell on a last "Whole manuscript" row."""
+    used = {n for ch in book.chapters for n in ch.results} | set(book.book_results)
+    columns = [s for s in checks_for() if s.name in used]
     rows = [(ch, [ch.results.get(s.name) for s in columns]) for ch in book.chapters]
+    if book.book_results and book.chapters:
+        row = book_row(book)
+        rows.append((row, [row.results.get(s.name) for s in columns]))
     return Grid(columns, rows)
 
 

@@ -255,6 +255,11 @@ def child(tag: str, names: List[str], out: Path, report_path: Path, count: bool)
     from PyQt6.QtWidgets import QApplication, QDialog, QMenu, QMessageBox
 
     app = QApplication(sys.argv[:1])
+    try:                                      # draw with the app's own style sheet
+        from src.ui.styles import get_modern_style
+        app.setStyleSheet(get_modern_style())
+    except Exception as e:
+        print(f"[harness] app style sheet not applied: {e}")
     # Nothing may block, reach a model, or touch real stores.
     QDialog.exec = lambda self, *a, **k: 0
     for n in ("information", "warning", "critical", "question"):
@@ -481,6 +486,17 @@ def _check(top, focus, app) -> List[str]:
         if w.height() < need:
             label = (getattr(w, "text", lambda: "")() if isinstance(w, one_line) else "") or w.objectName()
             squeezed.append(f"{type(w).__name__} “{str(label)[:30]}” {w.height()}px < {need}px")
+    # A button narrower than its label needs shows it cut off, or blank.
+    narrow = []
+    for b in focus.findChildren((QPushButton, QToolButton)):
+        if not b.isVisibleTo(top) or b.width() <= 0 or not (b.text() or "").strip():
+            continue
+        need = b.minimumSizeHint().width()
+        if need > 0 and b.width() + 2 < need:
+            narrow.append(f"“{b.text()[:20]}” {b.width()}px < {need}px")
+    if narrow:
+        problems.append(f"{len(narrow)} button(s) too narrow for their label: "
+                        + "; ".join(narrow[:6]) + (" …" if len(narrow) > 6 else ""))
     if squeezed:
         problems.append(f"{len(squeezed)} widget(s) below a readable height: "
                         + "; ".join(squeezed[:6]) + (" …" if len(squeezed) > 6 else ""))

@@ -467,6 +467,8 @@ def project_vocabulary(project) -> Tuple[List[str], List[str]]:
     words: List[str] = []
     try:
         words += [c.name for c in getattr(project, "characters", None) or []]
+        from src.ai.canon_index import character_alias_names
+        words += character_alias_names(getattr(project, "characters", None) or [])
         from src.ai.canon_index import collect_world_entities
         words += [e.name for e in collect_world_entities(
             getattr(project, "worldbuilding", None))]
@@ -476,7 +478,8 @@ def project_vocabulary(project) -> Tuple[List[str], List[str]]:
     # Names repeat because stories are about people and places.
     names = [c.name for c in getattr(project, "characters", None) or []]
     try:
-        from src.ai.canon_index import collect_world_entities
+        from src.ai.canon_index import character_alias_names, collect_world_entities
+        names += character_alias_names(getattr(project, "characters", None) or [])
         names += [e.name for e in collect_world_entities(getattr(project, "worldbuilding", None))]
     except Exception:
         pass

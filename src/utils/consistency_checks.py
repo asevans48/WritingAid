@@ -214,7 +214,8 @@ class ConsistencyChecker:
         cap_rx = re.compile(r"\b[A-Z][a-z'’]{2,}\b")
         counts = Counter()
         for ch, m in self._find_all(cap_rx):
-            w = m.group(0).rstrip("'’s")
+            # Drop a possessive ("Dorcas's", "Dorcas'"), never a final s.
+            w = re.sub(r"['’]s?$", "", m.group(0))
             low = w.lower()
             if low in tokens:
                 counts[tokens[low]] += 1

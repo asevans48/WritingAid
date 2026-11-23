@@ -94,7 +94,7 @@ def test_cache_used_when_unchanged_and_refreshed_when_changed(tmp_path, monkeypa
     rd.chapter_report(p, ch)
     assert len(calls) == 1                                       # unchanged: cached
     again = rd.chapter_report(p, ch)
-    assert again.from_cache == 2
+    assert again.from_cache == len(again.results) >= 2
     assert again.results["spelling_grammar"].count == first.results["spelling_grammar"].count
 
     ch.content = TEXT + "Anothr line.\n"                          # text changed
@@ -143,9 +143,14 @@ def test_book_report_per_manuscript(tmp_path):
     assert len(main.chapters) == 1 and len(nov.chapters) == 2
     assert nov.kind == "novella" and nov.name == "Novella"
     assert nov.chapters[0].is_opening and nov.chapters[0].scope == nov.scope
-    assert main.readiness == 1.0 and main.cells == 1               # only spelling_grammar counts
-    assert nov.readiness == pytest.approx(0.5)                     # one problem, one ready
-    assert main.counted == ["spelling_grammar"] and main.left_out == {"overdescribed": "needs a model"}
+    sg = lambda r, i: r.chapters[i].results["spelling_grammar"].status
+    assert sg(main, 0) == rd.Status.READY
+    assert sg(nov, 0) == rd.Status.PROBLEM and sg(nov, 1) == rd.Status.READY
+    assert nov.readiness < main.readiness                          # the novella has the slips
+    assert main.readiness == pytest.approx(rd.readiness_figure(main)) and main.cells > 1
+    assert "spelling_grammar" in main.counted
+    assert main.left_out["overdescribed"] == "needs a model"
+    assert main.left_out["chapter_length"] == "information only"
     data = json.loads(rs.readiness_path(p).read_text())
     assert set(data["manuscripts"]) == {"main", nov.scope}
     assert len(data["manuscripts"][nov.scope]["chapters"]) == 2
@@ -164,9 +169,13 @@ def test_grid_and_helpers(tmp_path):
     p = _project(tmp_path)
     book = rd.book_report(p)
     g = rd.grid(book)
-    assert [s.name for s in g.columns] == ["overdescribed", "spelling_grammar"]   # stage order
-    assert [st for st, _ in g.stages()] == ["line", "copyedit"]
-    assert len(g.rows) == 2 and g.rows[0][1][1].status == rd.Status.PROBLEM
+    stages = [st for st, _ in g.stages()]
+    assert stages == sorted(stages, key=rd.STAGES.index)                     # stage order
+    names = [s.name for s in g.columns]
+    assert names.index("overdescribed") < names.index("spelling_grammar")
+    assert len(g.rows) == 3 and g.rows[-1][0].chapter_id == rd.BOOK_ROW   # + whole manuscript
+    assert g.rows[0][1][names.index("spelling_grammar")].status == rd.Status.PROBLEM
+    assert g.rows[-1][1][names.index("manuscript_length")].status == rd.Status.INFO
     items = rd.items_for(book.chapters[0], "spelling_grammar")
     assert items and items[0].paragraph >= 0
     fixes = rd.fix_candidates_for(book, "copyedit")

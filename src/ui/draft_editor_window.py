@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
 )
 
 from src.models.project import ManuscriptDraft, Chapter, WriterProject
+from src.ui.ui_kit import compact_button  # narrow buttons show their symbol
 
 
 class DraftEditorPanel(QWidget):
@@ -129,6 +130,7 @@ class DraftEditorPanel(QWidget):
         self.move_up_btn.setToolTip("Move selected chapter up in the draft order")
         self.move_up_btn.setStyleSheet(btn_css)
         self.move_up_btn.setMaximumWidth(28)
+        compact_button(self.move_up_btn)  # narrow: show its symbol
         self.move_up_btn.clicked.connect(self._move_chapter_up)
         bar.addWidget(self.move_up_btn)
 
@@ -136,6 +138,7 @@ class DraftEditorPanel(QWidget):
         self.move_down_btn.setToolTip("Move selected chapter down in the draft order")
         self.move_down_btn.setStyleSheet(btn_css)
         self.move_down_btn.setMaximumWidth(28)
+        compact_button(self.move_down_btn)  # narrow: show its symbol
         self.move_down_btn.clicked.connect(self._move_chapter_down)
         bar.addWidget(self.move_down_btn)
 
@@ -143,6 +146,7 @@ class DraftEditorPanel(QWidget):
         self.save_btn.setToolTip("Save draft edits (Ctrl+S)")
         self.save_btn.setStyleSheet(btn_css)
         self.save_btn.setMaximumWidth(30)
+        compact_button(self.save_btn)  # narrow: show its symbol
         self.save_btn.clicked.connect(self._save_current)
         bar.addWidget(self.save_btn)
 
@@ -160,6 +164,7 @@ class DraftEditorPanel(QWidget):
                 }
                 QPushButton:hover { background-color: #fecaca; }
             """)
+            compact_button(self.close_btn)  # narrow: show its symbol
             self.close_btn.clicked.connect(self._on_close_clicked)
             bar.addWidget(self.close_btn)
 

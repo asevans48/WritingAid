@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
 )
 
 from src.ui.worldbuilding._record_dialog import FieldSpec, edit_record
+from src.ui.ui_kit import compact_button  # narrow buttons show their symbol
 
 
 def populate_faction_combo(combo: QComboBox, factions: list,
@@ -221,6 +222,7 @@ class SystemBuilderBase(QWidget):
         btns.addWidget(add_btn)
         rem_btn = QPushButton("🗑️")
         rem_btn.setMaximumWidth(40)
+        compact_button(rem_btn)  # narrow: show its symbol
         rem_btn.clicked.connect(self._remove_system)
         btns.addWidget(rem_btn)
         if self.IMPORT_SECTION:

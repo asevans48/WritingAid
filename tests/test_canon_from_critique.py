@@ -288,3 +288,77 @@ def test_world_tab_entries_no_longer_break_saving(qapp):
     again = ComprehensiveWorldBuildingWidget()
     again.load_data(saved)
     assert again.encyclopedia_widget._custom_entries[0]["tags"] == ["sea", "storm"]
+
+
+# ── Another name for a character ─────────────────────────────────────────
+
+NICK_TEXT = ("\"Keep your voice down,\" Bran said. Brannoc never raised his.\n\n"
+             "\"Move,\" said Bran, and the crew moved.\n")
+
+
+def _with_brannoc(tmp_path, notes=""):
+    from src.models.project import Character
+    p = _project(tmp_path)
+    p.manuscript.chapters[0].content = NICK_TEXT
+    p.characters.append(Character(id="b", name="Brannoc", character_type="major", notes=notes))
+    return p
+
+
+def test_nicknames_come_from_the_notes_line(tmp_path):
+    from src.ai.canon_index import character_aliases, character_name_variants, find_mentions
+    p = _with_brannoc(tmp_path, "Gruff.\nAlso called: Bran, The Captain.")
+    c = p.characters[0]
+    assert character_aliases(c) == ["Bran", "The Captain"]
+    assert "Bran" in character_name_variants([c])["Brannoc"]
+    assert find_mentions("Bran said nothing.", character_name_variants([c]))
+
+
+def test_add_nickname_writes_one_line(tmp_path):
+    p = _with_brannoc(tmp_path, "Gruff.")
+    assert cc.add_nickname(p, "Brannoc", "Bran") == "added"
+    assert p.characters[0].notes == "Gruff.\n\nAlso called: Bran"
+    assert cc.add_nickname(p, "Brannoc", "The Captain") == "added"
+    assert p.characters[0].notes.endswith("Also called: Bran, The Captain")
+    assert cc.add_nickname(p, "Brannoc", "bran") == ""                 # already there
+    assert cc.add_nickname(p, "Nobody", "X") == "missing"
+
+
+def test_popup_offers_another_name_for_a_character(qapp, tmp_path):
+    from src.ui.canon_add_dialog import CanonAddDialog
+    p = _with_brannoc(tmp_path)
+    llm = FakeLLM("TARGET: Brannoc\nRELATION: alias\nDEFINITION: x")
+    dlg = CanonAddDialog(p, "character", 'Bran (2×) — e.g. "Move,"', llm_factory=lambda t: llm)
+    assert dlg.mode_connect.isVisible() or not dlg.isVisible()
+    assert dlg.connecting() and dlg.kind() == "nickname"            # "Bran" is in "Brannoc"
+    assert dlg.target()["name"] == "Brannoc"
+    assert dlg.data() == {"nickname": "Bran", "character": "Brannoc"}
+    assert not dlg.relation_combo.isVisibleTo(dlg)                  # just "another name"
+    dlg.fill_with_ai()
+    _wait(qapp, dlg)
+    assert "which recorded character it names" in llm.prompts[0]
+    dlg.mode_new.setChecked(True)
+    assert dlg.kind() == "character" and dlg.add_btn.text() == "Add character"
+
+
+def test_saving_a_nickname_and_the_report_knows_it(qapp, tmp_path):
+    from src.ai.chapter_analysis_agent import CharacterAnalyzer, resolve_genre_profile
+    from src.ui.canon_add_dialog import add_from_critique
+    p = _with_brannoc(tmp_path)
+
+    def speakers():
+        a = CharacterAnalyzer(project=p, manuscript=p.manuscript)
+        sec = a.run(NICK_TEXT, "One", 0, resolve_genre_profile("literary"), "", "", None, None)
+        return " ".join(sec.extra_lists.get("Speakers with no character record", []))
+    assert "Bran" in speakers()
+    mw, shown = _main_window_like(p)
+    assert add_from_critique(mw, "nickname", {"nickname": "Bran", "character": "Brannoc"})
+    assert "Also called: Bran" in p.characters[0].notes
+    assert any("another name for Brannoc" in m for m in shown if isinstance(m, str))
+    assert "Bran" not in speakers()
+
+
+def test_spell_checker_learns_nicknames(tmp_path):
+    from src.utils.editor_flags import project_vocabulary
+    p = _with_brannoc(tmp_path, "Also called: Branno")
+    words, names = project_vocabulary(p)
+    assert "Branno" in words and "Branno" in names

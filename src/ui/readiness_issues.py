@@ -25,6 +25,13 @@ STATUS_WORDS = {"ready": "ready", "needs_work": "needs work", "problem": "a prob
                 "info": "information"}
 
 
+def _per_1000(name: str) -> bool:
+    """Whether a check's measure is a rate per 1,000 words."""
+    from src.ai import readiness as rd
+    t = rd._thresholds().get(name)
+    return bool(t is not None and t.per_1000)
+
+
 def _e(text: Any) -> str:
     return html.escape(str(text or ""))
 
@@ -48,15 +55,17 @@ class ChapterIssues(QTextBrowser):
     # ── Showing ──────────────────────────────────────────────────
 
     def show_chapter(self, chapter_report, checks: Optional[Sequence[str]] = None,
-                     text: Optional[str] = None) -> None:
+                     text: Optional[str] = None,
+                     titles: Optional[Dict[str, str]] = None) -> None:
         """List the issues of ``chapter_report`` for ``checks`` (all when
         None). ``text`` is the chapter's text, for the sentence around each
         issue; it is used only if it is the text that was checked."""
         from src.ai import readiness as rd
         self._chapter = chapter_report
         self._links = []
+        self._titles = titles or {}
         ch = chapter_report
-        if text is not None and rd.text_hash(text) != ch.text_hash:
+        if text is not None and ch.text_hash and rd.text_hash(text) != ch.text_hash:
             text, stale = None, True
         else:
             stale = False
@@ -64,7 +73,9 @@ class ChapterIssues(QTextBrowser):
         parts = [f"<div style='font-size:14px; font-weight:bold; color:{PALETTE['ink']}'>"
                  f"{_e(title)}</div>",
                  f"<div style='color:{PALETTE['ink_faint']}'>{ch.words:,} words"
-                 + (" · the opening chapter" if ch.is_opening else "") + "</div>"]
+                 + (" · the opening chapter" if ch.is_opening else "")
+                 + (" · checks that look across every chapter" if ch.chapter_id == rd.BOOK_ROW
+                    else "") + "</div>"]
         names = ([s.name for s in rd.checks_for() if s.name in ch.results] if checks is None
                  else [n for n in checks if n in ch.results])
         if checks is not None:
@@ -77,9 +88,10 @@ class ChapterIssues(QTextBrowser):
                          "this check; click Check readiness for current results.</p>")
         for name in names:
             parts.append(self._check_html(name, ch.results[name], text, ch))
-        parts.append(f"<p style='color:{PALETTE['ink_faint']}'>For this chapter's full "
-                     "reports (pacing, voice, dialogue and the rest), <b>Run Critique</b> "
-                     "below; it is set to this chapter.</p>")
+        if ch.chapter_id != rd.BOOK_ROW:
+            parts.append(f"<p style='color:{PALETTE['ink_faint']}'>For this chapter's full "
+                         "reports (pacing, voice, dialogue and the rest), <b>Run Critique</b> "
+                         "below; it is set to this chapter.</p>")
         self.setHtml("".join(parts))
         self._fit()
 
@@ -95,19 +107,28 @@ class ChapterIssues(QTextBrowser):
         label = spec.label if spec else name
         stage = spec.stage if spec else ""
         colour = STAGE_COLOURS.get(stage, PALETTE["ink"])
-        rate = (f", {result.measure:g} per 1,000 words"
-                if result.measure is not None and result.status != "could_not_check" else "")
+        display = getattr(spec, "display", "count") if spec else "count"
+        if result.status == "info":
+            summary = "information, not counted"
+        elif display == "measure" and result.measure is not None:
+            summary = f"{STATUS_WORDS.get(result.status, result.status)}: {result.measure:g}"
+        else:
+            rate = (f", {result.measure:g} per 1,000 words"
+                    if result.measure is not None and result.status != "could_not_check"
+                    and spec is not None and _per_1000(spec.name) else "")
+            summary = (f"{STATUS_WORDS.get(result.status, result.status)}: "
+                       f"{result.count} found{rate}")
         head = (f"<div style='margin-top:10px'><span style='color:{colour}; font-weight:bold'>"
                 f"{_e(rd.STAGE_LABELS.get(stage, stage))} › {_e(label)}</span> "
-                f"<span style='color:{PALETTE['ink_soft']}'>— "
-                f"{_e(STATUS_WORDS.get(result.status, result.status))}: "
-                f"{result.count} found{rate}</span></div>")
+                f"<span style='color:{PALETTE['ink_soft']}'>— {_e(summary)}</span></div>")
         out = [head]
         if result.message:
             out.append(f"<div style='color:{PALETTE['ink_faint']}'>{_e(result.message)}</div>")
         items = [i for i in result.items if i.verdict != "cleared"]
         if result.status == "could_not_check":
             out.append(f"<div style='color:{PALETTE['error']}'>{_e(result.error)}</div>")
+            return "".join(out)
+        if result.status == "info" and not items:
             return "".join(out)
         if not items:
             out.append(f"<div style='color:{PALETTE['success']}'>Nothing found.</div>")
@@ -137,6 +158,13 @@ class ChapterIssues(QTextBrowser):
 
     def _item_html(self, name: str, group, text: Optional[str], ch) -> str:
         first = group[0]
+        where = ""
+        if first.chapter_id and first.chapter_id != ch.chapter_id:
+            chapters = list(dict.fromkeys(i.chapter_id for i in group if i.chapter_id))
+            names = [self._titles.get(c, "") for c in chapters if self._titles.get(c)]
+            if names:
+                where = (f"<br><span style='color:{PALETTE['ink_faint']}'>In: "
+                         + _e(", ".join(names[:6])) + (" …" if len(names) > 6 else "") + "</span>")
         times = f" <span style='color:{PALETTE['ink_faint']}'>×{len(group)}</span>" \
             if len(group) > 1 else ""
         bits = []
@@ -148,7 +176,7 @@ class ChapterIssues(QTextBrowser):
                             f"“{_e(first.suggestions[0])}”</span>")
             bits.append(f"<br><a href='{self._link('show', first)}'>Show in chapter</a> · "
                         f"<a href='{self._link('expand', first)}'>Ways to expand it…</a>")
-            return "".join(bits)
+            return "".join(bits) + where
         kind = {"spelling": "Spelling", "grammar": "Grammar"}.get(first.kind, first.kind.title())
         bits.append(f"<b>{_e(first.text)}</b>{times} "
                     f"<span style='color:{PALETTE['ink_faint']}'>{_e(kind)}</span>")
@@ -164,8 +192,9 @@ class ChapterIssues(QTextBrowser):
         if first.suggestions:
             bits.append(f"<br><span style='color:{PALETTE['ink_faint']}'>Try: "
                         + ", ".join(f"“{_e(s)}”" for s in first.suggestions[:4]) + "</span>")
-        bits.append(f"<br><a href='{self._link('show', first)}'>Show in chapter</a>")
-        return "".join(bits)
+        if first.end > first.start or first.chapter_id:
+            bits.append(f"<br><a href='{self._link('show', first)}'>Show in chapter</a>")
+        return "".join(bits) + where
 
     # ── Links ────────────────────────────────────────────────────
 
@@ -183,9 +212,10 @@ class ChapterIssues(QTextBrowser):
         if kind == "all":
             self.show_all_requested.emit()
         elif ch is not None and kind == "show":
-            self.show_requested.emit(ch.chapter_id, item.text, item.start)
+            self.show_requested.emit(item.chapter_id or ch.chapter_id, item.text, item.start)
         elif ch is not None and kind == "expand":
-            self.expand_requested.emit(ch.chapter_id, ch.title, item.text, item.start)
+            cid = item.chapter_id or ch.chapter_id
+            self.expand_requested.emit(cid, self._titles.get(cid, ch.title), item.text, item.start)
 
     def _fit(self) -> None:
         """As tall as the list, up to about 45% of the window; then it
@@ -195,7 +225,10 @@ class ChapterIssues(QTextBrowser):
         height = int(doc.size().height()) + 2 * self.frameWidth() + 8
         window = self.window().height() if self.window() is not None else 900
         cap = max(160, int(window * 0.45))
-        self.setFixedHeight(min(height, cap))
+        if self.height() != min(height, cap):
+            self.setFixedHeight(min(height, cap))
+            from src.ui.ui_kit import relayout
+            relayout(self)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

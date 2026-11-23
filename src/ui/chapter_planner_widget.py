@@ -13,6 +13,7 @@ import threading
 import uuid
 
 from src.ui.styles import SYSTEM_FONT
+from src.ui.ui_kit import compact_button  # narrow buttons show their symbol
 
 
 # Tags the chapter-planner AI emits when it wants to propose a new
@@ -226,6 +227,7 @@ class TodoItemWidget(QWidget):
                 border-radius: 3px;
             }
         """)
+        compact_button(delete_btn)  # narrow: show its symbol
         delete_btn.clicked.connect(lambda: self.delete_requested.emit(self.item_id))
         layout.addWidget(delete_btn)
 
@@ -396,6 +398,7 @@ class StoryEventWidget(QWidget):
                 border-radius: 3px;
             }
         """)
+        compact_button(ai_btn)  # narrow: show its symbol
         ai_btn.clicked.connect(
             lambda: self.ai_help_requested.emit(self.event_id))
         layout.addWidget(ai_btn)
@@ -417,6 +420,7 @@ class StoryEventWidget(QWidget):
                 border-radius: 3px;
             }
         """)
+        compact_button(delete_btn)  # narrow: show its symbol
         delete_btn.clicked.connect(lambda: self.delete_requested.emit(self.event_id))
         layout.addWidget(delete_btn)
 
@@ -1158,6 +1162,7 @@ class ChapterPlannerWidget(QWidget):
         self.add_subject_btn.setFixedSize(24, 24)
         self.add_subject_btn.setToolTip("Add subject")
         self.add_subject_btn.setStyleSheet("font-weight: bold; font-size: 14px; padding: 0;")
+        compact_button(self.add_subject_btn)  # narrow: show its symbol
         self.add_subject_btn.clicked.connect(self._add_note_subject)
         toolbar.addWidget(self.add_subject_btn)
 
@@ -1165,6 +1170,7 @@ class ChapterPlannerWidget(QWidget):
         self.rename_subject_btn.setFixedSize(24, 24)
         self.rename_subject_btn.setToolTip("Rename subject")
         self.rename_subject_btn.setStyleSheet("font-size: 10px; padding: 0;")
+        compact_button(self.rename_subject_btn)  # narrow: show its symbol
         self.rename_subject_btn.clicked.connect(self._rename_note_subject)
         toolbar.addWidget(self.rename_subject_btn)
 
@@ -1172,6 +1178,7 @@ class ChapterPlannerWidget(QWidget):
         self.remove_subject_btn.setFixedSize(24, 24)
         self.remove_subject_btn.setToolTip("Remove subject")
         self.remove_subject_btn.setStyleSheet("font-weight: bold; font-size: 14px; padding: 0;")
+        compact_button(self.remove_subject_btn)  # narrow: show its symbol
         self.remove_subject_btn.clicked.connect(self._remove_note_subject)
         toolbar.addWidget(self.remove_subject_btn)
 
@@ -1589,6 +1596,7 @@ class ChapterPlannerWidget(QWidget):
         toggle_btn = QPushButton("\u25b6" if collapsed else "\u25bc")
         toggle_btn.setFixedSize(18, 18)
         toggle_btn.setStyleSheet("border: none; font-size: 9px; color: #6b7280; padding: 0;")
+        compact_button(toggle_btn)  # narrow: show its symbol
         toggle_btn.setToolTip("Collapse/expand")
         toggle_btn.setAttribute(wa_no_activate)
         toggle_btn.clicked.connect(lambda _, idx=index: self._toggle_note_collapsed(idx))
@@ -1609,6 +1617,7 @@ class ChapterPlannerWidget(QWidget):
         del_btn.setToolTip("Remove note")
         del_btn.setAttribute(wa_no_activate)
         del_btn.setStyleSheet("border: none; font-size: 13px; font-weight: bold; color: #9ca3af; padding: 0;")
+        compact_button(del_btn)  # narrow: show its symbol
         del_btn.clicked.connect(lambda _, idx=index: self._remove_note_entry(idx))
         header_layout.addWidget(del_btn)
 
@@ -1745,6 +1754,7 @@ class ChapterPlannerWidget(QWidget):
         toggle_btn.setFixedSize(18, 18)
         toggle_btn.setAttribute(wa_no_activate)
         toggle_btn.setStyleSheet("border: none; font-size: 9px; color: #6d28d9; padding: 0;")
+        compact_button(toggle_btn)  # narrow: show its symbol
         toggle_btn.setToolTip("Collapse/expand")
         toggle_btn.clicked.connect(lambda _, idx=index: self._toggle_subplot_collapsed(idx))
         header_layout.addWidget(toggle_btn)
@@ -1773,6 +1783,7 @@ class ChapterPlannerWidget(QWidget):
         del_btn.setToolTip("Remove subplot note")
         del_btn.setAttribute(wa_no_activate)
         del_btn.setStyleSheet("border: none; font-size: 13px; font-weight: bold; color: #8b5cf6; padding: 0;")
+        compact_button(del_btn)  # narrow: show its symbol
         del_btn.clicked.connect(lambda _, idx=index: self._remove_subplot_note(idx))
         header_layout.addWidget(del_btn)
 

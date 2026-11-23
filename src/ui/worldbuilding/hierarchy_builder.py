@@ -11,6 +11,7 @@ from typing import List, Optional
 import uuid
 
 from src.models.worldbuilding_objects import PowerHierarchy, HierarchyNode
+from src.ui.ui_kit import compact_button  # narrow buttons show their symbol
 
 
 class HierarchyNodeEditor(QWidget):
@@ -497,6 +498,7 @@ class HierarchyBuilderWidget(QWidget):
 
         remove_btn = QPushButton("🗑️")
         remove_btn.setMaximumWidth(40)
+        compact_button(remove_btn)  # narrow: show its symbol
         remove_btn.clicked.connect(self._remove_hierarchy)
         btn_layout.addWidget(remove_btn)
 

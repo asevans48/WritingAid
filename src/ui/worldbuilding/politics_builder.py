@@ -12,6 +12,7 @@ import uuid
 
 from src.models.worldbuilding_objects import PoliticalSystem, GovernmentBranch, Faction
 from PyQt6.QtWidgets import QMessageBox
+from src.ui.ui_kit import compact_button  # narrow buttons show their symbol
 
 
 class GovernmentBranchEditor(QWidget):
@@ -582,6 +583,7 @@ class PoliticsBuilderWidget(QWidget):
 
         remove_btn = QPushButton("🗑️")
         remove_btn.setMaximumWidth(40)
+        compact_button(remove_btn)  # narrow: show its symbol
         remove_btn.clicked.connect(self._remove_system)
         btn_layout.addWidget(remove_btn)
 

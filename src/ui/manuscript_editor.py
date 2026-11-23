@@ -23,6 +23,7 @@ from src.ai.chapter_memory import ChapterMemoryManager
 from src.utils.markdown_editor import MarkdownStyle, toggle_inline_style
 from src.utils.thesaurus import get_synonyms, get_antonyms
 from src.ui.styles import SYSTEM_FONT
+from src.ui.ui_kit import compact_button  # narrow buttons show their symbol
 
 
 class AnnotationMarginArea(QWidget):
@@ -4063,6 +4064,7 @@ class ManuscriptEditor(QWidget):
             "Open a draft in a separate pop-out window")
         self.popout_draft_btn.setMaximumWidth(30)
         self.popout_draft_btn.setStyleSheet("font-size: 11px; padding: 3px;")
+        compact_button(self.popout_draft_btn)  # narrow: show its symbol
         self.popout_draft_btn.clicked.connect(self._open_compare_window)
         header_layout.addWidget(self.popout_draft_btn)
 
