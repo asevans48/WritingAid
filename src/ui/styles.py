@@ -32,6 +32,19 @@ COLORS = {
     'warning': '#f59e0b',
     'error': '#ef4444',
     'info': '#3b82f6',
+
+    # Light panels (the app's light theme). These are the values the newer
+    # panels set by hand; the shared kit (ui_kit.py) uses them by name.
+    'surface': '#ffffff',
+    'surface_muted': '#f3f4f6',
+    'surface_hover': '#e5e7eb',
+    'border': '#e5e7eb',
+    'border_strong': '#d1d5db',
+    'ink': '#1f2937',          # body text on light panels
+    'ink_soft': '#4b5563',
+    'ink_faint': '#6b7280',
+    'primary_tint': '#eef2ff',
+    'primary_ink': '#312e81',
 }
 
 # Modern stylesheet

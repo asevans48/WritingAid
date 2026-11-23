@@ -300,7 +300,7 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 - [x] [0.2](pieces/02-0.2-map-the-screens-count-the-clutter-decide-what-me.md) Map the screens, count the clutter, decide what merges (S, no code)
 - [~] [0.3](pieces/03-0.3-safety-net-for-your-two-projects.md) Safety net for your two projects (S) — check built, both projects pass; screen check to follow
 - [x] [0.4](pieces/03b-0.4-harden-saving.md) Harden saving (M, before any piece that stores data)
-- [ ] [U.1](pieces/04-U.1-shared-interface-parts.md) Shared interface parts (M)
+- [x] [U.1](pieces/04-U.1-shared-interface-parts.md) Shared interface parts (M)
 - [ ] [U.2](pieces/05-U.2-screenshot-and-clutter-count-harness.md) Screenshot and clutter-count harness (S)
 - [x] [R.1](pieces/06-R.1-one-list-of-model-providers.md) One list of model providers (S)
 - [ ] [R.2](pieces/07-R.2-one-way-to-run-background-work.md) One way to run background work (M)
@@ -422,10 +422,13 @@ Work top to bottom within a group. A piece's file lists what it depends on.
     stays its own tab. Rephrase, Suggestions and Overly descriptive? become one
     Improve window, while AI Thesaurus and Ask stay separate (D.2). The six
     Analyze ▾ analyses run as Critique reports (D.5).
+13. **Look and feel.** The points in [look-and-feel.md](look-and-feel.md)
+    stand as written, with the changes agreed in 0.2. Settled when the writer
+    asked for U.1 to be built.
 
 ### Open
 
-1. **Look and feel.** You are updating the fourteen points. Needed before U.1.
+1. ~~**Look and feel.**~~ Settled: see settled decision 13.
 2. **Parity scope.** Confirm the three things left out of parity in settled
    decision 7.
 3. **Quality target.** A check is on by default only if four in five of its

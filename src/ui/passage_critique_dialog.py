@@ -148,24 +148,16 @@ class PassageCritiqueDialog(QDialog):
     # ── UI ───────────────────────────────────────────────────────────
 
     def _fit_to_screen(self, width: int, height: int):
-        screen = self.screen() if hasattr(self, "screen") else None
-        if screen is not None:
-            avail = screen.availableGeometry()
-            width = min(width, avail.width() - 40)
-            height = min(height, avail.height() - 60)
-        self.resize(max(width, 480), max(height, 360))
+        from src.ui.ui_kit import fit_to_screen
+        fit_to_screen(self, width, height)
 
     def _build_ui(self, selection):
         # Everything but the Close / Use buttons scrolls, so a small window
         # (or a laptop screen) never squeezes the sections to nothing.
+        from src.ui.ui_kit import scrollable
         outer = QVBoxLayout(self)
-        self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         content = QWidget()
-        self.scroll_area.setWidget(content)
+        self.scroll_area = scrollable(content)
         outer.addWidget(self.scroll_area, 1)
         layout = QVBoxLayout(content)
         layout.setContentsMargins(0, 0, 6, 0)

@@ -48,78 +48,13 @@ def run_background(fn: Callable[[], Any], on_done: Callable[[Any, str], None]) -
     return task
 
 
-class CollapsibleSection(QWidget):
-    """A section of the Companion that opens and closes from its header."""
-    toggled = pyqtSignal(str, bool)          # key, collapsed
-
-    def __init__(self, title: str, key: str, parent=None):
-        super().__init__(parent)
-        self.key, self.title = key, title
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 2, 0, 2)
-        outer.setSpacing(0)
-        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
-        self.header = QPushButton()
-        self.header.setCheckable(True)
-        self.header.setChecked(True)
-        self.header.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.header.setToolTip("Click to open or close")
-        self.header.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.header.setStyleSheet(
-            "QPushButton { text-align: left; border: none; border-radius: 4px;"
-            " background: #f3f4f6; color: #1f2937; font-weight: bold; font-size: 11px;"
-            " padding: 5px 8px; min-height: 0; }"
-            "QPushButton:hover, QPushButton:checked:hover { background: #e5e7eb; }"
-            "QPushButton:checked { background: #eef2ff; color: #312e81; }")
-        self.header.toggled.connect(self._on_toggled)
-        outer.addWidget(self.header)
-        self.body = QWidget()
-        self.body_layout = QVBoxLayout(self.body)
-        self.body_layout.setContentsMargins(6, 4, 2, 6)
-        outer.addWidget(self.body)
-        self._count = ""
-        self._label()
-
-    def _label(self):
-        arrow = "▾" if self.header.isChecked() else "▸"
-        self.header.setText(f"{arrow}  {self.title}{self._count}")
-
-    def set_count(self, n: Optional[int]) -> None:
-        self._count = f"  ({n})" if n else ""
-        self._label()
-
-    def is_open(self) -> bool:
-        return self.header.isChecked()
-
-    def set_open(self, is_open: bool, *, quiet: bool = True) -> None:
-        if quiet:
-            self.header.blockSignals(True)
-        self.header.setChecked(is_open)
-        self._show_body(is_open)
-        if quiet:
-            self.header.blockSignals(False)
-
-    def _show_body(self, is_open: bool) -> None:
-        self.body.setVisible(is_open)
-        self._label()
-        # Closed sections shrink to their header right away.
-        self.updateGeometry()
-        parent = self.parentWidget()
-        if parent is not None and parent.layout() is not None:
-            parent.layout().invalidate()
-            parent.layout().activate()
-            parent.adjustSize()
-
-    def _on_toggled(self, is_open: bool):
-        self._show_body(is_open)
-        self.toggled.emit(self.key, not is_open)
+# Moved to the shared kit (U.1); imported here so every existing
+# ``from src.ui.companion_panel import CollapsibleSection`` keeps working.
+from src.ui.ui_kit import CollapsibleSection, section_header  # noqa: E402
 
 
 def _divider(text: str) -> QLabel:
-    label = QLabel(text)
-    label.setStyleSheet("color: #6b7280; font-size: 10px; font-weight: bold; "
-                        "letter-spacing: 1px; padding: 8px 2px 2px 2px;")
-    return label
+    return section_header(text)
 
 
 def _small(text: str = "", color: str = "#6b7280") -> QLabel:

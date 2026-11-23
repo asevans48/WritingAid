@@ -39,3 +39,16 @@ def _isolated_companion_state(tmp_path, monkeypatch):
     user's home folder."""
     import src.data.companion_state as cs
     monkeypatch.setattr(cs, "state_path", lambda project: tmp_path / "companion_state.json")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_window_geometry(tmp_path, monkeypatch):
+    """Window positions (ui_kit.remember_geometry) go to a throwaway file,
+    never the writer's real settings."""
+    try:
+        from PyQt6.QtCore import QSettings
+        import src.ui.ui_kit as kit
+    except Exception:
+        return
+    path = str(tmp_path / "window_geometry.ini")
+    monkeypatch.setattr(kit, "_settings", lambda: QSettings(path, QSettings.Format.IniFormat))

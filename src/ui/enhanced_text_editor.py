@@ -3090,8 +3090,7 @@ class ErrorCard(QWidget):
     card, closes when the mouse leaves, on typing, or on a click elsewhere.
     """
 
-    COLORS = {"spelling": "#dc2626", "grammar": "#16a34a", "overuse": "#2563eb",
-              "overused_phrase": "#7c3aed", "style": "#d97706"}
+    from src.ui.ui_kit import FLAG_COLOURS as COLORS   # one colour per kind, app-wide
     NAMES = {"spelling": "Spelling", "grammar": "Grammar", "overuse": "Overused word",
              "overused_phrase": "Repeated phrase", "style": "Style"}
 
