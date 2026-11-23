@@ -404,6 +404,10 @@ class CritiqueWorker(QThread):
                 from src.ai.writer_voice import project_voice
                 orchestrator.writer_voice = project_voice(
                     self.project, None, "\n\n".join(c.get("text", "") for c in self.chapters))
+                if llm is not None and "scope" in self.chapters[0]:   # AI reading of the voice
+                    from src.ai.voice_profile import ensure
+                    ensure(orchestrator.writer_voice, self.project,
+                           self.chapters[0]["scope"] or None, llm, progress_cb)
             if self.chapters:
                 report = orchestrator.run(
                     chapters=self.chapters,

@@ -1,0 +1,586 @@
+{
+ "about": "Hand-marked passages for the style checks and the overly descriptive check (piece Q.1). Original text written for the benchmark. Each mark names a kind of check, a snippet of the passage, and whether a flag there would be RIGHT (flag: true, a real weakness an editor would want changed) or WRONG (flag: false, a deliberate choice: a character's voice, a fragment for effect, a passive that fits). The passages are fully marked: a flag of a kind that matches no mark of that kind counts as wrong. Marks are a draft by the session that built Q.1, for the writer to review. A mark covers every occurrence of its snippet in the passage.",
+ "status": "draft — to be reviewed by the writer",
+ "passages": [
+  {
+   "id": "passive-hides-the-actor",
+   "text": "The door was kicked open before anyone could move. Glass was thrown across the floor, and Mara was dragged into the hall.",
+   "marks": [
+    {
+     "kind": "passive",
+     "text": "was kicked",
+     "flag": true,
+     "why": "Action scene: who kicked it is the point."
+    },
+    {
+     "kind": "passive",
+     "text": "was thrown",
+     "flag": true,
+     "why": "Hides the actor in a fight."
+    },
+    {
+     "kind": "passive",
+     "text": "was dragged",
+     "flag": true,
+     "why": "Mara should be acted on by someone named."
+    },
+    {
+     "kind": "sticky_sentence",
+     "text": "Glass was thrown across",
+     "flag": false,
+     "why": "Plain action; its trouble is the passive."
+    }
+   ]
+  },
+  {
+   "id": "passive-that-fits",
+   "text": "Tobin was born in a fishing town on the north coast. The harbour wall was built before the war, and nobody remembered by whom.",
+   "marks": [
+    {
+     "kind": "passive",
+     "text": "was born",
+     "flag": false,
+     "why": "The natural way to say it."
+    },
+    {
+     "kind": "passive",
+     "text": "was built",
+     "flag": false,
+     "why": "The builder is unknown, and the sentence says so."
+    },
+    {
+     "kind": "sticky_sentence",
+     "text": "Tobin was born",
+     "flag": false,
+     "why": "Plain, readable."
+    },
+    {
+     "kind": "sticky_sentence",
+     "text": "The harbour wall was built",
+     "flag": false,
+     "why": "Plain, readable."
+    }
+   ]
+  },
+  {
+   "id": "adverbs-that-repeat-the-verb",
+   "text": "She shouted loudly for the dog. He whispered quietly that it was gone, and she sighed sadly.",
+   "marks": [
+    {
+     "kind": "adverb",
+     "text": "loudly",
+     "flag": true,
+     "why": "Shouting is loud."
+    },
+    {
+     "kind": "adverb",
+     "text": "quietly",
+     "flag": true,
+     "why": "Whispering is quiet."
+    },
+    {
+     "kind": "adverb",
+     "text": "sadly",
+     "flag": true,
+     "why": "The sigh already says it."
+    },
+    {
+     "kind": "sticky_sentence",
+     "text": "He whispered quietly",
+     "flag": false,
+     "why": "Its trouble is the adverbs."
+    },
+    {
+     "kind": "passive",
+     "text": "was gone",
+     "flag": false,
+     "why": "'Gone' is an adjective here, not a passive."
+    }
+   ]
+  },
+  {
+   "id": "adverbs-that-carry-meaning",
+   "text": "She was barely awake when the phone rang. He nearly dropped the cup, and the line went dead almost immediately.",
+   "marks": [
+    {
+     "kind": "adverb",
+     "text": "barely",
+     "flag": false,
+     "why": "Changes the meaning; cannot be cut."
+    },
+    {
+     "kind": "adverb",
+     "text": "nearly",
+     "flag": false,
+     "why": "Changes the meaning; cannot be cut."
+    },
+    {
+     "kind": "adverb",
+     "text": "immediately",
+     "flag": false,
+     "why": "Timing matters here."
+    },
+    {
+     "kind": "sticky_sentence",
+     "text": "She was barely awake",
+     "flag": false,
+     "why": "Plain, readable."
+    },
+    {
+     "kind": "overdescribed",
+     "text": "She was barely awake",
+     "flag": false,
+     "why": "States a fact, not a feeling."
+    },
+    {
+     "kind": "overdescribed",
+     "text": "He nearly dropped the cup",
+     "flag": false,
+     "why": "Action, shown."
+    }
+   ]
+  },
+  {
+   "id": "intensifiers-in-narration",
+   "text": "It was very cold on the pier and really dark beyond the lamps. The water was extremely still.",
+   "marks": [
+    {
+     "kind": "intensifier",
+     "text": "very",
+     "flag": true,
+     "why": "Weak; show the cold."
+    },
+    {
+     "kind": "intensifier",
+     "text": "really",
+     "flag": true,
+     "why": "Weak filler."
+    },
+    {
+     "kind": "intensifier",
+     "text": "extremely",
+     "flag": true,
+     "why": "Weak; 'glassy' or a detail would do."
+    },
+    {
+     "kind": "sticky_sentence",
+     "text": "It was very cold on the pier",
+     "flag": false,
+     "why": "Its trouble is the intensifiers."
+    },
+    {
+     "kind": "overdescribed",
+     "text": "It was very cold on the pier",
+     "flag": true,
+     "why": "Tells the cold and the dark."
+    },
+    {
+     "kind": "overdescribed",
+     "text": "The water was extremely still",
+     "flag": true,
+     "why": "Tells; a detail would show it."
+    }
+   ]
+  },
+  {
+   "id": "intensifiers-in-a-characters-voice",
+   "text": "\"I'm really sorry,\" Ilse said. \"Truly. I just didn't think you'd come.\"",
+   "marks": [
+    {
+     "kind": "intensifier",
+     "text": "really",
+     "flag": false,
+     "why": "How people talk."
+    },
+    {
+     "kind": "intensifier",
+     "text": "Truly",
+     "flag": false,
+     "why": "Her voice, and a deliberate fragment."
+    },
+    {
+     "kind": "intensifier",
+     "text": "just",
+     "flag": false,
+     "why": "Natural speech."
+    }
+   ]
+  },
+  {
+   "id": "wordy-phrases",
+   "text": "In order to reach the boat in time, he made a decision to run. Mara nodded her head and followed.",
+   "marks": [
+    {
+     "kind": "wordy",
+     "text": "In order to",
+     "flag": true,
+     "why": "'To' says it."
+    },
+    {
+     "kind": "wordy",
+     "text": "made a decision",
+     "flag": true,
+     "why": "'Decided'."
+    },
+    {
+     "kind": "wordy",
+     "text": "nodded her head",
+     "flag": true,
+     "why": "'Nodded'."
+    },
+    {
+     "kind": "sticky_sentence",
+     "text": "In order to reach",
+     "flag": false,
+     "why": "Its trouble is the wordy phrases."
+    }
+   ]
+  },
+  {
+   "id": "began-to-when-it-matters-and-when-not",
+   "text": "He began to run the moment the shot rang out. Later, as the mourners left the churchyard, the snow began to fall.",
+   "marks": [
+    {
+     "kind": "wordy",
+     "text": "began to run",
+     "flag": true,
+     "why": "Sudden action: 'He ran'."
+    },
+    {
+     "kind": "wordy",
+     "text": "began to fall",
+     "flag": false,
+     "why": "A gradual beginning is the point."
+    },
+    {
+     "kind": "sticky_sentence",
+     "text": "He began to run",
+     "flag": false,
+     "why": "Plain, readable."
+    }
+   ]
+  },
+  {
+   "id": "cliches-in-narration",
+   "text": "At the end of the day, the plan fell apart all of a sudden, and they escaped in the nick of time.",
+   "marks": [
+    {
+     "kind": "cliche",
+     "text": "At the end of the day",
+     "flag": true,
+     "why": "Stock phrase."
+    },
+    {
+     "kind": "cliche",
+     "text": "all of a sudden",
+     "flag": true,
+     "why": "Stock phrase."
+    },
+    {
+     "kind": "cliche",
+     "text": "in the nick of time",
+     "flag": true,
+     "why": "Stock phrase."
+    },
+    {
+     "kind": "sticky_sentence",
+     "text": "At the end of the day",
+     "flag": false,
+     "why": "Its trouble is the cliches."
+    }
+   ]
+  },
+  {
+   "id": "cliche-as-a-characters-habit",
+   "text": "\"Better late than never,\" Gran said, as she said every Sunday when Tobin came through the door.",
+   "marks": [
+    {
+     "kind": "cliche",
+     "text": "Better late than never",
+     "flag": false,
+     "why": "Her catchphrase; it characterises her."
+    },
+    {
+     "kind": "echo",
+     "text": "said",
+     "flag": false,
+     "why": "'as she said every Sunday' stresses the habit."
+    }
+   ]
+  },
+  {
+   "id": "monotonous-starts",
+   "text": "He opened the drawer. He took out the letter. He read it twice. He put it back and closed the drawer.",
+   "marks": [
+    {
+     "kind": "repeated_start",
+     "text": "He read it twice",
+     "flag": true,
+     "why": "Flat rhythm; vary the openings."
+    },
+    {
+     "kind": "repeated_start",
+     "text": "He put it back",
+     "flag": true,
+     "why": "Flat rhythm."
+    },
+    {
+     "kind": "echo",
+     "text": "drawer",
+     "flag": false,
+     "why": "Bookending the same object is deliberate."
+    },
+    {
+     "kind": "sticky_sentence",
+     "text": "He put it back",
+     "flag": false,
+     "why": "Plain, readable."
+    }
+   ]
+  },
+  {
+   "id": "deliberate-anaphora",
+   "text": "We searched the harbour. We searched the cliffs above it. We searched until the tide came in and there was nowhere left to look.",
+   "marks": [
+    {
+     "kind": "repeated_start",
+     "text": "We searched until",
+     "flag": false,
+     "why": "Rhetorical repetition, on purpose."
+    },
+    {
+     "kind": "echo",
+     "text": "searched",
+     "flag": false,
+     "why": "The repetition is the point."
+    },
+    {
+     "kind": "long_sentence",
+     "text": "We searched until",
+     "flag": false,
+     "why": "Under the limit and rhythmic."
+    },
+    {
+     "kind": "sticky_sentence",
+     "text": "We searched until",
+     "flag": false,
+     "why": "Plain, rhythmic."
+    }
+   ]
+  },
+  {
+   "id": "accidental-echo",
+   "text": "The light from the lamp spilled over the table, and the lamp's light caught the edge of the knife Mara had left there.",
+   "marks": [
+    {
+     "kind": "echo",
+     "text": "lamp",
+     "flag": true,
+     "why": "Careless repeat."
+    },
+    {
+     "kind": "echo",
+     "text": "light",
+     "flag": true,
+     "why": "Careless repeat."
+    }
+   ]
+  },
+  {
+   "id": "refrain",
+   "text": "Nothing moved on the moor. Nothing breathed. Nothing, for a long while, but the wind.",
+   "marks": [
+    {
+     "kind": "echo",
+     "text": "Nothing",
+     "flag": false,
+     "why": "A refrain."
+    },
+    {
+     "kind": "repeated_start",
+     "text": "Nothing, for",
+     "flag": false,
+     "why": "A refrain."
+    },
+    {
+     "kind": "sticky_sentence",
+     "text": "Nothing, for a long while",
+     "flag": false,
+     "why": "A refrain."
+    }
+   ]
+  },
+  {
+   "id": "clumsy-long-sentence",
+   "text": "When they finally reached the station after walking for what felt like hours through the rain and the mud and the dark lanes that all looked the same to Tobin, who had never been good with directions, the last train had already gone.",
+   "marks": [
+    {
+     "kind": "long_sentence",
+     "text": "When they finally reached",
+     "flag": true,
+     "why": "Buries the point at the end."
+    },
+    {
+     "kind": "adverb",
+     "text": "finally",
+     "flag": false,
+     "why": "Carries the sense of a long wait."
+    },
+    {
+     "kind": "sticky_sentence",
+     "text": "When they finally reached",
+     "flag": false,
+     "why": "Its trouble is length, already flagged."
+    },
+    {
+     "kind": "hard_sentence",
+     "text": "When they finally reached",
+     "flag": true,
+     "why": "Hard to follow in one breath."
+    },
+    {
+     "kind": "overdescribed",
+     "text": "When they finally reached",
+     "flag": false,
+     "why": "Narrates events; nothing over-described."
+    }
+   ]
+  },
+  {
+   "id": "deliberately-breathless-sentence",
+   "text": "She ran past the boats and the nets and the old ice house, past the chapel and the fish market and the bakery with its lights still on, and did not stop until the road ran out.",
+   "marks": [
+    {
+     "kind": "long_sentence",
+     "text": "She ran past",
+     "flag": false,
+     "why": "The run-on rhythm is the running."
+    },
+    {
+     "kind": "hard_sentence",
+     "text": "She ran past",
+     "flag": false,
+     "why": "Plain words; easy to read."
+    },
+    {
+     "kind": "sticky_sentence",
+     "text": "She ran past",
+     "flag": false,
+     "why": "The 'and's are the rhythm."
+    },
+    {
+     "kind": "echo",
+     "text": "past",
+     "flag": false,
+     "why": "'past ... past' is the rhythm."
+    }
+   ]
+  },
+  {
+   "id": "hard-abstract-sentence",
+   "text": "The administrative reorganisation necessitated considerable reconsideration of institutional responsibilities and organisational accountability.",
+   "marks": [
+    {
+     "kind": "hard_sentence",
+     "text": "The administrative",
+     "flag": true,
+     "why": "Abstract and polysyllabic."
+    }
+   ]
+  },
+  {
+   "id": "sticky-sentence",
+   "text": "It was the one that he had been thinking of when he was out in the boat with them all on that night.",
+   "marks": [
+    {
+     "kind": "sticky_sentence",
+     "text": "It was the one",
+     "flag": true,
+     "why": "Mostly glue words; says little."
+    }
+   ]
+  },
+  {
+   "id": "dialect-and-fragments",
+   "text": "\"Ain't nobody coming,\" Jory said. \"Not tonight. Not ever. You hear?\"",
+   "marks": []
+  },
+  {
+   "id": "overly-descriptive",
+   "text": "The room was almost too dark to see. She felt very angry about the letter.",
+   "marks": [
+    {
+     "kind": "overdescribed",
+     "text": "The room was almost too dark",
+     "flag": true,
+     "why": "Tells; show what she can't see."
+    },
+    {
+     "kind": "overdescribed",
+     "text": "She felt very angry",
+     "flag": true,
+     "why": "Tells the feeling."
+    },
+    {
+     "kind": "intensifier",
+     "text": "very",
+     "flag": true,
+     "why": "Weak."
+    },
+    {
+     "kind": "sticky_sentence",
+     "text": "The room was almost too dark",
+     "flag": false,
+     "why": "Its trouble is that it tells."
+    }
+   ]
+  },
+  {
+   "id": "concrete-detail",
+   "text": "Rain needled the window. Mara counted the drips from the broken gutter and lost count at forty.",
+   "marks": []
+  },
+  {
+   "id": "clean-literary-paragraph",
+   "text": "The ferry came in late, heavy with cattle and wet sacks of grain. Tobin took the rope from the deckhand and made it fast, and for a moment neither of them spoke.",
+   "marks": [
+    {
+     "kind": "sticky_sentence",
+     "text": "Tobin took the rope",
+     "flag": false,
+     "why": "Clean prose."
+    }
+   ]
+  },
+  {
+   "id": "passive-in-dialogue",
+   "text": "\"I was told to wait here,\" he said, and he sat down on the step.",
+   "marks": [
+    {
+     "kind": "passive",
+     "text": "was told",
+     "flag": false,
+     "why": "Natural speech; he doesn't know who."
+    },
+    {
+     "kind": "sticky_sentence",
+     "text": "\"I was told to wait here,\"",
+     "flag": false,
+     "why": "Natural speech."
+    }
+   ]
+  },
+  {
+   "id": "adverb-dialogue-tag",
+   "text": "\"Get out,\" she said angrily. He left without a word.",
+   "marks": [
+    {
+     "kind": "adverb",
+     "text": "angrily",
+     "flag": true,
+     "why": "The line already shows it."
+    }
+   ]
+  }
+ ]
+}

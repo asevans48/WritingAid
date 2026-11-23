@@ -150,6 +150,8 @@ For pieces 1.1, 9.2 and 9.3.
   show a message saying it "will be implemented soon". The working exports
   (Kindle, Barnes & Noble, publisher-ready, Word, outline, LLM context,
   project summary) live in the Export menu, not in this tab.
+- **Since 1.1** the Publishing tab also asks each manuscript's publishing route
+  (agent submission or self-publishing) at the top of "Publishing Actions".
 - **Feedback** (`src/ui/feedback_widget.py`, 486 lines) holds per-chapter
   entries, each with a title, a source (Beta Reader, Editor, Workshop, or
   typed in) and free text. They are stored in the chapter's
@@ -196,3 +198,6 @@ right):
 So a writer can see one count in the Style tab and a different one in the
 Critique's Style report for the same chapter. R.4 should keep one of the two,
 using Q.2's numbers to pick.
+
+**Resolved in R.4:** `ProWritingAnalyzer` now calls `style_checks` for all
+five measures, so the Critique and the Style tab count the same things.

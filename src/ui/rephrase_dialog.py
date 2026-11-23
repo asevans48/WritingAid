@@ -2238,6 +2238,9 @@ class RephraseDialog(QDialog):
                     self._manuscript_text_for_voice(),
                     selection=self.original_text,
                     stated_targets=targets)
+                from src.ai import voice_profile          # stored AI reading, if any
+                voice_profile.attach_cached(self._writer_voice, self.project,
+                                            voice_profile.scope_of_chapter(self.project, self.chapter))
             except Exception as e:
                 print(f"[voice] analysis failed: {e}")
                 from src.ai.writer_voice import WriterVoice

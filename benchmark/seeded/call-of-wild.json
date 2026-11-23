@@ -1,0 +1,46 @@
+{
+ "source": "call-of-wild",
+ "text": "François sat down and scratched his head. Perrault looked at his watch and swore. Time was flying, and they should of been on the trail an hour gone. François scratched his head again. He shook it and grinned sheepishly at the courier, who shrugged his shoulders in sign that they was beaten. Then François went up to where Sol-leks stood and called to Buck. Buck laughed, as dogs laugh, yet kept his distance. François unfastened Sol-leks’s traces and put him back in his old place. The team stood harnessed to the sled in an unbroken line, ready for the trail. There was no place for Buck save at the front. Once more François called, and once more Buck laughed and kept away.\nFrançois complied, whereupon Buck trotted in, laughing triumphantly, and swung around into position at the head of the team. His traces were fastened, the sled broken out, and with both men running they dashed out on to the river trail.\nHighly as the the dog-driver had forevalued Buck, with his two devils, he found, while the day was yet young, that he had undervalued. At a bound Buck took up the duties of leadership; and where judgment was required, and quick thinking and quick acting, he showed himslef the superior even of Spitz, of whom François had never seen an equal.\nBut it was in giving the law and making his mates live up to it, that Buck excelled. Dave and Sol-leks did not mind the change in leadership. It was none of their business. Their business was to toil, and toil mightily, in the traces. So long as that were not interfered with, they did not care what happened. Billee, the good-natured, could lead for all they cared , so long as he kept order. The rest of the team, however, had grown unruly during the last days of Spitz, and their surprise was great now that Buck proceeded to lick them into shape.",
+ "insertions": [
+  {
+   "kind": "confused_word",
+   "start": 108,
+   "end": 117,
+   "text": "should of",
+   "original": "should have",
+   "change": "should have → should of"
+  },
+  {
+   "kind": "agreement",
+   "start": 276,
+   "end": 284,
+   "text": "they was",
+   "original": "they were",
+   "change": "they were → they was"
+  },
+  {
+   "kind": "repeated_word",
+   "start": 926,
+   "end": 933,
+   "text": "the the",
+   "original": "the",
+   "change": "the the"
+  },
+  {
+   "kind": "spelling",
+   "start": 1181,
+   "end": 1188,
+   "text": "himslef",
+   "original": "himself",
+   "change": "himself → himslef"
+  },
+  {
+   "kind": "punctuation",
+   "start": 1623,
+   "end": 1628,
+   "text": "d , s",
+   "original": "d, s",
+   "change": "space before a comma"
+  }
+ ]
+}

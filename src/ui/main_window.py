@@ -7300,6 +7300,7 @@ class MainWindow(QMainWindow):
         except Exception:
             self.image_generator.set_plot_events([])
         self.agent_manager.load_data(self.current_project.agent_contacts)
+        self.agent_manager.set_project(self.current_project)  # publishing route (1.1)
         self.prose_profile_widget.load_data(self.current_project.prose_profile)
         self.attributions_tab.set_manuscript(self.current_project.manuscript)
 

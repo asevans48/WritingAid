@@ -305,13 +305,13 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 - [x] [R.1](pieces/06-R.1-one-list-of-model-providers.md) One list of model providers (S)
 - [x] [R.2](pieces/07-R.2-one-way-to-run-background-work.md) One way to run background work (M)
 - [x] [R.3](pieces/08-R.3-move-the-checkers-out-of-the-editor-file.md) Move the checkers out of the editor file (M)
-- [ ] [Q.1](pieces/09-Q.1-benchmark-set.md) Benchmark set (M)
-- [ ] [Q.2](pieces/10-Q.2-scoring-the-checks.md) Scoring the checks (M)
-- [ ] [R.4](pieces/11-R.4-one-style-analyser-not-two.md) One style analyser, not two (M)
+- [x] [Q.1](pieces/09-Q.1-benchmark-set.md) Benchmark set (M)
+- [x] [Q.2](pieces/10-Q.2-scoring-the-checks.md) Scoring the checks (M)
+- [x] [R.4](pieces/11-R.4-one-style-analyser-not-two.md) One style analyser, not two (M)
 
 **The path, in order**
-- [ ] [1.1](pieces/12-1.1-publishing-goal.md) Publishing goal (S)
-- [ ] [1.2a](pieces/13-1.2a-readiness-engine-design.md) Readiness engine: design (S, design, no code)
+- [x] [1.1](pieces/12-1.1-publishing-goal.md) Publishing goal (S)
+- [x] [1.2a](pieces/13-1.2a-readiness-engine-design.md) Readiness engine: design (S, design, no code)
 - [ ] [1.2b](pieces/14-1.2b-readiness-engine-build-with-its-first-two-checks.md) Readiness engine: build, with its first two checks (M)
 - [ ] [2.1](pieces/15-2.1-scorecard-screen.md) Scorecard screen (M)
 - [ ] [1.3](pieces/16-1.3-line-checks.md) Line checks (S)
@@ -433,6 +433,8 @@ Work top to bottom within a group. A piece's file lists what it depends on.
    decision 7.
 3. **Quality target.** A check is on by default only if four in five of its
    flags are right. Confirm or change after the first numbers from Q.2.
+   **The first numbers are in** ([check_scores.md](check_scores.md)); see
+   the Q.2 *Outcome* for a suggestion.
 4. **How far to refactor.** R.1 to R.5 are limited to what the plan needs. A
    general split of the 15,000-line main window and the 4,000-line settings
    dialog is left out. Say so if you want it added.
@@ -441,3 +443,7 @@ Work top to bottom within a group. A piece's file lists what it depends on.
    project's ratings entirely to itself.
 6. **Side-by-side comparison.** P.1 is optional and needs access to
    ProWritingAid. Say whether you want it.
+7. **Readiness engine design (1.2a).** Review the *Design* in
+   [1.2a](pieces/13-1.2a-readiness-engine-design.md) before 1.2b, especially
+   its §10: a small refactor piece (R.6) before 1.2b, the figure's weighting,
+   and the overly descriptive threshold.

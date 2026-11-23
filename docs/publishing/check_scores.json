@@ -1,0 +1,524 @@
+{
+ "date": "2026-11-23",
+ "languagetool": true,
+ "model": false,
+ "seeded_count": 12,
+ "insertion_count": 58,
+ "marked_passages": 24,
+ "seeded": {
+  "by_mistake": {
+   "punctuation": {
+    "found": 12,
+    "missed": 0
+   },
+   "repeated_word": {
+    "found": 12,
+    "missed": 0
+   },
+   "agreement": {
+    "found": 10,
+    "missed": 0
+   },
+   "spelling": {
+    "found": 12,
+    "missed": 0
+   },
+   "confused_word": {
+    "found": 9,
+    "missed": 3
+   }
+  },
+  "flags_right": {
+   "spelling": 15,
+   "grammar": 41
+  },
+  "flags_wrong": {
+   "spelling": 23,
+   "grammar": 7
+  },
+  "missed_examples": {
+   "confused_word": [
+    "to → too",
+    "it is → its",
+    "to → too"
+   ]
+  }
+ },
+ "clean": {
+  "words": 4210,
+  "counts": {
+   "sticky_sentence": 145,
+   "long_sentence": 21,
+   "hard_sentence": 12,
+   "spelling": 24,
+   "overuse": 94,
+   "echo": 23,
+   "adverb": 45,
+   "passive": 10,
+   "intensifier": 11,
+   "overdescribed": 34,
+   "wordy": 5,
+   "overused_phrase": 42,
+   "grammar": 7
+  },
+  "per_1000": {
+   "sticky_sentence": 34.4,
+   "long_sentence": 5.0,
+   "hard_sentence": 2.9,
+   "spelling": 5.7,
+   "overuse": 22.3,
+   "echo": 5.5,
+   "adverb": 10.7,
+   "passive": 2.4,
+   "intensifier": 2.6,
+   "overdescribed": 8.1,
+   "wordy": 1.2,
+   "overused_phrase": 10.0,
+   "grammar": 1.7
+  },
+  "examples": {
+   "sticky_sentence": [
+    "\"What they must have cost at this season",
+    "the lady was saying in a sighing staccat",
+    "Archer bowed, and she continued: \"My Ell",
+    "But I was called away by our dear great "
+   ],
+   "long_sentence": [
+    "I came from Cuba, where I have been spen",
+    "The boys, who had to wriggle hastily dow",
+    "Anne could run like a deer, however; run",
+    "Then, realizing that there was no help f"
+   ],
+   "hard_sentence": [
+    "I came from Cuba, where I have been spen",
+    "The boys, who had to wriggle hastily dow",
+    "Ruby Gillis, who got a glimpse of it as ",
+    "Phillips’s brief reforming energy was ov"
+   ],
+   "spelling": [
+    "Agathon",
+    "bloweth",
+    "listeth",
+    "marvellous"
+   ],
+   "overuse": [
+    "know",
+    "know",
+    "spirit",
+    "know"
+   ],
+   "echo": [
+    "poetry",
+    "witty",
+    "once",
+    "quick"
+   ],
+   "adverb": [
+    "reprovingly",
+    "hastily",
+    "happily",
+    "softly"
+   ],
+   "passive": [
+    "was swept",
+    "were beaten",
+    "was required",
+    "were not interfered"
+   ],
+   "intensifier": [
+    "just",
+    "fairly",
+    "rather",
+    "simply"
+   ],
+   "overdescribed": [
+    "The boys, who had to wriggle hastily dow",
+    "At last he said with an almost touching ",
+    "When those four quite honest men said th",
+    "A person can’t be quite alone in a stree"
+   ],
+   "wordy": [
+    "shrugged his shoulders",
+    "made an attempt",
+    "began to",
+    "began to"
+   ],
+   "overused_phrase": [
+    "scratched his head",
+    "scratched his head",
+    "man had gone",
+    "man had gone"
+   ],
+   "grammar": [
+    "last",
+    " hopefully",
+    "it",
+    "evil-doer"
+   ]
+  }
+ },
+ "marked": {
+  "passive": {
+   "right": 3,
+   "wrong": 3,
+   "on_deliberate": 3,
+   "missed": 0,
+   "marked_right": 3
+  },
+  "adverb": {
+   "right": 4,
+   "wrong": 4,
+   "on_deliberate": 4,
+   "missed": 0,
+   "marked_right": 4
+  },
+  "intensifier": {
+   "right": 4,
+   "wrong": 0,
+   "on_deliberate": 0,
+   "missed": 0,
+   "marked_right": 4
+  },
+  "wordy": {
+   "right": 4,
+   "wrong": 1,
+   "on_deliberate": 1,
+   "missed": 0,
+   "marked_right": 4
+  },
+  "cliche": {
+   "right": 3,
+   "wrong": 1,
+   "on_deliberate": 1,
+   "missed": 0,
+   "marked_right": 3
+  },
+  "repeated_start": {
+   "right": 2,
+   "wrong": 2,
+   "on_deliberate": 2,
+   "missed": 0,
+   "marked_right": 2
+  },
+  "echo": {
+   "right": 1,
+   "wrong": 4,
+   "on_deliberate": 4,
+   "missed": 1,
+   "marked_right": 2
+  },
+  "long_sentence": {
+   "right": 1,
+   "wrong": 1,
+   "on_deliberate": 1,
+   "missed": 0,
+   "marked_right": 1
+  },
+  "hard_sentence": {
+   "right": 1,
+   "wrong": 0,
+   "on_deliberate": 0,
+   "missed": 1,
+   "marked_right": 2
+  },
+  "sticky_sentence": {
+   "right": 1,
+   "wrong": 16,
+   "on_deliberate": 15,
+   "missed": 0,
+   "marked_right": 1
+  },
+  "overdescribed": {
+   "right": 4,
+   "wrong": 3,
+   "on_deliberate": 3,
+   "missed": 0,
+   "marked_right": 4
+  }
+ },
+ "analysers": {
+  "marked": {
+   "style_checks": {
+    "passive": {
+     "right": 3,
+     "wrong": 4,
+     "on_deliberate": 4,
+     "missed": 0,
+     "marked_right": 3
+    },
+    "adverb": {
+     "right": 4,
+     "wrong": 4,
+     "on_deliberate": 4,
+     "missed": 0,
+     "marked_right": 4
+    },
+    "cliche": {
+     "right": 3,
+     "wrong": 1,
+     "on_deliberate": 1,
+     "missed": 0,
+     "marked_right": 3
+    },
+    "sticky_sentence": {
+     "right": 1,
+     "wrong": 16,
+     "on_deliberate": 15,
+     "missed": 0,
+     "marked_right": 1
+    },
+    "echo": {
+     "right": 1,
+     "wrong": 4,
+     "on_deliberate": 4,
+     "missed": 1,
+     "marked_right": 2
+    }
+   },
+   "ProWritingAnalyzer": {
+    "passive": {
+     "right": 2,
+     "wrong": 4,
+     "on_deliberate": 4,
+     "missed": 0,
+     "marked_right": 3
+    },
+    "adverb": {
+     "right": 4,
+     "wrong": 7,
+     "on_deliberate": 4,
+     "missed": 0,
+     "marked_right": 4
+    },
+    "cliche": {
+     "right": 3,
+     "wrong": 1,
+     "on_deliberate": 1,
+     "missed": 0,
+     "marked_right": 3
+    },
+    "sticky_sentence": {
+     "right": 1,
+     "wrong": 15,
+     "on_deliberate": 15,
+     "missed": 0,
+     "marked_right": 1
+    },
+    "echo": {
+     "right": 1,
+     "wrong": 9,
+     "on_deliberate": 3,
+     "missed": 1,
+     "marked_right": 2
+    }
+   }
+  },
+  "clean_per_1000": {
+   "style_checks": {
+    "sticky_sentence": 34.4,
+    "passive": 4.3,
+    "adverb": 11.9,
+    "echo": 5.5
+   },
+   "ProWritingAnalyzer": {
+    "passive": 2.4,
+    "adverb": 13.5,
+    "sticky_sentence": 18.8,
+    "echo": 10.9
+   }
+  }
+ },
+ "rows": [
+  {
+   "check": "Spelling",
+   "set": "seeded",
+   "found": 12,
+   "missed": 0,
+   "right": 15,
+   "wrong": 23,
+   "precision": 0.39473684210526316,
+   "recall": 1.0,
+   "clean_per_1000": 5.7,
+   "verdict": "below 4 in 5; too many on clean prose"
+  },
+  {
+   "check": "Grammar",
+   "set": "seeded",
+   "found": 43,
+   "missed": 3,
+   "right": 41,
+   "wrong": 7,
+   "precision": 0.8541666666666666,
+   "recall": 0.9347826086956522,
+   "clean_per_1000": 1.7,
+   "verdict": "meets both targets"
+  },
+  {
+   "check": "Overused words",
+   "set": "clean only",
+   "found": null,
+   "missed": null,
+   "right": null,
+   "wrong": null,
+   "precision": null,
+   "recall": null,
+   "clean_per_1000": 22.3,
+   "verdict": "too many on clean prose"
+  },
+  {
+   "check": "Repeated phrases",
+   "set": "clean only",
+   "found": null,
+   "missed": null,
+   "right": null,
+   "wrong": null,
+   "precision": null,
+   "recall": null,
+   "clean_per_1000": 10.0,
+   "verdict": "too many on clean prose"
+  },
+  {
+   "check": "Passive voice",
+   "set": "marked",
+   "found": 3,
+   "missed": 0,
+   "right": 3,
+   "wrong": 3,
+   "on_deliberate": 3,
+   "precision": 0.5,
+   "recall": 1.0,
+   "clean_per_1000": 2.4,
+   "verdict": "below 4 in 5"
+  },
+  {
+   "check": "Adverbs",
+   "set": "marked",
+   "found": 4,
+   "missed": 0,
+   "right": 4,
+   "wrong": 4,
+   "on_deliberate": 4,
+   "precision": 0.5,
+   "recall": 1.0,
+   "clean_per_1000": 10.7,
+   "verdict": "below 4 in 5; too many on clean prose"
+  },
+  {
+   "check": "Weak intensifiers",
+   "set": "marked",
+   "found": 4,
+   "missed": 0,
+   "right": 4,
+   "wrong": 0,
+   "on_deliberate": 0,
+   "precision": 1.0,
+   "recall": 1.0,
+   "clean_per_1000": 2.6,
+   "verdict": "meets both targets"
+  },
+  {
+   "check": "Wordy phrases",
+   "set": "marked",
+   "found": 4,
+   "missed": 0,
+   "right": 4,
+   "wrong": 1,
+   "on_deliberate": 1,
+   "precision": 0.8,
+   "recall": 1.0,
+   "clean_per_1000": 1.2,
+   "verdict": "meets both targets"
+  },
+  {
+   "check": "Clichés",
+   "set": "marked",
+   "found": 3,
+   "missed": 0,
+   "right": 3,
+   "wrong": 1,
+   "on_deliberate": 1,
+   "precision": 0.75,
+   "recall": 1.0,
+   "clean_per_1000": 0.0,
+   "verdict": "below 4 in 5"
+  },
+  {
+   "check": "Repeated sentence starts",
+   "set": "marked",
+   "found": 2,
+   "missed": 0,
+   "right": 2,
+   "wrong": 2,
+   "on_deliberate": 2,
+   "precision": 0.5,
+   "recall": 1.0,
+   "clean_per_1000": 0.0,
+   "verdict": "below 4 in 5"
+  },
+  {
+   "check": "Echoes",
+   "set": "marked",
+   "found": 1,
+   "missed": 1,
+   "right": 1,
+   "wrong": 4,
+   "on_deliberate": 4,
+   "precision": 0.2,
+   "recall": 0.5,
+   "clean_per_1000": 5.5,
+   "verdict": "below 4 in 5; too many on clean prose"
+  },
+  {
+   "check": "Long sentences",
+   "set": "marked",
+   "found": 1,
+   "missed": 0,
+   "right": 1,
+   "wrong": 1,
+   "on_deliberate": 1,
+   "precision": 0.5,
+   "recall": 1.0,
+   "clean_per_1000": 5.0,
+   "verdict": "below 4 in 5; too many on clean prose"
+  },
+  {
+   "check": "Hard-to-read sentences",
+   "set": "marked",
+   "found": 1,
+   "missed": 1,
+   "right": 1,
+   "wrong": 0,
+   "on_deliberate": 0,
+   "precision": 1.0,
+   "recall": 0.5,
+   "clean_per_1000": 2.9,
+   "verdict": "meets both targets"
+  },
+  {
+   "check": "Sticky sentences",
+   "set": "marked",
+   "found": 1,
+   "missed": 0,
+   "right": 1,
+   "wrong": 16,
+   "on_deliberate": 15,
+   "precision": 0.058823529411764705,
+   "recall": 1.0,
+   "clean_per_1000": 34.4,
+   "verdict": "below 4 in 5; too many on clean prose"
+  },
+  {
+   "check": "Overly descriptive",
+   "set": "marked",
+   "found": 4,
+   "missed": 0,
+   "right": 4,
+   "wrong": 3,
+   "on_deliberate": 3,
+   "precision": 0.5714285714285714,
+   "recall": 1.0,
+   "clean_per_1000": 8.1,
+   "verdict": "below 4 in 5; too many on clean prose"
+  }
+ ]
+}

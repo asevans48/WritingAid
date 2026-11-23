@@ -177,11 +177,16 @@ class AgentManagerWidget(QWidget):
         publishing_group = QGroupBox("Publishing Actions")
         publishing_layout = QVBoxLayout()
 
+        # The publishing route, per manuscript (piece 1.1).
+        from src.ui.publishing_route import RouteForm
+        self.route_form = RouteForm()
+        publishing_layout.addWidget(self.route_form)
+
         publish_kindle_button = QPushButton("Publish to Kindle Direct Publishing")
         publish_kindle_button.clicked.connect(lambda: self._publish_to_platform("Kindle"))
         publishing_layout.addWidget(publish_kindle_button)
 
-        publish_bn_button = QPushButton("Publish to Barnes & Noble Press")
+        publish_bn_button = QPushButton("Publish to Barnes && Noble Press")   # "&&" shows one "&"
         publish_bn_button.clicked.connect(lambda: self._publish_to_platform("Barnes & Noble"))
         publishing_layout.addWidget(publish_bn_button)
 
@@ -261,6 +266,10 @@ class AgentManagerWidget(QWidget):
             "This will require API integration and formatting your manuscript "
             "according to platform requirements."
         )
+
+    def set_project(self, project) -> None:
+        """The project whose manuscripts' publishing routes are shown."""
+        self.route_form.set_project(project)
 
     def load_data(self, agents: List[AgentContact]):
         """Load agent contacts."""

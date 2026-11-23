@@ -1,0 +1,46 @@
+{
+ "source": "my-antonia",
+ "text": "Ántonia looked eagerly about the house and admired everything. ‘Maybe I be the kind of girl you like better; now I come to town,’ she suggested hopefully.\nHow good it was to have Ántonia near us again; to see her every day and almost every night! Her greatest fault, Mrs. Harling found, was that she so often stopped her work and fell to to playing with the children. She woudl race about the orchard with us, or take sides in our hay-fights in the barn, or be the old bear that came down from the mountain and carried off Nina. Tony learned English so quickly that by the time school began she could speak as well as any of us.\nI was jealous of Tony’s admiration for Charley Harling. Because he were always first in his classes at school, and could mend the water-pipes or the doorbell and take the clock to pieces, she seemed to think him a sort of prince. Nothing that Charley wanted was too much trouble for her. She loved to put up lunches for him when he went hunting, to mend his ball-gloves and sew buttons on his shooting-coat, baked the kind of nut-cake he liked, and fed his setter dog when he was away on trips with his father. Ántonia had made herself cloth working-slippers out of Mr. Harling’s old coats, and in these she went padding about after Charley, fairly panting with eagerness to please him.\nNext to Charley, I think she loved Nina best. Nina was only six, and she was rather more complex then the other children. She was fanciful, had all sorts of unspoken preferences, and was easily offended. At the slightest disappointment or displeasure, her velvety brown eyes filled with tears, and she would lift her chin and walk silently away. If we ran after her and tried to appease her, it did no good. She walked on unmollified. I used to think that no eyes in the world could grow so large or hold so many tears as Nina’s. Mrs. Harling and Ántonia invariably took her part. We were never given a chance to explain. The charge was simply: ‘You have made Nina cry. now, Jimmy can go home, and Sally must get her arithmetic.’ I liked Nina, too; she was so quaint and unexpected, and her eyes were lovely; but I often wanted to shake her.",
+ "insertions": [
+  {
+   "kind": "repeated_word",
+   "start": 335,
+   "end": 340,
+   "text": "to to",
+   "original": "to",
+   "change": "to to"
+  },
+  {
+   "kind": "spelling",
+   "start": 372,
+   "end": 377,
+   "text": "woudl",
+   "original": "would",
+   "change": "would → woudl"
+  },
+  {
+   "kind": "agreement",
+   "start": 693,
+   "end": 700,
+   "text": "he were",
+   "original": "he was",
+   "change": "he was → he were"
+  },
+  {
+   "kind": "confused_word",
+   "start": 1413,
+   "end": 1417,
+   "text": "then",
+   "original": "than",
+   "change": "than → then"
+  },
+  {
+   "kind": "punctuation",
+   "start": 1984,
+   "end": 1989,
+   "text": ". now",
+   "original": ". Now",
+   "change": "no capital after a full stop"
+  }
+ ]
+}

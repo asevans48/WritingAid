@@ -1,0 +1,46 @@
+{
+ "source": "thirty-nine-steps",
+ "text": "It was a wonderful starry night, and I had not much difficulty about the road. Sir Harry’s map had given me the lie of the land, and all I had to do was to steer a point or two west of south-west to come to the stream where I had met the roadman. in all these travels I never knew the names of the places, but I beleive this stream was no less then the upper waters of the river Tweed. I calculated I must be about eighteen miles distant, and that meant I could not get there before morning. So I must lie up a day somewhere, for I was too outrageous a figure to be seen in the sunlight. I had neither coat, waistcoat, collar, nor hat, my trousers were badly torn, and my face and and hands were black with the explosion. I daresay I had other beauties, for my eyes felt as if they was furiously bloodshot. Altogether I was no spectacle for God-fearing citizens to see on a highroad.\nVery soon after daybreak I made an attempt to clean myself in a hill burn, and then approached a herd’s cottage, for I was feeling the need of food. The herd was away from home, and his wife was alone, with no neighbour for five miles. She was a decent old body, and a plucky one, for though she got a fright when she saw me, she had an axe handy, and would have used it on any evil-doer. I told her that I had had a fall—I didn’t say how—and she saw by my looks that I was pretty sick. Like a true Samaritan she asked no questions, but gave me a bowl of milk with a dash of whisky in it, and let me sit for a little by her kitchen fire. She would have bathed my shoulder, but it ached so badly that I would not let her touch it.",
+ "insertions": [
+  {
+   "kind": "punctuation",
+   "start": 245,
+   "end": 249,
+   "text": ". in",
+   "original": ". In",
+   "change": "no capital after a full stop"
+  },
+  {
+   "kind": "spelling",
+   "start": 312,
+   "end": 319,
+   "text": "beleive",
+   "original": "believe",
+   "change": "believe → beleive"
+  },
+  {
+   "kind": "confused_word",
+   "start": 339,
+   "end": 348,
+   "text": "less then",
+   "original": "less than",
+   "change": "than → then"
+  },
+  {
+   "kind": "repeated_word",
+   "start": 677,
+   "end": 684,
+   "text": "and and",
+   "original": "and",
+   "change": "and and"
+  },
+  {
+   "kind": "agreement",
+   "start": 777,
+   "end": 785,
+   "text": "they was",
+   "original": "they were",
+   "change": "they were → they was"
+  }
+ ]
+}

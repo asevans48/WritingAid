@@ -1,0 +1,110 @@
+[
+ {
+  "file": "great-gatsby.txt",
+  "title": "The Great Gatsby",
+  "genre": "literary",
+  "year": 1925,
+  "words": 342,
+  "source": "Project Gutenberg (gutenberg-great-gatsby)",
+  "license": "public domain in the US"
+ },
+ {
+  "file": "age-of-innocence.txt",
+  "title": "The Age of Innocence",
+  "genre": "literary",
+  "year": 1920,
+  "words": 334,
+  "source": "Project Gutenberg (gutenberg-age-of-innocence)",
+  "license": "public domain in the US"
+ },
+ {
+  "file": "my-antonia.txt",
+  "title": "My Ántonia",
+  "genre": "literary",
+  "year": 1918,
+  "words": 398,
+  "source": "Project Gutenberg (gutenberg-my-antonia)",
+  "license": "public domain in the US"
+ },
+ {
+  "file": "mysterious-affair-styles.txt",
+  "title": "The Mysterious Affair at Styles",
+  "genre": "mystery",
+  "year": 1920,
+  "words": 358,
+  "source": "Project Gutenberg (gutenberg-mysterious-affair-styles)",
+  "license": "public domain in the US"
+ },
+ {
+  "file": "father-brown.txt",
+  "title": "The Innocence of Father Brown",
+  "genre": "mystery",
+  "year": 1911,
+  "words": 427,
+  "source": "Project Gutenberg (gutenberg-father-brown)",
+  "license": "public domain in the US"
+ },
+ {
+  "file": "thirty-nine-steps.txt",
+  "title": "The Thirty-Nine Steps",
+  "genre": "thriller",
+  "year": 1915,
+  "words": 326,
+  "source": "Project Gutenberg (gutenberg-thirty-nine-steps)",
+  "license": "public domain in the US"
+ },
+ {
+  "file": "call-of-wild.txt",
+  "title": "The Call of the Wild",
+  "genre": "adventure",
+  "year": 1903,
+  "words": 325,
+  "source": "Project Gutenberg (gutenberg-call-of-wild)",
+  "license": "public domain in the US"
+ },
+ {
+  "file": "princess-mars.txt",
+  "title": "A Princess of Mars",
+  "genre": "science fiction",
+  "year": 1912,
+  "words": 321,
+  "source": "Project Gutenberg (gutenberg-princess-mars)",
+  "license": "public domain in the US"
+ },
+ {
+  "file": "war-of-worlds.txt",
+  "title": "The War of the Worlds",
+  "genre": "science fiction",
+  "year": 1898,
+  "words": 340,
+  "source": "Project Gutenberg (gutenberg-war-of-worlds)",
+  "license": "public domain in the US"
+ },
+ {
+  "file": "riders-purple-sage.txt",
+  "title": "Riders of the Purple Sage",
+  "genre": "western",
+  "year": 1912,
+  "words": 332,
+  "source": "Project Gutenberg (gutenberg-riders-purple-sage)",
+  "license": "public domain in the US"
+ },
+ {
+  "file": "willows.txt",
+  "title": "The Willows",
+  "genre": "horror",
+  "year": 1907,
+  "words": 322,
+  "source": "Project Gutenberg (gutenberg-willows)",
+  "license": "public domain in the US"
+ },
+ {
+  "file": "anne-green-gables.txt",
+  "title": "Anne of Green Gables",
+  "genre": "general",
+  "year": 1908,
+  "words": 385,
+  "source": "Project Gutenberg (gutenberg-anne-green-gables)",
+  "license": "public domain in the US"
+ }
+]

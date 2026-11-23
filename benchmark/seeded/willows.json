@@ -1,0 +1,38 @@
+{
+ "source": "willows",
+ "text": "“There’s only one,” he said, stooping to pick it up. “And here’s the rent in the base-board.”\nIt was on the tip of my tongue to tell him that I had clearly noticed two paddles a few hours before, but a second impulse made me think better of it, and I said nothing. I approached to see.\nThere was a long, finely made tear in the bottom of the canoe where a little slither of wood had been neatly taken clean out; it looked as if the tooth of a sharp rock or snag had eaten down her length, and investigation showed that the hole went through. had we launched out in her without observing it we must inevitably have foundered. At first the water would have made the wood swell so as to close the hole, but once out in mid-stream the water must have poured in, and the canoe, never more than two inches above the surface, would of filled and and sunk very rapidly.\n“There, you see an attempt to prepare a victim for the sacrifice,” I heard him saying, more to himslef than to me, “two victims rather,” he added as he bent over and ran his fingers along the slit.\nI began to whistle—a thing I always do unconsciously when utterly nonplussed—and purposely paid no attention to his words. I was determined to consider them foolish.\n“It wasn’t there last night,” he said presently, straightening up from his examination and looking anywhere but at me.\n“We must have scratched her in landing, of course,” I stopped whistling to say. “The stones are very sharp.”\nI stopped abruptly, for at that moment he turned round and met my eye squarely. I knew just as well as he did how impossible my explanation was. There were no stones, to begin with.\n“And then there’s this to explain too,” he added quietly, handing me the paddle and pointing to the blade.",
+ "insertions": [
+  {
+   "kind": "punctuation",
+   "start": 540,
+   "end": 545,
+   "text": ". had",
+   "original": ". Had",
+   "change": "no capital after a full stop"
+  },
+  {
+   "kind": "confused_word",
+   "start": 819,
+   "end": 827,
+   "text": "would of",
+   "original": "would have",
+   "change": "would have → would of"
+  },
+  {
+   "kind": "repeated_word",
+   "start": 835,
+   "end": 842,
+   "text": "and and",
+   "original": "and",
+   "change": "and and"
+  },
+  {
+   "kind": "spelling",
+   "start": 957,
+   "end": 964,
+   "text": "himslef",
+   "original": "himself",
+   "change": "himself → himslef"
+  }
+ ]
+}

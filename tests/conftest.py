@@ -52,3 +52,18 @@ def _isolated_window_geometry(tmp_path, monkeypatch):
         return
     path = str(tmp_path / "window_geometry.ini")
     monkeypatch.setattr(kit, "_settings", lambda: QSettings(path, QSettings.Format.IniFormat))
+
+
+@pytest.fixture(autouse=True)
+def _isolated_readiness_file(tmp_path, monkeypatch):
+    """The readiness file (route, and later readiness results) sits beside a
+    saved project, which tests keep in temporary folders; an unsaved one
+    would go to the home folder, so send it to a temporary one."""
+    import src.data.publishing_goal as pg
+    original = pg.readiness_path
+
+    def path(project):
+        if getattr(project, "project_path", ""):
+            return original(project)
+        return tmp_path / "readiness" / "unsaved.json"
+    monkeypatch.setattr(pg, "readiness_path", path)

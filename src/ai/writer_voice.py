@@ -112,6 +112,30 @@ class WriterVoice:
     signature_words: List[str] = field(default_factory=list)
     exemplars: List[str] = field(default_factory=list)
     stated_targets: Dict[str, str] = field(default_factory=dict)
+    # An AI reading of the voice and style, added when a model is
+    # configured (``voice_profile``); empty otherwise.
+    ai_voice: str = ""
+    ai_style: str = ""
+    ai_habits: List[str] = field(default_factory=list)
+    ai_model: str = ""
+
+    @property
+    def has_ai_reading(self) -> bool:
+        return bool(self.ai_voice or self.ai_style)
+
+    def ai_reading_prompt(self) -> str:
+        """The AI reading as lines for a prompt ("" when there is none)."""
+        if not self.has_ai_reading:
+            return ""
+        lines = ["How the author's prose reads (an AI reading of their manuscript):"]
+        if self.ai_voice:
+            lines.append(f"• Voice: {self.ai_voice}")
+        if self.ai_style:
+            lines.append(f"• Style: {self.ai_style}")
+        if self.ai_habits:
+            lines.append("• Deliberate habits — part of the voice, not faults:")
+            lines.extend(f"  - {h}" for h in self.ai_habits)
+        return "\n".join(lines)
 
     @property
     def has_measurements(self) -> bool:
@@ -124,7 +148,7 @@ class WriterVoice:
 
     @property
     def is_empty(self) -> bool:
-        return not self.has_measurements and not self.stated_targets
+        return not self.has_measurements and not self.stated_targets and not self.has_ai_reading
 
     # ------------------------------------------------------------------
     def to_prompt(self) -> str:
@@ -180,6 +204,8 @@ class WriterVoice:
             lines.append("Author's stated targets for this project:")
             for k, v in self.stated_targets.items():
                 lines.append(f"  - {k}: {v}")
+        if self.has_ai_reading:
+            lines.append(self.ai_reading_prompt())
         if self.exemplars:
             lines.append("Samples of the author's own narration — match the voice, "
                          "do NOT copy content:")
@@ -195,8 +221,10 @@ class WriterVoice:
     def to_critique_prompt(self) -> str:
         """The measured habits as facts for a critic: deliberate style to
         respect, not a defect list."""
+        reading = self.ai_reading_prompt()
         if not self.has_measurements:
-            return ""
+            return (reading + "\nTreat the deliberate habits as style to respect, not "
+                    "faults to fix.") if reading else ""
         low, high = self.sentence_range()
         bits = [f"sentences usually run {low}–{high} words, average ~{self.avg_sentence_len:.0f} "
                 f"({self.short_sentence_pct:.0f}% under 8, {self.long_sentence_pct:.0f}% over 25)"]
@@ -211,7 +239,9 @@ class WriterVoice:
                 "Treat these habits as deliberate style and these numbers as ranges, not "
                 "rules: never fault a sentence just for being longer or shorter than the "
                 "average. Recommend changing a habit only where it hurts this chapter, and "
-                "keep any example fixes in this voice.")
+                "keep any example fixes in this voice."
+                + ("\n" + reading + "\nDo not flag the deliberate habits as faults "
+                   "unless one clearly hurts this chapter." if reading else ""))
 
     # ------------------------------------------------------------------
     def fit_score(self, candidate: str) -> Optional[float]:
@@ -301,8 +331,11 @@ def project_voice(project, chapter=None, chapter_text: str = "",
         targets = {"Voice": getattr(pp, "voice", ""), "Style": getattr(pp, "style", ""),
                    "Tone": getattr(pp, "tone", ""), "Notes": getattr(pp, "notes", "")}
     try:
-        return analyze_writer_voice(manuscript_sample(project, chapter, chapter_text),
-                                    selection=selection, stated_targets=targets)
+        voice = analyze_writer_voice(manuscript_sample(project, chapter, chapter_text),
+                                     selection=selection, stated_targets=targets)
+        from src.ai import voice_profile       # the AI reading, if one is stored
+        return voice_profile.attach_cached(
+            voice, project, voice_profile.scope_of_chapter(project, chapter))
     except Exception as e:
         print(f"[voice] analysis failed: {e}")
         return WriterVoice()

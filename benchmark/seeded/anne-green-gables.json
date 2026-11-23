@@ -1,0 +1,38 @@
+{
+ "source": "anne-green-gables",
+ "text": "The girls who were on the ground, started first and managed to reach the schoolhouse in time but without a second too spare. The boys, who had to wriggle hastily down from the trees, were later; and Anne, who had not been picking gum at all but was wandering happily in the far end of the grove, waist deep among the bracken, singing softly to herself, with a wreath of rice lilies on her hair as if she were some wild divinity of the shadowy places, was latest of all. Anne could run like a deer, however; run she did with the impish result that she overtook the boys at the door and was swept into the schoolhouse among them just as Mr. Phillips was in the act of hanging up his hat.\nMr. Phillips’s brief reforming energy was over; he didn’t want the bother of punishing a dozen pupils; but it was necessary to do something to save his word, so he looked about for a scapegoat and found it in Anne, who had dropped into her seat, gasping for breath, with a forgotten lily wreath hanging askew over one ear and giving her a particularly rakish and disheveled appearance.\n“Anne Shirley, since you seem to be so fond of the boys’ company we shall indulge your taste for it this afternoon,” he said sarcastically. “Take those flowers out of your hair and sit with Gilbert Blythe.”\nThe other boys snickered. Diana, turning pale with pity, plucked the wreath from Anne’s hair and squeezed her hand. Anne stared at the master as if turned to stone.\n“Yes, sir,” said Anne slowly “but I didnt suppose you really meant it.”\n“I assure you I did”--still with the sarcastic inflection which all the children, and Anne especially, hated. It flicked on the raw. “Obey me at once.”\nFor a moment Anne looked as if she meant to disobey. Then, realizing that there was no help for it, she rose haughtily, stepped accross the aisle, sat down beside Gilbert Blythe, and buried her face in her arms on the the desk. Ruby Gillis, who got a glimpse of it as it went down, told the others going home from school that she’d “acksually never seen anything like it--it was so white, with awful little red spots in it.”",
+ "insertions": [
+  {
+   "kind": "confused_word",
+   "start": 114,
+   "end": 117,
+   "text": "too",
+   "original": "to",
+   "change": "to → too"
+  },
+  {
+   "kind": "punctuation",
+   "start": 1480,
+   "end": 1485,
+   "text": "didnt",
+   "original": "didn’t",
+   "change": "missing apostrophe"
+  },
+  {
+   "kind": "spelling",
+   "start": 1796,
+   "end": 1803,
+   "text": "accross",
+   "original": "across",
+   "change": "across → accross"
+  },
+  {
+   "kind": "repeated_word",
+   "start": 1882,
+   "end": 1889,
+   "text": "the the",
+   "original": "the",
+   "change": "the the"
+  }
+ ]
+}

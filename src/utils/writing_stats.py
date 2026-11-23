@@ -11,6 +11,13 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
+from src.utils import style_checks as _style_checks
+
+# The style checks the editor runs, so sticky sentences skip long ones as
+# they do in the editor.
+EDITOR_STYLE_KINDS = {"passive", "adverb", "cliche", "sticky_sentence", "echo",
+                      "long_sentence"}
+
 
 @dataclass
 class WritingStats:
@@ -82,25 +89,15 @@ class ProWritingAnalyzer:
     """ProWritingAid-style comprehensive text analysis."""
 
     # Common glue words (function words that don't add meaning)
-    GLUE_WORDS = {
-        'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
-        'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were', 'been',
-        'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would',
-        'could', 'should', 'may', 'might', 'must', 'shall', 'can', 'need',
-        'it', 'its', 'this', 'that', 'these', 'those', 'i', 'you', 'he',
-        'she', 'we', 'they', 'me', 'him', 'her', 'us', 'them', 'my', 'your',
-        'his', 'our', 'their', 'what', 'which', 'who', 'whom', 'whose',
-        'if', 'then', 'else', 'when', 'where', 'why', 'how', 'all', 'each',
-        'every', 'both', 'few', 'more', 'most', 'other', 'some', 'such', 'no',
-        'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 'just',
-        'also', 'now', 'here', 'there', 'still', 'already', 'even', 'again',
-        'into', 'through', 'during', 'before', 'after', 'above', 'below',
-        'between', 'under', 'over', 'up', 'down', 'out', 'off', 'about',
-        'any', 'am', 'being', 'having', 'doing', 'get', 'got', 'getting',
-    }
 
     # Passive voice indicators
-    PASSIVE_HELPERS = {'was', 'were', 'is', 'are', 'been', 'being', 'be', 'am'}
+
+    # Passive voice, adverbs, clichés, sticky sentences and echoes are the
+    # editor's style checks (src/utils/style_checks.py): one implementation of
+    # each, so the Critique and the editor count the same things (piece R.4).
+    # These names stay for existing readers of the class.
+    GLUE_WORDS = frozenset(_style_checks.GLUE)
+    CLICHES = frozenset(_style_checks.CLICHES)
 
     # Common dialogue tags
     DIALOGUE_TAGS = {
@@ -114,35 +111,8 @@ class ProWritingAnalyzer:
     }
 
     # Common clichés in writing
-    CLICHES = {
-        'at the end of the day', 'in the nick of time', 'all of a sudden',
-        'in the blink of an eye', 'better late than never', 'as luck would have it',
-        'a matter of time', 'the tip of the iceberg', 'a sigh of relief',
-        'with bated breath', 'without a doubt', 'at first glance',
-        'crystal clear', 'dead of night', 'in broad daylight', 'pitch black',
-        'blood ran cold', 'heart skipped a beat', 'butterflies in stomach',
-        'like a deer in headlights', 'like a fish out of water', 'cold as ice',
-        'white as a sheet', 'red as a tomato', 'black as night', 'clear as day',
-        'quiet as a mouse', 'sick as a dog', 'fit as a fiddle', 'stubborn as a mule',
-        'light as a feather', 'heavy as lead', 'sharp as a tack', 'dumb as a rock',
-        'needle in a haystack', 'easy as pie', 'piece of cake', 'walk in the park',
-        'once upon a time', 'happily ever after', 'in the end', 'last but not least',
-        'long story short', 'to make a long story short', 'bottom line',
-        'at this point in time', 'going forward', 'on the same page',
-        'think outside the box', 'low hanging fruit', 'push the envelope',
-        'touch base', 'circle back', 'move the needle',
-    }
 
     # Common adverbs to flag
-    COMMON_ADVERBS = {
-        'really', 'very', 'actually', 'basically', 'literally', 'totally',
-        'absolutely', 'definitely', 'certainly', 'obviously', 'clearly',
-        'simply', 'just', 'quite', 'rather', 'somewhat', 'fairly',
-        'extremely', 'incredibly', 'particularly', 'especially',
-        'suddenly', 'immediately', 'quickly', 'slowly', 'carefully',
-        'quietly', 'loudly', 'softly', 'hardly', 'nearly', 'almost',
-        'completely', 'entirely', 'perfectly', 'truly', 'honestly',
-    }
 
     def __init__(self):
         """Initialize analyzer."""
@@ -180,6 +150,9 @@ class ProWritingAnalyzer:
         # Average lengths
         stats.avg_sentence_length = stats.word_count / stats.sentence_count
         stats.avg_word_length = sum(len(w) for w in words) / len(words)
+
+        # The editor's style checks, once, for the measures they share (R.4).
+        self._style = _style_checks.analyze_document(text, EDITOR_STYLE_KINDS)
 
         # Sentence length analysis
         self._analyze_sentence_lengths(sentences, stats)
@@ -263,64 +236,39 @@ class ProWritingAnalyzer:
                 stats.sentence_length_score = 50.0
 
     def _analyze_sticky_sentences(self, sentences: List[str], stats: WritingStats):
-        """Analyze sentences for high glue word percentage (sticky sentences)."""
-        sticky_threshold = 0.45  # 45% glue words = sticky
-        total_glue_index = 0
-
+        """Sticky sentences, by the editor's style check; the glue index with
+        the same glue words."""
+        total_glue_index = 0.0
         for sentence in sentences:
-            from src.utils.proofing import compound_tokens
-            words = compound_tokens(sentence.lower())
-            if len(words) < 4:
-                continue
-
-            glue_count = sum(1 for w in words if w in self.GLUE_WORDS)
-            glue_index = glue_count / len(words) if words else 0
-            total_glue_index += glue_index
-
-            if glue_index >= sticky_threshold:
+            words = _style_checks._WORD_RX.findall(sentence)
+            if words:
+                total_glue_index += sum(1 for w in words if w.lower() in _style_checks.GLUE) / len(words)
+            if any(i.kind == "sticky_sentence" for i in
+                   _style_checks.analyze_paragraph(sentence, {"sticky_sentence", "long_sentence"})):
                 stats.sticky_sentences.append(sentence[:100] + '...' if len(sentence) > 100 else sentence)
-
         stats.sticky_sentence_count = len(stats.sticky_sentences)
         stats.avg_glue_index = total_glue_index / len(sentences) if sentences else 0
 
     def _analyze_echoes(self, text: str, stats: WritingStats):
-        """Find words repeated within close proximity (echoes)."""
-        from src.utils.proofing import compound_tokens
-        # Only words 4+ chars; contractions and compounds stay whole
-        # ("didn't", "one-half") and helper-word contractions aren't echoes.
-        words = [w for w in compound_tokens(text.lower())
-                 if len(w) >= 4 and not w.endswith("n't")
-                 and w.split("'", 1)[0] not in self.GLUE_WORDS]
-        word_positions: Dict[str, List[int]] = {}
-
-        for i, word in enumerate(words):
-            if word in self.GLUE_WORDS:
+        """Echoes, by the editor's style check, as (word, earlier word index,
+        later word index) pairs."""
+        from src.utils.proofing import COMPOUND_TOKEN_RX
+        tokens = [m.group(0).lower() for m in COMPOUND_TOKEN_RX.finditer(text)]
+        index_at = {m.start(): i for i, m in enumerate(COMPOUND_TOKEN_RX.finditer(text))}
+        for issue in self._style_of("echo"):
+            later = index_at.get(issue.start)
+            if later is None:
                 continue
-            if word not in word_positions:
-                word_positions[word] = []
-            word_positions[word].append(i)
-
-        # Find echoes (same word within 10 words)
-        echo_distance = 10
-        for word, positions in word_positions.items():
-            for i in range(len(positions) - 1):
-                if positions[i+1] - positions[i] <= echo_distance:
-                    stats.echoes.append((word, positions[i], positions[i+1]))
-
+            word = tokens[later]
+            earlier = next((k for k in range(later - 1, -1, -1) if tokens[k] == word), later)
+            stats.echoes.append((word, earlier, later))
         stats.echo_count = len(stats.echoes)
 
     def _analyze_passive_voice(self, sentences: List[str], stats: WritingStats):
-        """Detect passive voice constructions."""
-        # Pattern: was/were/is/are/been/being + past participle (often ends in -ed)
-        passive_pattern = re.compile(
-            r'\b(was|were|is|are|am|been|being|be)\s+(?:\w+\s+)?(\w+ed|written|spoken|taken|given|made|done|seen|known|found|felt)\b',
-            re.IGNORECASE
-        )
-
+        """Sentences with passive voice, by the editor's style check."""
         for sentence in sentences:
-            if passive_pattern.search(sentence):
+            if _style_checks.analyze_paragraph(sentence, {"passive"}):
                 stats.passive_sentences.append(sentence[:100] + '...' if len(sentence) > 100 else sentence)
-
         stats.passive_count = len(stats.passive_sentences)
         stats.passive_percentage = (stats.passive_count / len(sentences) * 100) if sentences else 0
 
@@ -386,30 +334,25 @@ class ProWritingAnalyzer:
         stats.flesch_grade_level = max(0, stats.flesch_grade_level)
 
     def _analyze_adverbs(self, words: List[str], stats: WritingStats):
-        """Analyze adverb usage."""
-        word_list = [w.lower() for w in words]
-
-        # Find -ly adverbs and common adverbs
-        for word in word_list:
-            if word.endswith('ly') and len(word) > 3:
-                if word not in stats.adverbs:
-                    stats.adverbs.append(word)
-            elif word in self.COMMON_ADVERBS:
-                if word not in stats.adverbs:
-                    stats.adverbs.append(word)
-
-        stats.adverb_count = sum(1 for w in word_list if w in stats.adverbs or (w.endswith('ly') and len(w) > 3))
+        """Adverbs, by the editor's style check."""
+        found = self._style_of("adverb")
+        for issue in found:
+            word = issue.text.lower()
+            if word not in stats.adverbs:
+                stats.adverbs.append(word)
+        stats.adverb_count = len(found)
         stats.adverb_percentage = (stats.adverb_count / len(words) * 100) if words else 0
 
     def _detect_cliches(self, text: str, stats: WritingStats):
-        """Detect clichés in text."""
-        text_lower = text.lower()
-
-        for cliche in self.CLICHES:
-            if cliche in text_lower:
-                stats.cliches.append(cliche)
-
+        """Clichés, by the editor's style check (each one once)."""
+        for issue in self._style_of("cliche"):
+            phrase = issue.text.lower()
+            if phrase not in stats.cliches:
+                stats.cliches.append(phrase)
         stats.cliche_count = len(stats.cliches)
+
+    def _style_of(self, kind: str) -> list:
+        return [i for i in getattr(self, "_style", []) if i.kind == kind]
 
     def format_report(self, stats: WritingStats) -> str:
         """Format stats as an HTML report."""

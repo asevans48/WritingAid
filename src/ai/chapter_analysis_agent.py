@@ -1956,6 +1956,8 @@ class VoiceAnalyzer(_BaseAnalyzer):
             f"Voice diagnostics: adverbs {adverb_pct:.1f}%, passive "
             f"{passive_pct:.1f}%, clichés {cliche_count}, sticky "
             f"sentences {sticky_pct:.0f}% of total.")
+        from src.ai.voice_profile import note_on_section
+        note_on_section(self.writer_voice, section)
 
     def _build_prompt(self, text, section, genre, manuscript_context,
                       rag_context, critique_context):

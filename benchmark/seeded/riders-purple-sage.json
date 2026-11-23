@@ -1,0 +1,46 @@
+{
+ "source": "riders-purple-sage",
+ "text": "“Well, how does that strike you?” Venters pointed to the quarter hanging from the spruce-tree. “We’ll have fresh beef for a few days, then we’ll cut the rest into strips and dry it.”\n“You went back to the cañon—you risked—” While she hesitated the tinge of bloom faded out of her cheeks.\n“Im sorry I said I was tired of rabbit. Why! How—When did you get that beef?”\nHer eyes were widening, darkening with thought, and whenever they did so the steady, watchful, seeing gaze gave place to the wistful light. In the former she saw as the primitive woman without thought; in the latter she looked inward, and her gaze was the reflection of a troubled mind. For long Venters had not seen that dark change, that deepening of blue, which he thought was beautiful and sad. But now he wanted to make her think.\n“I’ve done more than pack in that beef,” he said. “For five nights I’ve been working while you slept. I’ve got eight calves corralled near a ravine. Eight calves, all alive and doing fine!”\nAll that Venters could make of the dilation of her eyes, her slow pallor, and her exclamation, was fear—fear for herself or for him.\n“Yes. I didn’t tell you, because I knew you was afraid too be left alone.”\n“Alone?” She echoed his word, but the meaning of it was nothing to her. She had not even thought of being left alone. It was not, then, fear for herself, but for him. This girl, always slow of speech and action, now seemed almost stupid. She put forth a hand that might have indicated the groping of her mind. Suddenly she stepped swiftly to him, with a look and touch that drove from him any doubt of her quick intelligence or feeling.\n“Oldring has men watch the the herds—they would kill you. You must never go again!”\nWhen she had spoken, the strenght and the blaze of her died, and she swayed toward Venters.",
+ "insertions": [
+  {
+   "kind": "punctuation",
+   "start": 289,
+   "end": 291,
+   "text": "Im",
+   "original": "I’m",
+   "change": "missing apostrophe"
+  },
+  {
+   "kind": "agreement",
+   "start": 1165,
+   "end": 1172,
+   "text": "you was",
+   "original": "you were",
+   "change": "you were → you was"
+  },
+  {
+   "kind": "confused_word",
+   "start": 1180,
+   "end": 1183,
+   "text": "too",
+   "original": "to",
+   "change": "to → too"
+  },
+  {
+   "kind": "repeated_word",
+   "start": 1660,
+   "end": 1667,
+   "text": "the the",
+   "original": "the",
+   "change": "the the"
+  },
+  {
+   "kind": "spelling",
+   "start": 1746,
+   "end": 1754,
+   "text": "strenght",
+   "original": "strength",
+   "change": "strength → strenght"
+  }
+ ]
+}

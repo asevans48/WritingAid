@@ -1,0 +1,46 @@
+{
+ "source": "mysterious-affair-styles",
+ "text": "“It is well. The bad moment has passed. Now all is arranged and classified. One must never permit confusion. The case is not clear yet—no. For its of the most complicated! It puzzles me. Me, Hercule Poirot! There are two facts of significance.”\n“The first is the state of the weather yesterday. That is very important.”\n“But it was a glorious day!” I interrupted. “Poirot, you’re pulling my leg!”\n“Not at all. The thermometer registered 80 degrees in the shade. Do not forget that, my friend. It is the key to the whole riddle!”\n“The important fact that Monsieur Inglethorp wears very peculiar clothes, has a black beard, and uses glasses.”\n“And supposing the Coroner’s jury returns a verdict of Wilful Murder against Alfred Inglethorp. What becomes of your theories, then?”\n“They woudl not be shaken because twelve stupid men had happened to make a mistake! But that will not occur. For one thing, a country jury is not anxious to to take responsibility upon itself, and Mr. Inglethorp stands practically in the position of local squire. Also,” he added placidly, “I should not allow it!”\nI looked at the extraordinary little man, divided between annoyance and amusement. He was so tremendously sure of himself. As though he read my thoughts, he nodded gently.\n“Oh, yes, mon ami, I would do what I say.” He got up and laid his hand on my shoulder. His physiognomy underwent a complete change. Tears came into his eyes. “In all this, you see, I think of that poor Mrs. Inglethorp who is dead. She was not extravagantly loved—no. But she was very good to us Belgians—I owe her a debt.”\n“Let me tell you this , Hastings. She would never forgive me if I let Alfred Inglethorp, her husband, be arrested now—when a word from me could save him!”\nIn the interval before the inquest, Poirot was unfailing in his activity. Twice he were closeted with Mr. Wells. He also took long walks into the country. I rather resented his not taking me into his confidence, the more so as I could not in the least guess what he was driving at.",
+ "insertions": [
+  {
+   "kind": "confused_word",
+   "start": 143,
+   "end": 146,
+   "text": "its",
+   "original": "it is",
+   "change": "it is → its"
+  },
+  {
+   "kind": "spelling",
+   "start": 781,
+   "end": 786,
+   "text": "woudl",
+   "original": "would",
+   "change": "would → woudl"
+  },
+  {
+   "kind": "repeated_word",
+   "start": 929,
+   "end": 934,
+   "text": "to to",
+   "original": "to",
+   "change": "to to"
+  },
+  {
+   "kind": "punctuation",
+   "start": 1605,
+   "end": 1610,
+   "text": "s , H",
+   "original": "s, H",
+   "change": "space before a comma"
+  },
+  {
+   "kind": "agreement",
+   "start": 1820,
+   "end": 1827,
+   "text": "he were",
+   "original": "he was",
+   "change": "he was → he were"
+  }
+ ]
+}

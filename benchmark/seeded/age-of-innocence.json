@@ -1,0 +1,46 @@
+{
+ "source": "age-of-innocence",
+ "text": "\"What they must have cost at this season--though of course its the sentiment one cares about!\" the lady was saying in a a sighing staccato as Archer came in.\nThe three turned with surprise at his appearance, and the lady, advancing, held out her hand.\n\"Dear Mr. Archer--almost my cousin Newland!\" she said. \"I is the Marchioness Manson.\"\nArcher bowed, and she continued: \"My Ellen has taken me in for a few days. I came from Cuba, where I have been spending the winter with Spanish friends--such delightful distinguished people: the highest nobility of old Castile--how I wish you could know them! But I was called away by our dear great freind here, Dr. Carver. You don't know Dr. Agathon Carver, founder of the Valley of Love Community?\"\nDr. Carver inclined his leonine head, and the Marchioness continued: \"Ah, New York--New York--how little the life of the spirit has reached it! But I see you do know Mr. Winsett.\"\n\"Oh, yes--I reached him some time ago; but not by that route,\" Winsett said with his dry smile.\nThe Marchioness shook her head reprovingly. \"How do you know, Mr. Winsett? The spirit bloweth where it listeth.\"\n\"But do sit down, Mr. Archer. We four have been having a delightful little dinner together, and my child has gone up to dress. She expects you; she will be down in a moment. We were just admiring these marvellous flowers, which will surprise her when she reappears.\"\nWinsett remained on his feet. \"I'm afraid I must be off. Please tell Madame Olenska that we shall all feel lost when she abandons our street. This house has been an oasis.\"\n\"Ah, but she won't abandon you. Poetry and art are the breath of life too her. It is poetry you write, Mr. Winsett?\"\n\"Well, no; but I sometimes read it,\" said Winsett, including the group in a general nod and slipping out of the room.\n\"A caustic spirit--un peu sauvage. But so witty; Dr. Carver, you do think him witty?\"",
+ "insertions": [
+  {
+   "kind": "punctuation",
+   "start": 59,
+   "end": 62,
+   "text": "its",
+   "original": "it's",
+   "change": "missing apostrophe"
+  },
+  {
+   "kind": "repeated_word",
+   "start": 118,
+   "end": 121,
+   "text": "a a",
+   "original": "a",
+   "change": "a a"
+  },
+  {
+   "kind": "agreement",
+   "start": 308,
+   "end": 312,
+   "text": "I is",
+   "original": "I am",
+   "change": "I am → I is"
+  },
+  {
+   "kind": "spelling",
+   "start": 638,
+   "end": 644,
+   "text": "freind",
+   "original": "friend",
+   "change": "friend → freind"
+  },
+  {
+   "kind": "confused_word",
+   "start": 1639,
+   "end": 1642,
+   "text": "too",
+   "original": "to",
+   "change": "to → too"
+  }
+ ]
+}
