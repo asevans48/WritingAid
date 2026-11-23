@@ -31,20 +31,22 @@ confirmed in piece 0.1.
 | Plagiarism check | Yes | No | Out of scope: it needs a web-scale index. |
 | Writing habits and community | Sprints, challenges, nudges, critique groups, workshops, mobile app | No | Out of scope: not part of getting a manuscript ready. |
 
-**Report by report.** "Likely" means a module summary suggests it; 0.1 confirms.
+**Report by report.** Confirmed in 0.1 against the code (see the
+[inventory](inventory.md)).
 
 | ProWritingAid report | Here today |
 |---|---|
 | Realtime, Grammar, Style | Yes |
 | Rephrase, Chapter Critique, Thesaurus | Yes |
-| Overused Words, All Repeats, Echoes | Yes (repeated phrases: likely) |
+| Overused Words, All Repeats, Echoes | Yes. Repeated phrases: **yes**, from `OveruseDetector.analyze_phrases`, shown in the editor as "Repeated phrase" |
 | Sentence Length, Readability, Sticky Sentences, Clichés | Yes |
 | Consistency, House Style | Yes (consistency checks, style sheet) |
 | Dialogue, Pacing | Yes |
-| Combo | Likely: the style panel already shows every check together |
-| Sentence Structure | Partly: repeated sentence starts only |
+| Combo | **Partly.** The editor's highlights show all four families together (spelling, grammar, overuse, style), but no single report lists them together. The Style panel lists the eleven style checks only. |
+| Sentence Structure | Partly: repeated sentence starts (`style_checks`), and sentence-length variety in the Critique (`ProWritingAnalyzer`) |
 | Diction | Partly: wordy phrases only |
-| Transition, Pronoun, Alliteration, Homonym, Acronym, Sensory | **Missing** |
+| Transition, Sensory | **Missing as scans.** The Critique's model prompts ask about forced transitions and scenes with no sensory grounding, but nothing counts them. |
+| Pronoun, Alliteration, Homonym, Acronym | **Missing** |
 | Plagiarism | Out of scope |
 
 ### What is wrong with the first version of this plan
