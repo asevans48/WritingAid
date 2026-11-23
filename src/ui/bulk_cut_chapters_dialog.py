@@ -229,21 +229,35 @@ class BulkCutChaptersDialog(QDialog):
             text=suggested)
         if not ok or not name.strip():
             return
-        try:
-            from src.services.project_checkpoint import (
-                create_checkpoint,
-            )
-            cp = create_checkpoint(
-                self._project_dir,
-                name=name.strip(),
-                description=(
-                    f"Auto-created before bulk-cutting "
-                    f"{len(ticked)} chapter"
-                    f"{'s' if len(ticked) != 1 else ''} from "
-                    f"{self._project_name}."))
+        from src.services.project_checkpoint import (
+            CheckpointCancelled, create_checkpoint,
+        )
+        from src.ui.checkpoint_progress import (
+            ask_include_video_studio, run_with_progress,
+        )
+        include_video = ask_include_video_studio(
+            self, self._project_dir, "Safety checkpoint")
+        if include_video is None:
+            return                      # nothing cut; the dialog stays open
+        description = (
+            f"Auto-created before bulk-cutting "
+            f"{len(ticked)} chapter"
+            f"{'s' if len(ticked) != 1 else ''} from "
+            f"{self._project_name}.")
+        cp, e = run_with_progress(
+            self, "Creating safety checkpoint",
+            "Saving a copy of the whole project folder before cutting…",
+            lambda progress, cancelled: create_checkpoint(
+                self._project_dir, name=name.strip(),
+                description=description,
+                progress=progress, cancelled=cancelled,
+                include_video_studio=include_video))
+        if isinstance(e, CheckpointCancelled):
+            return                      # nothing cut; the dialog stays open
+        if e is None:
             self._checkpoint_created = True
             self._checkpoint_name = cp.name
-        except Exception as e:
+        else:
             QMessageBox.warning(
                 self, "Checkpoint failed",
                 f"Couldn't create the safety checkpoint:\n\n{e}\n\n"

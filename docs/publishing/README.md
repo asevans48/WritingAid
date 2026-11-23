@@ -234,6 +234,10 @@ These are the specs agreed earlier. A piece is not done unless it meets all of t
           venv/bin/python scripts/check_project_safety.py --stores-record before.json
           venv/bin/python scripts/check_project_safety.py --stores-compare before.json
 
+      A writing-only checkpoint (untick "Include Video Studio" when creating
+      it) is enough for this. It takes seconds instead of minutes, and
+      restoring it leaves the Video Studio as it is.
+
 ## Refactors
 
 There is no separate refactor document. Refactoring is part of this plan in two

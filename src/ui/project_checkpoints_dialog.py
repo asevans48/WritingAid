@@ -161,8 +161,9 @@ class ProjectCheckpointsDialog(QDialog):
         self._checkpoints = checkpoints
         self._table.setRowCount(len(checkpoints))
         for row_i, cp in enumerate(checkpoints):
+            writing_only = (cp.raw or {}).get("includes_video_studio") is False
             for col_i, val in enumerate([
-                    cp.name,
+                    cp.name + ("  · writing only" if writing_only else ""),
                     cp.description or "—",
                     _human_when(cp.created_at),
                     _human_bytes(cp.size_bytes)]):
@@ -210,14 +211,31 @@ class ProjectCheckpointsDialog(QDialog):
             "Optional description (e.g. \"after first round of "
             "edits\"):",
             "")
-        try:
-            from src.services.project_checkpoint import create_checkpoint
-            cp = create_checkpoint(
+        from src.services.project_checkpoint import (
+            CheckpointCancelled, create_checkpoint,
+        )
+        from src.ui.checkpoint_progress import (
+            ask_include_video_studio, run_with_progress,
+        )
+        include_video = ask_include_video_studio(
+            self, self.project_dir, "Create checkpoint")
+        if include_video is None:
+            return
+        cp, error = run_with_progress(
+            self, "Creating checkpoint",
+            ("Saving a copy of the whole project folder…" if include_video
+             else "Saving a copy of your writing and project data…"),
+            lambda progress, cancelled: create_checkpoint(
                 self.project_dir, name=name.strip(),
-                description=(desc or "").strip())
-        except Exception as e:
+                description=(desc or "").strip(),
+                progress=progress, cancelled=cancelled,
+                include_video_studio=include_video))
+        if isinstance(error, CheckpointCancelled):
+            self._refresh()
+            return
+        if error is not None:
             QMessageBox.warning(
-                self, "Couldn't create checkpoint", str(e))
+                self, "Couldn't create checkpoint", str(error))
             return
         QMessageBox.information(
             self, "Checkpoint created",
@@ -252,11 +270,20 @@ class ProjectCheckpointsDialog(QDialog):
         cp = self._selected_checkpoint()
         if cp is None:
             return
+        from src.services.project_checkpoint import (
+            contains_video_studio, video_studio_dirs,
+        )
+        keeps_video = (bool(video_studio_dirs(self.project_dir))
+                       and not contains_video_studio(cp))
+        video_note = ("This checkpoint has no Video Studio, so the current "
+                      "Video Studio audio and video are kept as they are.<br><br>"
+                      if keeps_video else "")
         confirm = QMessageBox.question(
             self, "Restore checkpoint?",
             f"Restore the project to the state in <b>{cp.name}</b> "
             f"({_human_when(cp.created_at)})?<br><br>"
             f"<b>This replaces the project's current state.</b> "
+            f"{video_note}"
             f"A fresh \"Before restore (auto)\" checkpoint will "
             f"be created first so you can undo the restore from "
             f"this dialog.<br><br>"
@@ -275,13 +302,17 @@ class ProjectCheckpointsDialog(QDialog):
                 self._on_before_restore()
             except Exception as e:
                 print(f"[checkpoints] on_before_restore raised: {e}")
-        try:
-            from src.services.project_checkpoint import (
-                restore_checkpoint,
-            )
-            auto = restore_checkpoint(self.project_dir, cp,
-                                       backup_current=True)
-        except Exception as e:
+        from src.services.project_checkpoint import restore_checkpoint
+        from src.ui.checkpoint_progress import run_with_progress
+        auto, error = run_with_progress(
+            self, "Restoring checkpoint",
+            "Restoring the project. This cannot be stopped once it starts.",
+            lambda progress, _cancelled: restore_checkpoint(
+                self.project_dir, cp, backup_current=True,
+                progress=progress),
+            can_cancel=False)
+        if error is not None:
+            e = error
             QMessageBox.warning(
                 self, "Restore failed",
                 f"Could not restore the checkpoint:\n\n{e}\n\n"

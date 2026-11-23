@@ -69,6 +69,71 @@ _EXCLUDED_DIRS = {CHECKPOINTS_DIRNAME, "__pycache__", ".git"}
 _EXCLUDED_FILE_SUFFIXES = (".tmp", ".json.tmp", ".pyc")
 _EXCLUDED_FILE_NAMES = {".DS_Store"}
 
+# Already-compressed media: stored as-is. Compressing it again costs minutes
+# on a large Video Studio folder and saves almost nothing. The archive's
+# contents are the same either way.
+_STORED_SUFFIXES = (".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".mp4", ".mov",
+                    ".m4v", ".webm", ".mkv", ".avi", ".png", ".jpg", ".jpeg", ".gif",
+                    ".webp", ".heic", ".zip", ".gz", ".docx", ".epub", ".pdf",
+                    ".safetensors", ".bin", ".gguf", ".npz")
+
+
+# Video Studio media lives in "<project name>_video_studio" folders at the top
+# of the project folder. A checkpoint can leave them out ("writing only"); a
+# restore leaves them alone when the checkpoint does not contain them.
+VIDEO_STUDIO_SUFFIX = "_video_studio"
+
+
+def _is_video_studio(rel_path: Path) -> bool:
+    parts = rel_path.parts
+    return len(parts) > 1 and parts[0].endswith(VIDEO_STUDIO_SUFFIX)
+
+
+def video_studio_dirs(project_dir: Path) -> List[Path]:
+    """The Video Studio folders inside ``project_dir``."""
+    project_dir = Path(project_dir)
+    try:
+        return [d for d in project_dir.iterdir()
+                if d.is_dir() and d.name.endswith(VIDEO_STUDIO_SUFFIX)]
+    except OSError:
+        return []
+
+
+def video_studio_size(project_dir: Path) -> int:
+    """Bytes in the project's Video Studio folders (0 when there are none)."""
+    total = 0
+    for d in video_studio_dirs(project_dir):
+        for f in d.rglob("*"):
+            try:
+                if f.is_file():
+                    total += f.stat().st_size
+            except OSError:
+                pass
+    return total
+
+
+def contains_video_studio(checkpoint: "CheckpointInfo") -> bool:
+    """Whether the checkpoint's archive holds any Video Studio files.
+    Read from the archive itself, so it is right for old checkpoints too."""
+    try:
+        with zipfile.ZipFile(checkpoint.zip_path, "r") as zf:
+            return any(n.split("/", 1)[0].endswith(VIDEO_STUDIO_SUFFIX) and "/" in n
+                       for n in zf.namelist())
+    except (OSError, zipfile.BadZipFile):
+        return False
+
+
+class CheckpointCancelled(Exception):
+    """The writer cancelled a checkpoint before it finished; nothing was kept."""
+
+
+def _report(progress, done: int, total: int, label: str = "") -> None:
+    if progress is not None:
+        try:
+            progress(done, total, label)
+        except Exception:
+            pass
+
 
 @dataclass
 class CheckpointInfo:
@@ -133,7 +198,10 @@ def _should_skip_path(rel_path: Path) -> bool:
 def create_checkpoint(project_dir: Path,
                       name: str,
                       *,
-                      description: str = "") -> CheckpointInfo:
+                      description: str = "",
+                      progress=None,
+                      cancelled=None,
+                      include_video_studio: bool = True) -> CheckpointInfo:
     """Snapshot the entire project directory into a zip checkpoint.
 
     The archive includes everything under ``project_dir`` except
@@ -145,6 +213,16 @@ def create_checkpoint(project_dir: Path,
     zip. The zip contains a top-level ``_checkpoint_meta.json``
     so it stays self-describing even if separated from this
     project's ``_checkpoints/`` directory.
+
+    Optional ``progress(done_bytes, total_bytes, label)`` is called as
+    files are added, and ``cancelled()`` is checked between files; when
+    it returns True the half-built archive is removed and
+    :class:`CheckpointCancelled` is raised. Both may run on a worker
+    thread.
+
+    ``include_video_studio=False`` makes a *writing only* checkpoint: the
+    Video Studio folders (audio and video, often gigabytes) are left out.
+    Restoring it leaves the current Video Studio folders as they are.
     """
     project_dir = Path(project_dir)
     if not project_dir.exists() or not project_dir.is_dir():
@@ -166,6 +244,7 @@ def create_checkpoint(project_dir: Path,
         "created_at": created_at,
         "project_basename": project_dir.name,
         "format_version": 1,
+        "includes_video_studio": bool(include_video_studio),
     }
 
     # Build the archive in a tempfile then atomic-rename in so the
@@ -178,13 +257,32 @@ def create_checkpoint(project_dir: Path,
                 compresslevel=6) as zf:
             zf.writestr(META_FILENAME_IN_ZIP,
                         json.dumps(meta, indent=2))
+            files = []
             for path in sorted(project_dir.rglob("*")):
                 if not path.is_file():
                     continue
                 rel = path.relative_to(project_dir)
                 if _should_skip_path(rel):
                     continue
-                zf.write(path, arcname=str(rel))
+                if not include_video_studio and _is_video_studio(rel):
+                    continue
+                try:
+                    size = path.stat().st_size
+                except OSError:
+                    size = 0
+                files.append((path, rel, size))
+            total = sum(size for _, _, size in files) or 1
+            done = 0
+            _report(progress, 0, total, "")
+            for path, rel, size in files:
+                if cancelled is not None and cancelled():
+                    raise CheckpointCancelled()
+                stored = path.suffix.lower() in _STORED_SUFFIXES
+                zf.write(path, arcname=str(rel),
+                         compress_type=(zipfile.ZIP_STORED if stored
+                                        else zipfile.ZIP_DEFLATED))
+                done += size
+                _report(progress, done, total, str(rel))
         tmp_zip.replace(zip_path)
     except Exception:
         try:
@@ -293,7 +391,8 @@ def _read_checkpoint_meta_from_zip(
 def restore_checkpoint(project_dir: Path,
                        checkpoint: CheckpointInfo,
                        *,
-                       backup_current: bool = True) -> Optional[CheckpointInfo]:
+                       backup_current: bool = True,
+                       progress=None) -> Optional[CheckpointInfo]:
     """Restore the project to the state captured in ``checkpoint``.
 
     Steps (each guarded so a partial failure leaves the project
@@ -314,6 +413,16 @@ def restore_checkpoint(project_dir: Path,
     created, else None. Raises on any failure during extraction
     (the caller should surface the error; the auto-checkpoint
     means the user hasn't lost data).
+
+    Optional ``progress(done, total, label)`` reports the safety
+    checkpoint and then the extraction. A restore cannot be cancelled:
+    stopping halfway would leave the project half-restored.
+
+    The project becomes an exact copy of the checkpoint, with one
+    exception: when the checkpoint holds no Video Studio files (a
+    *writing only* checkpoint, or one made before the Video Studio
+    existed), the current Video Studio folders are left untouched, and
+    the safety checkpoint leaves them out too.
     """
     project_dir = Path(project_dir)
     zip_path = Path(checkpoint.zip_path)
@@ -324,6 +433,8 @@ def restore_checkpoint(project_dir: Path,
         raise FileNotFoundError(
             f"Project directory missing: {project_dir}")
 
+    keep_video_studio = not contains_video_studio(checkpoint)
+
     auto_info: Optional[CheckpointInfo] = None
     if backup_current:
         try:
@@ -333,7 +444,11 @@ def restore_checkpoint(project_dir: Path,
                 description=(
                     f"Auto-created before restoring checkpoint "
                     f"'{checkpoint.name}' "
-                    f"({checkpoint.created_at})"))
+                    f"({checkpoint.created_at})"),
+                include_video_studio=not keep_video_studio,
+                progress=(None if progress is None else
+                          lambda d, t, label: progress(
+                              d, t, f"Saving the current state first: {label}")))
         except Exception as e:
             # If we can't take the safety checkpoint, refuse to
             # restore — destructive op without an undo path is
@@ -348,6 +463,8 @@ def restore_checkpoint(project_dir: Path,
     for entry in list(project_dir.iterdir()):
         if entry.name == cp_dirname:
             continue
+        if keep_video_studio and entry.is_dir() and entry.name.endswith(VIDEO_STUDIO_SUFFIX):
+            continue                    # not in this checkpoint: leave it as it is
         try:
             if entry.is_dir() and not entry.is_symlink():
                 shutil.rmtree(entry)
@@ -360,7 +477,14 @@ def restore_checkpoint(project_dir: Path,
             pass
 
     with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall(project_dir)
+        members = zf.infolist()
+        total = sum(m.file_size for m in members) or 1
+        done = 0
+        _report(progress, 0, total, "Restoring")
+        for member in members:
+            zf.extract(member, project_dir)
+            done += member.file_size
+            _report(progress, done, total, f"Restoring: {member.filename}")
 
     return auto_info
 
