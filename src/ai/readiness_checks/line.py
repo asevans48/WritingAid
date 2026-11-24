@@ -9,7 +9,7 @@ from src.ai.readiness import CheckContext, CheckOutput, Item, NOT_APPLICABLE, ch
 from src.utils.editor_flags import ErrorType
 
 
-@check(name="overdescribed", stage="line", label="Overly descriptive",
+@check(name="overdescribed", tier="polish", stage="line", label="Overly descriptive",
        needs_model=True,      # the scan alone flags published prose (8 per 1,000 words)
        version=1, weight=45,
        description="Sentences that tell the reader how something is instead of showing "
@@ -45,7 +45,7 @@ def _style(ctx: CheckContext, kinds) -> CheckOutput:
     return CheckOutput(items=items, measure=_rate(len(items), ctx.words))
 
 
-@check(name="repetition", stage="line", label="Repeated words and phrases", version=1,
+@check(name="repetition", tier="polish", stage="line", label="Repeated words and phrases", version=1,
        weight=40, needs_model=True,     # published chapters show ~130 per 1,000 as a scan
        description="Words and phrases used so often they draw attention, as the editor "
                    "marks them (names and the story's own words are left out). Most repeats "
@@ -63,21 +63,21 @@ def repetition(ctx: CheckContext) -> CheckOutput:
     return CheckOutput(items=items, measure=_rate(len(items), ctx.words))
 
 
-@check(name="echoes", stage="line", label="Echoes", version=1, weight=25,
+@check(name="echoes", tier="polish", stage="line", label="Echoes", version=1, weight=25,
        description="The same word again within a few lines.")
 def echoes(ctx: CheckContext) -> CheckOutput:
     return _style(ctx, {"echo"})
 
 
-@check(name="filler", stage="line", label="Filler and weak intensifiers", version=1,
+@check(name="filler", tier="polish", stage="line", label="Filler and weak intensifiers", version=1,
        weight=35, description="Words that add little (just, really, very, actually …) and "
                               "wordy phrases with a shorter form.")
 def filler(ctx: CheckContext) -> CheckOutput:
     return _style(ctx, {"intensifier", "wordy"})
 
 
-@check(name="sentence_variety", stage="line", label="Sentence variety", version=1, weight=20,
-       display="measure",
+@check(name="sentence_variety", tier="polish", stage="line", label="Sentence variety", version=1, weight=20,
+       display="measure", judge=False,
        description="How much sentence lengths vary (0–100), against the genre's usual "
                    "figure. Prose whose sentences are all one length reads flat.")
 def sentence_variety(ctx: CheckContext) -> CheckOutput:
@@ -98,26 +98,26 @@ def sentence_variety(ctx: CheckContext) -> CheckOutput:
     return CheckOutput(measure=score, status=status, message=msg)
 
 
-@check(name="passive", stage="line", label="Passive voice", version=1, weight=30,
+@check(name="passive", tier="polish", stage="line", label="Passive voice", version=1, weight=30,
        description="Sentences where the doer is hidden or comes last (was thrown, had "
                    "been taken).")
 def passive(ctx: CheckContext) -> CheckOutput:
     return _style(ctx, {"passive"})
 
 
-@check(name="adverbs", stage="line", label="Adverbs", version=1, weight=25,
+@check(name="adverbs", tier="polish", stage="line", label="Adverbs", version=1, weight=25,
        description="-ly adverbs, often a sign a stronger verb would do the work.")
 def adverbs(ctx: CheckContext) -> CheckOutput:
     return _style(ctx, {"adverb"})
 
 
-@check(name="cliches", stage="line", label="Clichés", version=1, weight=50,
+@check(name="cliches", tier="polish", stage="line", label="Clichés", version=1, weight=50,
        description="Stock phrases readers have seen many times.")
 def cliches(ctx: CheckContext) -> CheckOutput:
     return _style(ctx, {"cliche"})
 
 
-@check(name="sticky", stage="line", label="Sticky sentences", version=1, weight=15,
+@check(name="sticky", tier="polish", stage="line", label="Sticky sentences", version=1, weight=15,
        description="Sentences heavy with glue words (of, the, that, it …). The noisiest "
                    "check (see the check scores), so its bar is set high.")
 def sticky(ctx: CheckContext) -> CheckOutput:

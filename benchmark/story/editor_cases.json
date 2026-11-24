@@ -1,0 +1,81 @@
+{
+ "about": "Hand-written four-chapter books for scripts/measure_misses.py --editor: each has one planted structural flaw (expect = the check that should raise it, the chapter, and words its finding should touch), or none.",
+ "cases": [
+  {
+   "id": "dropped-pistol",
+   "flaw": "loose_threads",
+   "chapters": [
+    "Ilse found her dead father's pistol wrapped in oilcloth at the bottom of the sea chest. She loaded it, and swore to herself that when the bailiff came for the farm she would use it. She hid it under the loose board by the hearth.",
+    "The bailiff came on Thursday with two men and a paper. Ilse read the paper standing in the doorway. The debt was real, and her father's signature was at the bottom of it. She asked for a month.",
+    "In the month she sold the plough horses and the best of the ewes. She walked to the fair at Marlow and came back with eleven crowns short of the sum, and she lay awake counting it again.",
+    "On the last day her cousin sent the eleven crowns by the carrier. Ilse paid the bailiff at the gate, and he tipped his hat and went. That evening she sat on the step and watched the swifts until dark."
+   ],
+   "expect": {
+    "check": "loose_threads",
+    "chapter": 0,
+    "quote": "pistol"
+   },
+   "note": "a loaded pistol and a vow, never returned to"
+  },
+  {
+   "id": "flat-scene",
+   "flaw": "scene_purpose",
+   "chapters": [
+    "Ilse found her dead father's pistol wrapped in oilcloth at the bottom of the sea chest. She loaded it, and swore to herself that when the bailiff came for the farm she would use it. She hid it under the loose board by the hearth.",
+    "The bailiff came on Thursday with two men and a paper. Ilse read the paper standing in the doorway. The debt was real, and her father's signature was at the bottom of it. She asked for a month.",
+    "Next morning Ilse fed the hens. She swept the kitchen and aired the beds. She ate bread and cheese at noon. In the afternoon she mended a stocking, and then she went to bed. The weather was dry.",
+    "On the last day the bailiff came back early, with the men. Ilse lifted the loose board by the hearth, took out her father's pistol, and met them at the gate. He looked at the pistol, and then at her, and he took the eleven crowns she did not have off the sum."
+   ],
+   "expect": {
+    "check": "scene_purpose",
+    "chapter": 2,
+    "quote": null
+   },
+   "note": "a chapter of chores after which nothing is different"
+  },
+  {
+   "id": "head-hop",
+   "flaw": "pov_slips",
+   "chapters": [
+    "Ilse found her dead father's pistol wrapped in oilcloth at the bottom of the sea chest. She loaded it, and swore to herself that when the bailiff came for the farm she would use it. She hid it under the loose board by the hearth.",
+    "Ilse read the paper standing in the doorway, and her stomach turned over; she would not let him see it. The bailiff watched her and thought privately that she looked like her mother, whom he had once hoped to marry, and he felt an old ache he had never told anyone about. Ilse asked for a month.",
+    "In the month she sold the plough horses and the best of the ewes. She walked to the fair at Marlow and came back with eleven crowns short of the sum, and she lay awake counting it again.",
+    "On the last day the bailiff came back early, with the men. Ilse lifted the loose board by the hearth, took out her father's pistol, and met them at the gate. He looked at the pistol, and then at her, and he took the eleven crowns she did not have off the sum."
+   ],
+   "expect": {
+    "check": "pov_slips",
+    "chapter": 1,
+    "quote": "thought privately"
+   },
+   "note": "the bailiff's private thoughts inside Ilse's scene"
+  },
+  {
+   "id": "sag",
+   "flaw": "reader_pull",
+   "chapters": [
+    "Ilse found her dead father's pistol wrapped in oilcloth at the bottom of the sea chest. She loaded it, and swore to herself that when the bailiff came for the farm she would use it. She hid it under the loose board by the hearth.",
+    "The bailiff came on Thursday with two men and a paper. Ilse read the paper standing in the doorway. The debt was real, and her father's signature was at the bottom of it. She asked for a month.",
+    "Next morning Ilse fed the hens. She swept the kitchen and aired the beds. She ate bread and cheese at noon. In the afternoon she mended a stocking, and then she went to bed. The weather was dry.",
+    "On the last day the bailiff came back early, with the men. Ilse lifted the loose board by the hearth, took out her father's pistol, and met them at the gate. He looked at the pistol, and then at her, and he took the eleven crowns she did not have off the sum."
+   ],
+   "expect": {
+    "check": "reader_pull",
+    "chapter": 2,
+    "quote": null
+   },
+   "note": "the chores chapter should read as the weakest pull"
+  },
+  {
+   "id": "ok-paid",
+   "flaw": null,
+   "chapters": [
+    "Ilse found her dead father's pistol wrapped in oilcloth at the bottom of the sea chest. She loaded it, and swore to herself that when the bailiff came for the farm she would use it. She hid it under the loose board by the hearth.",
+    "The bailiff came on Thursday with two men and a paper. Ilse read the paper standing in the doorway. The debt was real, and her father's signature was at the bottom of it. She asked for a month.",
+    "In the month she sold the plough horses and the best of the ewes. She walked to the fair at Marlow and came back with eleven crowns short of the sum, and she lay awake counting it again.",
+    "On the last day the bailiff came back early, with the men. Ilse lifted the loose board by the hearth, took out her father's pistol, and met them at the gate. He looked at the pistol, and then at her, and he took the eleven crowns she did not have off the sum."
+   ],
+   "expect": null,
+   "note": "the pistol is paid off; every scene changes something"
+  }
+ ]
+}

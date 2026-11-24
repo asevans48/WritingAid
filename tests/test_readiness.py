@@ -173,8 +173,9 @@ def test_grid_and_helpers(tmp_path):
     assert stages == sorted(stages, key=rd.STAGES.index)                     # stage order
     names = [s.name for s in g.columns]
     assert names.index("overdescribed") < names.index("spelling_grammar")
-    assert len(g.rows) == 3 and g.rows[-1][0].chapter_id == rd.BOOK_ROW   # + whole manuscript
-    assert g.rows[0][1][names.index("spelling_grammar")].status == rd.Status.PROBLEM
+    assert len(g.rows) == 4 and g.rows[-1][0].chapter_id == rd.BOOK_ROW   # + whole manuscript
+    assert g.rows[0][0].chapter_id == rd.OPENING_ROW                       # + opening pages
+    assert g.rows[1][1][names.index("spelling_grammar")].status == rd.Status.PROBLEM
     assert g.rows[-1][1][names.index("manuscript_length")].status == rd.Status.INFO
     items = rd.items_for(book.chapters[0], "spelling_grammar")
     assert items and items[0].paragraph >= 0

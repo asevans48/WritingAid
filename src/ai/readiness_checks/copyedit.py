@@ -4,7 +4,7 @@ from src.ai.readiness import NOT_APPLICABLE, CheckContext, CheckOutput, Item, ch
 from src.utils.editor_flags import ErrorType
 
 
-@check(name="spelling_grammar", stage="copyedit", label="Spelling and grammar left",
+@check(name="spelling_grammar", tier="major", stage="copyedit", label="Spelling and grammar left",
        version=1, weight=90,
        description="Spelling and grammar flags still showing in the chapter: the same "
                    "ones the editor underlines, after your names, dictionary and allowed "

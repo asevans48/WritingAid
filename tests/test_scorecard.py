@@ -39,6 +39,12 @@ def _project(tmp_path, texts=(TEXT, CLEAN), novella=None):
     return p
 
 
+def _row(sc, i):
+    """The table row of the report's i-th chapter (an Opening pages row comes first)."""
+    sc = getattr(sc, "scorecard", sc)
+    return sc._row_of(sc.report.chapters[i].chapter_id)
+
+
 def _wait(qapp, sc):
     from src.ui import background
     for _ in range(200):
@@ -80,7 +86,7 @@ def test_the_grid_matches_the_report(qapp, grader, tmp_path):
     assert report is not None and len(report.chapters) == 2
     t = sc.table
     g = rd.grid(report)
-    assert t.rowCount() == len(g.rows) == 3 and t.columnCount() == len(g.columns)
+    assert t.rowCount() == len(g.rows) == 4 and t.columnCount() == len(g.columns)
     for c, spec in enumerate(g.columns):
         assert spec.label in " ".join(t.horizontalHeaderItem(c).text().split())
         assert spec.description.split(".")[0] in t.horizontalHeaderItem(c).toolTip()
@@ -90,16 +96,20 @@ def test_the_grid_matches_the_report(qapp, grader, tmp_path):
                 want = ""                                   # a whole-book check on a chapter row
             elif res.status == "info":
                 want = f"{res.measure:,.0f}"                # information: its figure
-            elif spec.display == "measure":
+            elif spec.display == "measure" and res.measure is not None:
                 want = f"{res.measure:g}"                   # a score
             elif res.status == "could_not_check":
                 want = "?"
+            elif res.status == "needs_model" and not res.found:
+                want = "–"                                  # not read yet
             else:
                 want = str(res.count)
             assert t.item(r, c).text() == want
-    assert t.verticalHeaderItem(0).text() == "1. Chapter 1"
-    assert sc.figure_label.text() == f"{round(report.readiness * 100)}%"
-    assert "ready for readers" in sc.figure_caption.text()
+    assert t.verticalHeaderItem(0).text() == "Opening pages"
+    assert t.verticalHeaderItem(1).text() == "1. Chapter 1"
+    v = rd.verdict(report)
+    assert v.title in sc.figure_label.text() and sc.figure_caption.text() == v.detail
+    assert f"{round(report.readiness * 100)}%" in sc.figure_label.toolTip()   # the old figure, kept
     assert any(w.text() == sc_module.HONEST_LINE for w in sc.findChildren(type(sc.figure_caption)))
     assert "A scan" in sc.note_label.text() and "Overly descriptive" in sc.note_label.text()
 
@@ -135,11 +145,11 @@ def test_each_manuscript_has_its_own_grid(qapp, grader, tmp_path):
     assert sc.manuscript_combo.count() == 2 and sc.manuscript_combo.isVisibleTo(sc)
     sc.refresh()
     _wait(qapp, sc)
-    assert sc.table.rowCount() == 2                                  # + whole manuscript
+    assert sc.table.rowCount() == 3                                  # + opening, whole manuscript
     main_figure = sc.figure_label.text()
     sc.manuscript_combo.setCurrentIndex(1)
     _wait(qapp, sc)
-    assert sc.report.scope == p.subprojects[0].id and sc.table.rowCount() == 4
+    assert sc.report.scope == p.subprojects[0].id and sc.table.rowCount() == 5
 
 
 def test_the_detailed_critique_is_one_click_away(qapp, grader, tmp_path):
@@ -156,7 +166,7 @@ def test_the_detailed_critique_is_one_click_away(qapp, grader, tmp_path):
     # A chapter's row prepares its detailed critique.
     _wait(qapp, grader.scorecard)
     setup.set_open(False)
-    grader.scorecard._choose_row(1)
+    grader.scorecard._choose_row(_row(grader.scorecard, 1))
     assert setup.is_open() and grader.scope_multi_radio.isChecked()
     chosen = [grader.chapter_picker.item(i).data(0x0100 + 1)
               for i in range(grader.chapter_picker.count())
@@ -238,21 +248,22 @@ def test_clicking_a_chapter_lists_what_was_found(qapp, grader, tmp_path):
     p = _project(tmp_path)
     sc = _checked(qapp, grader, p)
     assert "Click a chapter" in sc.issues.toPlainText()
-    sc._select_row(0, None)
+    sc._select_row(_row(sc, 0), None)
     text = sc.issues.toPlainText()
     assert "1. Chapter 1" in text and "Spelling and grammar left" in text
     assert "beutiful" in text and "Its a beutiful day" in text          # the word in its sentence
     assert "Overly descriptive" in text and "terribly cold" in text      # the sentence itself
     assert "Show in chapter" in text and "Ways to expand it" in text
     assert "×6" in text                                                   # one entry per word
-    assert sc.selected_row() == 0 and sc.table.verticalHeaderItem(0).font().bold()
-    assert not sc.table.verticalHeaderItem(1).font().bold()
+    r0 = _row(sc, 0)
+    assert sc.selected_row() == r0 and sc.table.verticalHeaderItem(r0).font().bold()
+    assert not sc.table.verticalHeaderItem(r0 + 1).font().bold()
 
 
 def test_clicking_a_cell_shows_that_check_alone(qapp, grader, tmp_path):
     p = _project(tmp_path)
     sc = _checked(qapp, grader, p)
-    sc._on_cell(0, _col(sc, "overdescribed"))
+    sc._on_cell(_row(sc, 0), _col(sc, "overdescribed"))
     text = sc.issues.toPlainText()
     assert "Overly descriptive" in text and "beutiful" not in text
     link = next(i for i, (k, _) in enumerate(sc.issues._links) if k == "all")
@@ -265,7 +276,7 @@ def test_links_go_to_the_chapter_and_the_expand_window(qapp, grader, tmp_path):
     from PyQt6.QtCore import QUrl
     p = _project(tmp_path)
     sc = _checked(qapp, grader, p)
-    sc._on_cell(0, _col(sc, "spelling_grammar"))
+    sc._on_cell(_row(sc, 0), _col(sc, "spelling_grammar"))
     shown, expanded = [], []
     sc.issues.show_requested.connect(lambda *a: shown.append(a))
     grader.expand_statement_requested.connect(lambda *a: expanded.append(a))
@@ -274,7 +285,7 @@ def test_links_go_to_the_chapter_and_the_expand_window(qapp, grader, tmp_path):
     sc.issues._on_link(QUrl(f"issue:{i}"))
     cid = p.manuscript.chapters[0].id
     assert shown == [(cid, "beutiful", TEXT.index("beutiful"))]
-    sc._on_cell(0, _col(sc, "overdescribed"))
+    sc._on_cell(_row(sc, 0), _col(sc, "overdescribed"))
     i = next(n for n, (k, _) in enumerate(sc.issues._links) if k == "expand")
     sc.issues._on_link(QUrl(f"issue:{i}"))
     assert expanded and expanded[0][0] == cid and "terribly cold" in expanded[0][2]
@@ -283,7 +294,7 @@ def test_links_go_to_the_chapter_and_the_expand_window(qapp, grader, tmp_path):
 def test_a_click_points_the_detailed_critique_at_the_chapter(qapp, grader, tmp_path):
     p = _project(tmp_path)
     sc = _checked(qapp, grader, p)
-    sc._select_row(1, None)
+    sc._select_row(_row(sc, 1), None)
     assert grader.scope_multi_radio.isChecked() and not grader.critique_setup.is_open()
     chosen = [grader.chapter_picker.item(i).data(0x0100 + 1)
               for i in range(grader.chapter_picker.count())
@@ -317,14 +328,14 @@ def test_opens_on_the_manuscript_and_chapter_being_written(qapp, grader, tmp_pat
     assert sc.scope() == p.subprojects[0].id
     assert sc._selected == nov_ch.id and "2. N2" in sc.issues.toPlainText()
     # The writer picks another chapter; it stays picked while Write is unchanged.
-    sc._select_row(0, None)
+    sc._select_row(_row(sc, 0), None)
     grader.hide()
     grader.show()
     qapp.processEvents()
     _wait(qapp, sc)
     assert sc._selected == p.subprojects[0].manuscript.chapters[0].id
     # Clicking the chapter open in Write sets the critique to "Current chapter".
-    sc._select_row(1, None)
+    sc._select_row(_row(sc, 1), None)
     assert grader.scope_single_radio.isChecked()
 
 

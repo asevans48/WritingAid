@@ -320,12 +320,12 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 - [x] [1.4](pieces/17-1.4-copyedit-checks.md) Copyedit checks (S)
 - [x] [1.5](pieces/18-1.5-structure-checks.md) Structure checks (M)
 - [x] [1.6](pieces/19-1.6-scene-checks.md) Scene checks (M)
-- [ ] [1.7](pieces/20-1.7-model-judging-for-the-checks.md) Model judging for the checks (M)
-- [ ] [1.8](pieces/21-1.8-opening-pages.md) Opening pages (S)
-- [ ] [R.5](pieces/22-R.5-take-the-revision-wiring-out-of-the-main-window.md) Take the revision wiring out of the main window (M)
-- [ ] [2.2](pieces/23-2.2-from-a-cell-to-the-fix.md) From a cell to the fix (S)
-- [ ] [2.3](pieces/24-2.3-check-the-book-in-the-background.md) Check the book in the background (M)
-- [ ] [2.4](pieces/25-2.4-progress-over-time.md) Progress over time (S)
+- [x] [1.7](pieces/20-1.7-model-judging-for-the-checks.md) Model judging for the checks (M)
+- [x] [1.8](pieces/21-1.8-opening-pages.md) Opening pages (S)
+- [x] [R.5](pieces/22-R.5-take-the-revision-wiring-out-of-the-main-window.md) Take the revision wiring out of the main window (M)
+- [x] [2.2](pieces/23-2.2-from-a-cell-to-the-fix.md) From a cell to the fix (S)
+- [x] [2.3](pieces/24-2.3-check-the-book-in-the-background.md) Check the book in the background (M)
+- [x] [2.4](pieces/25-2.4-progress-over-time.md) Progress over time (S)
 - [ ] [3.1](pieces/26-3.1-chapter-stages.md) Chapter stages (S)
 - [ ] [3.2](pieces/27-3.2-the-next-fix-queue.md) The next-fix queue (M)
 - [ ] [3.3](pieces/28-3.3-skip-and-not-a-problem.md) Skip and Not a problem (M)
@@ -336,7 +336,7 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 - [ ] [P.2a](pieces/31-P.2a-missing-reports-transitions-pronouns-alliteratio.md) Missing reports: transitions, pronouns, alliteration, acronyms (M)
 - [ ] [P.2b](pieces/32-P.2b-missing-reports-homonyms-sensory-detail-sentence.md) Missing reports: homonyms, sensory detail, sentence structure, diction (M)
 - [ ] [P.3](pieces/33-P.3-every-measure-compared-with-the-genre.md) Every measure compared with the genre (M)
-- [ ] [P.4](pieces/34-P.4-deeper-proofreading-with-a-model.md) Deeper proofreading with a model (M)
+- [x] [P.4](pieces/34-P.4-deeper-proofreading-with-a-model.md) Deeper proofreading with a model (M)
 - [ ] [P.6](pieces/35-P.6-languagetool-in-full-with-its-larger-data-as-a-d.md) LanguageTool in full, with its larger data as a download (S)
 - [ ] [P.8](pieces/36-P.8-character-analysis.md) Character analysis (M)
 - [ ] [P.7](pieces/37-P.7-reader-s-eye-for-the-whole-book.md) Reader's eye for the whole book (M, best after 8.1)
@@ -378,7 +378,7 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 **When the server is connected**
 - [ ] [8.1a](pieces/63-8.1a-job-queue-design.md) Job queue: design (S, design, no code)
 - [ ] [8.1b](pieces/64-8.1b-job-queue-build.md) Job queue: build (M)
-- [ ] [8.2](pieces/65-8.2-editorial-letter.md) Editorial letter (M)
+- [x] [8.2](pieces/65-8.2-editorial-letter.md) Editorial letter (M) — built; not yet tried with a real model
 - [ ] [8.3](pieces/66-8.3-server-prompts.md) Server prompts (M)
 
 **Cut** (see [cut.md](cut.md)): 5.1, 5.2, U.4, U.5, 9.4, 10.1
@@ -437,6 +437,10 @@ Work top to bottom within a group. A piece's file lists what it depends on.
    flags are right. Confirm or change after the first numbers from Q.2.
    **The first numbers are in** ([check_scores.md](check_scores.md)); see
    the Q.2 *Outcome* for a suggestion.
+   **How much the checks miss** is measured separately
+   ([miss_rates.md](miss_rates.md), `scripts/measure_misses.py`): known
+   mistakes and contradictions inserted, counted as caught or missed, with
+   the rules alone and with a model.
 4. **How far to refactor.** R.1 to R.5 are limited to what the plan needs. A
    general split of the 15,000-line main window and the 4,000-line settings
    dialog is left out. Say so if you want it added.

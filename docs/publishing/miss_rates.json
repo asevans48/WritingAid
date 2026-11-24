@@ -1,0 +1,74 @@
+{
+ "date": "2026-11-23",
+ "rounds": 5,
+ "passages": 60,
+ "languagetool": false,
+ "story_cases": 15,
+ "rules": {
+  "by_kind": {
+   "punctuation": {
+    "caught": 54,
+    "missed": 6,
+    "examples": [
+     "missing apostrophe",
+     "missing apostrophe",
+     "missing apostrophe",
+     "missing apostrophe",
+     "missing apostrophe"
+    ]
+   },
+   "agreement": {
+    "caught": 49,
+    "missed": 0,
+    "examples": []
+   },
+   "harder_confusion": {
+    "caught": 0,
+    "missed": 60,
+    "examples": [
+     "his \u2192 he's",
+     "his \u2192 he's",
+     "of \u2192 off",
+     "his \u2192 he's",
+     "of \u2192 off"
+    ]
+   },
+   "repeated_word": {
+    "caught": 60,
+    "missed": 0,
+    "examples": []
+   },
+   "spelling": {
+    "caught": 60,
+    "missed": 0,
+    "examples": []
+   },
+   "missing_word": {
+    "caught": 0,
+    "missed": 60,
+    "examples": [
+     "\u201cthe\u201d dropped",
+     "\u201cthe\u201d dropped",
+     "\u201cthe\u201d dropped",
+     "\u201cthe\u201d dropped",
+     "\u201cthe\u201d dropped"
+    ]
+   },
+   "confused_word": {
+    "caught": 7,
+    "missed": 53,
+    "examples": [
+     "where \u2192 were",
+     "where \u2192 were",
+     "where \u2192 were",
+     "where \u2192 were",
+     "to \u2192 too"
+    ]
+   }
+  },
+  "caught": 230,
+  "missed": 179,
+  "wrong_per_1000": 4.75,
+  "clean_per_1000": 4.75
+ }
+}

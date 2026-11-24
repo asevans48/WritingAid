@@ -24,6 +24,7 @@ adding one is one decorated function there.
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 import traceback
 from dataclasses import asdict, dataclass, field, fields
@@ -33,7 +34,7 @@ STAGES = ("structure", "scene", "line", "copyedit", "proof")
 STAGE_LABELS = {"structure": "Structure", "scene": "Scene", "line": "Line",
                 "copyedit": "Copyedit", "proof": "Proof", "info": "Information"}
 FIGURE_VERSION = 1
-THRESHOLDS_VERSION = 2
+THRESHOLDS_VERSION = 5
 MAX_ITEMS = 80                   # kept per check per chapter; the count stays exact
 _UNSET = object()
 
@@ -71,6 +72,7 @@ class Item:
     verdict: str = ""               # "" not judged | "problem" | "cleared" (1.7)
     chapter_id: str = ""
     paragraph: int = -1             # line number in the chapter text
+    note: str = ""                  # the model's reason, when it judged the item (1.7)
     dismissed: bool = False         # set when the report is assembled (3.3)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -78,7 +80,7 @@ class Item:
         d = asdict(self)
         d.pop("dismissed", None)
         defaults = {"kind": "", "key": "", "suggestions": [], "verdict": "",
-                    "chapter_id": "", "paragraph": -1}
+                    "chapter_id": "", "paragraph": -1, "note": ""}
         return {k: v for k, v in d.items() if k not in defaults or v != defaults[k]}
 
     @classmethod
@@ -141,6 +143,9 @@ class BookReport:
     kind: str
     chapters: List[ChapterReport] = field(default_factory=list)
     book_results: Dict[str, CheckResult] = field(default_factory=dict)
+    opening_results: Dict[str, CheckResult] = field(default_factory=dict)   # 1.8
+    opening_words: int = 0
+    history: List[Dict[str, Any]] = field(default_factory=list)   # daily figures (2.4)
     info: Dict[str, Any] = field(default_factory=dict)
     readiness: float = 0.0
     cells: int = 0                  # cells in the figure
@@ -196,14 +201,45 @@ def _thresholds() -> Dict[str, "Threshold"]:
             "adverbs": T(per_1000=(16.0, 24.0)),
             "cliches": T(per_1000=(0.6, 1.5)),
             "sticky": T(per_1000=(40.0, 55.0)),
+            # The story's major issues (a model's findings, each quoted)
+            "character_disconnects": T(count=(0, 2)),
+            "plot_jumps": T(count=(0, 2)),
+            "continuity": T(count=(0, 1)),
             # Scene
             "dialogue_fit": T(count=(1, 4)),
             "dialogue_problems": T(per_1000=(7.0, 10.0)),
             # Structure
             "pacing": T(count=(1, 2)),                    # genre risks: one is common
             "subplots": T(count=(0, 2)),
+            # An editor's whole-book questions (from the chapter digests)
+            "scene_purpose": T(count=(0, 2)),
+            "pov_slips": T(count=(0, 2)),
+            "loose_threads": T(count=(0, 2)),
+            "character_threads": T(count=(0, 2)),
         })
     return THRESHOLDS
+
+
+# How much tighter the opening chapter's line and copyedit thresholds are.
+OPENING_STRICTNESS = {"agent": 0.75, "self": 0.9}   # a convention, not research
+# Checks whose threshold depends on the route (the opening checks).
+_ROUTE_THRESHOLDS: Dict[str, Dict[str, "Threshold"]] = {}
+
+
+def _route_thresholds():
+    if not _ROUTE_THRESHOLDS:
+        T = Threshold
+        _ROUTE_THRESHOLDS.update({
+            # Words before the first dialogue or action.
+            "first_action": {"agent": T(count=(300, 800)), "self": T(count=(500, 1200))},
+            # Share of the opening (per 1,000 sentences, i.e. tenths of a percent) that
+            # looks back before anything happens.
+            "backstory": {"agent": T(per_1000=(150, 300)), "self": T(per_1000=(200, 400))},
+            # Words into the manuscript before the plan's first event shows.
+            "first_plot_event": {"agent": T(count=(10_000, 20_000)),
+                                 "self": T(count=(12_000, 25_000))},
+        })
+    return _ROUTE_THRESHOLDS
 
 
 @dataclass
@@ -233,6 +269,15 @@ class CheckSpec:
     # (continuity across novellas): its key includes them all.
     book_wide: bool = False
     display: str = "count"          # what a cell shows: "count", or "measure" (a score)
+    judge: bool = True              # a model judges its items (1.7)
+    # Where it sits in the big picture: "major" (spelling and grammar,
+    # character disconnects, plot jumps, continuity), "factor" (the other
+    # things to settle before polish) or "polish" (style).
+    tier: str = "factor"
+    model_ready: bool = True        # False: a model can't settle it here yet (stays "needs a model")
+    # Something else the result depends on, as a string that goes into the
+    # cache key (the story checks: the earlier chapters' recorded facts).
+    depends: Optional[Callable[["CheckContext"], str]] = None
 
 
 REGISTRY: Dict[str, CheckSpec] = {}
@@ -246,13 +291,14 @@ def check(*, name: str, stage: str, label: str, level: str = "chapter",
           needs_model: bool = False, counts: bool = True,
           threshold: Optional[Threshold] = None, version: int = 1,
           description: str = "", weight: int = 50, book_wide: bool = False,
-          display: str = "count"):
+          display: str = "count", judge: bool = True, model_ready: bool = True,
+          tier: str = "factor", depends=None):
     """Register a readiness check: one decorated function. Its threshold
     normally lives in ``THRESHOLDS`` (one table for every check)."""
     def register(fn):
         REGISTRY[name] = CheckSpec(name, stage, label, fn, level, needs_model, counts,
                                    threshold, version, description, weight, book_wide,
-                                   display)
+                                   display, judge, tier, model_ready, depends)
         return fn
     return register
 
@@ -289,9 +335,13 @@ class Scanner:
             kept = sorted(kept_kinds(project))
         except Exception:
             pass
+        from src.utils import spelling_varieties
         self.vocabulary_hash = _hash("\n".join(sorted(words) + ["--"] + sorted(names) + ["--"]
-                                               + allowed_words(project) + ["--"] + kept))
+                                               + allowed_words(project) + ["--"] + kept
+                                               + ["--", str(spelling_varieties.current())]))
         self.languagetool = self._languagetool_ready() if languagetool is None else languagetool
+        from src.utils import proof_store
+        proof_store.load(project)        # a model's stored corrections show as grammar flags
 
     @staticmethod
     def _languagetool_ready() -> bool:
@@ -438,11 +488,65 @@ class CheckContext:
     def threshold(self, name: str) -> Optional[Threshold]:
         """A check's threshold for this chapter. Route, the opening chapter
         (1.8) and genre baselines (P.3) adjust it here, and only here."""
-        found = _thresholds().get(name)
-        if found is not None:
-            return found
         spec = REGISTRY.get(name)
-        return spec.threshold if spec else None
+        route = self.route if self.route in OPENING_STRICTNESS else "agent"
+        found = (_route_thresholds().get(name, {}).get(route) or _thresholds().get(name)
+                 or (spec.threshold if spec else None))
+        if found is None:
+            return None
+        if self.is_opening and spec is not None and spec.stage in ("line", "copyedit"):
+            # The first pages are read hardest: a tighter bar, tightest for agents.
+            f = OPENING_STRICTNESS[route]
+            if found.per_1000:
+                a, b = found.per_1000
+                found = Threshold(per_1000=(round(a * f, 2), round(b * f, 2)))
+            elif found.count:
+                a, b = found.count
+                found = Threshold(count=(int(a * f), max(int(a * f), int(b * f))))
+        return found
+
+
+OPENING_WORDS = 2_500          # about ten pages: what agents report reading first
+
+
+class OpeningContext(CheckContext):
+    """The opening pages: the first ~2,500 words, across chapters when the
+    first is short. ``locate`` maps an offset to its chapter."""
+
+    def __init__(self, project, scope, book: "Book", *, route, genre, llm=None,
+                 scanner: Optional[Scanner] = None):
+        parts, spans, words = [], [], 0
+        pos = 0
+        for ch in book.chapters:
+            text = book.texts.get(ch.id, "")
+            if not text.strip():
+                continue
+            take = text
+            tokens = text.split()
+            if words + len(tokens) > OPENING_WORDS:
+                need = OPENING_WORDS - words
+                m = re.match(r"(?:\S+\s+){%d}" % max(need, 1), text)
+                take = text[:m.end()] if m else text
+                cut = re.search(r"[.!?…][\"”’]?\s", text[len(take):])  # finish the sentence
+                if cut:
+                    take = text[:len(take) + cut.end()]
+            parts.append(take)
+            spans.append((pos, pos + len(take), ch.id))
+            pos += len(take) + 2
+            words += len(take.split())
+            if words >= OPENING_WORDS:
+                break
+        super().__init__(project, scope, book.chapters[0] if book.chapters else None,
+                         "\n\n".join(parts), is_opening=True, route=route, genre=genre,
+                         llm=llm, scanner=scanner, book=book)
+        self.spans = spans
+
+    def locate(self, pos: int) -> Tuple[str, int]:
+        """(chapter id, offset in that chapter) for an offset in the opening."""
+        for start, end, cid in self.spans:
+            if start <= pos <= end:
+                return cid, pos - start
+        return (self.spans[0][2], pos) if self.spans else ("", pos)
 
 
 class BookContext(CheckContext):
@@ -498,7 +602,7 @@ def _run_check(spec: CheckSpec, ctx: CheckContext) -> Optional[CheckResult]:
         out = out or CheckOutput()
         items = list(out.items)
         live = [i for i in items if i.verdict != "cleared"]
-        if spec.needs_model and ctx.llm is None:
+        if spec.needs_model and (ctx.llm is None or not spec.model_ready):
             status = Status.NEEDS_MODEL
             message = out.message or (f"The scan found {len(live)} to look at; a model decides "
                                       "which count (not in the figure without one).")
@@ -593,32 +697,123 @@ def chapter_report(project, chapter, *, scope=_UNSET, text=None, llm=None, use_c
                            text_hash=t_hash, is_opening=is_opening,
                            stage=str(stored.get("stage", "") or ""), made_at=_now())
     fresh: Dict[str, Any] = {}
+    raws: Dict[str, CheckResult] = {}
+    model_failed = False
+    to_judge: List[CheckSpec] = []
+    keys: Dict[str, Tuple[str, str]] = {}
     for spec in checks_for(level="chapter"):
         if checks is not None and spec.name not in checks:
             continue
-        key = _hash("|".join([t_hash, spec.name, str(spec.version), fingerprint, tier]
-                             + ([book.hash, book.planning_hash()] if spec.book_wide else [])))
-        cached = stored_results.get(spec.name)
-        if use_cache and isinstance(cached, dict) and cached.get("key") == key:
+        base = [t_hash, spec.name, str(spec.version), fingerprint] + (
+            [book.hash, book.planning_hash()] if spec.book_wide else []) + (
+            [spec.depends(ctx)] if spec.depends else [])
+        k_scan, k_judged = _hash("|".join(base + ["scan"])), _hash("|".join(base + ["judged"]))
+        keys[spec.name] = (k_scan, k_judged)
+        cached = stored_results.get(spec.name) if use_cache else None
+        cached_key = cached.get("key") if isinstance(cached, dict) else None
+        judgeable = llm is not None and spec.judge and spec.model_ready
+        # A check the model produces itself (the story read): run it with the
+        # model unless its model-made result is already stored.
+        model_made = (llm is not None and spec.needs_model and spec.model_ready
+                      and not spec.judge)
+        if cached_key == k_judged:                      # a model judged it: best there is
             raw = CheckResult.from_dict(cached)
             report.from_cache += 1
+        elif model_made:
+            raw = _run_check(spec, ctx)
+            if raw is None:
+                continue
+            if raw.status == Status.COULD_NOT_CHECK:
+                model_failed = True                      # tried again next time
+            else:
+                raw.judged = True
+                fresh[spec.name] = dict(raw.to_dict(), key=k_judged, tier=tier)
+        elif cached_key == k_scan:
+            raw = CheckResult.from_dict(cached)
+            report.from_cache += 1
+            if judgeable:
+                to_judge.append(spec)
         else:
             raw = _run_check(spec, ctx)
             if raw is None:
                 continue                                 # doesn't apply here
             if raw.status != Status.COULD_NOT_CHECK:
-                fresh[spec.name] = dict(raw.to_dict(), key=key, tier=tier)
-        report.results[spec.name] = _finish(spec, raw, ctx.words, dismissed,
-                                            ctx.threshold(spec.name))
-    report.judged = any(r.judged for r in report.results.values())
-    if fresh:
+                fresh[spec.name] = dict(raw.to_dict(), key=k_scan, tier="scan")
+                if judgeable:
+                    to_judge.append(spec)
+        raws[spec.name] = raw
+    judged_all = None                     # every stage judged (None: no judging this time)
+    if llm is not None and to_judge:
+        judged_all = _judge_chapter(project, scope, text, llm, to_judge, raws, ctx, keys, fresh)
+    elif llm is not None:
+        judged_all = True                  # everything judgeable was already judged
+    if judged_all and model_failed:
+        judged_all = False
+    for name, raw in raws.items():
+        spec = REGISTRY[name]
+        report.results[name] = _finish(spec, raw, ctx.words, dismissed, ctx.threshold(name))
+    same_text = stored.get("text_hash") == t_hash
+    report.judged = (judged_all if judged_all is not None
+                     else bool(stored.get("judged")) and same_text)
+    if fresh or (judged_all is not None and stored.get("judged") != judged_all):
         fields = {"text_hash": t_hash, "context": fingerprint, "made_at": report.made_at,
-                  "results": fresh}
+                  "results": fresh, "judged": bool(report.judged)}
         if save:
             report.saved = rs.store_chapter(project, scope, chapter.id, fields)
         else:
             report.pending = fields
     return report
+
+
+def _judge_chapter(project, scope, text, llm, specs, raws, ctx, keys, fresh) -> bool:
+    """One model request per stage; judged results replace the scan's and
+    are cached under their own key. A stage whose request fails keeps the
+    scan result (and is tried again next time)."""
+    from src.ai import readiness_judge as rj
+    compact = False
+    try:
+        from src.ai.chapter_analysis_agent import is_local_llm
+        compact = bool(is_local_llm(llm))
+    except Exception:
+        pass
+    context = rj.voice_block(project, scope)
+    by_stage: Dict[str, List[CheckSpec]] = {}
+    for spec in specs:
+        if raws.get(spec.name) is not None and raws[spec.name].status != Status.COULD_NOT_CHECK:
+            by_stage.setdefault(spec.stage, []).append(spec)
+    tier = f"model:{getattr(llm, 'model', '') or 'model'}"
+    all_ok = True
+    for stage, stage_specs in by_stage.items():
+        results = [(spec, raws[spec.name]) for spec in stage_specs]
+        with_items = [(sp, r) for sp, r in results if any(i.end > i.start for i in r.items)]
+        ok = True
+        if with_items:
+            ok = rj.judge_stage(llm, stage, with_items, text, context, compact) > 0
+        if ok and stage == "copyedit":      # the model also proofreads (P.4)
+            target = next((r for sp, r in results if sp.name == "spelling_grammar"), None)
+            try:
+                if target is not None:
+                    from src.ai import proofread
+                    proofread.add_findings(target, llm, text, ctx, compact)
+            except Exception as e:
+                print(f"[readiness] proofreading failed: {e}")
+                ok = False
+        if not ok:
+            all_ok = False                 # tried again next time
+            continue
+        for spec, r in results:
+            live = [i for i in r.items if i.verdict != "cleared"]
+            cleared = len(r.items) - len(live)
+            r.count = max(0, r.count - cleared)
+            r.judged = True
+            if r.status in Status.VERDICTS + (Status.NEEDS_MODEL,):
+                r.status = _status_from(ctx.threshold(spec.name), r.count, ctx.words)
+                r.message = (r.message if not r.message.startswith("The scan found") else "")
+            if cleared:
+                r.message = (r.message + " " if r.message else "") + \
+                    f"The model cleared {cleared} of {len(r.items)} it judged."
+            fresh[spec.name] = dict(r.to_dict(), key=keys[spec.name][1], tier=tier)
+    return all_ok
 
 
 def readiness_figure(report: BookReport) -> float:
@@ -637,7 +832,7 @@ def _figure(report: BookReport) -> Tuple[float, int]:
             spec = REGISTRY.get(name)
             if spec is not None and spec.counts and r.status in weights:
                 values.append(weights[r.status])
-    for name, r in report.book_results.items():
+    for name, r in list(report.book_results.items()) + list(report.opening_results.items()):
         spec = REGISTRY.get(name)
         if spec is not None and spec.counts and r.status in weights:
             values.append(weights[r.status])
@@ -646,7 +841,7 @@ def _figure(report: BookReport) -> Tuple[float, int]:
 
 def book_report(project, scope: Optional[str] = None, *, texts: Optional[Dict[str, str]] = None,
                 llm=None, use_cache: bool = True, progress=None, stop=None,
-                scanner: Optional[Scanner] = None) -> BookReport:
+                scanner: Optional[Scanner] = None, partial=None) -> BookReport:
     """Every chapter of one manuscript, and its readiness figure. ``texts``
     maps chapter id → live text for open chapters. ``progress(done, total,
     title)`` and ``stop()`` serve a background run."""
@@ -689,21 +884,28 @@ def book_report(project, scope: Optional[str] = None, *, texts: Optional[Dict[st
                 pending[ch.id] = cr.pending
                 cr.pending = {}
             report.chapters.append(cr)
-            # Written every couple of seconds, so stopping or closing loses little.
-            if time.monotonic() - last_write > 2.0:
+            # Written every couple of seconds, or after every chapter when a model
+            # is judging (each takes a while), so stopping or closing loses little.
+            if llm is not None or time.monotonic() - last_write > 2.0:
                 write_pending()
+            if partial is not None:
+                partial(_snapshot(report))
         write_pending()
         if progress is not None and report.complete:
             progress(len(chapters), len(chapters), "")
     if report.complete:
         _book_checks(project, scope, book, report, goal, llm, scanner, use_cache, dismissed)
+        _book_checks(project, scope, book, report, goal, llm, scanner, use_cache, dismissed,
+                     level="opening")
     _load_checks()
-    used = {n for ch in report.chapters for n in ch.results} | set(report.book_results)
+    used = ({n for ch in report.chapters for n in ch.results} | set(report.book_results)
+            | set(report.opening_results))
     for name in used:
         spec = REGISTRY.get(name)
         statuses = {ch.results[name].status for ch in report.chapters if name in ch.results}
-        if name in report.book_results:
-            statuses.add(report.book_results[name].status)
+        for extra in (report.book_results, report.opening_results):
+            if name in extra:
+                statuses.add(extra[name].status)
         if spec is None:
             continue
         if not spec.counts:
@@ -715,22 +917,239 @@ def book_report(project, scope: Optional[str] = None, *, texts: Optional[Dict[st
         else:
             report.counted.append(name)
     report.counted.sort(key=lambda n: list(REGISTRY).index(n) if n in REGISTRY else 999)
+    judged = [ch.judged for ch in report.chapters]
+    report.tier = ("model" if judged and all(judged) else
+                   "mixed" if any(judged) else "scan")
     report.readiness, report.cells = _figure(report)
+    _record_history(project, scope, report)
     return report
 
 
-def _book_checks(project, scope, book: Book, report: BookReport, goal, llm, scanner,
-                 use_cache: bool, dismissed) -> None:
-    """Whole-book checks: cached on every chapter's text and the plan."""
+def _snapshot(report: BookReport) -> BookReport:
+    """A copy of a report in progress, safe to hand to the screen."""
+    copy = BookReport(scope=report.scope, name=report.name, kind=report.kind,
+                      chapters=list(report.chapters), info=dict(report.info),
+                      tier=report.tier, made_at=report.made_at, complete=False)
+    judged = [ch.judged for ch in copy.chapters]
+    copy.tier = "model" if judged and all(judged) else "mixed" if any(judged) else "scan"
+    copy.readiness, copy.cells = _figure(copy)
+    return copy
+
+
+def model_work(project, scope: Optional[str] = None,
+               texts: Optional[Dict[str, str]] = None) -> Tuple[int, int]:
+    """(chapters a model would judge, chapters in the manuscript): those
+    whose text changed, or that no model has judged yet (for the estimate)."""
     from src.data import readiness_state as rs
-    specs = checks_for(level="book")
+    book = Book(project, scope, texts)
+    from src.ai import chapter_digest, story_ledger
+    ledger = story_ledger.for_book(book)
+    digests = chapter_digest.for_book(book)
+    todo = 0
+    for ch in book.chapters:
+        text = book.texts.get(ch.id, "")
+        if not text.strip():
+            continue
+        stored = rs.stored_chapter(project, scope, ch.id)
+        if (stored.get("text_hash") != text_hash(text) or not stored.get("judged")
+                or not ledger.is_current(ch, text, text_hash(text))
+                or digests.get(ch, text) is None):
+            todo += 1         # changed, never judged, not outlined, or earlier facts changed
+    return todo, len(book.chapters)
+
+
+# ── The verdict: a finish line, not a score ───────────────────────────
+#
+# A percentage invites chasing 100%, which published books don't reach
+# either. The headline is a verdict built on three tiers:
+#
+# 1. **Major issues**: errors a reader trips on. Spelling and grammar left,
+#    character disconnects, plot jumps, continuity breaks (``tier="major"``).
+# 2. **Other factors**: things to settle before polish. Pacing, dialogue,
+#    the opening pages, consistency, subplots (``tier="factor"``).
+# 3. **Polish**: style (``tier="polish"``). Never blocks.
+#
+# Why these: docs/publishing/background.md. The percentage stays, in the
+# tooltip and the history.
+
+TIERS = ("major", "factor", "polish")
+TIER_LABELS = {"major": "Major issues", "factor": "Other factors", "polish": "Polish"}
+
+
+@dataclass
+class Verdict:
+    level: str                       # "ready" | "nearly" | "revise" | "unchecked"
+    title: str
+    detail: str
+    majors: int = 0                  # major-tier cells not ready
+    factors: int = 0                 # other-factor cells at "problem"
+    polish: int = 0                  # everything else not ready (optional)
+    chapters: int = 0                # chapters with a major issue
+    unread: List[str] = field(default_factory=list)   # major checks waiting for the model
+    lines: Dict[str, List[str]] = field(default_factory=dict)   # tier → what's there
+
+
+def _cells(report: BookReport):
+    """(row id, check name, result) for every cell of a counted check."""
+    _load_checks()
+    rows = [(ch.chapter_id, ch.results) for ch in report.chapters]
+    rows.append((BOOK_ROW, report.book_results))
+    rows.append((OPENING_ROW, report.opening_results))
+    for row, results in rows:
+        for name, r in results.items():
+            spec = REGISTRY.get(name)
+            if spec is not None and spec.counts:
+                yield row, name, r
+
+
+def verdict(report: BookReport) -> Verdict:
+    """Needs a revision pass (a major issue is a problem somewhere), Nearly
+    there (lighter major issues, or another factor is a problem), or Ready
+    to send (polish only)."""
+    plural = lambda n, w: f"{n} {w}{'s' if n != 1 else ''}"
+    found: Dict[str, Dict[str, Dict[str, Any]]] = {t: {} for t in TIERS}
+    unread, any_cell = [], False
+    major_rows = set()
+    for row, name, r in _cells(report):
+        spec = REGISTRY[name]
+        if r.status == Status.NEEDS_MODEL and spec.tier == "major":
+            if spec.label not in unread:
+                unread.append(spec.label)
+            continue
+        if r.status not in Status.VERDICTS:
+            continue
+        any_cell = True
+        if r.status == Status.READY:
+            continue
+        entry = found[spec.tier].setdefault(name, {"rows": 0, "items": 0, "problem": 0})
+        entry["rows"] += 1
+        entry["items"] += r.count
+        entry["problem"] += r.status == Status.PROBLEM
+        if spec.tier == "major" and row not in (BOOK_ROW, OPENING_ROW):
+            major_rows.add(row)
+    if not any_cell:
+        return Verdict("unchecked", "Not checked yet",
+                       "Nothing counts yet: check readiness to see where the book stands.",
+                       unread=unread)
+
+    def describe(name: str, e: Dict[str, Any]) -> str:
+        spec = REGISTRY[name]
+        label = spec.label[0].lower() + spec.label[1:]
+        if spec.level != "chapter":
+            return f"{label} ({e['items']})" if e["items"] else label
+        if spec.needs_model and not spec.judge:          # the model's quoted findings
+            return f"{plural(e['items'], label[:-1] if label.endswith('s') else label)}" \
+                   f" in {plural(e['rows'], 'chapter')}"
+        return f"{label} in {plural(e['rows'], 'chapter')}"
+
+    order = lambda tier: sorted(found[tier], key=lambda n: (-found[tier][n]["problem"],
+                                                            -REGISTRY[n].weight))
+    lines = {t: [describe(n, found[t][n]) for n in order(t)] for t in TIERS}
+    majors = sum(e["rows"] for e in found["major"].values())
+    major_problems = sum(e["problem"] for e in found["major"].values())
+    factor_problems = sum(e["problem"] for e in found["factor"].values())
+    polish = (sum(e["rows"] for e in found["polish"].values())
+              + sum(e["rows"] - e["problem"] for e in found["factor"].values()))
+    bits = []
+    if lines["major"]:
+        bits.append("Major issues: " + "; ".join(lines["major"]) + ".")
+    blocking_factors = [describe(n, found["factor"][n]) for n in order("factor")
+                        if found["factor"][n]["problem"]]
+    if blocking_factors:
+        bits.append(("Then: " if lines["major"] else "Before polish: ")
+                    + "; ".join(blocking_factors) + ".")
+    if polish:
+        bits.append(f"{plural(polish, 'optional polish item')}.")
+    if unread:
+        bits.append("Not read yet (needs the model): " + ", ".join(u.lower() for u in unread) + ".")
+    if major_problems:
+        level, title = "revise", "Needs a revision pass"
+    elif majors or factor_problems:
+        level, title = "nearly", "Nearly there"
+    else:
+        level, title = "ready", ("Ready to send" if not unread else "Ready, as far as checked")
+        bits.insert(0, "No major issues.")
+    return Verdict(level, title, " ".join(bits), majors, factor_problems, polish,
+                   len(major_rows), unread, lines)
+
+
+def majors_change(report: BookReport) -> Optional[Tuple[int, str]]:
+    """(change in major issues, the earlier day) against the last check on an
+    earlier day, measured the same way; None when there is none."""
+    h = [e for e in report.history if "majors" in e]
+    if not h or h[-1].get("date") != _today():
+        return None
+    today = h[-1]
+    for earlier in reversed(h[:-1]):
+        if earlier.get("date") == today.get("date"):
+            continue
+        if earlier.get("thresholds_version") != today.get("thresholds_version"):
+            return None
+        return today["majors"] - earlier["majors"], earlier["date"]
+    return None
+
+
+def _today() -> str:
+    return time.strftime("%Y-%m-%d")
+
+
+def _record_history(project, scope, report: BookReport) -> None:
+    """Today's figure, kept per manuscript (2.4). Only a complete check
+    with something counted is recorded."""
+    from src.data import readiness_state as rs
+    if report.complete and report.cells and report.saved:
+        v = verdict(report)
+        entry = {"date": _today(), "readiness": round(report.readiness, 4),
+                 "figure_version": FIGURE_VERSION, "thresholds_version": THRESHOLDS_VERSION,
+                 "tier": report.tier, "cells": report.cells,
+                 "verdict": v.level, "majors": v.majors, "polish": v.polish}
+        rs.record_history(project, scope, entry)
+    try:
+        report.history = rs.history(project, scope)
+    except Exception:
+        report.history = []
+
+
+def change_since_last(report: BookReport) -> Optional[Tuple[float, str]]:
+    """(change in the figure, the earlier day) against the last check on an
+    earlier day, measured the same way; None when there is none."""
+    h = report.history
+    if not h:
+        return None
+    today = h[-1]
+    for earlier in reversed(h[:-1]):
+        if earlier.get("date") == today.get("date"):
+            continue
+        same = (earlier.get("figure_version") == today.get("figure_version")
+                and earlier.get("thresholds_version") == today.get("thresholds_version"))
+        if not same:
+            return None                         # measured differently: not comparable
+        return round(today["readiness"] - earlier["readiness"], 4), earlier["date"]
+    return None
+
+
+def _book_checks(project, scope, book: Book, report: BookReport, goal, llm, scanner,
+                 use_cache: bool, dismissed, level: str = "book") -> None:
+    """Whole-book checks (or, with ``level="opening"``, the opening pages'
+    checks, 1.8): cached on every chapter's text and the plan."""
+    from src.data import readiness_state as rs
+    specs = checks_for(level=level)
     if not specs:
         return
-    bctx = BookContext(project, scope, book, report.chapters, route=goal.route,
-                       genre=goal.genre, llm=llm, scanner=scanner)
+    if level == "opening":
+        bctx = OpeningContext(project, scope, book, route=goal.route, genre=goal.genre,
+                              llm=llm, scanner=scanner)
+        if not bctx.text.strip():
+            return
+        report.opening_words = bctx.words
+        target = report.opening_results
+    else:
+        bctx = BookContext(project, scope, book, report.chapters, route=goal.route,
+                           genre=goal.genre, llm=llm, scanner=scanner)
+        target = report.book_results
     tier = "scan" if llm is None else f"model:{getattr(llm, 'model', '') or 'model'}"
     base = "|".join([book.hash, book.planning_hash(), goal.route, goal.genre,
-                     str(THRESHOLDS_VERSION), tier])
+                     str(THRESHOLDS_VERSION)])
     stored = (rs.stored_book(project, scope).get("results") or {}) if use_cache else {}
     fresh: Dict[str, Any] = {}
     project_hash = None
@@ -742,7 +1161,10 @@ def _book_checks(project, scope, book: Book, report: BookReport, goal, llm, scan
             extra = "|" + project_hash
         key = _hash(f"{base}|{spec.name}|{spec.version}{extra}")
         cached = stored.get(spec.name)
-        if use_cache and isinstance(cached, dict) and cached.get("key") == key:
+        rerun_with_model = (llm is not None and spec.needs_model and spec.model_ready
+                            and isinstance(cached, dict) and cached.get("tier", "scan") == "scan")
+        if use_cache and isinstance(cached, dict) and cached.get("key") == key \
+                and not rerun_with_model:
             if cached.get("not_applicable"):
                 continue
             raw = CheckResult.from_dict(cached)
@@ -751,10 +1173,13 @@ def _book_checks(project, scope, book: Book, report: BookReport, goal, llm, scan
             if raw is None:
                 fresh[spec.name] = {"key": key, "not_applicable": True}
                 continue
+            if llm is not None and spec.needs_model and spec.model_ready:
+                raw.judged = True
             if raw.status != Status.COULD_NOT_CHECK:
-                fresh[spec.name] = dict(raw.to_dict(), key=key, tier=tier)
-        report.book_results[spec.name] = _finish(spec, raw, bctx.words, dismissed,
-                                                 bctx.threshold(spec.name))
+                fresh[spec.name] = dict(raw.to_dict(), key=key,
+                                        tier=tier if raw.judged else "scan")
+        target[spec.name] = _finish(spec, raw, bctx.words, dismissed,
+                                    bctx.threshold(spec.name))
     if fresh:
         report.saved = rs.store_book(project, scope, fresh) and report.saved
 
@@ -797,6 +1222,13 @@ class Grid:
 
 
 BOOK_ROW = "__book__"            # the chapter id of the "Whole manuscript" row
+OPENING_ROW = "__opening__"      # the chapter id of the "Opening pages" row (1.8)
+
+
+def opening_row(book: BookReport) -> ChapterReport:
+    return ChapterReport(scope=book.scope, chapter_id=OPENING_ROW, number=0,
+                         title="Opening pages", words=book.opening_words, text_hash="",
+                         results=dict(book.opening_results), is_opening=True)
 
 
 def book_row(book: BookReport) -> ChapterReport:
@@ -811,9 +1243,13 @@ def book_row(book: BookReport) -> ChapterReport:
 def grid(book: BookReport) -> Grid:
     """Chapters down the side, checks across (grouped by stage); whole-book
     checks have their cell on a last "Whole manuscript" row."""
-    used = {n for ch in book.chapters for n in ch.results} | set(book.book_results)
+    used = ({n for ch in book.chapters for n in ch.results} | set(book.book_results)
+            | set(book.opening_results))
     columns = [s for s in checks_for() if s.name in used]
     rows = [(ch, [ch.results.get(s.name) for s in columns]) for ch in book.chapters]
+    if book.opening_results and book.chapters:
+        row = opening_row(book)
+        rows.insert(0, (row, [row.results.get(s.name) for s in columns]))
     if book.book_results and book.chapters:
         row = book_row(book)
         rows.append((row, [row.results.get(s.name) for s in columns]))

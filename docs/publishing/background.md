@@ -177,6 +177,337 @@ publisher's own guidelines always override.
   Hallie Ephron, "7 Reasons Why Your Work May Be Rejected", Writer's Digest,
   https://writersdigest.com/publishing-insights/7-reasons-why-your-work-may-be-rejected-by-hallie-ephron
 
+## How publishers acquire and edit novels
+
+Researched 23 November 2026 to ground the verdict and the Critique. Each claim
+is marked by how strong its evidence is: **[R]** scholarly research, **[P]**
+professional-body guidance, **[O]** practitioner opinion. Claims marked
+*(review)* were read in a review or summary, not in the book itself.
+
+**Acquisition turns mostly on things outside the text.**
+- Editors weigh the author's sales record, comparable titles, the author's
+  platform and trade buzz; there is no formula, and many bestsellers
+  surprised their publishers (Thompson, *Merchants of Culture* [R],
+  *(review)*).
+- UK commissioning editors describe buying on "love", often "from the first
+  page, or the first chapter", in meetings that are "half book club, half
+  commercial assessment". Many books are bought for their potential, with the
+  author's readiness to be edited part of the decision (Squires 2020 [R], 19
+  interviews).
+- Publisher and author history predict sales; text quality was not a modelled
+  input (Wang et al. 2019 [R]).
+
+**The order of edits rests on professional guidance, not research.**
+- The developmental edit comes first and is delivered as a letter that
+  "outlines the big-picture issues"; line editing follows "after big-picture
+  issues have been addressed"; then copyediting and proofreading (EFA [P]).
+- No scholarly study was found that maps the sequence of edits inside a
+  publisher; structural editing is deliberately kept out of view (Squires
+  [R]).
+
+**How editors deliver feedback** (Editors Canada, *Professional Editorial
+Standards* 2024 [P]): queries and letters are clear, succinct and actionable;
+query where intent is unclear and keep queries few; explain changes; never
+alter the intended meaning; keep the author's voice.
+
+**What the evidence does not support.**
+- No peer-reviewed study of agents' decisions or of opening pages deciding
+  acceptance was found. The "first pages" convention is interview and
+  practitioner evidence.
+- Readability scores barely differ between more and less successful novels,
+  and simpler syntax correlated with *less* success in one study of
+  public-domain books (Ashok et al. 2013 [R], correlational).
+- Bestseller-prediction claims (*The Bestseller Code*) are weak.
+
+**What the app does with this**
+
+1. **Macro before micro.** The verdict names stages in editing order, and
+   tells the writer to start with structure.
+2. **Major issues come first, then other factors, then polish** (revised;
+   see the next section). Major: spelling and grammar, character
+   disconnects, plot jumps, continuity. A major check at "problem" gives
+   "Needs a revision pass". Line-level style checks are polish and never
+   block.
+3. **The opening checks are a convention.** They count like any other scene
+   or structure check; they no longer force a verdict alone, and chapter 1's
+   stricter bar was eased (0.75 agent, 0.9 self).
+4. **No prediction of acceptance.** The scorecard says it cannot tell whether
+   an agent or publisher will take the book.
+5. **A model's verdict is one reader's view,** and the scorecard says so.
+6. **No readability targets.** Hard-to-read sentences stay an editor aid;
+   readability is not a readiness check.
+7. **For later pieces** (8.2 editorial letter, P.4 proofreading): a short
+   prioritised letter plus passage-anchored notes; queries where intent is
+   unclear; every finding actionable, with its evidence.
+
+**Not verified:** Thompson's own text on editing practice; the Chicago Manual
+of Style sections on queries and author letters (paywalled); CIEP's fiction
+guidance (members only); Greenberg's books on editing (cited via Squires).
+
+**Sources**
+- Thompson, J.B. *Merchants of Culture*. Polity, 2010; 2nd ed. 2012. Review:
+  https://www.timeshighereducation.com/books/book-of-the-week-merchants-of-culture-the-publishing-business-in-the-twenty-first-century/413351.article
+- Childress, C. *Under the Cover*. Princeton UP, 2017. https://muse.jhu.edu/book/56270
+- Squires, C. "Sensing the Novel/Seeing the Book/Selling the Goods", in *The
+  Novel as Network*, Palgrave, 2020.
+  https://www.storre.stir.ac.uk/bitstream/1893/31484/1/Squires%20Sensing%20the%20Novel%20_accepted.pdf
+- Wang et al., "Success in books: predicting book sales before publication",
+  *EPJ Data Science* 8:31, 2019. https://link.springer.com/10.1140/epjds/s13688-019-0208-6
+- Ashok, Feng & Choi, "Success with Style", EMNLP 2013. https://aclanthology.org/D13-1181/
+- Editors Canada, *Professional Editorial Standards* 2024.
+  https://editors.ca/publications/professional-editorial-standards/fundamentals-editing/
+- EFA, editorial services definitions: https://www.the-efa.org/editorial-services-definitions/
+
+## What readers stumble on: the major issues
+
+Researched and verified 23 November 2026, to define the major issues the
+scorecard puts first (spelling and grammar, character disconnects, plot
+jumps, continuity). Same marks as above. Each source says how it was read,
+because several support a narrower claim than they are usually cited for.
+
+**Readers track a few dimensions, and breaks in some cost more than others.**
+- Readers follow time, space, causation, the protagonist and their goals
+  (the event-indexing model: Zwaan, Langston & Graesser 1995 [R]; reviewed in
+  Zwaan & Radvansky 1998 [R], read in full). The 1995 paper's own evidence
+  is a task of grouping verbs, not reading times, and the review says the
+  five dimensions are not "exhaustive or fixed".
+- The reading-time evidence: breaks in time and in cause slow readers
+  (Zwaan, Magliano & Graesser 1995 [R], via the review, "partial support");
+  shifts of protagonist and time slow readers and lower how coherent the
+  text is rated, while the effect of a change of place is weak (Rinck &
+  Weber 2003 [R], abstract only).
+- Stories are remembered and judged coherent through their causal links
+  (Trabasso & van den Broek 1985 [R], secondary sources only).
+
+**A character inconsistency is a conflict with something specific.**
+- Readers slow at an action that contradicts a trait stated earlier, even
+  several sentences back (Albrecht & O'Brien 1993 [R], secondary sources
+  only). Whether an outdated fact still interferes after the text has
+  explained the change (O'Brien et al. 1998) is contested (Zwaan & Madden
+  2004), so the app only says: check whether the text shows a reason.
+- Readers form expectations from specific traits, not general impressions
+  (Rapp, Gerrig & Prentice 2001 [R], abstract only).
+
+**A gap is not an error by itself.** Narrative theory treats ellipsis and
+withheld information as ordinary, often deliberate devices (Genette;
+Sternberg; Malcolm 2018, read in full) [R, theory, not experiment].
+
+**Spelling and grammar errors lower how the writer is judged, in studies of
+short texts.** Typos lowered ratings of the writer, more for some readers
+than others (Boland & Queen 2016 [R], read in full; emails, not fiction). A
+few errors had no effect on judgements of the writer; many did (Kreiner et
+al. 2002 [R], abstract). No study of errors in novels was found.
+
+**Continuity is the copyeditor's job, done with a style sheet and
+queries.** A fiction style sheet records characters, places and the timeline
+(Schneider, *The Chicago Guide to Copyediting Fiction*, 2023 [P], publisher's
+description only). The copyeditor checks internal consistency and must
+"correct or query" (Editors Canada, *Professional Editorial Standards* 2024,
+D2–D3 [P]); fiction may break usual rules on purpose (D1.2).
+
+**Not supported, so not claimed.** That one error "breaks immersion":
+Busselle & Bilandzic 2008 propose that perceived inconsistency *may* disrupt
+engagement; it is a theoretical paper. That a count of errors predicts how
+readers or publishers receive a novel. That a change of place alone is a
+problem.
+
+**What the app does with this**
+
+1. **A finding is an instance, never a verdict on the writer.** It quotes
+   the passage.
+2. **A character disconnect or continuity break quotes both sides**: the
+   words in the chapter and the earlier words (or the record) they
+   contradict. If either quote can't be found in what the model was shown,
+   the finding is dropped.
+3. **A plot jump names what broke**: time, cause and effect, or whom we
+   follow. A change of place alone is not counted; a marked scene break or
+   a gap the reader can fill is not a jump.
+4. **Findings are queries.** "Earlier: “…”. … Which is intended?" The app
+   doesn't rule on which passage is right, and asks whether a gap is
+   intended.
+5. **Dialogue and dialect are the writer's choice**; British and period
+   spellings can be accepted in Settings.
+6. **Spelling and grammar are a major issue only at the "problem" level**
+   (many errors), matching Kreiner et al.; a handful doesn't block.
+7. **A book-wide style sheet** (`src/ai/story_ledger.py`). As the model
+   reads each chapter it also lists the facts that chapter establishes
+   (about characters, places, things and the timeline), each with the words
+   that establish it. Every later chapter is read against the facts recorded
+   before it about the people and things it mentions, so a contradiction
+   many chapters apart can be seen. The writer can read the style sheet from
+   the Whole manuscript row of the scorecard.
+8. **Every Critique report puts findings the same way**
+   (`src/ai/editorial_standards.py`): passage, effect, option; a question
+   where the author may have meant it; meaning and voice are the author's;
+   few, well-chosen points; about the text, never the writer.
+9. **Misses are measured, not assumed** (`scripts/measure_misses.py`,
+   results in `miss_rates.md`): known mistakes and contradictions are
+   inserted and counted as caught or missed, with the rules alone and with
+   a model.
+
+**Sources**
+- Zwaan & Radvansky, "Situation models in language comprehension and
+  memory", *Psychological Bulletin* 123, 1998.
+  https://sites.ualberta.ca/~dmiall/Cognitive/Readings/Zwaan_Radvansky_1998.pdf
+- Zwaan, Langston & Graesser, "The construction of situation models in
+  narrative comprehension", *Psychological Science* 6, 1995.
+  https://www.psychologicalscience.org/journals/psychological-science/j.1467-9280.1995.tb00513.x/
+- Zwaan, Magliano & Graesser, *JEP: Learning, Memory, and Cognition* 21,
+  386–397, 1995.
+- Rinck & Weber, *Memory & Cognition* 31(8), 1284–1292, 2003.
+  https://link.springer.com/article/10.3758/BF03195811
+- Albrecht & O'Brien, *JEP: LMC* 19, 1993. https://doi.org/10.1037/0278-7393.19.5.1061
+- Rapp, Gerrig & Prentice, "Readers' trait-based models of characters in
+  narrative comprehension", *Journal of Memory and Language*, 2001.
+  https://collaborate.princeton.edu/en/publications/readers-trait-based-models-of-characters-in-narrative-comprehensi/
+- Trabasso & van den Broek, *Journal of Memory and Language* 24, 1985.
+- Busselle & Bilandzic, *Communication Theory* 18, 2008.
+  https://doi.org/10.1111/j.1468-2885.2008.00322.x
+- Boland & Queen, *PLOS ONE*, 2016. https://pmc.ncbi.nlm.nih.gov/articles/PMC4784893
+- Kreiner et al., *Journal of General Psychology* 129, 2002.
+  https://doi.org/10.1080/00221300209602029
+- Schneider, *The Chicago Guide to Copyediting Fiction*, 2023.
+  https://www.press.uchicago.edu/ucp/books/book/chicago/C/bo183690033.html
+- Editors Canada, *Professional Editorial Standards* 2024, copy editing.
+  https://editors.ca/publications/professional-editorial-standards/copy-editing/
+- Malcolm, "Ellipsis, narrative gaps…", *Tekstualia*, 2018.
+  https://tekstualia.pl/files/2db2274d/malcolm_d._-_ellipsis_narrative_gaps....pdf
+
+## What a developmental editor's read rests on
+
+Researched and verified 23 November 2026, for the chapter outline, the
+editor's whole-book checks, the reader's pull and the editorial letter. Same
+marks as above; each source says how it was read. Much of the older
+psychology is paywalled: where only the citation was confirmed, the finding
+comes from secondary sources and is marked so.
+
+**What a manuscript evaluation is** [P].
+- Editors Canada (*Professional Editorial Standards* 2024, appendix, read in
+  full): "a systematic examination of the strengths and weaknesses", a
+  "detailed memo to help a writer revise", following "a set of headings",
+  with "specific guidance about how to revise". For fiction it lists
+  characterization, dialogue, setting, plot, structure and believability;
+  voice and tone are among what it "can also involve".
+- The structural-editing standard itself (Section B) has **no fiction
+  checklist**: it speaks of narrative flow, cutting superfluous material and
+  filling gaps.
+- EFA (read in full): a developmental editor may deliver a manuscript
+  evaluation or an editorial letter on big-picture issues and ways to
+  address them. CIEP (read in full): a critique covers story, plot and
+  structure, character, tension, theme and point of view, as general
+  analysis, not every instance.
+- Norton, *Developmental Editing*, 2nd ed. (Chicago, 2023; contents page
+  only): summarising the content comes before planning the edit. The book
+  is mainly about nonfiction; its fiction chapter was not read.
+
+**Outlining what the draft contains.**
+- Events with more causal connections are recalled better and judged more
+  important than dead ends (Trabasso & Sperry 1985; Trabasso & van den
+  Broek 1985 [R], secondary sources only; short simple stories, not novels).
+  This does **not** show that a scene with no consequences is bad craft.
+- Reverse outlining as a revision technique: writing-centre handouts only
+  [O]. No controlled study was found.
+- Genette (scene and summary, focalization) and Labov & Waletzky (the parts
+  of an oral anecdote) give vocabulary, not evidence about readers.
+
+**Point of view, character, setups.**
+- Sentences that keep the established point of view are read faster and
+  remembered better than ones that shift it (Black, Turner & Bower 1979 [R],
+  secondary sources; sentence-level stimuli, not novels).
+- Readers slow at behaviour inconsistent with a character's traits (Rapp,
+  Gerrig & Prentice 2001 [R], abstract). Nothing empirical was found on
+  character arcs or on characters who drop out.
+- Suspense rises when readers believe the paths to a solution are narrowing
+  (Gerrig & Bernardo 1994 [R], abstract). **Setup and payoff ("Chekhov's
+  gun") is practitioner lore** [O]: no research was found.
+
+**Where readers are held or lost.**
+- Transportation and narrative engagement are measured by asking readers
+  (Green & Brock 2000; Busselle & Bilandzic 2009 [R], abstracts; the second
+  was validated on film and television). Neither can be computed from text.
+- Suspense, curiosity and surprise come from the order in which events are
+  revealed (Brewer & Lichtenstein 1982 [R], secondary).
+- Reading data from one company: readers who stop mostly stop in the first
+  chapters (Jellybooks [O], industry data from volunteer readers). The
+  often-repeated "90% quit after five chapters" described one title.
+- Story-shape studies do not support predicting a novel's success: Reagan
+  et al. 2016 measured word sentiment in Gutenberg texts; Toubia et al. 2021
+  studied films, television and papers, not novels.
+
+**What models can and can't do with a whole book** [R], as of the models
+tested in 2024–25 (newer ones are probably better; not verified):
+- Summarising a book in pieces and merging gives coherent summaries (Chang
+  et al., BooookScore, ICLR 2024, read in full), but coherent is not
+  accurate: 69–91% of claims in such summaries were faithful, the errors
+  were mostly about characters' states and events, key events were missing
+  from a third to two thirds of summaries, and a model checking its own
+  claims did poorly (Kim et al., FABLES, 2024, read in full).
+- Judging claims that need the whole novel: the best model got 56% of
+  claim pairs right (chance 25%), worse on reasoning across the book and in
+  speculative fiction (Karpinska et al., NoCha, EMNLP 2024, read in full).
+- Finding planted plot holes: equal to people on very short stories,
+  markedly worse on longer ones, and summaries introduced errors of their
+  own (Ahuja, Sclar & Tsvetkov 2025, read in full).
+- Feedback on flawed short stories was mostly accurate, but "models often
+  fail to identify the biggest writing issue" and call flawed stories fine
+  (Rashkin et al., ACL 2025, read in full).
+- No study compares a model's developmental feedback on a whole novel with
+  a human editor's.
+
+**What the app does with this**
+
+1. **The letter follows the evaluation's shape**: what works, the three to
+   five most important issues in order, each with where it shows, its
+   effect and one option, under the elements Editors Canada and CIEP list
+   (`src/ai/editorial_letter.py`).
+2. **An outline per chapter, then the whole** (`src/ai/chapter_digest.py`),
+   every line tied to words in the chapter; an issue in the letter that
+   names no real chapter is dropped.
+3. **Every structural finding is a question.** A scene that changes
+   nothing, a shift of point of view, an open thread or a character who
+   leaves can all be deliberate, and the research is on short texts.
+4. **The reader's pull is one model reader's rating**, weighted to the
+   first three chapters, and never called a prediction.
+5. **The letter says what it can't judge**: the prose itself; whole-book
+   judgements as its least reliable part; that finding nothing is not a
+   clean bill of health; acceptance, sales, and where real readers stop.
+7. **The handover to a human editor is the goal** (`src/ai/editor_pass.py`):
+   mechanical work cleared first, queries answered or marked intended, and
+   a brief with the style sheet, open questions and deliberate choices.
+   Editors Canada's copyediting standard has the editor build a style
+   sheet and query the author; the brief hands both over at the start.
+6. **Measured, not assumed**: `scripts/measure_misses.py --model --editor`
+   runs the checks and the letter on short books with one planted flaw.
+
+**Not claimed:** that the letter equals a developmental edit; that setup
+and payoff or reverse outlining are research-backed; that Editors Canada's
+structural standard prescribes these checks; anything from the *Chicago
+Manual of Style* or from Norton's fiction chapter (not read).
+
+**Sources**
+- Editors Canada, *Professional Editorial Standards* 2024: appendix
+  https://editors.ca/publications/professional-editorial-standards/appendix/
+  and structural editing
+  https://editors.ca/publications/professional-editorial-standards/structural-editing/
+- EFA, editorial service definitions: https://www.the-efa.org/editorial-services-definitions/
+- CIEP, manuscript critique: https://www.ciep.uk/resource/manuscript-critique.html
+- Norton, *Developmental Editing*, 2nd ed., 2023.
+  https://press.uchicago.edu/ucp/books/book/chicago/D/bo201563215.html
+- Trabasso & Sperry; Trabasso & van den Broek, *Journal of Memory and
+  Language* 24(5), 1985. doi:10.1016/0749-596X(85)90049-X
+- Black, Turner & Bower, *Journal of Verbal Learning and Verbal Behavior*
+  18, 187–198, 1979.
+- Gerrig & Bernardo, *Poetics* 22(6), 459–472, 1994.
+- Green & Brock, *JPSP* 79(5), 701–721, 2000. Busselle & Bilandzic, *Media
+  Psychology* 12(4), 321–347, 2009. Brewer & Lichtenstein, *Journal of
+  Pragmatics* 6, 473–486, 1982.
+- Reagan et al., *EPJ Data Science* 5:31, 2016 (arXiv:1606.07772). Toubia,
+  Berger & Eliashberg, *PNAS* 118(26), 2021.
+- Jellybooks: https://www.jellybooks.com/about/publishers/completion-rate
+- Chang et al., BooookScore, arXiv:2310.00785. Kim et al., FABLES,
+  arXiv:2404.01261. Karpinska et al., NoCha, arXiv:2406.16264. Ahuja, Sclar
+  & Tsvetkov, arXiv:2504.11900. Rashkin et al., arXiv:2507.16007.
+
 ## Outstanding issues
 
 Open as of this version of the plan. Each is handled by the piece or decision

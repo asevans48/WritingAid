@@ -3,9 +3,8 @@
 * **Dialogue fits the speaker** and **dialogue problems** need no model.
 * **Continuity across novellas** gives what a scan can (possible
   resurrections, shared names with no record); conflicts need a model.
-* **Continuity within the book** needs a model (the Critique's Canon,
-  Characters and Worldbuilding reports); it is shown, not counted, without
-  one.
+* **Continuity within the book** is a major issue, read by a model
+  (``readiness_checks/story.py``).
 * **Order of events** is not checked: nothing links a chapter's events to
   the plan's events, so there is nothing to compare (piece 1.6, Outcome).
 """
@@ -71,17 +70,7 @@ def dialogue_problems(ctx: CheckContext) -> CheckOutput:
     return CheckOutput(items=items, measure=round(len(items) * 1000.0 / max(ctx.words, 1), 2))
 
 
-@check(name="continuity_in_book", stage="scene", label="Continuity in this book",
-       level="book", needs_model=True, version=1, weight=60,
-       description="Characters, places and facts that contradict each other between "
-                   "chapters. It takes a model to read for this (the Critique's Canon, "
-                   "Characters and Worldbuilding reports), so without one it isn't counted.")
-def continuity_in_book(ctx: CheckContext) -> CheckOutput:
-    return CheckOutput(message="Needs a model: the Critique's Canon, Characters and "
-                               "Worldbuilding reports read for contradictions.")
-
-
-@check(name="continuity_novellas", stage="scene", label="Continuity across novellas",
+@check(name="continuity_novellas", tier="major", stage="scene", label="Continuity across novellas",
        level="book", needs_model=True, version=1, weight=60, book_wide=True,
        description="The main manuscript and novellas compared: a character who dies in one "
                    "and appears in another, shared names with no record. A scan finds "
@@ -90,7 +79,9 @@ def continuity_novellas(ctx: CheckContext) -> CheckOutput:
     from src.ai.continuity_analysis import ContinuityAnalyzer, has_cross_manuscript_content
     if ctx.scope is not None or not has_cross_manuscript_content(ctx.project):
         return NOT_APPLICABLE                # shown once, on the main manuscript
-    section = ctx.book.lazy("continuity", lambda: ContinuityAnalyzer(ctx.project, None).run())
+    # With a model the analyzer also judges conflicts; without, it scans.
+    section = ctx.book.lazy("continuity",
+                            lambda: ContinuityAnalyzer(ctx.project, ctx.llm).run())
     items = [Item(start=0, end=0, text=m.split(" — ")[0][:200], reason=m,
                   kind="resurrection", key=f"continuity:{m[:60].lower()}")
              for m in section.major_issues]

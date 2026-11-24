@@ -10,6 +10,8 @@ from typing import List, Dict, Any, Optional, Tuple, TYPE_CHECKING
 from dataclasses import dataclass
 from enum import Enum
 
+from src.ai.editorial_standards import with_standards
+
 if TYPE_CHECKING:
     from src.ai.llm_client import LLMClient
     from src.ui.enhanced_text_editor import WritingStats
@@ -1398,7 +1400,7 @@ class _BaseAnalyzer:
             return ""
         call_id = f"c{len(section.calls) + 1}"
         section.calls.append({"id": call_id, "label": label, "kind": kind,
-                              "system": system or "", "prompt": prompt,
+                              "system": with_standards(system, self.compact), "prompt": prompt,
                               "output": output})
         return call_id
 
@@ -1417,7 +1419,7 @@ class _BaseAnalyzer:
         # Capture prompts on the section so rated rows can
         # save the real (prompt, narrative) pair for training.
         section.prompt = prompt
-        section.system_prompt = system_prompt
+        section.system_prompt = system_prompt = with_standards(system_prompt, self.compact)
         section.narrative = self._generate(llm, prompt, system_prompt,
                                            self.max_tokens)
         self._record_call("Full report", "report", system_prompt, prompt,
@@ -1440,6 +1442,7 @@ class _BaseAnalyzer:
         """
         if temperature is None:
             temperature = 0.3 if self.compact else 0.5
+        system_prompt = with_standards(system_prompt, self.compact)
         try:
             response = llm.generate_text(
                 prompt, system_prompt, max_tokens=max_tokens,

@@ -65,6 +65,18 @@ def normalize_apostrophes(text: str) -> str:
 # Use on normalize_apostrophes() text so every apostrophe style matches.
 WORD_TOKEN_RX = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)*")
 
+# For spelling: accented Latin letters belong to the word ("Ántonia", "café",
+# "naïve"), so a word is never cut at its accent and the rest reported.
+LETTERS = "A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u017F"
+SPELL_TOKEN_RX = re.compile(rf"[{LETTERS}]+(?:['’][{LETTERS}]+)*")
+
+
+def unaccented(word: str) -> str:
+    """The word with its accents removed (café → cafe)."""
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFKD", word)
+                   if not unicodedata.combining(c))
+
 
 def word_tokens(text: str) -> List[str]:
     """Words in ``text`` with contractions kept whole, any apostrophe style."""
@@ -318,8 +330,8 @@ def _builtin_grammar(text: str) -> List[GrammarIssue]:
                       "“anything / anybody / any”.", [], "DOUBLE_NEGATIVE"))
 
     agreement = [
-        (r"\b(I)\s+(has|is|does|doesn't|was not)\b", {"has": "have", "is": "am", "does": "do",
-                                                    "doesn't": "don't", "was not": "wasn't"}),
+        (r"\b(I)\s+(has|is|does|doesn't)\b", {"has": "have", "is": "am", "does": "do",
+                                            "doesn't": "don't"}),   # "I was not" is correct
         (r"(?<!\b[Ii]f )(?<!\b[Ww]ish )(?<!\b[Aa]s if )(?<!\b[Tt]hough )"
          r"\b([Hh]e|[Ss]he|[Ii]t)\s+(have|don't|dont|are|were|do)\b",
          {"have": "has", "don't": "doesn't", "dont": "doesn't", "are": "is",

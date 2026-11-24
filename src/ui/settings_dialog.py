@@ -2827,6 +2827,8 @@ class SettingsDialog(QDialog):
         self.enable_spell_check = QCheckBox("Enable Spell Checking (red underline)")
         self.enable_spell_check.setChecked(self.settings.get("enable_spell_check", True))
         writing_layout.addWidget(self.enable_spell_check)
+        from src.ui.spelling_settings import SpellingOptions      # British / period spellings
+        self.spelling_options = SpellingOptions(writing_layout, self.settings)
 
         self.enable_grammar_check_editor = QCheckBox("Enable Grammar Checking (green underline)")
         self.enable_grammar_check_editor.setChecked(self.settings.get("enable_grammar_check_editor", True))
@@ -3950,6 +3952,7 @@ class SettingsDialog(QDialog):
             "enable_rephrasing": self.enable_rephrasing.isChecked(),
             "show_craft_tips": self.show_craft_tips.isChecked(),
             "enable_spell_check": self.enable_spell_check.isChecked(),
+            **self.spelling_options.values(),
             "enable_grammar_check_editor": self.enable_grammar_check_editor.isChecked(),
             "enable_overuse_check": self.enable_overuse_check.isChecked(),
             "overuse_threshold": self.overuse_threshold_spin.value(),

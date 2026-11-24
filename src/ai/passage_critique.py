@@ -723,7 +723,8 @@ def critique_passage(llm: Any, ctx: PassageContext, focus: str = "",
     the quality checks once; best rewrite first."""
     say = progress or (lambda _msg: None)
     say("Reading the passage against your story notes…")
-    raw = llm.generate_text(build_prompt(ctx, focus), SYSTEM_PROMPT,
+    from src.ai.editorial_standards import with_standards
+    raw = llm.generate_text(build_prompt(ctx, focus), with_standards(SYSTEM_PROMPT),
                             max_tokens=1800, temperature=0.7)
     result = parse_critique(raw)
     # Rewrites may reorder only what the critique found out of order.

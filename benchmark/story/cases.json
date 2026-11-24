@@ -1,0 +1,170 @@
+{
+ "about": "Hand-written story cases for scripts/measure_misses.py: a first chapter that establishes something, a neutral chapter, and a last chapter that contradicts it (expect = the words where it goes wrong) or doesn't (expect = null).",
+ "cases": [
+  {
+   "id": "swim",
+   "kind": "character",
+   "chapters": [
+    "Mara had never learned to swim, and the sea frightened her. She kept to the middle of the quay when she walked to the chandler's, well away from the edge, and she would not set foot in her uncle's boat even when it was tied up.",
+    "The market filled slowly that morning. Carts came down from the hill farms with cabbages and late apples, and the fishwives set their baskets along the wall. A boy chased a goose between the stalls until the baker caught it by the neck and handed it back to its owner. By noon the square smelled of bread and brine, and nobody spoke of anything but the price of salt.",
+    "The buoy had slipped its chain. Mara dived off the quay and swam hard for the far buoy, hauled it back against the tide and climbed the ladder laughing, water streaming from her hair."
+   ],
+   "expect": "Mara dived off the quay and swam hard",
+   "note": "skill contradicted two chapters later"
+  },
+  {
+   "id": "eyes",
+   "kind": "continuity",
+   "chapters": [
+    "Tobias looked up from the nets. His eyes were grey as slate, the same grey as his father's, and they missed very little that happened on the harbor wall.",
+    "The market filled slowly that morning. Carts came down from the hill farms with cabbages and late apples, and the fishwives set their baskets along the wall. A boy chased a goose between the stalls until the baker caught it by the neck and handed it back to its owner. By noon the square smelled of bread and brine, and nobody spoke of anything but the price of salt.",
+    "The lamp was lit when she came in. Tobias turned, and she saw the lamplight catch in his brown eyes before he looked away toward the window."
+   ],
+   "expect": "his brown eyes",
+   "note": "appearance changed"
+  },
+  {
+   "id": "letter",
+   "kind": "character",
+   "chapters": [
+    "Old Hesper could not read. She had never been taught, and when a letter came she carried it up the hill to the schoolmaster and paid him a penny to say it aloud.",
+    "The market filled slowly that morning. Carts came down from the hill farms with cabbages and late apples, and the fishwives set their baskets along the wall. A boy chased a goose between the stalls until the baker caught it by the neck and handed it back to its owner. By noon the square smelled of bread and brine, and nobody spoke of anything but the price of salt.",
+    "A letter lay on the mat. Hesper broke the seal, read it through twice at the kitchen table, and then sat for a long time with the page in her lap."
+   ],
+   "expect": "read it through twice at the kitchen table",
+   "note": "ability contradicted"
+  },
+  {
+   "id": "arm",
+   "kind": "continuity",
+   "chapters": [
+    "The fall from the loft broke Jonas's left arm in two places. The bonesetter bound it in splints and told him he would not lift so much as a spoon with it before midsummer.",
+    "The market filled slowly that morning. Carts came down from the hill farms with cabbages and late apples, and the fishwives set their baskets along the wall. A boy chased a goose between the stalls until the baker caught it by the neck and handed it back to its owner. By noon the square smelled of bread and brine, and nobody spoke of anything but the price of salt.",
+    "Next morning Jonas was in the yard before light. He swung the axe with both hands and split the whole cord of oak before breakfast, whistling as he worked."
+   ],
+   "expect": "He swung the axe with both hands",
+   "note": "injury forgotten the next day"
+  },
+  {
+   "id": "horse",
+   "kind": "continuity",
+   "chapters": [
+    "They had sold the grey mare at the autumn fair to pay the rent. Ilse cried when the dealer led her away, and the stable stood empty all winter.",
+    "The market filled slowly that morning. Carts came down from the hill farms with cabbages and late apples, and the fishwives set their baskets along the wall. A boy chased a goose between the stalls until the baker caught it by the neck and handed it back to its owner. By noon the square smelled of bread and brine, and nobody spoke of anything but the price of salt.",
+    "At dawn Ilse went out to the stable, saddled the grey mare as she did every morning, and rode down to the ford."
+   ],
+   "expect": "saddled the grey mare as she did every morning",
+   "note": "sold object reappears"
+  },
+  {
+   "id": "brother",
+   "kind": "character",
+   "chapters": [
+    "Anselm was an only child. His mother said so often, with a sigh, that one had been quite enough, and he had grown up alone in the big house.",
+    "The market filled slowly that morning. Carts came down from the hill farms with cabbages and late apples, and the fishwives set their baskets along the wall. A boy chased a goose between the stalls until the baker caught it by the neck and handed it back to its owner. By noon the square smelled of bread and brine, and nobody spoke of anything but the price of salt.",
+    "Anselm wrote that night to his brother in the city, as he had every week since they were boys, and asked him for the loan of forty crowns."
+   ],
+   "expect": "wrote that night to his brother in the city",
+   "note": "relationship contradicted"
+  },
+  {
+   "id": "winter",
+   "kind": "continuity",
+   "chapters": [
+    "It was the first week of June. The hay stood high in the meadow, and the swifts screamed round the church tower until ten at night.",
+    "The market filled slowly that morning. Carts came down from the hill farms with cabbages and late apples, and the fishwives set their baskets along the wall. A boy chased a goose between the stalls until the baker caught it by the neck and handed it back to its owner. By noon the square smelled of bread and brine, and nobody spoke of anything but the price of salt.",
+    "The same afternoon Petra walked out across the meadow. Snow lay a foot deep over the frozen ground, and her breath smoked in the bitter air."
+   ],
+   "expect": "Snow lay a foot deep over the frozen ground",
+   "note": "season contradicted the same day"
+  },
+  {
+   "id": "key",
+   "kind": "continuity",
+   "chapters": [
+    "Before she left, Wren dropped the cellar key down the well. She heard it strike the water far below, and that was the end of it; nobody would open that door again.",
+    "The market filled slowly that morning. Carts came down from the hill farms with cabbages and late apples, and the fishwives set their baskets along the wall. A boy chased a goose between the stalls until the baker caught it by the neck and handed it back to its owner. By noon the square smelled of bread and brine, and nobody spoke of anything but the price of salt.",
+    "Wren came back at dusk. She took the cellar key from her apron pocket, unlocked the door, and went down the steps with a candle."
+   ],
+   "expect": "She took the cellar key from her apron pocket",
+   "note": "lost object reappears"
+  },
+  {
+   "id": "dead",
+   "kind": "jump",
+   "chapters": [
+    "Captain Orrin stood at the rail and watched the coast go by. He had forty men aboard and a hold full of wool, and the wind was fair for the south.",
+    "The market filled slowly that morning. Carts came down from the hill farms with cabbages and late apples, and the fishwives set their baskets along the wall. A boy chased a goose between the stalls until the baker caught it by the neck and handed it back to its owner. By noon the square smelled of bread and brine, and nobody spoke of anything but the price of salt.",
+    "Captain Orrin stood at the rail and gave the order to make sail. The funeral was well attended. His widow wore grey, and the crew carried the coffin up the hill in the rain."
+   ],
+   "expect": "The funeral was well attended",
+   "note": "cause missing: a death is never shown"
+  },
+  {
+   "id": "fear",
+   "kind": "character",
+   "chapters": [
+    "Dunstan was terrified of dogs. Since the mastiff bit him as a boy he would cross the street to avoid a lapdog, and his hands shook at the sound of barking.",
+    "The market filled slowly that morning. Carts came down from the hill farms with cabbages and late apples, and the fishwives set their baskets along the wall. A boy chased a goose between the stalls until the baker caught it by the neck and handed it back to its owner. By noon the square smelled of bread and brine, and nobody spoke of anything but the price of salt.",
+    "A huge stray came snarling out of the alley. Dunstan knelt at once, ruffled its ears and let it lick his face, and it followed him home."
+   ],
+   "expect": "Dunstan knelt at once, ruffled its ears",
+   "note": "fear contradicted with no reason shown"
+  },
+  {
+   "id": "ok-learned",
+   "kind": null,
+   "chapters": [
+    "Mara had never learned to swim, and the sea frightened her. She kept to the middle of the quay when she walked to the chandler's.",
+    "The market filled slowly that morning. Carts came down from the hill farms with cabbages and late apples, and the fishwives set their baskets along the wall. A boy chased a goose between the stalls until the baker caught it by the neck and handed it back to its owner. By noon the square smelled of bread and brine, and nobody spoke of anything but the price of salt.",
+    "All that summer Tobias taught Mara to swim in the shallows behind the breakwater. By September she could cross the harbor mouth, and when the buoy slipped its chain she dived off the quay and swam out for it."
+   ],
+   "expect": null,
+   "note": "the change is explained"
+  },
+  {
+   "id": "ok-gap",
+   "kind": null,
+   "chapters": [
+    "It was the first week of June. The hay stood high in the meadow, and the swifts screamed round the church tower.",
+    "The market filled slowly that morning. Carts came down from the hill farms with cabbages and late apples, and the fishwives set their baskets along the wall. A boy chased a goose between the stalls until the baker caught it by the neck and handed it back to its owner. By noon the square smelled of bread and brine, and nobody spoke of anything but the price of salt.",
+    "Six months later the meadow lay under snow. Petra walked out across it in her father's boots, her breath smoking in the bitter air."
+   ],
+   "expect": null,
+   "note": "a marked jump in time"
+  },
+  {
+   "id": "ok-plain",
+   "kind": null,
+   "chapters": [
+    "Tobias looked up from the nets. His eyes were grey as slate, and they missed very little that happened on the harbor wall.",
+    "The market filled slowly that morning. Carts came down from the hill farms with cabbages and late apples, and the fishwives set their baskets along the wall. A boy chased a goose between the stalls until the baker caught it by the neck and handed it back to its owner. By noon the square smelled of bread and brine, and nobody spoke of anything but the price of salt.",
+    "The lamp was lit when she came in. Tobias turned, and she saw the lamplight catch in his grey eyes before he looked away."
+   ],
+   "expect": null,
+   "note": "consistent"
+  },
+  {
+   "id": "ok-secret",
+   "kind": null,
+   "chapters": [
+    "Old Hesper told everyone she could not read, and carried her letters up the hill to the schoolmaster. It suited her that they thought so.",
+    "The market filled slowly that morning. Carts came down from the hill farms with cabbages and late apples, and the fishwives set their baskets along the wall. A boy chased a goose between the stalls until the baker caught it by the neck and handed it back to its owner. By noon the square smelled of bread and brine, and nobody spoke of anything but the price of salt.",
+    "A letter lay on the mat. Alone in the kitchen, with the door bolted, Hesper read it through twice. Nobody in the village knew she could."
+   ],
+   "expect": null,
+   "note": "a deliberate secret the text shows"
+  },
+  {
+   "id": "ok-bought",
+   "kind": null,
+   "chapters": [
+    "They had sold the grey mare at the autumn fair to pay the rent, and the stable stood empty all winter.",
+    "The market filled slowly that morning. Carts came down from the hill farms with cabbages and late apples, and the fishwives set their baskets along the wall. A boy chased a goose between the stalls until the baker caught it by the neck and handed it back to its owner. By noon the square smelled of bread and brine, and nobody spoke of anything but the price of salt.",
+    "In spring the wool money came in, and Ilse walked to the dealer's and bought the grey mare back. Next dawn she saddled her and rode down to the ford."
+   ],
+   "expect": null,
+   "note": "the object's return is explained"
+  }
+ ]
+}

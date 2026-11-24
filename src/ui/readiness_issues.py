@@ -42,6 +42,18 @@ class ChapterIssues(QTextBrowser):
     # chapter id, chapter title, sentence, offset (the Critique's expand signal)
     expand_requested = pyqtSignal(str, str, str, int)
     show_all_requested = pyqtSignal()
+    # chapter id, check label, items: work through them in the Companion (2.2)
+    companion_requested = pyqtSignal(str, str, object)
+    # "edit" | "remove" | "restore", the fact: the writer changes the style sheet
+    sheet_change_requested = pyqtSignal(str, object)
+    # "write" | "show": the editorial letter (8.2)
+    letter_requested = pyqtSignal(str)
+    # chapter id: show that chapter's row (a link in the letter)
+    chapter_requested = pyqtSignal(str)
+    # the item, the check's name, True (intended) or False (take it back)
+    intended_requested = pyqtSignal(object, str, bool)
+    # save the editor's brief (the document to send with the manuscript)
+    brief_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -51,6 +63,14 @@ class ChapterIssues(QTextBrowser):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self._links: List[Tuple[str, Any]] = []
         self._chapter = None
+        # The book's style sheet (story_ledger facts), shown from the
+        # Whole manuscript row; the scorecard sets it.
+        self.style_sheet: List[Dict[str, Any]] = []
+        self.style_sheet_removed: List[Dict[str, Any]] = []
+        # The last editorial letter (editorial_letter.stored), or None.
+        self.letter: Optional[Dict[str, Any]] = None
+        # Where the manuscript stands before an editor (editor_pass.plan), or None.
+        self.editor_plan = None
 
     # ── Showing ──────────────────────────────────────────────────
 
@@ -73,9 +93,10 @@ class ChapterIssues(QTextBrowser):
         parts = [f"<div style='font-size:14px; font-weight:bold; color:{PALETTE['ink']}'>"
                  f"{_e(title)}</div>",
                  f"<div style='color:{PALETTE['ink_faint']}'>{ch.words:,} words"
-                 + (" · the opening chapter" if ch.is_opening else "")
-                 + (" · checks that look across every chapter" if ch.chapter_id == rd.BOOK_ROW
-                    else "") + "</div>"]
+                 + ({rd.BOOK_ROW: " · checks that look across every chapter",
+                     rd.OPENING_ROW: " · the first pages, read as an agent reads them"}.get(
+                     ch.chapter_id, " · the opening chapter, held to a stricter bar"
+                     if ch.is_opening else "")) + "</div>"]
         names = ([s.name for s in rd.checks_for() if s.name in ch.results] if checks is None
                  else [n for n in checks if n in ch.results])
         if checks is not None:
@@ -86,13 +107,107 @@ class ChapterIssues(QTextBrowser):
         if stale:
             parts.append(f"<p style='color:{PALETTE['warning']}'>The chapter has changed since "
                          "this check; click Check readiness for current results.</p>")
+        # The big picture first: major issues, then other factors, then polish.
+        tier_of = lambda n: rd.REGISTRY[n].tier if n in rd.REGISTRY else "factor"
+        names = sorted(names, key=lambda n: rd.TIERS.index(tier_of(n)))
+        shown_tier = None
         for name in names:
+            if checks is None and tier_of(name) != shown_tier:
+                shown_tier = tier_of(name)
+                parts.append(f"<div style='margin-top:14px; font-size:11px; font-weight:bold; "
+                             f"letter-spacing:1px; color:{PALETTE['ink_faint']}'>"
+                             f"{_e(rd.TIER_LABELS[shown_tier].upper())}</div>")
             parts.append(self._check_html(name, ch.results[name], text, ch))
-        if ch.chapter_id != rd.BOOK_ROW:
+        if ch.chapter_id == rd.BOOK_ROW and self.editor_plan is not None:
+            plan = self.editor_plan
+            colour = PALETTE["success"] if plan.ready else PALETTE["ink"]
+            parts.append(f"<div style='margin-top:10px; font-weight:bold; color:{colour}'>"
+                         f"Before an editor: {_e(plan.title)}</div>"
+                         f"<div style='color:{PALETTE['ink_faint']}'>So an editor's time goes "
+                         "to the book, not to the mechanical work. In order:</div><ol "
+                         "style='margin-top:2px'>")
+            for step in plan.steps:
+                mark = "✓ " if step.done else ""
+                go = (f" <a href='{self._link('chapter', step.chapter_id)}'>Start there</a>"
+                      if step.chapter_id and not step.done else "")
+                parts.append(f"<li><b>{mark}{_e(step.title)}.</b> {_e(step.line)}{go}</li>")
+            parts.append(f"</ol><p style='color:{PALETTE['ink_soft']}'><b>Editor's brief:</b> "
+                         "the state of the manuscript, open questions, your deliberate "
+                         "choices, the style sheet and the outline, to send with it. "
+                         f"<a href='{self._link('brief', None)}'>Save the editor's brief…</a></p>")
+        if ch.chapter_id == rd.BOOK_ROW:
+            if self.letter:
+                state = (" (the book has changed since)" if self.letter.get("stale") else "")
+                links = (f"<a href='{self._link('letter-show', None)}'>Show the letter</a> · "
+                         f"<a href='{self._link('letter-write', None)}'>write it again</a>")
+                made = f"written {_e(self.letter.get('made_at', ''))}{state}. "
+            else:
+                made = ("the three to five most important issues across the book, each "
+                        "with where it shows. ")
+                links = f"<a href='{self._link('letter-write', None)}'>Write the letter</a>"
+            parts.append(f"<p style='color:{PALETTE['ink_soft']}'><b>Editorial letter:</b> "
+                         f"{made}{links}</p>")
+        if ch.chapter_id == rd.BOOK_ROW and self.style_sheet:
+            chapters = len({f.get("chapter_id") for f in self.style_sheet})
+            parts.append(
+                f"<p style='color:{PALETTE['ink_soft']}'><b>Style sheet:</b> "
+                f"{len(self.style_sheet)} facts recorded from {chapters} "
+                f"chapter{'s' if chapters != 1 else ''}; each later chapter is read against "
+                f"them. <a href='{self._link('sheet', None)}'>Show the style sheet</a></p>")
+        if ch.chapter_id not in (rd.BOOK_ROW, rd.OPENING_ROW):
             parts.append(f"<p style='color:{PALETTE['ink_faint']}'>For this chapter's full "
                          "reports (pacing, voice, dialogue and the rest), <b>Run Critique</b> "
                          "below; it is set to this chapter.</p>")
         self.setHtml("".join(parts))
+        self._fit()
+
+    def show_style_sheet(self) -> None:
+        """The facts the model recorded, by character, place or thing, with
+        the words that establish each (click to go there)."""
+        from src.ai.story_ledger import grouped
+        self._links = []
+        parts = [f"<div style='font-size:14px; font-weight:bold; color:{PALETTE['ink']}'>"
+                 "Style sheet</div>",
+                 f"<div style='color:{PALETTE['ink_faint']}'>What each chapter establishes, "
+                 "as the model recorded it. Later chapters are read against these, so "
+                 "reword or remove any that are wrong. · "
+                 f"<a href='{self._link('all', None)}'>back to the checks</a></div>"]
+        for subject, facts in grouped(self.style_sheet).items():
+            parts.append(f"<div style='margin-top:10px; font-weight:bold; "
+                         f"color:{PALETTE['ink']}'>{_e(subject)}</div>")
+            for f in facts:
+                parts.append(
+                    f"<div style='margin-left:12px'>{_e(f.get('fact', ''))} "
+                    f"<span style='color:{PALETTE['ink_faint']}'>· {_e(f.get('chapter', ''))} · "
+                    f"</span><a href='{self._link('fact', f)}' style='color:"
+                    f"{PALETTE['ink_soft']}'>“{_e(f.get('quote', ''))}”</a> · "
+                    f"<a href='{self._link('sheet-edit', f)}'>reword</a> · "
+                    f"<a href='{self._link('sheet-remove', f)}'>remove</a></div>")
+        if self.style_sheet_removed:
+            parts.append(f"<div style='margin-top:14px; font-weight:bold; "
+                         f"color:{PALETTE['ink_faint']}'>Removed by you</div>")
+            for f in self.style_sheet_removed:
+                parts.append(
+                    f"<div style='margin-left:12px; color:{PALETTE['ink_faint']}'>"
+                    f"{_e(f.get('subject', ''))}: {_e(f.get('fact', ''))} · "
+                    f"{_e(f.get('chapter', ''))} · "
+                    f"<a href='{self._link('sheet-restore', f)}'>put back</a></div>")
+        self.setHtml("".join(parts))
+        self._fit()
+
+    def show_letter(self, titles: Optional[Dict[str, str]] = None) -> None:
+        """The editorial letter; a chapter's name opens its row."""
+        from src.ai.editorial_letter import to_html
+        if not self.letter:
+            return
+        self._links = []
+        if titles:
+            self._titles = titles
+        back = (f"<div style='color:{PALETTE['ink_faint']}'>"
+                f"<a href='{self._link('all', None)}'>back to the checks</a> · "
+                f"<a href='{self._link('letter-write', None)}'>write it again</a></div>")
+        self.setHtml(to_html(self.letter, getattr(self, "_titles", {}) or {},
+                             lambda cid: self._link("chapter", cid), PALETTE) + back)
         self._fit()
 
     def show_message(self, text: str) -> None:
@@ -108,8 +223,11 @@ class ChapterIssues(QTextBrowser):
         stage = spec.stage if spec else ""
         colour = STAGE_COLOURS.get(stage, PALETTE["ink"])
         display = getattr(spec, "display", "count") if spec else "count"
+        unread = result.status == "needs_model" and not result.found
         if result.status == "info":
             summary = "information, not counted"
+        elif unread:
+            summary = "not read yet"
         elif display == "measure" and result.measure is not None:
             summary = f"{STATUS_WORDS.get(result.status, result.status)}: {result.measure:g}"
         else:
@@ -124,15 +242,28 @@ class ChapterIssues(QTextBrowser):
         out = [head]
         if result.message:
             out.append(f"<div style='color:{PALETTE['ink_faint']}'>{_e(result.message)}</div>")
-        items = [i for i in result.items if i.verdict != "cleared"]
+        cleared = [i for i in result.items if i.verdict == "cleared"]
+        meant = [i for i in result.items if i.verdict != "cleared" and i.dismissed]
+        items = [i for i in result.items if i.verdict != "cleared" and not i.dismissed]
         if result.status == "could_not_check":
             out.append(f"<div style='color:{PALETTE['error']}'>{_e(result.error)}</div>")
             return "".join(out)
         if result.status == "info" and not items:
             return "".join(out)
-        if not items:
-            out.append(f"<div style='color:{PALETTE['success']}'>Nothing found.</div>")
+        fixable = [i for i in items if i.end > i.start]
+        if fixable and result.status in ("needs_work", "problem", "needs_model"):
+            out.append(f"<div><a href='{self._link('companion', name)}'>Work through these in "
+                       "the Companion →</a></div>")
+        if unread:
+            out.append(f"<div style='color:{PALETTE['ink_faint']}'>Use “Check the book with "
+                       "the model…” to read for this.</div>")
             return "".join(out)
+        if not items:
+            out.append(f"<div style='color:{PALETTE['success']}'>"
+                       + ("Nothing left: the model cleared them all." if cleared
+                          else "Nothing left: you said the rest is intended." if meant
+                          else "Nothing found.") + "</div>")
+            return "".join(out) + self._meant_html(name, meant) + self._cleared_html(cleared)
         groups = self._group(items)
         out.append("<ol style='margin-top:4px'>")
         for key, group in list(groups.items())[:MAX_PER_CHECK]:
@@ -145,7 +276,28 @@ class ChapterIssues(QTextBrowser):
         if len(result.items) < result.found:
             out.append(f"<div style='color:{PALETTE['ink_faint']}'>Only the first "
                        f"{len(result.items)} of {result.found} are kept.</div>")
-        return "".join(out)
+        return "".join(out) + self._meant_html(name, meant) + self._cleared_html(cleared)
+
+    def _meant_html(self, name: str, meant) -> str:
+        """What the writer said is intended: listed, not counted, undoable."""
+        if not meant:
+            return ""
+        rows = "".join(
+            f"<div style='margin-left:12px'>“{_e(i.text[:120])}” · "
+            f"<a href='{self._link('unintend', (i, name))}'>take that back</a></div>"
+            for i in meant[:12])
+        return (f"<div style='color:{PALETTE['ink_faint']}; margin-top:4px'>You said these are "
+                f"intended (they go in the editor's brief):{rows}</div>")
+
+    def _cleared_html(self, cleared) -> str:
+        """What the model judged fine: shown, not counted."""
+        if not cleared:
+            return ""
+        rows = "".join(f"<li>“{_e(i.text[:90])}” — {_e(i.note or 'fine as written')}</li>"
+                       for i in cleared[:20])
+        more = f"<li>…and {len(cleared) - 20} more</li>" if len(cleared) > 20 else ""
+        return (f"<div style='color:{PALETTE['ink_faint']}; margin-top:4px'>Cleared by the "
+                f"model (not counted):<ul style='margin-top:2px'>{rows}{more}</ul></div>")
 
     @staticmethod
     def _group(items) -> "OrderedDict[str, list]":
@@ -177,11 +329,12 @@ class ChapterIssues(QTextBrowser):
             bits.append(f"<br><a href='{self._link('show', first)}'>Show in chapter</a> · "
                         f"<a href='{self._link('expand', first)}'>Ways to expand it…</a>")
             return "".join(bits) + where
-        kind = {"spelling": "Spelling", "grammar": "Grammar"}.get(first.kind, first.kind.title())
+        kind = {"spelling": "Spelling", "grammar": "Grammar"}.get(first.kind, "")
         bits.append(f"<b>{_e(first.text)}</b>{times} "
-                    f"<span style='color:{PALETTE['ink_faint']}'>{_e(kind)}</span>")
+                    + (f"<span style='color:{PALETTE['ink_faint']}'>{_e(kind)}</span>"
+                       if kind else ""))
         reason = first.reason
-        if reason and reason.lower() not in ("possible misspelling.", kind.lower()):
+        if reason and reason.lower() not in ("possible misspelling.", (kind or "-").lower()):
             bits.append(f" — <span style='color:{PALETTE['ink_soft']}'>{_e(reason)}</span>")
         sentence = _sentence(text, first.start, first.end)
         if sentence:
@@ -189,11 +342,20 @@ class ChapterIssues(QTextBrowser):
             bits.append(f"<br><span style='color:{PALETTE['ink_soft']}'>…{_e(before)}"
                         f"<b style='background:{PALETTE['primary_tint']}'>{_e(word)}</b>"
                         f"{_e(after)}…</span>")
+        if first.verdict == "problem" and first.note:
+            bits.append(f"<br><span style='color:{PALETTE['ink_soft']}'>The model: {_e(first.note)}"
+                        "</span>")
         if first.suggestions:
             bits.append(f"<br><span style='color:{PALETTE['ink_faint']}'>Try: "
                         + ", ".join(f"“{_e(s)}”" for s in first.suggestions[:4]) + "</span>")
+        links = []
         if first.end > first.start or first.chapter_id:
-            bits.append(f"<br><a href='{self._link('show', first)}'>Show in chapter</a>")
+            links.append(f"<a href='{self._link('show', first)}'>Show in chapter</a>")
+        from src.ai.editor_pass import is_query
+        if is_query(first) and first.key:
+            links.append(f"<a href='{self._link('intend', (first, name))}'>That's intended</a>")
+        if links:
+            bits.append("<br>" + " · ".join(links))
         return "".join(bits) + where
 
     # ── Links ────────────────────────────────────────────────────
@@ -211,11 +373,50 @@ class ChapterIssues(QTextBrowser):
         ch = self._chapter
         if kind == "all":
             self.show_all_requested.emit()
+        elif kind == "sheet":
+            self.show_style_sheet()
+        elif kind in ("intend", "unintend"):
+            self.intended_requested.emit(item[0], item[1], kind == "intend")
+        elif kind == "brief":
+            self.brief_requested.emit()
+        elif kind.startswith("letter-"):
+            self.letter_requested.emit(kind[7:])
+        elif kind == "chapter":
+            self.chapter_requested.emit(item)
+        elif kind.startswith("sheet-"):
+            self.sheet_change_requested.emit(kind[6:], item)
+        elif kind == "fact":
+            self.show_requested.emit(item.get("chapter_id", ""), item.get("quote", ""), 0)
+        elif ch is not None and kind == "companion":
+            self.request_companion(ch, [item])
         elif ch is not None and kind == "show":
             self.show_requested.emit(item.chapter_id or ch.chapter_id, item.text, item.start)
         elif ch is not None and kind == "expand":
             cid = item.chapter_id or ch.chapter_id
             self.expand_requested.emit(cid, self._titles.get(cid, ch.title), item.text, item.start)
+
+    def request_companion(self, chapter_report, check_names) -> bool:
+        """Ask for these checks' findings in the Companion. For the whole-book
+        and opening rows, the chapter is that of the first finding."""
+        from src.ai import readiness as rd
+        items, labels = [], []
+        for name in check_names:
+            r = chapter_report.results.get(name)
+            if r is None:
+                continue
+            spec = rd.REGISTRY.get(name)
+            labels.append(spec.label if spec else name)
+            items += [i for i in r.items if i.verdict != "cleared" and i.end > i.start]
+        if not items:
+            return False
+        cid = chapter_report.chapter_id
+        if cid in (rd.BOOK_ROW, rd.OPENING_ROW):
+            cid = next((i.chapter_id for i in items if i.chapter_id), "")
+            items = [i for i in items if i.chapter_id == cid]
+        if not cid:
+            return False
+        self.companion_requested.emit(cid, " / ".join(labels), items)
+        return True
 
     def _fit(self) -> None:
         """As tall as the list, up to about 45% of the window; then it
@@ -251,31 +452,7 @@ def _sentence(text: Optional[str], start: int, end: int,
 
 
 def show_passage(main_window, chapter_id: str, passage: str, offset: int) -> None:
-    """Open the chapter in Write and select the passage nearest ``offset``
-    (used by the issue links). The editor's hover card then offers its
-    fixes, as for any underlined word."""
-    import re
-    me = getattr(main_window, "manuscript_editor", None)
-    if me is None:
-        return
-    main_window.tab_widget.setCurrentWidget(me)
-    ce = me.current_chapter_editor
-    if chapter_id and (ce is None or getattr(ce.chapter, "id", None) != chapter_id):
-        me.open_chapter(chapter_id)
-        ce = me.current_chapter_editor
-    if ce is None:
-        return
-    text = ce.editor.toPlainText()
-    hits = [m.start() for m in re.finditer(re.escape(passage), text)] if passage else []
-    if not hits:
-        main_window.statusBar().showMessage(
-            "That passage has changed since the check; check readiness again.", 5000)
-        return
-    start = min(hits, key=lambda i: abs(i - offset))
-    from src.ai.passage_critique import py_to_qt_index
-    cursor = ce.editor.textCursor()
-    cursor.setPosition(py_to_qt_index(text, start))
-    cursor.setPosition(py_to_qt_index(text, start + len(passage)), cursor.MoveMode.KeepAnchor)
-    ce.editor.setTextCursor(cursor)
-    ce.editor.ensureCursorVisible()
-    ce.editor.setFocus()
+    """Open the chapter in Write and select the passage nearest ``offset``.
+    Kept for callers; the work is the revision controller's (R.5)."""
+    from src.ui.revision_controller import RevisionController
+    RevisionController(main_window).show_passage(chapter_id, passage, offset)

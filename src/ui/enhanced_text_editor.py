@@ -1420,6 +1420,8 @@ class EnhancedTextEditor(QTextEdit):
         from src.utils.editor_flags import project_vocabulary
         words, names = project_vocabulary(project)
         self.spell_checker.set_project_words(words)
+        from src.utils import proof_store
+        proof_store.load(project)      # a model's stored corrections (P.4)
         self._project = project
         self.writing_highlighter.project = project
         self.overuse_detector.set_names(names + self._allowed_words())

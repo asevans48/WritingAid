@@ -55,6 +55,34 @@ def _isolated_window_geometry(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _american_spelling_by_default():
+    """The British / period spelling settings start off in every test (and
+    never read the writer's real settings)."""
+    from src.utils import spelling_varieties as sv
+    sv.set_for_session(False, False)
+    yield
+    sv.set_for_session(False, False)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_model_verdicts():
+    """The flag and repetition judges remember verdicts in memory; one
+    test's "intended word" must not leak into the next."""
+    try:
+        from src.ai import flag_judge, repetition_judge
+    except Exception:
+        yield
+        return
+    flag_judge._CACHE.clear()
+    repetition_judge._CACHE.clear()
+    from src.utils import proof_store
+    proof_store.clear()                 # a model's stored corrections
+    yield
+    flag_judge._CACHE.clear()
+    repetition_judge._CACHE.clear()
+
+
+@pytest.fixture(autouse=True)
 def _isolated_critique_resume(tmp_path, monkeypatch):
     """A stopped critique's finished reports: beside a saved project (a
     temporary folder in tests); an unsaved one's go to a temporary folder."""

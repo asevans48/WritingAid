@@ -191,7 +191,7 @@ def test_dialogue_fit_needs_known_voices(tmp_path):
 def test_continuity(tmp_path):
     p = _project(tmp_path, CLEAN)
     book = rd.book_report(p)
-    assert book.book_results["continuity_in_book"].status == rd.Status.NEEDS_MODEL
+    assert book.chapters[0].results["continuity"].status == rd.Status.NEEDS_MODEL
     assert "continuity_novellas" not in book.book_results           # no novellas
     sp = p.create_subproject("Novella")
     ch = Chapter(id="n1", number=1, title="N1", folder_root=sp.manuscript.folder_root)

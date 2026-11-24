@@ -83,6 +83,7 @@ class Task(QThread):
     """Runs ``fn`` on a worker thread. ``done(result, error)``."""
     done = pyqtSignal(object, str)          # result, error ("" when it worked)
     progress = pyqtSignal(str)
+    data = pyqtSignal(object)               # results so far, for screens that fill as they go
 
     def __init__(self, fn: Callable[..., Any]):
         super().__init__()
@@ -103,6 +104,10 @@ class Task(QThread):
         """Called from the work to show progress."""
         self.progress.emit(str(message))
 
+    def send(self, value: Any) -> None:
+        """Called from the work to hand over results so far (``on_data``)."""
+        self.data.emit(value)
+
     def run(self):
         try:
             result = self.fn(task=self) if self._pass_task else self.fn()
@@ -115,6 +120,7 @@ class Task(QThread):
 
 def run_background(fn: Callable[..., Any], on_done: Callable[[Any, str], None], *,
                    on_progress: Optional[Callable[[str], None]] = None,
+                   on_data: Optional[Callable[[Any], None]] = None,
                    owner: Optional[QObject] = None,
                    label: str = "background") -> Task:
     """Run ``fn`` in the background; ``on_done(result, error)`` on the GUI
@@ -135,6 +141,9 @@ def run_background(fn: Callable[..., Any], on_done: Callable[[Any, str], None], 
     task.done.connect(safe(deliver, label))
     if on_progress is not None:
         task.progress.connect(safe(lambda m: alive["owner"] and on_progress(m), label))
+    if on_data is not None:
+        task.data.connect(safe(lambda v: alive["owner"] and not task.stopping and on_data(v),
+                               label))
     start(task)
     return task
 

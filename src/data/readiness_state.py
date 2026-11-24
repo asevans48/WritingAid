@@ -191,6 +191,30 @@ def store_book(project: Any, scope: Optional[str], results: Dict[str, Any]) -> b
     return update(project, change)
 
 
+HISTORY_DAYS = 365
+
+
+def history(project: Any, scope: Optional[str]) -> list:
+    """The manuscript's daily readiness record, oldest first (2.4)."""
+    m = load(project)["manuscripts"].get(scope_key(scope), {})
+    h = m.get("history") if isinstance(m, dict) else None
+    return [e for e in (h or []) if isinstance(e, dict) and "date" in e]
+
+
+def record_history(project: Any, scope: Optional[str], entry: Dict[str, Any]) -> bool:
+    """Today's figure for a manuscript: one entry per day (the latest check
+    of the day wins), at most a year kept."""
+    def change(data):
+        m = manuscript_entry(data, scope)
+        h = [e for e in (m.get("history") or []) if isinstance(e, dict)]
+        if h and h[-1].get("date") == entry.get("date"):
+            h[-1] = entry
+        else:
+            h.append(entry)
+        m["history"] = h[-HISTORY_DAYS:]
+    return update(project, change)
+
+
 def dismissed_keys(project: Any) -> Set[str]:
     """Pattern keys the writer dismissed (3.3); empty until then."""
     d = load(project).get("dismissed")

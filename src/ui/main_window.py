@@ -3258,6 +3258,8 @@ class MainWindow(QMainWindow):
             self._on_chapter_externally_modified)
 
         # Connect grader widget signals
+        from src.ui.revision_controller import RevisionController    # R.5
+        self.revision = RevisionController(self)
         self.grader_widget.go_to_line_requested.connect(self._go_to_critique_line)
         self.grader_widget.ask_about_suggestion.connect(self._ask_about_critique_suggestion)
         self.grader_widget.expand_statement_requested.connect(self._expand_critique_statement)
@@ -7311,9 +7313,8 @@ class MainWindow(QMainWindow):
         self.grader_widget.set_project(self.current_project)
         self.grader_widget.set_content_provider(self.manuscript_editor.get_current_chapter_info)
         self.grader_widget.scorecard.set_live_source(self.manuscript_editor)   # scorecard (2.1)
-        from src.ui.readiness_issues import show_passage
-        self.grader_widget.scorecard.issues.show_requested.connect(
-            lambda cid, passage, offset: show_passage(self, cid, passage, offset))
+        self.grader_widget.scorecard.issues.show_requested.connect(self.revision.show_passage)
+        self.grader_widget.scorecard.issues.companion_requested.connect(self.revision.open_fixes)
 
         # Wire the project into the Video Studio. The studio reads
         # project.video_studio (creating it on first use) and uses
@@ -14294,6 +14295,8 @@ class MainWindow(QMainWindow):
             # Save settings persistently
             if self.ai_config.save_settings(self.settings):
                 self.statusBar().showMessage("AI settings saved successfully", 3000)
+                from src.ui.spelling_settings import apply_spelling_settings
+                apply_spelling_settings(self)
             else:
                 QMessageBox.warning(
                     self,
@@ -14988,143 +14991,14 @@ class MainWindow(QMainWindow):
                 break
 
     def _go_to_critique_line(self, number: int):
-        """Navigate to a specific sentence or paragraph from critique feedback.
-
-        Args:
-            number: The sentence number (positive, 1-indexed) or
-                   paragraph number (negative, 1-indexed as -N) from the critique
-        """
-        import re
-
-        # Switch to Write tab
-        self.tab_widget.setCurrentWidget(self.manuscript_editor)
-
-        # Get current chapter editor
-        if not self.manuscript_editor.current_chapter_editor:
-            return
-
-        editor = self.manuscript_editor.current_chapter_editor.editor
-        if not editor:
-            return
-
-        # Get the chapter text
-        text = editor.toPlainText()
-        if not text:
-            return
-
-        # Determine mode: positive = sentence, negative = paragraph
-        is_paragraph_mode = number < 0
-        target_number = abs(number)
-
-        if is_paragraph_mode:
-            # Paragraph navigation
-            paragraphs = text.split('\n\n')
-            paragraphs = [p.strip() for p in paragraphs if p.strip()]
-
-            if target_number < 1 or target_number > len(paragraphs):
-                return
-
-            target_text = paragraphs[target_number - 1]
-
-            # Find position of the paragraph
-            position = 0
-            for i in range(target_number - 1):
-                if i < len(paragraphs):
-                    found = text.find(paragraphs[i], position)
-                    if found >= 0:
-                        position = found + len(paragraphs[i])
-
-            position = text.find(target_text, position)
-            if position < 0:
-                position = 0
-
-            # Select the paragraph
-            end_pos = position + len(target_text)
-            status_msg = f"Navigated to paragraph {target_number}"
-        else:
-            # Sentence navigation (original behavior)
-            sentences = re.split(r'(?<=[.!?])\s+', text)
-            sentences = [s.strip() for s in sentences if s.strip()]
-
-            if target_number < 1 or target_number > len(sentences):
-                return
-
-            target_text = sentences[target_number - 1]
-
-            # Find the position of this sentence in the text
-            position = 0
-            current_sentence = 0
-            for match in re.finditer(r'[^.!?]*[.!?]', text):
-                sentence_text = match.group().strip()
-                if sentence_text:
-                    current_sentence += 1
-                    if current_sentence == target_number:
-                        position = match.start()
-                        break
-
-            # If regex approach didn't work, try direct search
-            if position == 0 and target_number > 1:
-                pos = 0
-                for i in range(target_number - 1):
-                    if i < len(sentences):
-                        found = text.find(sentences[i], pos)
-                        if found >= 0:
-                            pos = found + len(sentences[i])
-                position = text.find(target_text, pos)
-
-            end_pos = position + len(target_text)
-            status_msg = f"Navigated to sentence {target_number}"
-
-        # Move cursor and select the text
-        cursor = editor.textCursor()
-        cursor.setPosition(position)
-
-        if end_pos <= len(text):
-            cursor.setPosition(position)
-            cursor.setPosition(end_pos, cursor.MoveMode.KeepAnchor)
-        else:
-            cursor.movePosition(cursor.MoveOperation.EndOfBlock, cursor.MoveMode.KeepAnchor)
-
-        editor.setTextCursor(cursor)
-        editor.ensureCursorVisible()
-        editor.setFocus()
-
-        # Show a brief status message
-        self.statusBar().showMessage(status_msg, 3000)
+        """Go to a sentence (positive) or paragraph (negative) from critique
+        feedback (moved to the revision controller, R.5)."""
+        self.revision.go_to_line(number)
 
     def _expand_critique_statement(self, chapter_id: str, title: str, sentence: str,
                                    offset: int):
-        """Open an overly descriptive statement from the Critique tab in the
-        editor, with ways to expand it."""
-        import re
-        me = self.manuscript_editor
-        self.tab_widget.setCurrentWidget(me)
-        project = getattr(me, "project", None) or getattr(self, "current_project", None)
-        if not chapter_id and title and project is not None:
-            ce = me.current_chapter_editor
-            if ce is None or getattr(ce.chapter, "title", "") != title:
-                chapter_id = next((c.id for _, ms in project.iter_manuscripts()
-                                   for c in ms.chapters if c.title == title), "")
-        if chapter_id:
-            me.open_chapter(chapter_id)
-        ce = me.current_chapter_editor
-        if ce is None:
-            return
-        text = ce.editor.toPlainText()
-        hits = [m.start() for m in re.finditer(re.escape(sentence), text)] if sentence else []
-        if not hits:
-            self.statusBar().showMessage(
-                "That statement has changed since the critique — run it again.", 5000)
-            return
-        start = min(hits, key=lambda i: abs(i - offset))
-        from src.ai.passage_critique import py_to_qt_index
-        cursor = ce.editor.textCursor()
-        cursor.setPosition(py_to_qt_index(text, start))
-        cursor.setPosition(py_to_qt_index(text, start + len(sentence)),
-                           cursor.MoveMode.KeepAnchor)
-        ce.editor.setTextCursor(cursor)
-        ce.editor.ensureCursorVisible()
-        ce.expand_statement(start, start + len(sentence))
+        """Open an overly descriptive statement with ways to expand it (R.5)."""
+        self.revision.expand_statement(chapter_id, title, sentence, offset)
 
     def _ask_about_critique_suggestion(self, suggestion_type: str, original_text: str,
                                         suggestion: str, explanation: str):

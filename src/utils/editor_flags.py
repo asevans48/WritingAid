@@ -244,8 +244,8 @@ class FlagRules:
         if self._should_check(self._spell_mode):
             typing_end = (self._typing[1] if self._typing and self._typing[0] == block_number
                           else -1)
-            from src.utils.proofing import normalize_apostrophes
-            for match in re.finditer(r"[A-Za-z]+(?:'[A-Za-z]+)*", normalize_apostrophes(text)):
+            from src.utils.proofing import SPELL_TOKEN_RX, normalize_apostrophes
+            for match in SPELL_TOKEN_RX.finditer(normalize_apostrophes(text)):
                 word = text[match.start():match.end()]   # as typed (any apostrophe)
                 if match.end() == typing_end:
                     continue  # still being typed
@@ -272,7 +272,9 @@ class FlagRules:
         # Grammar: built-in rules (live) + cached LanguageTool results.
         if self._should_check(self._grammar_mode) and self.grammar_checker:
             from src.utils.proofing import builtin_grammar, merge_issues
-            issues = merge_issues(self._lt_issues_for_block(text), builtin_grammar(text))
+            from src.utils.proof_store import issues_for as model_issues
+            issues = merge_issues(self._lt_issues_for_block(text), builtin_grammar(text),
+                                  model_issues(text))    # a model's corrections (P.4)
             from src.ai import flag_judge as fj
             from src.ai.word_suggest import sentence_around
             for issue in issues:

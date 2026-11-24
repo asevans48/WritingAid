@@ -344,32 +344,46 @@ class SpellChecker:
         known ("Ash Wardens" → ash, wardens)."""
         vocab = set()
         for w in words or []:
-            for part in re.findall(r"[A-Za-z]+(?:['’][A-Za-z]+)*", str(w)):
+            from src.utils.proofing import SPELL_TOKEN_RX
+            for part in SPELL_TOKEN_RX.findall(str(w)):
                 vocab.add(_apos(part.lower()))
         self._project_words = vocab
         self._known_cache = {}
 
     def _is_known(self, word_lower: str) -> bool:
+        from src.utils import spelling_varieties as sv
         cache = getattr(self, "_known_cache", None)
-        if cache is None:
-            cache = self._known_cache = {}
+        if cache is None or getattr(self, "_varieties_version", None) != sv.version():
+            cache = self._known_cache = {}           # the spelling settings changed
+            self._varieties_version = sv.version()
         hit = cache.get(word_lower)
         if hit is not None:
             return hit
-        if (word_lower in self._custom_words
-                or word_lower in getattr(self, "_project_words", ())):
-            known = True
-        elif self._use_pyspellchecker and self._pyspellchecker:
-            known = bool(self._pyspellchecker.known([word_lower]))
-        elif self._use_enchant and self._enchant_dict:
-            known = bool(self._enchant_dict.check(word_lower))
-        else:
-            known = (word_lower in self._dictionary
-                     or self._check_with_suffixes(word_lower))
+        known = self._base_known(word_lower)
+        if not known and not word_lower.isascii():
+            # An accented word the dictionary holds without its accents
+            # (café, naïve, Zoë).
+            from src.utils.proofing import unaccented
+            known = self._base_known(unaccented(word_lower))
+        if not known:
+            # British or period spellings, when the writer's settings accept them.
+            known = sv.accepts(word_lower, self._base_known)
         if len(cache) > 50000:
             cache.clear()
         cache[word_lower] = known
         return known
+
+    def _base_known(self, word_lower: str) -> bool:
+        """Known to the project, the writer's own words or the dictionary."""
+        if (word_lower in self._custom_words
+                or word_lower in getattr(self, "_project_words", ())):
+            return True
+        if self._use_pyspellchecker and self._pyspellchecker:
+            return bool(self._pyspellchecker.known([word_lower]))
+        if self._use_enchant and self._enchant_dict:
+            return bool(self._enchant_dict.check(word_lower))
+        return (word_lower in self._dictionary
+                or self._check_with_suffixes(word_lower))
 
     # A sentence-initial unknown word is treated as a misspelling (not a
     # name) when its best correction is at least this common in English.

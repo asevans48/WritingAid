@@ -203,8 +203,12 @@ class LLMClient:
         # Conversation history for current session
         self._current_messages: List[Dict[str, str]] = []
 
-        # Default models
-        self.model = model or self._get_default_model()
+        # The model's name: the one asked for; for a local model, the one
+        # its config loads (never the provider's default, which named a
+        # different model in results and logs); else the provider's default.
+        local_id = (getattr(hf_config, "model_id", "") or "") if provider in (
+            LLMProvider.HUGGINGFACE_LOCAL, LLMProvider.MLX_LOCAL) else ""
+        self.model = model or local_id or self._get_default_model()
 
         # Initialize provider-specific client
         self.client = None

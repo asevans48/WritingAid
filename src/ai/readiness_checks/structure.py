@@ -13,6 +13,7 @@ def _genre(ctx: CheckContext):
 
 
 @check(name="pacing", stage="structure", label="Pacing for the genre", version=1, weight=55,
+       judge=False,
        description="Sentence rhythm against the genre's usual ranges: average sentence "
                    "length, variety, and the share of long sentences (the Critique's Pacing "
                    "measures, no model needed). Most published chapters stray on one of "
@@ -39,7 +40,7 @@ def pacing(ctx: CheckContext) -> CheckOutput:
                        message=where)
 
 
-@check(name="chapter_length", stage="structure", label="Chapter length", counts=False,
+@check(name="chapter_length", stage="structure", label="Chapter length", counts=False, judge=False,
        version=1, weight=0,
        description="The chapter's length beside what is common. Information only: never "
                    "a pass or a fail.")
@@ -93,7 +94,7 @@ def subplots(ctx: CheckContext) -> CheckOutput:
 
 
 @check(name="promises", stage="structure", label="Promises kept", level="book",
-       needs_model=True, version=1, weight=60,
+       needs_model=True, model_ready=False, version=1, weight=60,
        description="Whether the chapters deliver on the promises in your plan. Nothing in "
                    "the plan links a chapter to a promise, so a model reads the chapters to "
                    "judge it (from piece 1.7).")
@@ -101,5 +102,6 @@ def promises(ctx: CheckContext) -> CheckOutput:
     found = getattr(ctx.planning, "promises", None) or []
     if not found:
         return NOT_APPLICABLE
-    return CheckOutput(message=f"{len(found)} promise(s) in the plan. A model judges whether "
-                               "the chapters keep them; without one this isn't counted.")
+    return CheckOutput(message=f"{len(found)} promise(s) in the plan. Not counted yet: run the "
+                               "Critique's Plot & Promises report (with a model) to see whether "
+                               "the chapters keep them.")
