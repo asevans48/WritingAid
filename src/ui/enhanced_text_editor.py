@@ -1970,6 +1970,8 @@ class EnhancedTextEditor(QTextEdit):
                 lambda: self._ignore_error(block_number, error.start, error.word, error.error_type)
             )
 
+            from src.ui import intentional_menu; intentional_menu.add_to_menu(self, menu, error, block)  # 4.1
+
             # Add to dictionary (for spelling errors)
             if error.error_type == ErrorType.SPELLING:
                 add_dict_action = menu.addAction(f"Add '{error.word}' to Dictionary")

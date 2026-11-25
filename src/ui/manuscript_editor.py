@@ -24,7 +24,7 @@ from src.utils.markdown_editor import MarkdownStyle, toggle_inline_style
 from src.utils.thesaurus import get_synonyms, get_antonyms
 from src.ui.styles import SYSTEM_FONT
 from src.ui import notify  # quiet messages (D.9)
-from src.ui.ui_kit import compact_button  # narrow buttons show their symbol
+from src.ui.ui_kit import PALETTE, PRIMARY_BUTTON, compact_button, plain, plain_qss, text_style  # shared parts (U.1, D.8)
 
 
 class AnnotationMarginArea(QWidget):
@@ -304,9 +304,7 @@ class ChapterEditor(QWidget):
         self.checks_btn = QToolButton()
         self.checks_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.checks_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        self.checks_btn.setStyleSheet(
-            "QToolButton { font-size: 12px; padding: 2px 8px; border: 1px solid #d1d5db; "
-            "border-radius: 4px; } QToolButton::menu-indicator { image: none; }")
+        plain(self.checks_btn, 12, "3px 9px")
         self.checks_menu = QMenu(self.checks_btn)
         self._show_highlights_action = self.checks_menu.addAction("Show highlights")
         self._show_highlights_action.setCheckable(True)
@@ -510,22 +508,20 @@ class ChapterEditor(QWidget):
 
         # Flesch-Kincaid readability (chapter, or the current selection)
         self.readability_label = QLabel("")
-        self.readability_label.setStyleSheet("font-size: 11px; color: #4b5563; padding-left: 8px;")
+        self.readability_label.setStyleSheet(text_style("ink_soft", 11, extra="padding-left: 8px;"))
         self.readability_label.setTextFormat(Qt.TextFormat.RichText)
         bottom_toolbar.addWidget(self.readability_label)
 
         # Grammar engine status (LanguageTool starting / ready / basic rules)
         self.grammar_status_label = QLabel("")
-        self.grammar_status_label.setStyleSheet("font-size: 10px; color: #6b7280; padding-left: 8px;")
+        self.grammar_status_label.setStyleSheet(text_style("ink_faint", 10, extra="padding-left: 8px;"))
         bottom_toolbar.addWidget(self.grammar_status_label)
         self.editor.writing_highlighter.grammar_status.connect(
             self.grammar_status_label.setText)
 
         bottom_toolbar.addStretch()
 
-        menu_btn_style = ("QToolButton { font-size: 11px; padding: 3px 8px; border: 1px solid "
-                          "#d1d5db; border-radius: 4px; } QToolButton::menu-indicator "
-                          "{ image: none; }")
+        menu_btn_style = plain_qss("QToolButton", 11, "4px 9px")
 
         def menu_button(text: str, tip: str) -> Tuple[QToolButton, QMenu]:
             btn = QToolButton()
@@ -577,11 +573,7 @@ class ChapterEditor(QWidget):
         self.toggle_planner_btn.setCheckable(True)
         self.toggle_planner_btn.setToolTip(
             "Show/hide the side panel — Planner, Style issues, Feedback and Companion tabs")
-        self.toggle_planner_btn.setStyleSheet("""
-            QPushButton { background-color: #8b5cf6; color: white; font-weight: bold;
-                          padding: 3px 10px; border-radius: 3px; font-size: 11px; }
-            QPushButton:checked, QPushButton:hover { background-color: #7c3aed; }
-        """)
+        plain(self.toggle_planner_btn, 11, "3px 10px", bold=True)
         self.toggle_planner_btn.clicked.connect(self._toggle_side_panel)
         bottom_toolbar.addWidget(self.toggle_planner_btn)
 
@@ -594,7 +586,8 @@ class ChapterEditor(QWidget):
         self.right_panel = QTabWidget()
         self.right_panel.setVisible(False)
         self.right_panel.setMinimumWidth(300)
-        self.right_panel.setStyleSheet("QTabWidget::pane { border: none; } QTabBar::tab { font-size: 11px; padding: 4px 10px; }")
+        self.right_panel.setStyleSheet("QTabWidget::pane { border: none; } QTabBar::tab { font-size: 11px; padding: 4px 10px; }"
+                                       + plain_qss(size=13, pad="8px 16px"))   # D.8: every side-panel button plain but the main one
         # A ✕ on the tab bar closes the panel; ◧ Panel (bottom right) and the
         # "Where you left off" Details button bring it back.
         from src.ui.companion_panel import close_button
@@ -630,11 +623,6 @@ class ChapterEditor(QWidget):
             lambda: self.editor.textCursor().selectedText().replace("\u2029", "\n"))
         self.right_panel.addTab(self.planner_widget, "Planner")
 
-        from src.ui.style_panel import StyleIssuesPanel
-        self.style_panel = StyleIssuesPanel(self.editor)
-        self.style_panel.highlight_changed = self._sync_style_button
-        self.style_panel.consistency_requested.connect(self.consistency_requested.emit)
-        self.right_panel.addTab(self.style_panel, "Style")
         self.editor.style_rewrite_requested.connect(self._rewrite_span_with_ai)
         from src.ui import style_checks_menu; style_checks_menu.install(self)   # D.3
         self.editor.phase_changed.connect(lambda _p: self._update_checks_button())
@@ -682,6 +670,7 @@ class ChapterEditor(QWidget):
     def _show_right_panel(self, tab=None):
         """Show the side panel, optionally switching to ``tab`` (a widget,
         or an index for older callers)."""
+        from src.ui import retired_screens; tab = retired_screens.panel_tab(self, tab)   # D.6
         self.right_panel.setVisible(True)
         if isinstance(tab, int):
             self.right_panel.setCurrentIndex(tab)
@@ -1321,7 +1310,7 @@ class ChapterEditor(QWidget):
             self.readability_label.setText("")
             self.readability_label.setToolTip("")
             return
-        color = ("#059669" if r.fk_grade <= 9 else "#b45309" if r.fk_grade <= 12 else "#dc2626")
+        color = PALETTE["success_ink" if r.fk_grade <= 9 else "warning_ink" if r.fk_grade <= 12 else "error_ink"]
         self.readability_label.setText(
             f"{scope}: FK grade <b style='color:{color}'>{r.fk_grade:.1f}</b> · "
             f"Reading ease <b>{r.reading_ease:.0f}</b> ({r.ease_label})")
@@ -1520,7 +1509,7 @@ class ChapterEditor(QWidget):
     def _set_check_enabled(self, key: str, on: bool) -> None:
         self._apply_check_modes()
         if key == "style" and on:
-            self._show_right_panel(self.style_panel)
+            self._open_style_panel()
 
     def _apply_check_modes(self) -> None:
         """Push the Checks menu state to the editor."""
@@ -1534,8 +1523,6 @@ class ChapterEditor(QWidget):
         self.editor.set_grammar_mode(mode("grammar", True))
         self.editor.set_overuse_mode(mode("overuse", True))
         self.editor.set_style_mode(mode("style", False))
-        if hasattr(self, "style_panel"):
-            self.style_panel.sync_highlight()
         self._update_checks_button()
 
     def _set_highlights_visible(self, visible: bool) -> None:
@@ -1568,19 +1555,8 @@ class ChapterEditor(QWidget):
         act = self._check_actions["style"]
         act.setChecked(not act.isChecked())
 
-    def _sync_style_button(self):
-        """The Style panel toggled highlighting — mirror it in the menu."""
-        on = self.editor.get_style_mode() != CheckMode.OFF
-        act = self._check_actions["style"]
-        if act.isChecked() != on:
-            act.blockSignals(True)
-            act.setChecked(on)
-            act.blockSignals(False)
-        self._update_checks_button()
-        self.style_panel.sync_highlight()
-
     def _open_style_panel(self):
-        self._show_right_panel(self.style_panel)
+        from src.ui import retired_screens; retired_screens.open_style_issues(self)   # D.6
 
     def _rewrite_span_with_ai(self, start: int, end: int, hint: str):
         """✨ Rewrite with AI for a style issue: select the sentence and open
@@ -2617,7 +2593,7 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
             html = self.editor.toHtml() if hasattr(self.editor, 'toHtml') else ""
             project_dir = self._get_project_dir()
             self.chapter.add_revision(notes, html_content=html, project_dir=project_dir)
-            QMessageBox.information(
+            notify.notice(
                 self,
                 "Draft Saved",
                 f"Draft #{len(self.chapter.revisions)} saved."
@@ -2730,13 +2706,9 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
 
         self._sbs_search_field = QLineEdit()
         self._sbs_search_field.setPlaceholderText("Search in drafts...")
-        self._sbs_search_field.setStyleSheet("""
-            QLineEdit {
-                padding: 4px 8px; border: 1px solid #d1d5db; border-radius: 4px;
-                font-size: 11px; background: white;
-            }
-            QLineEdit:focus { border: 2px solid #6366f1; }
-        """)
+        self._sbs_search_field.setStyleSheet(
+            f"QLineEdit {{ padding: 4px 8px; border: 1px solid {PALETTE['border_strong']}; border-radius: 4px;"
+            f" font-size: 11px; background: {PALETTE['surface']}; }} QLineEdit:focus {{ border: 2px solid {PALETTE['primary']}; }}")
         self._sbs_search_field.returnPressed.connect(self._sbs_search_next)
         search_bar.addWidget(self._sbs_search_field)
 
@@ -2747,33 +2719,23 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
         search_bar.addWidget(self._sbs_search_scope)
 
         search_next_btn = QPushButton("Next")
-        search_next_btn.setStyleSheet(
-            "font-size: 11px; padding: 3px 8px; background: #6366f1; color: white;"
-            " border: none; border-radius: 4px;")
+        plain(search_next_btn)
         search_next_btn.clicked.connect(self._sbs_search_next)
         search_bar.addWidget(search_next_btn)
 
         search_prev_btn = QPushButton("Prev")
-        search_prev_btn.setStyleSheet(
-            "font-size: 11px; padding: 3px 8px; background: #6366f1; color: white;"
-            " border: none; border-radius: 4px;")
+        plain(search_prev_btn)
         search_prev_btn.clicked.connect(self._sbs_search_prev)
         search_bar.addWidget(search_prev_btn)
 
         self._sbs_search_status = QLabel("")
-        self._sbs_search_status.setStyleSheet("font-size: 10px; color: #6b7280;")
+        self._sbs_search_status.setStyleSheet(text_style("ink_faint", 10))
         search_bar.addWidget(self._sbs_search_status)
 
         search_bar.addStretch()
 
         close_sbs_btn = QPushButton("Close Side-by-Side")
-        close_sbs_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #ef4444; color: white; border: none;
-                border-radius: 4px; padding: 4px 12px; font-size: 11px; font-weight: 500;
-            }
-            QPushButton:hover { background-color: #dc2626; }
-        """)
+        plain(close_sbs_btn, 11, "4px 12px")
         close_sbs_btn.clicked.connect(self._exit_side_by_side)
         search_bar.addWidget(close_sbs_btn)
 
@@ -2790,8 +2752,8 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
 
         current_label = QLabel("Current Draft (latest)")
         current_label.setStyleSheet(
-            "font-weight: bold; font-size: 12px; color: #059669; padding: 4px 8px;"
-            "background-color: #ecfdf5; border-radius: 4px;")
+            text_style("success_ink", 12, bold=True, extra="padding: 4px 8px; border-radius: 4px;"
+                       f" background-color: {PALETTE['success_tint']};"))
         current_pane_layout.addWidget(current_label)
 
         # We'll reparent the main editor + annotation margin into this pane
@@ -2812,7 +2774,7 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
 
         current_wc = len(self.editor.toPlainText().split()) if self.editor.toPlainText().strip() else 0
         self._current_wc_label = QLabel(f"Words: {current_wc}")
-        self._current_wc_label.setStyleSheet("font-size: 11px; color: #6b7280; padding: 2px;")
+        self._current_wc_label.setStyleSheet(text_style("ink_faint", 11, extra="padding: 2px;"))
         current_pane_layout.addWidget(self._current_wc_label)
 
         self._sbs_splitter.addWidget(current_pane_widget)
@@ -2832,32 +2794,20 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
             older_title += f"  ({ref_date})"
         older_label = QLabel(older_title)
         older_label.setStyleSheet(
-            "font-weight: bold; font-size: 12px; color: #b45309; padding: 4px 8px;"
-            "background-color: #fffbeb; border-radius: 4px;")
+            text_style("warning_ink", 12, bold=True, extra="padding: 4px 8px; border-radius: 4px;"
+                       f" background-color: {PALETTE['warning_tint']};"))
         older_header.addWidget(older_label)
         older_header.addStretch()
 
         # Toggle editable
         self._ref_edit_btn = QPushButton("Make Editable")
-        self._ref_edit_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #6366f1; color: white; border: none;
-                border-radius: 4px; padding: 4px 10px; font-size: 11px;
-            }
-            QPushButton:hover { background-color: #4f46e5; }
-        """)
+        plain(self._ref_edit_btn, 11, "4px 10px")
         self._ref_edit_btn.clicked.connect(self._toggle_reference_editable)
         older_header.addWidget(self._ref_edit_btn)
 
         # Delete draft
         delete_rev_btn = QPushButton("Delete Draft")
-        delete_rev_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #ef4444; color: white; border: none;
-                border-radius: 4px; padding: 4px 10px; font-size: 11px;
-            }
-            QPushButton:hover { background-color: #dc2626; }
-        """)
+        plain(delete_rev_btn, 11, "4px 10px")
         delete_rev_btn.clicked.connect(self._delete_reference_revision)
         older_header.addWidget(delete_rev_btn)
 
@@ -2871,19 +2821,12 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
             self._reference_pane.setHtml(ref_html)
         else:
             self._reference_pane.setPlainText(ref_content)
-        self._reference_pane.setStyleSheet("""
-            QTextEdit {
-                background-color: #fffdf7;
-                border: 2px solid #fde68a;
-                border-radius: 4px;
-                padding: 8px;
-            }
-        """)
+        self._reference_pane.setStyleSheet(f"QTextEdit {{ background-color: {PALETTE['paper_warm']}; border: 2px solid {PALETTE['warning_border']}; border-radius: 4px; padding: 8px; }}")
         older_pane_layout.addWidget(self._reference_pane)
 
         ref_wc = len(ref_content.split()) if ref_content.strip() else 0
         self._ref_wc_label = QLabel(f"Words: {ref_wc}  |  Read-only")
-        self._ref_wc_label.setStyleSheet("font-size: 11px; color: #6b7280; padding: 2px;")
+        self._ref_wc_label.setStyleSheet(text_style("ink_faint", 11, extra="padding: 2px;"))
         older_pane_layout.addWidget(self._ref_wc_label)
 
         self._sbs_splitter.addWidget(older_pane_widget)
@@ -2915,26 +2858,12 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
 
         if is_readonly:
             self._ref_edit_btn.setText("Make Read-Only")
-            self._reference_pane.setStyleSheet("""
-                QTextEdit {
-                    background-color: #ffffff;
-                    border: 2px solid #f59e0b;
-                    border-radius: 4px;
-                    padding: 8px;
-                }
-            """)
+            self._reference_pane.setStyleSheet(f"QTextEdit {{ background-color: {PALETTE['surface']}; border: 2px solid {PALETTE['warning']}; border-radius: 4px; padding: 8px; }}")
             wc = len(self._reference_pane.toPlainText().split()) if self._reference_pane.toPlainText().strip() else 0
             self._ref_wc_label.setText(f"Words: {wc}  |  Editable")
         else:
             self._ref_edit_btn.setText("Make Editable")
-            self._reference_pane.setStyleSheet("""
-                QTextEdit {
-                    background-color: #fffdf7;
-                    border: 2px solid #fde68a;
-                    border-radius: 4px;
-                    padding: 8px;
-                }
-            """)
+            self._reference_pane.setStyleSheet(f"QTextEdit {{ background-color: {PALETTE['paper_warm']}; border: 2px solid {PALETTE['warning_border']}; border-radius: 4px; padding: 8px; }}")
             wc = len(self._reference_pane.toPlainText().split()) if self._reference_pane.toPlainText().strip() else 0
             self._ref_wc_label.setText(f"Words: {wc}  |  Read-only")
 
@@ -3009,10 +2938,10 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
         if found_in:
             label_parts = [{"current": "Current", "older": "Older"}[f] for f in found_in]
             self._sbs_search_status.setText(f"Found in: {', '.join(label_parts)}")
-            self._sbs_search_status.setStyleSheet("font-size: 10px; color: #059669;")
+            self._sbs_search_status.setStyleSheet(text_style("success_ink", 10))
         else:
             self._sbs_search_status.setText("Not found")
-            self._sbs_search_status.setStyleSheet("font-size: 10px; color: #ef4444;")
+            self._sbs_search_status.setStyleSheet(text_style("error_ink", 10))
 
     def _exit_side_by_side(self):
         """Exit side-by-side editing mode, restoring the editor to its original position."""
@@ -3831,19 +3760,14 @@ class ManuscriptEditor(QWidget):
         self.sidebar_toggle_btn.setFixedSize(16, 16)
         self.sidebar_toggle_btn.setIcon(self._make_arrow_icon("left"))
         self.sidebar_toggle_btn.setIconSize(QSize(10, 10))
-        self.sidebar_toggle_btn.setStyleSheet("""
-            QToolButton {
-                border: none; border-radius: 3px;
-                background: transparent;
-            }
-            QToolButton:hover { background: #e5e7eb; }
-        """)
+        self.sidebar_toggle_btn.setStyleSheet("QToolButton { border: none; border-radius: 3px; background: transparent; }"
+                                              f" QToolButton:hover {{ background: {PALETTE['surface_hover']}; }}")
         self.sidebar_toggle_btn.clicked.connect(self._toggle_sidebar)
         header_layout.addWidget(self.sidebar_toggle_btn)
 
         # Total word count (moved to left, more prominent)
         self.total_word_count_label = QLabel("Total: 0 words")
-        self.total_word_count_label.setStyleSheet("font-size: 13px; font-weight: 500; color: #6b7280;")
+        self.total_word_count_label.setStyleSheet(text_style("ink_faint", 13, extra="font-weight: 500;"))
         header_layout.addWidget(self.total_word_count_label)
 
         header_layout.addStretch()
@@ -3851,7 +3775,7 @@ class ManuscriptEditor(QWidget):
         # Draft selector — swap the editor between the main manuscript and
         # any saved draft. "Compare" opens a second window side-by-side.
         draft_label = QLabel("Editing:")
-        draft_label.setStyleSheet("font-size: 12px; color: #6b7280;")
+        draft_label.setStyleSheet(text_style("ink_faint", 12))
         header_layout.addWidget(draft_label)
 
         self.draft_selector = QComboBox()
@@ -3881,7 +3805,7 @@ class ManuscriptEditor(QWidget):
         self.compare_drafts_btn.setToolTip(
             "Toggle side-by-side editing — show another draft next to the "
             "main editor within this window")
-        self.compare_drafts_btn.setStyleSheet("font-size: 11px; padding: 3px 8px;")
+        plain(self.compare_drafts_btn)
         self.compare_drafts_btn.toggled.connect(self._toggle_split_view)
         header_layout.addWidget(self.compare_drafts_btn)
 
@@ -3889,7 +3813,7 @@ class ManuscriptEditor(QWidget):
         self.popout_draft_btn.setToolTip(
             "Open a draft in a separate pop-out window")
         self.popout_draft_btn.setMaximumWidth(30)
-        self.popout_draft_btn.setStyleSheet("font-size: 11px; padding: 3px;")
+        plain(self.popout_draft_btn, 11, "3px")
         compact_button(self.popout_draft_btn)  # narrow: show its symbol
         self.popout_draft_btn.clicked.connect(self._open_compare_window)
         header_layout.addWidget(self.popout_draft_btn)
@@ -3907,14 +3831,14 @@ class ManuscriptEditor(QWidget):
         left_layout.setSpacing(8)
 
         chapters_label = QLabel("Chapters")
-        chapters_label.setStyleSheet("font-size: 13px; font-weight: 600; color: #1a1a1a; padding: 4px;")
+        chapters_label.setStyleSheet(text_style("ink", 13, extra="font-weight: 600; padding: 4px;"))
         left_layout.addWidget(chapters_label)
 
         # Navigation buttons to switch between chapters
         nav_layout = QHBoxLayout()
         nav_layout.setSpacing(4)
 
-        nav_btn_style = "font-size: 11px; padding: 3px 8px;"
+        nav_btn_style = plain_qss()
 
         self.prev_chapter_btn = QPushButton("◀ Prev")
         self.prev_chapter_btn.setToolTip("Go to previous chapter")
@@ -3942,7 +3866,7 @@ class ManuscriptEditor(QWidget):
         button_layout = QHBoxLayout()
         button_layout.setSpacing(2)
 
-        compact_ch_btn_style = "font-size: 11px; padding: 2px 5px;"
+        compact_ch_btn_style = plain_qss(pad="2px 5px")
 
         add_button = QPushButton("+")
         add_button.setToolTip("Add new chapter at end")
@@ -3966,7 +3890,7 @@ class ManuscriptEditor(QWidget):
 
         # Hint label
         hint_label = QLabel("Right-click chapter for more options")
-        hint_label.setStyleSheet("color: #999; font-size: 10px; font-style: italic;")
+        hint_label.setStyleSheet(text_style("ink_faint", 10, italic=True))
         left_layout.addWidget(hint_label)
 
         left_panel.setMaximumWidth(250)
@@ -3980,7 +3904,7 @@ class ManuscriptEditor(QWidget):
 
         placeholder = QLabel("Add or select a chapter to begin writing")
         placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        placeholder.setStyleSheet("color: #999; font-size: 16px;")
+        placeholder.setStyleSheet(text_style("ink_faint", 16))
         self.editor_layout.addWidget(placeholder)
 
         splitter.addWidget(self.editor_container)
@@ -4001,7 +3925,7 @@ class ManuscriptEditor(QWidget):
         pixmap.fill(Qt.GlobalColor.transparent)
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(QColor("#9ca3af"))
+        pen = QPen(QColor(PALETTE['ink_disabled']))
         pen.setWidthF(1.2)
         painter.setPen(pen)
         if direction == "left":
@@ -4871,7 +4795,7 @@ class ManuscriptEditor(QWidget):
         """Show the 'select a chapter' placeholder in the editor area."""
         placeholder = QLabel("Add or select a chapter to begin writing")
         placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        placeholder.setStyleSheet("color: #999; font-size: 16px;")
+        placeholder.setStyleSheet(text_style("ink_faint", 16))
         self.editor_layout.addWidget(placeholder)
 
     def _update_total_word_count(self):
@@ -5644,7 +5568,7 @@ class ManuscriptEditor(QWidget):
 
         source_name = (self._active_draft.name
                        if self._active_draft else "the main manuscript")
-        notify.done(
+        notify.notice(
             self, "Draft Created",
             f"'{draft.name}' created with {len(draft.chapters)} chapters "
             f"(snapshotted from {source_name}).\n"
@@ -6071,15 +5995,8 @@ class ProseAnalysisDialog(QDialog):
         self._results = QTextEdit()
         self._results.setReadOnly(True)
         self._results.setFont(QFont(SYSTEM_FONT, 11))
-        self._results.setStyleSheet("""
-            QTextEdit {
-                border: 1px solid #d1d5db;
-                border-radius: 6px;
-                padding: 12px;
-                background-color: #fefefe;
-                line-height: 1.6;
-            }
-        """)
+        self._results.setStyleSheet(f"QTextEdit {{ border: 1px solid {PALETTE['border_strong']}; border-radius: 6px;"
+                                    f" padding: 12px; background-color: {PALETTE['surface']}; line-height: 1.6; }}")
         layout.addWidget(self._results)
 
         # Bottom buttons
@@ -6087,24 +6004,12 @@ class ProseAnalysisDialog(QDialog):
         btn_bar.addStretch()
 
         copy_btn = QPushButton("Copy to Clipboard")
-        copy_btn.setStyleSheet("""
-            QPushButton {
-                padding: 8px 16px; border-radius: 6px; font-size: 12px;
-                background-color: #6366f1; color: white; border: none;
-            }
-            QPushButton:hover { background-color: #4f46e5; }
-        """)
+        copy_btn.setStyleSheet(PRIMARY_BUTTON)
         copy_btn.clicked.connect(self._copy_results)
         btn_bar.addWidget(copy_btn)
 
         close_btn = QPushButton("Close")
-        close_btn.setStyleSheet("""
-            QPushButton {
-                padding: 8px 16px; border-radius: 6px; font-size: 12px;
-                background-color: #e5e7eb; border: none;
-            }
-            QPushButton:hover { background-color: #d1d5db; }
-        """)
+        plain(close_btn, 12, "8px 16px")
         close_btn.clicked.connect(self.close)
         btn_bar.addWidget(close_btn)
 
@@ -6113,7 +6018,7 @@ class ProseAnalysisDialog(QDialog):
     def set_loading(self):
         """Show a loading state."""
         self._results.setHtml(
-            '<div style="text-align: center; padding: 40px; color: #6b7280;">'
+            f'<div style="text-align: center; padding: 40px; color: {PALETTE["ink_faint"]};">'
             '<p style="font-size: 16px;">Analyzing prose...</p>'
             '<p style="font-size: 12px;">This may take a moment depending on your AI model.</p>'
             '</div>'
@@ -6141,7 +6046,7 @@ class ProseAnalysisDialog(QDialog):
                     html_lines.append('</ul>')
                     in_list = False
                 html_lines.append(
-                    f'<h3 style="color: #4f46e5; margin-top: 16px; margin-bottom: 4px;">'
+                    f'<h3 style="color: {PALETTE["primary_dark"]}; margin-top: 16px; margin-bottom: 4px;">'
                     f'{stripped[3:]}</h3>')
                 continue
             if stripped.startswith('# '):
@@ -6149,7 +6054,7 @@ class ProseAnalysisDialog(QDialog):
                     html_lines.append('</ul>')
                     in_list = False
                 html_lines.append(
-                    f'<h2 style="color: #312e81; margin-top: 20px; margin-bottom: 6px;">'
+                    f'<h2 style="color: {PALETTE["primary_ink"]}; margin-top: 20px; margin-bottom: 6px;">'
                     f'{stripped[2:]}</h2>')
                 continue
 
@@ -6189,7 +6094,7 @@ class ProseAnalysisDialog(QDialog):
             p = stripped
             p = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', p)
             p = re.sub(r'\*(.+?)\*', r'<em>\1</em>', p)
-            p = re.sub(r'"(.+?)"', r'<span style="color: #6d28d9;">&ldquo;\1&rdquo;</span>', p)
+            p = re.sub(r'"(.+?)"', rf'<span style="color: {PALETTE["violet_ink"]};">&ldquo;\1&rdquo;</span>', p)
             html_lines.append(f'<p style="margin: 4px 0; line-height: 1.5;">{p}</p>')
 
         if in_list:
@@ -6255,7 +6160,7 @@ class PromiseCheckDialog(QDialog):
         if self.characters:
             info_text.append(f"• {len(self.characters)} character profiles")
         info_label = QLabel("Checking against: " + ", ".join(info_text) if info_text else "No data to check against")
-        info_label.setStyleSheet("color: #6b7280; margin-bottom: 10px;")
+        info_label.setStyleSheet(text_style(extra="margin-bottom: 10px;"))
         layout.addWidget(info_label)
 
         # Results area (scrollable)
@@ -6365,7 +6270,7 @@ class PromiseCheckDialog(QDialog):
                 if v.violation_description:
                     lines.append(f"<br/>Issue: {v.violation_description}")
                 if v.suggestion:
-                    lines.append(f"<br/><span style='color: #059669;'>💡 {v.suggestion}</span>")
+                    lines.append(f"<br/><span style='color: {PALETTE['success_ink']};'>💡 {v.suggestion}</span>")
                 lines.append("</div>")
         else:
             lines.append("<p>✅ No promise violations detected</p>")
@@ -6381,7 +6286,7 @@ class PromiseCheckDialog(QDialog):
                 if c.expected_behavior:
                     lines.append(f"<br/>Expected: {c.expected_behavior}")
                 if c.suggestion:
-                    lines.append(f"<br/><span style='color: #059669;'>💡 {c.suggestion}</span>")
+                    lines.append(f"<br/><span style='color: {PALETTE['success_ink']};'>💡 {c.suggestion}</span>")
                 lines.append("</div>")
         else:
             lines.append("<p>✅ No character inconsistencies detected</p>")
@@ -6424,7 +6329,7 @@ class SimilaritySearchDialog(QDialog):
         search_layout = QVBoxLayout(search_frame)
         search_label = QLabel(self.search_text[:500] + ("..." if len(self.search_text) > 500 else ""))
         search_label.setWordWrap(True)
-        search_label.setStyleSheet("font-style: italic; color: #4b5563;")
+        search_label.setStyleSheet(text_style("ink_soft", italic=True))
         search_layout.addWidget(search_label)
         layout.addWidget(search_frame)
 
@@ -6471,7 +6376,7 @@ class SimilaritySearchDialog(QDialog):
         if not results:
             self.results_text.setHtml(
                 "<p>No similar content found in your project.</p>"
-                "<p style='color: #6b7280;'>Try adding more content to your "
+                f"<p style='color: {PALETTE['ink_faint']};'>Try adding more content to your "
                 "worldbuilding, characters, or plot sections.</p>"
             )
             return
@@ -6482,16 +6387,16 @@ class SimilaritySearchDialog(QDialog):
             score_pct = int(result.relevance_score * 100)
             type_icon = self._get_type_icon(result.source_type)
 
-            lines.append(f"<div style='margin-bottom: 15px; padding: 10px; background-color: #f9fafb; border-radius: 6px;'>")
+            lines.append(f"<div style='margin-bottom: 15px; padding: 10px; background-color: {PALETTE['surface_soft']}; border-radius: 6px;'>")
             lines.append(f"<h4>{type_icon} {result.source_name}</h4>")
-            lines.append(f"<p style='color: #6b7280; font-size: 11px;'>"
+            lines.append(f"<p style='color: {PALETTE['ink_faint']}; font-size: 11px;'>"
                         f"Type: {result.source_type.replace('_', ' ').title()} | "
                         f"Match: {score_pct}% | Method: {result.match_type}</p>")
 
             # Show matched terms if available
             if result.matched_terms:
                 terms = ", ".join(result.matched_terms[:5])
-                lines.append(f"<p style='color: #059669; font-size: 11px;'>Matched: {terms}</p>")
+                lines.append(f"<p style='color: {PALETTE['success_ink']}; font-size: 11px;'>Matched: {terms}</p>")
 
             # Show content preview
             content_preview = result.content[:400]
@@ -6625,7 +6530,7 @@ class AdvancedSearchDialog(QDialog):
 
         # Stats
         self.stats_label = QLabel("")
-        self.stats_label.setStyleSheet("color: #6b7280; font-size: 11px;")
+        self.stats_label.setStyleSheet(text_style("ink_faint", 11))
         layout.addWidget(self.stats_label)
 
         # Buttons
@@ -6724,18 +6629,18 @@ class AdvancedSearchDialog(QDialog):
 
             lines.append(
                 f"<div style='margin-bottom: 12px; padding: 10px; "
-                f"background-color: #f9fafb; border-radius: 6px; border-left: 3px solid #6366f1;'>"
+                f"background-color: {PALETTE['surface_soft']}; border-radius: 6px; border-left: 3px solid {PALETTE['primary']};'>"
             )
             lines.append(f"<h4 style='margin: 0;'>{icon} {result.source_name}</h4>")
             lines.append(
-                f"<p style='color: #6b7280; font-size: 11px; margin: 4px 0;'>"
+                f"<p style='color: {PALETTE['ink_faint']}; font-size: 11px; margin: 4px 0;'>"
                 f"{result.source_type.replace('_', ' ').title()} | "
                 f"Relevance: {score_pct}% | {result.match_type}</p>"
             )
 
             if result.matched_terms:
                 terms = ", ".join(f"<b>{t}</b>" for t in result.matched_terms[:5])
-                lines.append(f"<p style='color: #059669; font-size: 11px;'>Matched: {terms}</p>")
+                lines.append(f"<p style='color: {PALETTE['success_ink']}; font-size: 11px;'>Matched: {terms}</p>")
 
             # Content preview with query highlighting
             preview = result.content[:500]

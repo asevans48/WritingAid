@@ -45,6 +45,15 @@ COLORS = {
     'ink_faint': '#6b7280',
     'primary_tint': '#eef2ff',
     'primary_ink': '#312e81',
+    # One look (D.8): the tints and darker text shades screens set by hand.
+    'primary_border': '#c7d2fe',
+    'surface_soft': '#f9fafb', 'paper_warm': '#fffdf7', 'ink_disabled': '#9ca3af',
+    'success_ink': '#059669', 'success_tint': '#ecfdf5',
+    'warning_ink': '#b45309', 'warning_tint': '#fffbeb', 'warning_border': '#fde68a',
+    'error_ink': '#dc2626', 'error_tint': '#fef2f2', 'error_border': '#fecaca',
+    'info_ink': '#0369a1', 'info_tint': '#f0f9ff',
+    'violet': '#8b5cf6', 'violet_ink': '#6d28d9', 'violet_tint': '#ede9fe',
+    'accent_ink': '#be185d',
 }
 
 # Modern stylesheet
@@ -109,27 +118,45 @@ QTabBar::tab:hover {{
 
 /* Buttons - modern, rounded */
 QPushButton {{
-    background-color: {COLORS['primary']};
-    color: white;
-    border: none;
+    /* Plain by default (D.8, the writer's choice): white, a thin border.
+       The padding is 1 px less than before so the border keeps every
+       button's size. A screen's main action sets its own colour
+       (ui_kit.primary_button); a dialog's default button (OK, Save) is
+       coloured below. */
+    background-color: {COLORS['surface']};
+    color: {COLORS['ink']};
+    border: 1px solid {COLORS['border_strong']};
     border-radius: 6px;
-    padding: 8px 16px;
+    padding: 7px 15px;
     font-weight: 500;
     font-size: 13px;
     min-height: 28px;
 }}
 
 QPushButton:hover {{
-    background-color: {COLORS['primary_dark']};
+    background-color: {COLORS['surface_hover']};
 }}
 
-QPushButton:pressed {{
+QPushButton:pressed, QPushButton:checked {{
+    background-color: {COLORS['primary_tint']};
+    color: {COLORS['primary_ink']};
+    border-color: {COLORS['primary_border']};
+}}
+
+QPushButton:default {{
+    background-color: {COLORS['primary']};
+    color: white;
+    border: 1px solid {COLORS['primary']};
+}}
+
+QPushButton:default:hover {{
     background-color: {COLORS['primary_dark']};
 }}
 
 QPushButton:disabled {{
-    background-color: {COLORS['text_muted']};
-    color: {COLORS['text_secondary']};
+    background-color: {COLORS['surface']};
+    color: {COLORS['text_muted']};
+    border-color: {COLORS['border']};
 }}
 
 /* Secondary button style */

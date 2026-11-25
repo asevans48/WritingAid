@@ -3757,6 +3757,7 @@ class MainWindow(QMainWindow):
         self.story_planning_widget.content_changed.connect(self._on_content_changed)
         self.manuscript_editor.content_changed.connect(self._on_content_changed)
         self.prose_profile_widget.content_changed.connect(self._on_content_changed)
+        self.agent_manager.content_changed.connect(self._on_content_changed)   # pen name (9.2)
 
         # Plot tab's Discuss-with-AI: hand it a context provider that
         # builds its prompt-context dict from the live project state
@@ -14044,7 +14045,7 @@ class MainWindow(QMainWindow):
 
         draft = self.current_project.create_draft_from_current(
             name=name.strip())
-        QMessageBox.information(
+        notify.notice(
             self, "Draft Created",
             f"Created draft '{draft.name}' with {len(draft.chapters)} chapters.\n\n"
             f"Open it via File ▸ Drafts ▸ Open Draft in New Window...")

@@ -15,6 +15,15 @@ from src.utils.consistency_checks import ConsistencyChecker, apply_group, number
 
 # ── 1. Style checks ───────────────────────────────────────────────
 
+
+def _existing(p):
+    """A project from before decision 3 (24 Nov 2026): it keeps every style
+    check ticked, as these tests expect; a new one ticks only those meeting
+    4 in 5 (tests/test_check_switches.py)."""
+    from datetime import datetime
+    p.created_at = datetime(2026, 3, 1)
+    return p
+
 def _kinds(text):
     return [(i.kind, i.text) for i in analyze_paragraph(text)]
 
@@ -79,7 +88,7 @@ def chapter_editor(app, monkeypatch):
 
     def make(text):
         return ChapterEditor(Chapter(id="c1", number=1, title="One", content=text),
-                             project=WriterProject(name="t"))
+                             project=_existing(WriterProject(name="t")))
     return make
 
 
@@ -93,7 +102,26 @@ def _formats(editor):
     return out
 
 
-def test_style_highlighting_and_panel_fixes(chapter_editor):
+def _wait(app):
+    from src.ui import background, companion_panel
+    for _ in range(20):
+        for t in list(companion_panel._RUNNING):
+            t.wait(10000)
+        background.wait_all(10000)
+        app.processEvents()
+        if not companion_panel._RUNNING:
+            return
+
+
+def _show_kind(queue, kind):
+    queue.index = [e.item.kind for e in queue.entries].index(kind)
+    queue.show()
+    return queue.card
+
+
+def test_style_highlighting_and_panel_fixes(app, chapter_editor):
+    """D.6: the Style tab's list and Fix are the Companion card's style list
+    and Accept; its switches are the Style checks menu."""
     from src.ui.enhanced_text_editor import CheckMode, ErrorType
     ed = chapter_editor("She very quickly ran to the door in order to escape. Tommorow she left.")
     assert not any(f.underlineColor().name() == "#16a34a" for _, f in _formats(ed.editor))
@@ -105,19 +133,21 @@ def test_style_highlighting_and_panel_fixes(chapter_editor):
     hl = ed.editor.writing_highlighter
     pos = ed.editor.toPlainText().index("Tommorow") + 2
     assert hl.get_error_at(0, pos).error_type == ErrorType.SPELLING
-    panel = ed.style_panel
-    panel.refresh()
-    kinds = [i.kind for _, _, i in panel._shown]
-    assert {"intensifier", "adverb", "wordy"} <= set(kinds)
-    panel.list.setCurrentRow(kinds.index("wordy"))
-    assert panel.fix_btn.text() == "Fix → “to”"
-    panel._fix()
-    panel.list.setCurrentRow([i.kind for _, _, i in panel._shown].index("intensifier"))
-    panel._fix()
+    queue = ed.companion.queue
+    queue.show_style_issues()
+    assert {"intensifier", "adverb", "wordy"} <= {e.item.kind for e in queue.entries}
+    card = _show_kind(queue, "wordy")
+    assert card.option_text() == "She very quickly ran to the door to escape."
+    card._accept()
+    _wait(app)
+    card = _show_kind(queue, "intensifier")
+    card._accept()
+    _wait(app)
     assert ed.editor.toPlainText().startswith("She quickly ran to the door to escape.")
-    # Toggling a check off removes it from the list.
-    panel.kind_boxes["adverb"][0].setChecked(False)
-    assert "adverb" not in [i.kind for _, _, i in panel._shown]
+    # Switching a check off (✓ Checks ▾ → Style checks) leaves it out of the list.
+    ed._style_check_actions["adverb"].setChecked(False)
+    queue.show_style_issues()
+    assert "adverb" not in [e.item.kind for e in queue.entries]
     ed._toggle_style_check()                                   # off
     assert ed.editor.get_style_mode() == CheckMode.OFF
 
@@ -127,10 +157,10 @@ def test_rewrite_with_ai_selects_sentence_and_passes_hint(chapter_editor, monkey
     got = []
     ed.editor.style_rewrite_requested.disconnect()
     ed.editor.style_rewrite_requested.connect(lambda a, b, h: got.append((a, b, h)))
-    panel = ed.style_panel
-    panel.refresh()
-    panel.list.setCurrentRow([i.kind for _, _, i in panel._shown].index("passive"))
-    panel._rewrite()
+    queue = ed.companion.queue                                 # D.6: the card's 💡 More options…
+    queue.show_style_issues()
+    card = _show_kind(queue, "passive")
+    queue.more(card.fix)
     a, b, hint = got[0]
     assert ed.editor.toPlainText()[a:b] == "The map was taken by the guards at dawn."
     assert hint.startswith("Fix the passive voice")
@@ -203,7 +233,7 @@ def test_apply_consistency_in_open_and_closed_chapters(app):
     from src.models.project import Chapter, WriterProject
     from src.ui.manuscript_editor import ManuscriptEditor
     from src.ui.main_window import MainWindow
-    p = WriterProject(name="t")
+    p = _existing(WriterProject(name="t"))
     p.manuscript.chapters = [Chapter(id="c1", number=1, title="One", content=CHS[0][2]),
                              Chapter(id="c2", number=2, title="Two", content=CHS[1][2])]
     me = ManuscriptEditor(p)
@@ -284,7 +314,7 @@ def test_grader_records_and_shows_progress(app, monkeypatch):
     monkeypatch.setattr(tl, "build_critique_llm", lambda spec="": None)
     monkeypatch.setattr(tl, "build_default_llm", lambda: None)
     from PyQt6.QtCore import QCoreApplication
-    p = WriterProject(name="t")
+    p = _existing(WriterProject(name="t"))
     text = "The map was taken by the guards. She very quickly ran in order to escape."
     p.manuscript.chapters = [Chapter(id="c1", number=1, title="One", content=text)]
     g = GraderWidget()

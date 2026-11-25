@@ -430,6 +430,8 @@ class ChapterIssues(QTextBrowser):
             self.outline_open = not getattr(self, "outline_open", False)
             if getattr(self, "_shown", None):
                 self.show_chapter(*self._shown)
+        elif kind == "plan":                       # change a scene's planned events (7.3)
+            from src.ui import plan_section; plan_section.on_link(self, item)
         elif kind == "sheet":
             self.show_style_sheet()
         elif kind in ("intend", "unintend"):
@@ -489,6 +491,15 @@ class ChapterIssues(QTextBrowser):
             self.setFixedHeight(min(height, cap))
             from src.ui.ui_kit import relayout
             relayout(self)
+
+    def loadResource(self, kind, name):
+        """The scene outline's chart (7.3); everything else as before."""
+        if name.scheme() == "wa-chart":
+            from src.ui import plan_section
+            image = plan_section.load_chart(self, name.toString())
+            if image is not None:
+                return image
+        return super().loadResource(kind, name)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

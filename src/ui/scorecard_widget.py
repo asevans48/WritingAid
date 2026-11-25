@@ -29,7 +29,7 @@ from PyQt6.QtWidgets import (
 )
 
 from src.ui.ui_kit import (
-    PALETTE, STAGE_COLOURS, CollapsibleSection, empty_state, primary_button, relayout,
+    PALETTE, STAGE_COLOURS, CollapsibleSection, empty_state, plain, primary_button, relayout,
     size_class,
 )
 
@@ -109,7 +109,8 @@ class ScorecardWidget(QWidget):
         self.model_link.linkActivated.connect(self._on_note_link)
         self.model_link.setVisible(False)
         top.addWidget(self.model_link)
-        self.check_btn = primary_button("Check readiness")
+        self.check_btn = plain(primary_button("Check readiness"), size=13, pad="6px 14px", bold=True)
+        self.check_btn.setDefault(False)          # Run Critique is the main one (writer, D.8)
         self.check_btn.setToolTip("Check every chapter of this manuscript. Chapters you "
                                   "haven't changed since the last check are not checked again.")
         self.check_btn.clicked.connect(self._on_check_clicked)
@@ -610,6 +611,8 @@ class ScorecardWidget(QWidget):
         bits = [{"scan": "A scan: no model judged these results.",
                  "mixed": "Partly judged by a model: chapters changed since are a scan.",
                  }.get(report.tier, "Judged by a model (one reader's view): what it cleared doesn't count.")]
+        if (report.info or {}).get("genre_note"):
+            bits.append(report.info["genre_note"])      # said once (P.3); first, so it shows
         left = {n: why for n, why in report.left_out.items() if why != "information only"}
         if left:
             names = [f"{rd.REGISTRY[n].label} ({why})" if n in rd.REGISTRY else n
@@ -928,8 +931,22 @@ class ScorecardWidget(QWidget):
                         r.count = max(0, r.count + (-1 if on else 1))
         self._restore_selection()
         self.status_label.setText(
-            "Marked as intended; it goes in the editor's brief. Check readiness to update "
-            "the grid." if on else "Taken back. Check readiness to update the grid.")
+            "Marked as intended; it goes in your style sheet and the editor's brief. Check "
+            "readiness to update the grid." if on
+            else "Taken back. Check readiness to update the grid.")
+        self._style_sheet_touched("Marked intended in the Critique" if on else
+                                  "Taken back in the Critique")
+
+    def _style_sheet_touched(self, message: str) -> None:
+        """4.1: a style sheet line was added or removed; the open editor
+        redraws, the Companion's list follows, the project is marked changed."""
+        from src.ui.intentional_menu import announce
+        source = getattr(self, "_live_source", None)
+        ce = getattr(source, "current_chapter_editor", None)
+        if ce is not None:
+            announce(ce.editor, message)
+        elif hasattr(source, "content_changed"):
+            source.content_changed.emit()
 
     def _save_brief(self) -> None:
         """Save the editor's brief (Markdown) where the writer chooses."""

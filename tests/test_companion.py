@@ -489,19 +489,34 @@ def test_overly_descriptive_section_scans_without_a_model(app, project):
     assert "Overly descriptive  (1)" in panel.sections["overdescribed"].header.text()
 
 
+def _card_fixes(ed):
+    """The fixes the next-fix card is stepping through (D.6: Today's three
+    fixes show there)."""
+    queue = ed.companion.queue
+    return [queue.fixes[e.key] for e in queue.entries if e.key in queue.fixes]
+
+
+def _show(ed, fix):
+    queue = ed.companion.queue
+    queue.index = _card_fixes(ed).index(fix)
+    queue.show()
+    return ed.companion.panel.queue
+
+
 def test_three_fixes_without_a_model_offer_quick_fixes(app, project):
     ed = chapter_editor(app, project, FIX_TEXT)
     ed.companion._no_model = True
     ed.companion.find_three_fixes()
     wait_tasks(app)
-    panel = ed.companion.panel
-    over = next(f for f in panel.fixes if f.kind == "overdescribed")
-    panel.fixes_list.setCurrentRow(panel.fixes.index(over))
+    over = next(f for f in _card_fixes(ed) if f.kind == "overdescribed")
+    card = _show(ed, over)
     assert over.options and not over.options[0].by_ai
-    assert panel.fix_preview.toPlainText() == "The water was too dark to see."
-    panel._accept_fix()
+    assert card.option_text() == "The water was too dark to see."
+    assert "quick picks" in card.status.text()
+    card._accept()
+    wait_tasks(app)
     assert "The water was too dark to see." in ed.editor.toPlainText()
-    assert over not in panel.fixes
+    assert over not in _card_fixes(ed)
 
 
 def test_three_fixes_with_a_model_write_suggestions_in_voice(app, project, monkeypatch):
@@ -516,15 +531,17 @@ def test_three_fixes_with_a_model_write_suggestions_in_voice(app, project, monke
     ed.companion.find_three_fixes()
     wait_tasks(app)
     wait_tasks(app)
-    panel = ed.companion.panel
-    fix = panel.fixes[0]
+    fix = _card_fixes(ed)[0]
     assert fix.why == "the reader can't picture the dark."
     assert [o.by_ai for o in fix.options] == [True, True, False]   # quick fix stays last
     assert "THE PROBLEM TO FIX" in llm.prompts[1] and "⟦PASSAGE START⟧" in llm.prompts[1]
-    assert "Suggested fixes are ready" in panel.fixes_status.text()
-    panel.fixes_list.setCurrentRow(0)
-    panel.fix_preview.setPlainText("The oar vanished a hand below the surface.")
-    panel._accept_fix()
+    card = ed.companion.panel.queue
+    assert card.fix is fix and "The three that matter most" in card.status.text()
+    assert card.option_text() == fix.options[0].text            # the first suggestion shows
+    card.edit()                                       # ✎ edit, then Accept your own words
+    card.options.lineEdit().setText("The oar vanished a hand below the surface.")
+    card._accept()
+    wait_tasks(app)
     assert ("Mara rowed hard toward the pier. The oar vanished a hand below the surface. "
             "Tobin waited") in ed.editor.toPlainText()
 
@@ -536,15 +553,15 @@ def test_more_options_and_note_fix_open_suggestions_with_a_focus(app, project, m
                         lambda s, e, focus="": seen.append((ed.editor.toPlainText()[s:e], focus))
                         or True)
     fix = cp.Fix("Overly descriptive — tells", excerpt="almost too dark", paragraph=0)
-    ed.companion.panel.set_fixes([fix])
-    ed.companion.panel._more_fix()
+    ed.companion.queue.show_fixes([fix], "The three that matter most")
+    ed.companion.queue.more(fix)                      # the card's 💡 More options…
     note = cp.Note("pov", "Head-hop?", 0, "Tobin waited")
     ed.companion.panel.set_notes([note])
     ed.companion.panel.notes_list.setCurrentRow(0)
     ed.companion.panel._fix_note()
     assert seen == [("The water was almost too dark to see.", "Overly descriptive — tells"),
                     ("Tobin waited on the steps.", "Head-hop?")]
-    assert ed.companion.panel.fixes == [] and ed.companion.panel.notes == []
+    assert _card_fixes(ed) == [] and ed.companion.panel.notes == []
 
 
 def test_suggestions_dialog_takes_a_focus(app, project):
@@ -570,13 +587,17 @@ def test_locate_sentence():
 
 def test_accepting_your_own_edit_and_unchanged_text(app, project):
     ed = chapter_editor(app, project, FIX_TEXT)
-    panel = ed.companion.panel
+    card = ed.companion.panel.queue
     fix = cp.Fix("Spelling", excerpt="Tobin waited on the steps.", paragraph=0,
                  sentence="Tobin waited on the steps.")
-    panel.set_fixes([fix])
-    assert panel.fix_accept_btn.isEnabled()                  # no suggestion, but editable
-    panel._accept_fix()
-    assert "No change" in panel.fixes_status.text() and panel.fixes == [fix]
-    panel.fix_preview.setPlainText("Tobin waited on the stairs.")
-    panel._accept_fix()
+    ed.companion.queue.show_fixes([fix], "From the scorecard")
+    assert not card.accept_btn.isEnabled()                   # no suggestion yet…
+    card.edit()                                              # …but ✎ edit makes one
+    assert card.options.isVisibleTo(card) and card.accept_btn.isEnabled()
+    card._accept()
+    assert "No change" in card.status.text() and _card_fixes(ed) == [fix]
+    card.options.lineEdit().setText("Tobin waited on the stairs.")
+    card.options.lineEdit().textEdited.emit("Tobin waited on the stairs.")
+    card._accept()
+    wait_tasks(app)
     assert ed.editor.toPlainText().endswith("Tobin waited on the stairs.")

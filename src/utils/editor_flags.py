@@ -104,6 +104,11 @@ class FlagRules:
 
     _SENTENCE_END_RX = re.compile(r"[.!?…:]\s*$|^\s*$")
 
+    # The editor leaves out what the writer marked intentional (4.1); the
+    # readiness engine (``FlagState``) keeps them, so the Critique can list
+    # them with "take that back".
+    _hide_intended = True
+
     _BEFORE_SENTENCE_CHARS = frozenset("\"“”‘'([-—–*_")
 
     def _should_check(self, mode: CheckMode) -> bool:
@@ -122,10 +127,16 @@ class FlagRules:
     def style_issues_for(self, text: str) -> list:
         """Style issues for one paragraph (cached, minus ignored ones)."""
         from src.utils.style_checks import analyze_paragraph
-        key = (text, frozenset(self._style_kinds))
+        document = sig = None
+        if "acronym" in self._style_kinds and self._full_text:
+            # Acronyms look at the whole chapter (spelled out elsewhere?).
+            from src.utils.style_reports import acronym_signature
+            document = self._full_text
+            sig = acronym_signature(document)
+        key = (text, frozenset(self._style_kinds), sig)
         issues = self._style_cache.get(key)
         if issues is None:
-            issues = analyze_paragraph(text, self._style_kinds)
+            issues = analyze_paragraph(text, self._style_kinds, document)
             if len(self._style_cache) > 4000:
                 self._style_cache.clear()
             self._style_cache[key] = issues
@@ -155,6 +166,9 @@ class FlagRules:
         if project is not None:
             kept += [i for i in ss.preference_issues(project, text)
                      if (i.kind, _apos(i.text.strip().lower())) not in self._style_ignored]
+            if self._hide_intended:               # "This is intentional" (4.1)
+                from src.ai.intentional import hide_intended_issues
+                kept = hide_intended_issues(project, kept)
         return kept
 
     def _word_intended(self, word: str) -> bool:
@@ -367,6 +381,10 @@ class FlagRules:
                         suggestions=None,   # computed on demand (get_error_at)
                     ))
 
+        if self._hide_intended and self.project is not None and errors:
+            from src.ai.intentional import hide_intended       # 4.1
+            errors = hide_intended(self.project, errors)
+
         # Focus: only this paragraph's most important issues stay marked.
         must = [e for e in errors if e.error_type in (ErrorType.SPELLING, ErrorType.GRAMMAR)]
         others = [e for e in errors if e not in must]
@@ -408,6 +426,8 @@ class FlagState(FlagRules):
         self._full_text_fresh = False
         self._typing = None
         self._lt_cache: Dict[str, list] = {}       # LanguageTool results by paragraph text
+
+    _hide_intended = False
 
     _SETTINGS = ("phase", "focus", "focus_per_paragraph", "_spell_mode", "_grammar_mode",
                  "_overuse_mode", "_style_mode")

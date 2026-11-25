@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor
+from src.ui.ui_kit import PALETTE, PRIMARY_BUTTON, plain_qss  # shared parts (D.8)
 
 from src.config.credential_manager import get_credential_manager
 from src.ai.mlx_utils import can_use_mlx
@@ -448,10 +449,11 @@ class SettingsDialog(QDialog):
         self.setMinimumSize(820, 480)
 
         layout = QVBoxLayout(self)
+        self.setStyleSheet(plain_qss(size=13, pad="8px 16px"))     # D.8: Save is the one main button
 
         # Header
         header = QLabel("🤖 AI Configuration")
-        header.setStyleSheet("font-size: 18px; font-weight: 600; color: #1a1a1a; padding: 10px;")
+        header.setStyleSheet(f"font-size: 18px; font-weight: 600; color: {PALETTE['ink']}; padding: 10px;")
         layout.addWidget(header)
 
         # Categories — a vertical sidebar on the left + a stacked
@@ -480,25 +482,11 @@ class SettingsDialog(QDialog):
         self._category_list.setSpacing(2)
         # Compact, modern look — pad each entry so the icon + label
         # have room and the active row has clear visual weight.
-        self._category_list.setStyleSheet("""
-            QListWidget {
-                border: 1px solid #e5e7eb;
-                border-radius: 6px;
-                background: #f9fafb;
-                outline: 0;
-                padding: 4px;
-            }
-            QListWidget::item {
-                padding: 8px 10px;
-                border-radius: 4px;
-                color: #1f2937;
-            }
-            QListWidget::item:hover { background: #eef2ff; }
-            QListWidget::item:selected {
-                background: #4f46e5;
-                color: white;
-            }
-        """)
+        self._category_list.setStyleSheet(
+            f"QListWidget {{ border: 1px solid {PALETTE['border']}; border-radius: 6px; background: {PALETTE['surface_soft']}; outline: 0; padding: 4px; }}"
+            f" QListWidget::item {{ padding: 8px 10px; border-radius: 4px; color: {PALETTE['ink']}; }}"
+            f" QListWidget::item:hover {{ background: {PALETTE['primary_tint']}; }}"
+            f" QListWidget::item:selected {{ background: {PALETTE['primary_dark']}; color: white; }}")
         sidebar_layout.addWidget(self._category_list, stretch=1)
 
         self._category_stack = QStackedWidget()
@@ -545,6 +533,10 @@ class SettingsDialog(QDialog):
         self._add_category(
             "📖  Knowledge Bases", self.knowledge_widget)
 
+        from src.ui.writer_contact_form import settings_page    # title page details (9.2)
+        self._contact_page = settings_page()
+        self._add_category("👤  Your Details", self._contact_page)
+
         # Wire selection → stack page switch.
         self._category_list.currentRowChanged.connect(
             self._category_stack.setCurrentIndex)
@@ -570,7 +562,7 @@ class SettingsDialog(QDialog):
             "💡 Tip: API keys are stored locally and encrypted. Your data never leaves your machine without explicit action."
         )
         info_label.setWordWrap(True)
-        info_label.setStyleSheet("color: #6b7280; font-size: 11px; padding: 10px; background-color: #f3f4f6; border-radius: 4px;")
+        info_label.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px; padding: 10px; background-color: {PALETTE['surface_muted']}; border-radius: 4px;")
         layout.addWidget(info_label)
 
         # Buttons
@@ -584,6 +576,7 @@ class SettingsDialog(QDialog):
         save_button = QPushButton("💾 Save")
         save_button.clicked.connect(self.accept)
         save_button.setDefault(True)
+        save_button.setStyleSheet(PRIMARY_BUTTON)
         button_layout.addWidget(save_button)
 
         cancel_button = QPushButton("Cancel")
@@ -705,7 +698,7 @@ class SettingsDialog(QDialog):
             "• OpenAI: https://platform.openai.com/api-keys\n"
             "• Gemini: https://makersuite.google.com/app/apikey"
         )
-        help_text.setStyleSheet("color: #6b7280; font-size: 11px; padding: 10px;")
+        help_text.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px; padding: 10px;")
         help_text.setWordWrap(True)
         layout.addWidget(help_text)
 
@@ -725,7 +718,7 @@ class SettingsDialog(QDialog):
                        "AI to use it everywhere, or pick “My model server” for single tasks "
                        "under Per-Task Models.")
         intro.setWordWrap(True)
-        intro.setStyleSheet("color: #6b7280; font-size: 11px;")
+        intro.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px;")
         form.addRow(intro)
         self.server_url_edit = QLineEdit(self.settings.get("server_url", ""))
         self.server_url_edit.setPlaceholderText("e.g. http://192.168.1.50:8080/v1  or  "
@@ -760,14 +753,14 @@ class SettingsDialog(QDialog):
         key = self.server_key_edit.text().strip()
         model = self.server_model_combo.currentText().strip()
         self.server_test_btn.setEnabled(False)
-        self.server_status.setStyleSheet("font-size: 11px; color: #6b7280;")
+        self.server_status.setStyleSheet(f"font-size: 11px; color: {PALETTE['ink_faint']};")
         self.server_status.setText("Connecting… (a large model can take a minute to answer)")
 
         def done(result, error):
             self.server_test_btn.setEnabled(True)
             ok, message, models = result if result else (False, error, [])
             self.server_status.setStyleSheet(
-                f"font-size: 11px; color: {'#15803d' if ok else '#b91c1c'};")
+                f"font-size: 11px; color: {PALETTE['success_ink'] if ok else PALETTE['error_ink']};")
             self.server_status.setText(("✓ " if ok else "✗ ") + message)
             if models:
                 current = self.server_model_combo.currentText()
@@ -901,7 +894,7 @@ class SettingsDialog(QDialog):
             "Top P: Alternative to temperature for controlling randomness."
         )
         explain_label.setWordWrap(True)
-        explain_label.setStyleSheet("color: #6b7280; font-size: 10px; padding: 10px;")
+        explain_label.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 10px; padding: 10px;")
         layout.addWidget(explain_label)
 
         # Chapter Planning Configuration
@@ -912,7 +905,7 @@ class SettingsDialog(QDialog):
             "Configure which AI to use for chapter planning, event generation, and creative writing assistance."
         )
         planning_info.setWordWrap(True)
-        planning_info.setStyleSheet("color: #374151; font-size: 11px; padding: 4px;")
+        planning_info.setStyleSheet(f"color: {PALETTE['ink_soft']}; font-size: 11px; padding: 4px;")
         chapter_planning_layout.addWidget(planning_info)
 
         # Radio button group for chapter planning model choice
@@ -946,8 +939,8 @@ class SettingsDialog(QDialog):
         )
         local_models_info.setWordWrap(True)
         local_models_info.setStyleSheet(
-            "color: #6b7280; font-size: 10px; padding: 8px; "
-            "background-color: #f9fafb; border-radius: 4px; border-left: 3px solid #6366f1;"
+            f"color: {PALETTE['ink_faint']}; font-size: 10px; padding: 8px; "
+            f"background-color: {PALETTE['surface_soft']}; border-radius: 4px; border-left: 3px solid {PALETTE['primary']};"
         )
         chapter_planning_layout.addWidget(local_models_info)
 
@@ -985,7 +978,7 @@ class SettingsDialog(QDialog):
             "They're faster and private, but may require significant GPU memory."
         )
         enable_note.setWordWrap(True)
-        enable_note.setStyleSheet("color: #6b7280; font-size: 11px; padding: 4px;")
+        enable_note.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px; padding: 4px;")
         enable_layout.addWidget(enable_note)
 
         enable_group.setLayout(enable_layout)
@@ -999,7 +992,7 @@ class SettingsDialog(QDialog):
             "Select a model to download. Models are cached locally and can be used offline."
         )
         download_info.setWordWrap(True)
-        download_info.setStyleSheet("color: #6b7280; font-size: 11px; padding: 4px;")
+        download_info.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px; padding: 4px;")
         download_layout.addWidget(download_info)
 
         # Storytelling models highlight
@@ -1010,8 +1003,8 @@ class SettingsDialog(QDialog):
         )
         storytelling_highlight.setWordWrap(True)
         storytelling_highlight.setStyleSheet(
-            "color: #059669; font-size: 10px; padding: 6px; "
-            "background-color: #ecfdf5; border-radius: 4px; font-weight: 500;"
+            f"color: {PALETTE['success_ink']}; font-size: 10px; padding: 6px; "
+            f"background-color: {PALETTE['success_tint']}; border-radius: 4px; font-weight: 500;"
         )
         download_layout.addWidget(storytelling_highlight)
 
@@ -1030,8 +1023,8 @@ class SettingsDialog(QDialog):
         self.model_details_label = QLabel("Select a model to see details...")
         self.model_details_label.setWordWrap(True)
         self.model_details_label.setStyleSheet(
-            "color: #374151; font-size: 11px; padding: 8px; "
-            "background-color: #f3f4f6; border-radius: 4px;"
+            f"color: {PALETTE['ink_soft']}; font-size: 11px; padding: 8px; "
+            f"background-color: {PALETTE['surface_muted']}; border-radius: 4px;"
         )
         download_layout.addWidget(self.model_details_label)
 
@@ -1042,7 +1035,7 @@ class SettingsDialog(QDialog):
 
         self.download_status_label = QLabel("")
         self.download_status_label.setWordWrap(True)
-        self.download_status_label.setStyleSheet("color: #6b7280; font-size: 11px;")
+        self.download_status_label.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px;")
         self.download_status_label.setVisible(False)
         download_layout.addWidget(self.download_status_label)
 
@@ -1052,21 +1045,7 @@ class SettingsDialog(QDialog):
         self.download_btn = QPushButton("Download Selected Model")
         self.download_btn.setEnabled(False)
         self.download_btn.clicked.connect(self._download_selected_model)
-        self.download_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #6366f1;
-                color: white;
-                padding: 8px 16px;
-                border-radius: 4px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #4f46e5;
-            }
-            QPushButton:disabled {
-                background-color: #9ca3af;
-            }
-        """)
+        self.download_btn.setStyleSheet(plain_qss(size=13, pad="8px 16px", bold=True))
         download_buttons.addWidget(self.download_btn)
 
         self.check_downloaded_btn = QPushButton("Check Downloaded Models")
@@ -1080,8 +1059,8 @@ class SettingsDialog(QDialog):
         self.downloaded_models_label = QLabel("")
         self.downloaded_models_label.setWordWrap(True)
         self.downloaded_models_label.setStyleSheet(
-            "color: #059669; font-size: 11px; padding: 8px; "
-            "background-color: #ecfdf5; border-radius: 4px;"
+            f"color: {PALETTE['success_ink']}; font-size: 11px; padding: 8px; "
+            f"background-color: {PALETTE['success_tint']}; border-radius: 4px;"
         )
         self.downloaded_models_label.setVisible(False)
         download_layout.addWidget(self.downloaded_models_label)
@@ -1123,7 +1102,7 @@ class SettingsDialog(QDialog):
             "Get one at huggingface.co/settings/tokens (needed for gated models like Llama)"
         )
         hf_api_note.setWordWrap(True)
-        hf_api_note.setStyleSheet("color: #6b7280; font-size: 10px;")
+        hf_api_note.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 10px;")
         hf_api_layout.addRow("", hf_api_note)
 
         hf_api_group.setLayout(hf_api_layout)
@@ -1194,10 +1173,10 @@ class SettingsDialog(QDialog):
                 "Mac (MLX): 4-bit is supported. Pre-quantized mlx-community models "
                 "are already quantized and ignore this setting."
             )
-            quant_hint_style = "color: #22c55e; font-size: 10px;"
+            quant_hint_style = f"color: {PALETTE['success']}; font-size: 10px;"
         else:
             quant_hint_text = "4-bit and 8-bit quantization require an NVIDIA GPU (CUDA)."
-            quant_hint_style = "color: #f59e0b; font-size: 10px;"
+            quant_hint_style = f"color: {PALETTE['warning']}; font-size: 10px;"
 
         self.quantization_warning = QLabel(quant_hint_text)
         self.quantization_warning.setStyleSheet(quant_hint_style)
@@ -1320,7 +1299,7 @@ class SettingsDialog(QDialog):
             "These models are optimized for storytelling and narrative generation."
         )
         storytelling_note.setWordWrap(True)
-        storytelling_note.setStyleSheet("color: #6b7280; font-size: 10px; font-style: italic;")
+        storytelling_note.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 10px; font-style: italic;")
         storytelling_layout.addRow("", storytelling_note)
 
         storytelling_group.setLayout(storytelling_layout)
@@ -1336,7 +1315,7 @@ class SettingsDialog(QDialog):
             "critique narratives, and help with story planning."
         )
         reasoning_info.setWordWrap(True)
-        reasoning_info.setStyleSheet("color: #6b7280; font-size: 11px; padding: 4px;")
+        reasoning_info.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px; padding: 4px;")
         reasoning_layout.addRow("", reasoning_info)
 
         self.reasoning_model_combo = QComboBox()
@@ -1387,7 +1366,7 @@ class SettingsDialog(QDialog):
             "• Narrative critique and feedback"
         )
         reasoning_note.setWordWrap(True)
-        reasoning_note.setStyleSheet("color: #6b7280; font-size: 10px; font-style: italic;")
+        reasoning_note.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 10px; font-style: italic;")
         reasoning_layout.addRow("", reasoning_note)
 
         reasoning_group.setLayout(reasoning_layout)
@@ -1402,8 +1381,8 @@ class SettingsDialog(QDialog):
         )
         unified_note.setWordWrap(True)
         unified_note.setStyleSheet(
-            "color: #059669; font-size: 11px; padding: 8px; "
-            "background: #ecfdf5; border-radius: 4px; margin: 4px 0;"
+            f"color: {PALETTE['success_ink']}; font-size: 11px; padding: 8px; "
+            f"background: {PALETTE['success_tint']}; border-radius: 4px; margin: 4px 0;"
         )
         layout.addWidget(unified_note)
 
@@ -1420,7 +1399,7 @@ class SettingsDialog(QDialog):
             "This keeps your data private and works offline."
         )
         preference_note.setWordWrap(True)
-        preference_note.setStyleSheet("color: #6b7280; font-size: 11px;")
+        preference_note.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px;")
         preference_layout.addWidget(preference_note)
 
         preference_group.setLayout(preference_layout)
@@ -1435,7 +1414,7 @@ class SettingsDialog(QDialog):
             "A dedicated model can provide more consistent and thorough analysis."
         )
         critique_info.setWordWrap(True)
-        critique_info.setStyleSheet("color: #6b7280; font-size: 11px; padding: 4px;")
+        critique_info.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px; padding: 4px;")
         critique_layout.addRow("", critique_info)
 
         # Critique model source
@@ -1491,7 +1470,7 @@ class SettingsDialog(QDialog):
         critique_layout.addRow("Temperature:", critique_temp_layout)
 
         critique_temp_note = QLabel("Lower values (0.2-0.4) give more consistent critique")
-        critique_temp_note.setStyleSheet("color: #6b7280; font-size: 10px;")
+        critique_temp_note.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 10px;")
         critique_layout.addRow("", critique_temp_note)
 
         critique_group.setLayout(critique_layout)
@@ -1507,7 +1486,7 @@ class SettingsDialog(QDialog):
             "For quantization: pip install bitsandbytes accelerate"
         )
         requirements.setWordWrap(True)
-        requirements.setStyleSheet("color: #f59e0b; font-size: 11px; padding: 10px; background-color: #fffbeb; border-radius: 4px;")
+        requirements.setStyleSheet(f"color: {PALETTE['warning']}; font-size: 11px; padding: 10px; background-color: {PALETTE['warning_tint']}; border-radius: 4px;")
         layout.addWidget(requirements)
 
         # Initialize download worker reference
@@ -1662,7 +1641,7 @@ class SettingsDialog(QDialog):
 
             # Color downloaded models green, storytelling models in bold
             if is_downloaded:
-                item.setForeground(QColor("#059669"))
+                item.setForeground(QColor(PALETTE['success_ink']))
                 item.setToolTip(f"✓ Downloaded: {model.model_id}")
             else:
                 item.setToolTip(f"Not downloaded: {model.model_id}")
@@ -1711,8 +1690,8 @@ class SettingsDialog(QDialog):
                 "pip install huggingface_hub"
             )
             self.downloaded_models_label.setStyleSheet(
-                "color: #f59e0b; font-size: 11px; padding: 8px; "
-                "background-color: #fffbeb; border-radius: 4px;"
+                f"color: {PALETTE['warning']}; font-size: 11px; padding: 8px; "
+                f"background-color: {PALETTE['warning_tint']}; border-radius: 4px;"
             )
             self.downloaded_models_label.setVisible(True)
         except Exception as e:
@@ -1809,7 +1788,7 @@ class SettingsDialog(QDialog):
         # Header
         header = QLabel("Configure image generation models and settings")
         header.setWordWrap(True)
-        header.setStyleSheet("color: #666; padding: 5px;")
+        header.setStyleSheet(f"color: {PALETTE['ink_faint']}; padding: 5px;")
         layout.addWidget(header)
 
         # Enable/Disable
@@ -1846,7 +1825,7 @@ class SettingsDialog(QDialog):
         # Model info label
         self.model_info_label = QLabel()
         self.model_info_label.setWordWrap(True)
-        self.model_info_label.setStyleSheet("color: #666; font-size: 11px; padding: 5px;")
+        self.model_info_label.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px; padding: 5px;")
         self._update_model_info()
         self.image_model_combo.currentIndexChanged.connect(self._update_model_info)
         model_layout.addRow("", self.model_info_label)
@@ -1972,7 +1951,7 @@ class SettingsDialog(QDialog):
             "the one-click installer.")
         vs_help_label.setWordWrap(True)
         vs_help_label.setStyleSheet(
-            "color: #666; font-size: 11px; padding: 4px 0;")
+            f"color: {PALETTE['ink_faint']}; font-size: 11px; padding: 4px 0;")
         vs_layout.addRow("", vs_help_label)
 
         vs_group.setLayout(vs_layout)
@@ -2000,7 +1979,7 @@ class SettingsDialog(QDialog):
             "that matches your unique writing style and creative process."
         )
         info_header.setWordWrap(True)
-        info_header.setStyleSheet("font-size: 12px; padding: 10px; background-color: #f0f9ff; border-radius: 6px; color: #0369a1;")
+        info_header.setStyleSheet(f"font-size: 12px; padding: 10px; background-color: {PALETTE['info_tint']}; border-radius: 6px; color: {PALETTE['info_ink']};")
         layout.addWidget(info_header)
 
         # Enable collection
@@ -2017,7 +1996,7 @@ class SettingsDialog(QDialog):
             "Only conversations you explicitly rate are saved. All data stays on your machine."
         )
         collection_note.setWordWrap(True)
-        collection_note.setStyleSheet("color: #6b7280; font-size: 11px; padding: 4px;")
+        collection_note.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px; padding: 4px;")
         enable_layout.addWidget(collection_note)
 
         enable_group.setLayout(enable_layout)
@@ -2078,7 +2057,7 @@ class SettingsDialog(QDialog):
             "• ShareGPT format - Compatible with many training frameworks"
         )
         export_note.setWordWrap(True)
-        export_note.setStyleSheet("color: #6b7280; font-size: 11px; padding: 4px;")
+        export_note.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px; padding: 4px;")
         export_layout.addWidget(export_note)
 
         export_buttons = QHBoxLayout()
@@ -2095,7 +2074,7 @@ class SettingsDialog(QDialog):
 
         # Stats display
         self.training_stats_label = QLabel("No training data collected yet.")
-        self.training_stats_label.setStyleSheet("color: #6b7280; font-size: 11px; padding: 8px; background-color: #f9fafb; border-radius: 4px;")
+        self.training_stats_label.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px; padding: 8px; background-color: {PALETTE['surface_soft']}; border-radius: 4px;")
         export_layout.addWidget(self.training_stats_label)
 
         view_stats_btn = QPushButton("Refresh Statistics")
@@ -2113,7 +2092,7 @@ class SettingsDialog(QDialog):
             "Your conversations are never uploaded anywhere unless you explicitly export and share them."
         )
         privacy.setWordWrap(True)
-        privacy.setStyleSheet("color: #059669; font-size: 11px; padding: 10px; background-color: #ecfdf5; border-radius: 4px;")
+        privacy.setStyleSheet(f"color: {PALETTE['success_ink']}; font-size: 11px; padding: 10px; background-color: {PALETTE['success_tint']}; border-radius: 4px;")
         layout.addWidget(privacy)
 
         layout.addStretch()
@@ -2174,7 +2153,7 @@ class SettingsDialog(QDialog):
             "neural voice synthesis but requires installation."
         )
         engine_info.setWordWrap(True)
-        engine_info.setStyleSheet("color: #6b7280; font-size: 11px; padding: 4px;")
+        engine_info.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px; padding: 4px;")
         engine_layout.addWidget(engine_info)
 
         self.tts_engine_combo = QComboBox()
@@ -2225,12 +2204,12 @@ class SettingsDialog(QDialog):
             "The built-in voices are robotic. For natural Siri-quality voices,\n"
             "download them in macOS Settings, then restart this app."
         )
-        self.tts_voice_hint.setStyleSheet("font-size: 11px; color: #6b7280;")
+        self.tts_voice_hint.setStyleSheet(f"font-size: 11px; color: {PALETTE['ink_faint']};")
         self.tts_voice_hint.setWordWrap(True)
         voice_hint_layout.addWidget(self.tts_voice_hint)
 
         self.tts_download_voices_btn = QPushButton("Open macOS Voice Manager...")
-        self.tts_download_voices_btn.setStyleSheet("font-size: 11px; padding: 4px 10px;")
+        self.tts_download_voices_btn.setStyleSheet(plain_qss(pad="4px 10px"))
         self.tts_download_voices_btn.setMaximumWidth(220)
         self.tts_download_voices_btn.clicked.connect(self._open_macos_voice_manager)
         voice_hint_layout.addWidget(self.tts_download_voices_btn)
@@ -2265,7 +2244,7 @@ class SettingsDialog(QDialog):
         self.vibevoice_status_label = QLabel("Checking VibeVoice status...")
         self.vibevoice_status_label.setWordWrap(True)
         self.vibevoice_status_label.setStyleSheet(
-            "padding: 8px; background-color: #f3f4f6; border-radius: 4px;"
+            f"padding: 8px; background-color: {PALETTE['surface_muted']}; border-radius: 4px;"
         )
         vibevoice_layout.addWidget(self.vibevoice_status_label)
 
@@ -2292,7 +2271,7 @@ class SettingsDialog(QDialog):
 
         self.vibevoice_progress_label = QLabel("")
         self.vibevoice_progress_label.setWordWrap(True)
-        self.vibevoice_progress_label.setStyleSheet("color: #6b7280; font-size: 11px;")
+        self.vibevoice_progress_label.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px;")
         self.vibevoice_progress_label.setVisible(False)
         vibevoice_layout.addWidget(self.vibevoice_progress_label)
 
@@ -2301,21 +2280,7 @@ class SettingsDialog(QDialog):
 
         self.install_vibevoice_btn = QPushButton("Install VibeVoice from GitHub")
         self.install_vibevoice_btn.clicked.connect(self._install_vibevoice)
-        self.install_vibevoice_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #6366f1;
-                color: white;
-                padding: 8px 16px;
-                border-radius: 4px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #4f46e5;
-            }
-            QPushButton:disabled {
-                background-color: #9ca3af;
-            }
-        """)
+        self.install_vibevoice_btn.setStyleSheet(plain_qss(size=13, pad="8px 16px", bold=True))
         install_buttons.addWidget(self.install_vibevoice_btn)
 
         self.check_vibevoice_btn = QPushButton("Check Status")
@@ -2336,7 +2301,7 @@ class SettingsDialog(QDialog):
             "Models are downloaded on first use (~3-14GB depending on model size)."
         )
         vibevoice_info.setWordWrap(True)
-        vibevoice_info.setStyleSheet("color: #6b7280; font-size: 11px; padding: 8px;")
+        vibevoice_info.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px; padding: 8px;")
         vibevoice_layout.addWidget(vibevoice_info)
 
         vibevoice_group.setLayout(vibevoice_layout)
@@ -2436,7 +2401,7 @@ class SettingsDialog(QDialog):
             "private and work offline. Install one for best results."
         )
         stt_info.setWordWrap(True)
-        stt_info.setStyleSheet("color: #6b7280; font-size: 11px; padding: 4px;")
+        stt_info.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px; padding: 4px;")
         stt_layout.addWidget(stt_info)
 
         # Engine selection
@@ -2480,7 +2445,7 @@ class SettingsDialog(QDialog):
             from src.services.stt_service import STTService
             for name, engine_id, available in STTService.get_available_engines():
                 status = "installed" if available else "not installed"
-                color = "#059669" if available else "#9ca3af"
+                color = PALETTE['success_ink'] if available else PALETTE['ink_disabled']
                 stt_status_parts.append(f'<span style="color:{color}">● {name}: {status}</span>')
         except Exception:
             stt_status_parts.append("Could not detect STT engines")
@@ -2494,7 +2459,7 @@ class SettingsDialog(QDialog):
             "  pip install faster-whisper   (recommended, fastest)\n"
             "  pip install moonshine        (ultra-fast, 250M params)"
         )
-        install_note.setStyleSheet("color: #6b7280; font-size: 10px; font-family: monospace; padding: 4px;")
+        install_note.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 10px; font-family: monospace; padding: 4px;")
         stt_layout.addWidget(install_note)
 
         stt_group.setLayout(stt_layout)
@@ -2593,7 +2558,7 @@ class SettingsDialog(QDialog):
                 f"✓ VibeVoice is installed at:\n{install_path}"
             )
             self.vibevoice_status_label.setStyleSheet(
-                "padding: 8px; background-color: #ecfdf5; border-radius: 4px; color: #059669;"
+                f"padding: 8px; background-color: {PALETTE['success_tint']}; border-radius: 4px; color: {PALETTE['success_ink']};"
             )
             self.install_vibevoice_btn.setText("Reinstall VibeVoice")
         else:
@@ -2602,7 +2567,7 @@ class SettingsDialog(QDialog):
                 "Click 'Install VibeVoice from GitHub' to download and set up."
             )
             self.vibevoice_status_label.setStyleSheet(
-                "padding: 8px; background-color: #fef2f2; border-radius: 4px; color: #dc2626;"
+                f"padding: 8px; background-color: {PALETTE['error_tint']}; border-radius: 4px; color: {PALETTE['error_ink']};"
             )
             self.install_vibevoice_btn.setText("Install VibeVoice from GitHub")
 
@@ -2759,7 +2724,7 @@ class SettingsDialog(QDialog):
             "but results may be less sophisticated."
         )
         ai_mode_note.setWordWrap(True)
-        ai_mode_note.setStyleSheet("color: #6b7280; font-size: 11px; padding: 4px;")
+        ai_mode_note.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px; padding: 4px;")
         master_layout.addWidget(ai_mode_note)
 
         master_group.setLayout(master_layout)
@@ -2858,7 +2823,7 @@ class SettingsDialog(QDialog):
             "• Overused words (blue) - Words appearing too frequently with synonyms"
         )
         writing_note.setWordWrap(True)
-        writing_note.setStyleSheet("color: #6b7280; font-size: 11px; padding: 8px; background-color: #f9fafb; border-radius: 4px;")
+        writing_note.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px; padding: 8px; background-color: {PALETTE['surface_soft']}; border-radius: 4px;")
         writing_layout.addWidget(writing_note)
 
         writing_group.setLayout(writing_layout)
@@ -2881,7 +2846,7 @@ class SettingsDialog(QDialog):
             "Local SLM runs on your computer (requires ~4GB RAM, first run downloads model)."
         )
         rephrase_info.setWordWrap(True)
-        rephrase_info.setStyleSheet("color: #6b7280; font-size: 11px;")
+        rephrase_info.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px;")
         rephrase_layout.addRow("", rephrase_info)
 
         rephrase_group.setLayout(rephrase_layout)
@@ -2951,7 +2916,7 @@ class SettingsDialog(QDialog):
             "advanced text processing features like synonyms, grammar analysis, and more."
         )
         nltk_desc.setWordWrap(True)
-        nltk_desc.setStyleSheet("color: #6b7280; font-size: 11px; padding-bottom: 8px;")
+        nltk_desc.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px; padding-bottom: 8px;")
         nltk_layout.addWidget(nltk_desc)
 
         # Resource list with checkboxes
@@ -2960,15 +2925,8 @@ class SettingsDialog(QDialog):
             if resource.platform == "nltk":
                 # Create container for resource
                 resource_frame = QFrame()
-                resource_frame.setStyleSheet("""
-                    QFrame {
-                        background-color: #f9fafb;
-                        border: 1px solid #e5e7eb;
-                        border-radius: 6px;
-                        padding: 8px;
-                        margin: 2px 0;
-                    }
-                """)
+                resource_frame.setStyleSheet(f"QFrame {{ background-color: {PALETTE['surface_soft']}; border: 1px solid {PALETTE['border']};"
+                                             " border-radius: 6px; padding: 8px; margin: 2px 0; }")
                 resource_layout = QVBoxLayout(resource_frame)
                 resource_layout.setContentsMargins(8, 8, 8, 8)
                 resource_layout.setSpacing(4)
@@ -2981,13 +2939,13 @@ class SettingsDialog(QDialog):
 
                 # Description label
                 desc_label = QLabel(resource.description)
-                desc_label.setStyleSheet("color: #6b7280; font-size: 11px; margin-left: 20px;")
+                desc_label.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px; margin-left: 20px;")
                 desc_label.setWordWrap(True)
                 resource_layout.addWidget(desc_label)
 
                 # Required for label
                 req_label = QLabel(f"Used for: {resource.required_for}")
-                req_label.setStyleSheet("color: #4f46e5; font-size: 10px; margin-left: 20px;")
+                req_label.setStyleSheet(f"color: {PALETTE['primary_dark']}; font-size: 10px; margin-left: 20px;")
                 resource_layout.addWidget(req_label)
 
                 nltk_layout.addWidget(resource_frame)
@@ -3006,22 +2964,7 @@ class SettingsDialog(QDialog):
         button_row.addStretch()
 
         self.nltk_download_btn = QPushButton("Download Selected")
-        self.nltk_download_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #6366f1;
-                color: white;
-                border: none;
-                border-radius: 6px;
-                padding: 8px 16px;
-                font-weight: 500;
-            }
-            QPushButton:hover {
-                background-color: #4f46e5;
-            }
-            QPushButton:disabled {
-                background-color: #9ca3af;
-            }
-        """)
+        self.nltk_download_btn.setStyleSheet(plain_qss(size=13, pad="8px 16px"))
         self.nltk_download_btn.clicked.connect(self._download_nltk_resources)
         button_row.addWidget(self.nltk_download_btn)
 
@@ -3030,23 +2973,14 @@ class SettingsDialog(QDialog):
         # Progress bar (hidden initially)
         self.nltk_progress_bar = QProgressBar()
         self.nltk_progress_bar.setVisible(False)
-        self.nltk_progress_bar.setStyleSheet("""
-            QProgressBar {
-                border: 1px solid #e5e7eb;
-                border-radius: 4px;
-                text-align: center;
-                height: 20px;
-            }
-            QProgressBar::chunk {
-                background-color: #6366f1;
-                border-radius: 3px;
-            }
-        """)
+        self.nltk_progress_bar.setStyleSheet(
+            f"QProgressBar {{ border: 1px solid {PALETTE['border']}; border-radius: 4px; text-align: center; height: 20px; }}"
+            f" QProgressBar::chunk {{ background-color: {PALETTE['primary']}; border-radius: 3px; }}")
         nltk_layout.addWidget(self.nltk_progress_bar)
 
         # Status label
         self.nltk_status_label = QLabel("")
-        self.nltk_status_label.setStyleSheet("color: #6b7280; font-size: 11px;")
+        self.nltk_status_label.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px;")
         self.nltk_status_label.setWordWrap(True)
         nltk_layout.addWidget(self.nltk_status_label)
 
@@ -3076,8 +3010,8 @@ class SettingsDialog(QDialog):
         )
         info_note.setWordWrap(True)
         info_note.setStyleSheet(
-            "color: #6b7280; font-size: 11px; padding: 10px; "
-            "background-color: #f3f4f6; border-radius: 4px;"
+            f"color: {PALETTE['ink_faint']}; font-size: 11px; padding: 10px; "
+            f"background-color: {PALETTE['surface_muted']}; border-radius: 4px;"
         )
         layout.addWidget(info_note)
 
@@ -3146,7 +3080,7 @@ class SettingsDialog(QDialog):
 
         if success:
             self.nltk_status_label.setText("Download completed successfully!")
-            self.nltk_status_label.setStyleSheet("color: #059669; font-size: 11px;")
+            self.nltk_status_label.setStyleSheet(f"color: {PALETTE['success_ink']}; font-size: 11px;")
 
             # Refresh WordNet availability so thesaurus can use it immediately
             try:
@@ -3160,7 +3094,7 @@ class SettingsDialog(QDialog):
             QMessageBox.information(self, "Download Complete", message)
         else:
             self.nltk_status_label.setText(f"Download failed: {message[:50]}...")
-            self.nltk_status_label.setStyleSheet("color: #dc2626; font-size: 11px;")
+            self.nltk_status_label.setStyleSheet(f"color: {PALETTE['error_ink']}; font-size: 11px;")
             QMessageBox.warning(self, "Download Failed", message)
 
         # Refresh installed resources display
@@ -3212,7 +3146,7 @@ class SettingsDialog(QDialog):
 
             self.installed_resources_label.setText(installed_text + not_installed_text + wordnet_status)
             self.installed_resources_label.setStyleSheet(
-                "font-size: 11px; padding: 8px; background-color: #f9fafb; border-radius: 4px;"
+                f"font-size: 11px; padding: 8px; background-color: {PALETTE['surface_soft']}; border-radius: 4px;"
             )
 
         except ImportError:
@@ -3220,8 +3154,8 @@ class SettingsDialog(QDialog):
                 "NLTK is not installed. Install it with: pip install nltk"
             )
             self.installed_resources_label.setStyleSheet(
-                "font-size: 11px; padding: 8px; background-color: #fef2f2; "
-                "border-radius: 4px; color: #dc2626;"
+                f"font-size: 11px; padding: 8px; background-color: {PALETTE['error_tint']}; "
+                f"border-radius: 4px; color: {PALETTE['error_ink']};"
             )
 
     def _test_connection(self):
@@ -3341,7 +3275,7 @@ class SettingsDialog(QDialog):
             "fall back to the global Local Model ID or your cloud "
             "default.")
         intro.setWordWrap(True)
-        intro.setStyleSheet("color:#374151;font-size:12px;padding:6px;")
+        intro.setStyleSheet(f"color:{PALETTE['ink_soft']};font-size:12px;padding:6px;")
         outer.addWidget(intro)
 
         # Count line — answers "what's available to pick?" up front.
@@ -3355,13 +3289,13 @@ class SettingsDialog(QDialog):
                 f"<b>{n_local_pretrained}</b> local pretrained")
         bits.append("<b>4</b> cloud providers")
         count_html = (
-            "<span style='color:#065f46;'>"
+            f"<span style='color:{PALETTE['success_ink']};'>"
             "✓ Available: " + " · ".join(bits) + "."
             "</span>")
         count_label = QLabel(count_html)
         count_label.setWordWrap(True)
         count_label.setStyleSheet(
-            "padding:6px 8px;background:#f9fafb;border-radius:4px;")
+            f"padding:6px 8px;background:{PALETTE['surface_soft']};border-radius:4px;")
         outer.addWidget(count_label)
 
         # Per-task picker form. Each task gets one combo populated by
@@ -3391,7 +3325,7 @@ class SettingsDialog(QDialog):
         except Exception:
             pass
         mem_intro = QLabel(
-            f"<span style='color:#6b7280;font-size:11px;'>"
+            f"<span style='color:{PALETTE['ink_faint']};font-size:11px;'>"
             f"Detected available RAM: <b>{avail_gb:.1f} GB</b>. "
             f"Both the writing tool's per-task LLM cache AND the "
             f"global model cache honour these limits — LRU "
@@ -3427,7 +3361,7 @@ class SettingsDialog(QDialog):
 
         self._ram_preview_label = QLabel("")
         self._ram_preview_label.setStyleSheet(
-            "color:#6b7280;font-size:11px;padding:0 0 0 4px;")
+            f"color:{PALETTE['ink_faint']};font-size:11px;padding:0 0 0 4px;")
 
         def _refresh_preview():
             if avail_gb <= 0:
@@ -3539,6 +3473,7 @@ class SettingsDialog(QDialog):
         # AgentSuite reads them). Distinct from this dialog's
         # ``settings`` dict, which holds ai_config keys.
         self._save_per_task_models()
+        self._contact_page.form.save()      # title page details (9.2)
         # Call parent accept to close dialog
         super().accept()
 
@@ -4024,7 +3959,7 @@ class ConnectionTestDialog(QDialog):
         for provider in providers.keys():
             frame = QFrame()
             frame.setFrameStyle(QFrame.Shape.StyledPanel)
-            frame.setStyleSheet("QFrame { background-color: #f9fafb; border-radius: 4px; padding: 8px; }")
+            frame.setStyleSheet(f"QFrame {{ background-color: {PALETTE['surface_soft']}; border-radius: 4px; padding: 8px; }}")
 
             frame_layout = QHBoxLayout(frame)
             frame_layout.setContentsMargins(10, 8, 10, 8)
@@ -4036,7 +3971,7 @@ class ConnectionTestDialog(QDialog):
 
             # Status indicator
             status_label = QLabel("Testing...")
-            status_label.setStyleSheet("color: #6b7280;")
+            status_label.setStyleSheet(f"color: {PALETTE['ink_faint']};")
             frame_layout.addWidget(status_label, 1)
 
             # Store reference
@@ -4050,7 +3985,7 @@ class ConnectionTestDialog(QDialog):
 
         # Progress indicator
         self.progress_label = QLabel("Running tests...")
-        self.progress_label.setStyleSheet("color: #6b7280; font-style: italic; padding: 10px;")
+        self.progress_label.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-style: italic; padding: 10px;")
         layout.addWidget(self.progress_label)
 
         # Close button (initially disabled)
@@ -4077,10 +4012,10 @@ class ConnectionTestDialog(QDialog):
             label = self.status_widgets[provider]
             if success:
                 label.setText(f"✓ {message}")
-                label.setStyleSheet("color: #059669; font-weight: bold;")
+                label.setStyleSheet(f"color: {PALETTE['success_ink']}; font-weight: bold;")
             else:
                 label.setText(f"✗ {message}")
-                label.setStyleSheet("color: #dc2626;")
+                label.setStyleSheet(f"color: {PALETTE['error_ink']};")
 
     def _on_tests_complete(self):
         """Handle all tests completed."""
@@ -4090,13 +4025,13 @@ class ConnectionTestDialog(QDialog):
 
         if success_count == total_count:
             self.progress_label.setText(f"All {total_count} connections successful!")
-            self.progress_label.setStyleSheet("color: #059669; font-weight: bold; padding: 10px;")
+            self.progress_label.setStyleSheet(f"color: {PALETTE['success_ink']}; font-weight: bold; padding: 10px;")
         elif success_count > 0:
             self.progress_label.setText(f"{success_count} of {total_count} connections successful")
-            self.progress_label.setStyleSheet("color: #d97706; font-weight: bold; padding: 10px;")
+            self.progress_label.setStyleSheet(f"color: {PALETTE['warning_ink']}; font-weight: bold; padding: 10px;")
         else:
             self.progress_label.setText("All connection tests failed")
-            self.progress_label.setStyleSheet("color: #dc2626; font-weight: bold; padding: 10px;")
+            self.progress_label.setStyleSheet(f"color: {PALETTE['error_ink']}; font-weight: bold; padding: 10px;")
 
         self.close_btn.setEnabled(True)
         self.setWindowTitle("Connection Test Results")

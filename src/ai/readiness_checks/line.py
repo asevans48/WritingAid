@@ -5,6 +5,7 @@ and ``ctx.editor_flags`` use the editor's own rules), so a chapter's cell
 matches its underlines. Thresholds are in ``readiness.THRESHOLDS``.
 """
 
+from src.ai import genre_baseline
 from src.ai.readiness import CheckContext, CheckOutput, Item, NOT_APPLICABLE, check
 from src.utils.editor_flags import ErrorType
 
@@ -76,17 +77,34 @@ def filler(ctx: CheckContext) -> CheckOutput:
     return _style(ctx, {"intensifier", "wordy"})
 
 
-@check(name="sentence_variety", tier="polish", stage="line", label="Sentence variety", version=1, weight=20,
-       display="measure", judge=False,
+@check(name="sentence_variety", tier="polish", stage="line", label="Sentence variety", version=2, weight=20,
+       display="measure", judge=False, depends=genre_baseline.depends,
        description="How much sentence lengths vary (0–100), against the genre's usual "
-                   "figure. Prose whose sentences are all one length reads flat.")
+                   "figure: what most published books in the genre show, when the app has "
+                   "figures for it. Prose whose sentences are all one length reads flat.")
 def sentence_variety(ctx: CheckContext) -> CheckOutput:
     from src.ai.chapter_analysis_agent import resolve_genre_profile
     stats = ctx.stats()
     if stats.sentence_count < 8:
         return NOT_APPLICABLE                    # too short to judge rhythm
-    target = resolve_genre_profile(ctx.genre or "").variety_score_target
-    score = round(stats.sentence_length_score, 1)
+    published = genre_baseline.usable(ctx.genre or "", "sentence_variety")
+    target = (round(published.low, 1) if published
+              else resolve_genre_profile(ctx.genre or "").variety_score_target)
+    out = _variety(round(stats.sentence_length_score, 1), target)
+    return _beside_genre(ctx, "sentence_variety", out, show_value=False)
+
+
+def _beside_genre(ctx: CheckContext, measure: str, out: CheckOutput,
+                  show_value: bool = True) -> CheckOutput:
+    """Add "Adverbs 18 per 1,000 words; published thrillers 6 to 15 (12 books)."
+    to a result's message (P.3); nothing without genre figures."""
+    note = genre_baseline.line(ctx.genre or "", measure, out.measure if show_value else None)
+    if note:
+        out.message = f"{out.message} {note}".strip()
+    return out
+
+
+def _variety(score: float, target: float) -> CheckOutput:
     if score >= target:
         status, msg = "ready", f"Variety {score:g} of 100 meets the genre's {target:g}."
     elif score >= target * 0.75:
@@ -98,17 +116,23 @@ def sentence_variety(ctx: CheckContext) -> CheckOutput:
     return CheckOutput(measure=score, status=status, message=msg)
 
 
-@check(name="passive", tier="polish", stage="line", label="Passive voice", version=1, weight=30,
+_GENRE_BAR = (" The bar is what nine in ten published chapters of the book's genre show, "
+              "when the app has figures for that genre; otherwise a fixed figure.")
+
+
+@check(name="passive", tier="polish", stage="line", label="Passive voice", version=2, weight=30,
+       depends=genre_baseline.depends,
        description="Sentences where the doer is hidden or comes last (was thrown, had "
-                   "been taken).")
+                   "been taken)." + _GENRE_BAR)
 def passive(ctx: CheckContext) -> CheckOutput:
-    return _style(ctx, {"passive"})
+    return _beside_genre(ctx, "passive", _style(ctx, {"passive"}))
 
 
-@check(name="adverbs", tier="polish", stage="line", label="Adverbs", version=1, weight=25,
-       description="-ly adverbs, often a sign a stronger verb would do the work.")
+@check(name="adverbs", tier="polish", stage="line", label="Adverbs", version=2, weight=25,
+       depends=genre_baseline.depends,
+       description="-ly adverbs, often a sign a stronger verb would do the work." + _GENRE_BAR)
 def adverbs(ctx: CheckContext) -> CheckOutput:
-    return _style(ctx, {"adverb"})
+    return _beside_genre(ctx, "adverbs", _style(ctx, {"adverb"}))
 
 
 @check(name="cliches", tier="polish", stage="line", label="Clichés", version=1, weight=50,

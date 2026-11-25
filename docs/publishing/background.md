@@ -45,8 +45,10 @@ confirmed in piece 0.1.
 | Combo | **Partly.** The editor's highlights show all four families together (spelling, grammar, overuse, style), but no single report lists them together. The Style panel lists the eleven style checks only. |
 | Sentence Structure | Partly: repeated sentence starts (`style_checks`), and sentence-length variety in the Critique (`ProWritingAnalyzer`) |
 | Diction | Partly: wordy phrases only |
-| Transition, Sensory | **Missing as scans.** The Critique's model prompts ask about forced transitions and scenes with no sensory grounding, but nothing counts them. |
-| Pronoun, Alliteration, Homonym, Acronym | **Missing** |
+| Transition | Yes, since P.2a: style check "Few transitions" (long paragraphs with no linking word) and the share of sentences with one in the Style tab's summary. Off until ticked. |
+| Pronoun, Alliteration, Acronym | Yes, since P.2a: style checks "Pronouns", "Alliteration" and "Acronyms". Off until ticked. |
+| Sensory | **Missing as a scan.** The Critique's model prompts ask about scenes with no sensory grounding, but nothing counts them (P.2b). |
+| Homonym | **Missing** (P.2b) |
 | Plagiarism | Out of scope |
 
 ### What is wrong with the first version of this plan

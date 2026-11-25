@@ -31,6 +31,7 @@ signature shown.
 | Does a line fit its speaker | `dialogue_craft.speech_profiles(project, text)` then `dialogue_craft.line_fit(line, speaker, profiles)` | `{name: SpeechProfile}`; `line_fit` returns a note, or `""` | No | < 1 ms |
 | Pacing against published books by genre: **built-in ranges** | the Critique's `PacingAnalyzer` in `src/ai/chapter_analysis_agent.py`, with `resolve_genre_profile(project.prose_profile.genre)` → `GenreProfile` (11 genres plus a default: sentence length, variety, dialogue share, passive, long sentences and adverbs) | `ReportSection` | No for the numbers; the narrative needs a model | — |
 | Pacing against CONLIT data | `pacing_analyzer.analyze_text(text)`, then `compare_to_genre(stats, genre_key, conlit_stats)` with `conlit_loader.get_genre_stats_cached()` | stats `dict`; comparison `dict` | No, but **needs the CONLIT download** configured in the Training Studio (`None` in a fresh install) | 1 ms |
+| Every measure beside published books in the genre (P.3) | `genre_baseline.usable(genre, measure)` → `GenreRange` (p10, median, p90, books), `genre_baseline.threshold(name, genre, fixed)` (what `CheckContext.threshold` asks), `genre_baseline.line(genre, measure, value)` for the message, in `src/ai/genre_baseline.py`; built once by `scripts/genre_baseline.py` from the downloaded Gutenberg books into `~/.creativeos/genre_baseline.json` | `GenreRange` / `Threshold` / `str` | No, but **needs the baseline built** (none in a fresh install: the fixed figures stay) | < 1 ms to read; about a second a chapter to build |
 | Continuity **across novellas** | `ContinuityAnalyzer(project, llm=None).run()` in `src/ai/continuity_analysis.py`; `has_cross_manuscript_content(project)` says whether there is anything to check | `ReportSection` (`ReportType.CONTINUITY`) | No for the presence map, possible resurrections and unrecorded names; yes for conflicts | 2 ms |
 | Order of actions **in a rewrite** | `event_order.events(text)`; `event_order.order_problems(original, rewrite)` in `src/ai/event_order.py` | `List[Event]`; `List[str]` | No | 3 ms |
 | Story promises and character consistency in a chapter | `PromiseChecker(llm).check_chapter(...)` in `src/ai/chapter_analysis_agent.py`; inputs from `chat_actions.promise_check_inputs(project)` | `PromiseCheckResult` | **Yes** | one model call |
@@ -130,8 +131,12 @@ These were looked for and are not in the app:
 - **Whole-book voice drift:** no check.
 - **Sentence variety in `style_checks`:** only `ProWritingAnalyzer` measures
   it.
-- **Transitions, pronouns, alliteration, homonyms, acronyms, sensory detail:**
-  no scan. Forced transitions and scenes with no sensory grounding are named
-  only in the Critique's model prompts.
+- **Homonyms, sensory detail:** no scan. Scenes with no sensory grounding
+  are named only in the Critique's model prompts. (Transitions, pronouns,
+  alliteration and acronyms became style checks in P.2a,
+  `src/utils/style_reports.py`, off until ticked.)
 - **Pacing against genre with no download:** only the Critique's built-in
-  `GENRE_PROFILES`. CONLIT figures need the Training Studio download.
+  `GENRE_PROFILES` (rules of thumb, not measured). CONLIT figures need the
+  Training Studio download. Figures from published books in the genre
+  (P.3) need the downloaded books and `scripts/genre_baseline.py`; a
+  genre needs five books before they are used.

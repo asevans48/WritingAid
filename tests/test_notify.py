@@ -138,10 +138,10 @@ def test_write_tab_select_text_first_opens_no_box(app, fresh, tmp_path):
 
 
 def test_a_box_that_stays_is_not_touched():
-    """Draft #N saved mentions saving: it stays a box (the writer may move it later)."""
+    """Moving chapters is work the writer must not miss: it stays a box."""
     src = open("src/ui/manuscript_editor.py", encoding="utf-8").read()
-    i = src.index('"Draft Saved"')
-    assert "QMessageBox.information(" in src[i - 120:i]
+    i = src.index('"Chapters Moved"')
+    assert "QMessageBox.information(" in src[i - 80:i]
 
 
 def test_help_menu_has_recent_messages(app):
@@ -149,3 +149,24 @@ def test_help_menu_has_recent_messages(app):
     menu = QMenu()
     act = notify.install_menu(menu, None)
     assert act.text().startswith("Recent")
+
+
+def test_a_notice_is_seen_longer_on_a_tinted_bar_with_no_box(window, fresh):
+    """The writer's choice for "Draft #N saved" and "Created draft …":
+    visible, but no box."""
+    win, inner = window
+    notify.notice(inner, "Draft Saved", "Draft #3 saved.")
+    assert fresh == []
+    assert win.statusBar().currentMessage() == "Draft #3 saved."
+    assert "font-weight: bold" in win.statusBar().styleSheet()
+    win.statusBar().showMessage("Saved: elsewhere")           # the next message is plain
+    assert win.statusBar().styleSheet() == ""
+    assert notify.recent()[0].kind == "notice"
+
+
+def test_the_two_draft_messages_are_notices():
+    me = open("src/ui/manuscript_editor.py", encoding="utf-8").read()
+    mw = open("src/ui/main_window.py", encoding="utf-8").read()
+    for src, title in ((me, '"Draft Saved"'), (me, '"Draft Created"'), (mw, '"Draft Created"')):
+        i = src.index(title)
+        assert "notify.notice(" in src[i - 80:i], title

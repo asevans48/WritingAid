@@ -32,6 +32,26 @@ def _share_dictionary_data() -> None:
 _share_dictionary_data()
 
 
+def _share_languagetool_program() -> None:
+    """The same for LanguageTool: with a scratch HOME, a test that starts it
+    would download it again (about 260 MB) into the scratch folder. Point
+    language_tool_python at the copy already installed in the real
+    ``~/.cache`` (a program, not the writer's work)."""
+    if os.environ.get("LTP_PATH"):
+        return
+    try:
+        real_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except Exception:
+        return
+    installed = real_home / ".cache" / "language_tool_python"
+    if installed.is_dir() and any(installed.glob("LanguageTool-*")) \
+            and Path.home() != real_home:
+        os.environ["LTP_PATH"] = str(installed)
+
+
+_share_languagetool_program()
+
+
 @pytest.fixture(autouse=True)
 def _isolated_critique_history(tmp_path, monkeypatch):
     """Critique runs record history; keep it out of the user's home folder."""
@@ -138,3 +158,16 @@ def _isolated_readiness_file(tmp_path, monkeypatch):
             return original(project)
         return tmp_path / "readiness" / "unsaved.json"
     monkeypatch.setattr(rs, "readiness_path", path)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_genre_baseline(tmp_path, monkeypatch):
+    """The genre baseline (P.3) is read from the home folder; tests start
+    with none, in a temporary folder, so checks keep their fixed figures."""
+    import src.ai.genre_baseline as gb
+    monkeypatch.setattr(gb, "baseline_path", lambda: tmp_path / "genre_baseline.json")
+    gb._LOADED.update(key=None, data={})
+    import src.data.conlit_loader as cl        # and no CONLIT unless a test puts one there
+    monkeypatch.setattr(cl, "_CONLIT_PATH_HINT_FILE", tmp_path / "conlit_path.txt")
+    monkeypatch.setattr(cl, "_DEFAULT_LOCAL_CONLIT_DIR", tmp_path / "conlit")
+    monkeypatch.setattr(cl, "_CONLIT_CACHE_FILE", tmp_path / "conlit_stats.json")

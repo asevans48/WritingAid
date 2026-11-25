@@ -13,7 +13,7 @@ import threading
 import uuid
 
 from src.ui.styles import SYSTEM_FONT
-from src.ui.ui_kit import compact_button  # narrow buttons show their symbol
+from src.ui.ui_kit import ARC_COLOURS, PALETTE, PRIMARY_BUTTON, compact_button, plain_qss, text_style  # shared parts (U.1, D.8)
 
 
 # Tags the chapter-planner AI emits when it wants to propose a new
@@ -175,22 +175,10 @@ class TodoItemWidget(QWidget):
         # Checkbox with visible styling
         self.checkbox = QCheckBox()
         self.checkbox.setChecked(completed)
-        self.checkbox.setStyleSheet("""
-            QCheckBox::indicator {
-                width: 16px;
-                height: 16px;
-            }
-            QCheckBox::indicator:unchecked {
-                border: 2px solid #9ca3af;
-                border-radius: 3px;
-                background-color: white;
-            }
-            QCheckBox::indicator:checked {
-                border: 2px solid #22c55e;
-                border-radius: 3px;
-                background-color: #22c55e;
-            }
-        """)
+        self.checkbox.setStyleSheet(
+            "QCheckBox::indicator { width: 16px; height: 16px; border-radius: 3px; }"
+            f" QCheckBox::indicator:unchecked {{ border: 2px solid {PALETTE['ink_disabled']}; background-color: {PALETTE['surface']}; }}"
+            f" QCheckBox::indicator:checked {{ border: 2px solid {ARC_COLOURS['rising']}; background-color: {ARC_COLOURS['rising']}; }}")
         self.checkbox.stateChanged.connect(self._on_changed)
         layout.addWidget(self.checkbox)
 
@@ -215,18 +203,8 @@ class TodoItemWidget(QWidget):
         delete_btn.setMinimumWidth(24)
         delete_btn.setMaximumWidth(28)
         delete_btn.setToolTip("Delete task")
-        delete_btn.setStyleSheet("""
-            QPushButton {
-                font-size: 12px;
-                padding: 2px;
-                border: none;
-                background: transparent;
-            }
-            QPushButton:hover {
-                background-color: #fee2e2;
-                border-radius: 3px;
-            }
-        """)
+        delete_btn.setStyleSheet("QPushButton { font-size: 12px; padding: 2px; border: none; background: transparent; }"
+                                 f" QPushButton:hover {{ background-color: {PALETTE['error_tint']}; border-radius: 3px; }}")
         compact_button(delete_btn)  # narrow: show its symbol
         delete_btn.clicked.connect(lambda: self.delete_requested.emit(self.item_id))
         layout.addWidget(delete_btn)
@@ -240,13 +218,13 @@ class TodoItemWidget(QWidget):
     def _update_style(self):
         base_style = "font-size: 11px; "
         if self.checkbox.isChecked():
-            self.text_edit.setStyleSheet(base_style + "text-decoration: line-through; color: gray;")
+            self.text_edit.setStyleSheet(base_style + f"text-decoration: line-through; color: {PALETTE['ink_disabled']};")
         else:
             priority = self.priority_combo.currentText()
             if priority == "high":
-                self.text_edit.setStyleSheet(base_style + "color: #dc2626; font-weight: bold;")
+                self.text_edit.setStyleSheet(base_style + f"color: {PALETTE['error_ink']}; font-weight: bold;")
             elif priority == "low":
-                self.text_edit.setStyleSheet(base_style + "color: #6b7280;")
+                self.text_edit.setStyleSheet(base_style + f"color: {PALETTE['ink_faint']};")
             else:
                 self.text_edit.setStyleSheet(base_style)
 
@@ -302,7 +280,7 @@ class StoryEventWidget(QWidget):
 
         # Drag handle
         self.drag_handle = QLabel("⋮")
-        self.drag_handle.setStyleSheet("color: #9ca3af; font-size: 11px;")
+        self.drag_handle.setStyleSheet(text_style("ink_disabled", 11))
         self.drag_handle.setToolTip("Drag to reorder")
         self.drag_handle.setFixedWidth(12)
         self.drag_handle.setCursor(Qt.CursorShape.OpenHandCursor)
@@ -311,7 +289,7 @@ class StoryEventWidget(QWidget):
         # Order/number label
         self.order_label = QLabel(f"{self.order + 1}.")
         self.order_label.setFixedWidth(18)
-        self.order_label.setStyleSheet("font-weight: bold; color: #6366f1; font-size: 11px;")
+        self.order_label.setStyleSheet(text_style("primary", 11, bold=True))
         layout.addWidget(self.order_label)
 
         # Checkbox for completion
@@ -323,7 +301,7 @@ class StoryEventWidget(QWidget):
 
         # Expand/collapse indicator (combined with text field styling)
         self.expand_indicator = QLabel("▶")
-        self.expand_indicator.setStyleSheet("color: #9ca3af; font-size: 8px;")
+        self.expand_indicator.setStyleSheet(text_style("ink_disabled", 8))
         self.expand_indicator.setFixedWidth(10)
         layout.addWidget(self.expand_indicator)
 
@@ -331,20 +309,9 @@ class StoryEventWidget(QWidget):
         self.text_edit = QLineEdit(text)
         self.text_edit.setPlaceholderText("Event name...")
         self.text_edit.textChanged.connect(self._on_changed)
-        self.text_edit.setStyleSheet("""
-            QLineEdit {
-                border: 1px solid #e5e7eb;
-                border-radius: 3px;
-                padding: 2px 4px;
-                font-size: 11px;
-            }
-            QLineEdit:hover {
-                border-color: #6366f1;
-            }
-            QLineEdit:focus {
-                border-color: #6366f1;
-            }
-        """)
+        self.text_edit.setStyleSheet(
+            f"QLineEdit {{ border: 1px solid {PALETTE['border']}; border-radius: 3px; padding: 2px 4px; font-size: 11px; }}"
+            f" QLineEdit:hover, QLineEdit:focus {{ border-color: {PALETTE['primary']}; }}")
         self.text_edit.setMinimumWidth(80)
         layout.addWidget(self.text_edit, 1)
 
@@ -386,18 +353,8 @@ class StoryEventWidget(QWidget):
         ai_btn.setToolTip(
             "Ask the AI Assistant to help with this beat "
             "(opens outline mode focused on this beat).")
-        ai_btn.setStyleSheet("""
-            QPushButton {
-                font-size: 12px;
-                padding: 2px;
-                border: none;
-                background: transparent;
-            }
-            QPushButton:hover {
-                background-color: #ede9fe;
-                border-radius: 3px;
-            }
-        """)
+        ai_btn.setStyleSheet("QPushButton { font-size: 12px; padding: 2px; border: none; background: transparent; }"
+                             f" QPushButton:hover {{ background-color: {PALETTE['violet_tint']}; border-radius: 3px; }}")
         compact_button(ai_btn)  # narrow: show its symbol
         ai_btn.clicked.connect(
             lambda: self.ai_help_requested.emit(self.event_id))
@@ -408,18 +365,8 @@ class StoryEventWidget(QWidget):
         delete_btn.setMinimumWidth(24)
         delete_btn.setMaximumWidth(28)
         delete_btn.setToolTip("Delete event")
-        delete_btn.setStyleSheet("""
-            QPushButton {
-                font-size: 12px;
-                padding: 2px;
-                border: none;
-                background: transparent;
-            }
-            QPushButton:hover {
-                background-color: #fee2e2;
-                border-radius: 3px;
-            }
-        """)
+        delete_btn.setStyleSheet("QPushButton { font-size: 12px; padding: 2px; border: none; background: transparent; }"
+                                 f" QPushButton:hover {{ background-color: {PALETTE['error_tint']}; border-radius: 3px; }}")
         compact_button(delete_btn)  # narrow: show its symbol
         delete_btn.clicked.connect(lambda: self.delete_requested.emit(self.event_id))
         layout.addWidget(delete_btn)
@@ -436,20 +383,10 @@ class StoryEventWidget(QWidget):
         self.description_edit.setPlaceholderText("Event details...")
         self.description_edit.setPlainText(description)
         self.description_edit.setFixedHeight(45)
-        self.description_edit.setStyleSheet("""
-            QTextEdit {
-                border: 1px solid #d1d5db;
-                border-top: none;
-                border-radius: 0 0 3px 3px;
-                padding: 2px 6px;
-                background-color: #f9fafb;
-                font-size: 11px;
-            }
-            QTextEdit:focus {
-                border-color: #6366f1;
-                background-color: white;
-            }
-        """)
+        self.description_edit.setStyleSheet(
+            f"QTextEdit {{ border: 1px solid {PALETTE['border_strong']}; border-top: none; border-radius: 0 0 3px 3px;"
+            f" padding: 2px 6px; background-color: {PALETTE['surface_soft']}; font-size: 11px; }}"
+            f" QTextEdit:focus {{ border-color: {PALETTE['primary']}; background-color: {PALETTE['surface']}; }}")
         self.description_edit.textChanged.connect(self._on_changed)
         desc_layout.addWidget(self.description_edit)
 
@@ -501,32 +438,14 @@ class StoryEventWidget(QWidget):
         self.changed.emit()
 
     def _update_style(self):
-        base_style = """
-            QLineEdit {
-                border: 1px solid #e5e7eb;
-                border-radius: 4px;
-                padding: 4px 8px;
-            }
-            QLineEdit:hover {
-                border-color: #6366f1;
-            }
-            QLineEdit:focus {
-                border-color: #6366f1;
-            }
-        """
+        base_style = (f"QLineEdit {{ border: 1px solid {PALETTE['border']}; border-radius: 4px; padding: 4px 8px; }}"
+                      f" QLineEdit:hover, QLineEdit:focus {{ border-color: {PALETTE['primary']}; }}")
         if self.checkbox.isChecked():
-            self.text_edit.setStyleSheet(base_style + "QLineEdit { text-decoration: line-through; color: #9ca3af; }")
-            self.order_label.setStyleSheet("font-weight: bold; color: #9ca3af;")
+            self.text_edit.setStyleSheet(base_style + f"QLineEdit {{ text-decoration: line-through; color: {PALETTE['ink_disabled']}; }}")
+            self.order_label.setStyleSheet(text_style("ink_disabled", bold=True))
         else:
             stage = self.stage_combo.currentData()
-            colors = {
-                "exposition": "#3b82f6",  # blue
-                "rising": "#22c55e",  # green
-                "climax": "#ef4444",  # red
-                "falling": "#f97316",  # orange
-                "resolution": "#8b5cf6"  # purple
-            }
-            color = colors.get(stage, "#6366f1")
+            color = ARC_COLOURS.get(stage, PALETTE["primary"])
             self.text_edit.setStyleSheet(base_style)
             self.order_label.setStyleSheet(f"font-weight: bold; color: {color};")
 
@@ -596,7 +515,7 @@ class StoryEventWidget(QWidget):
             source_id = event.mimeData().text()
             if source_id != self.event_id:  # Don't accept drops on self
                 event.acceptProposedAction()
-                self.setStyleSheet("background-color: #e0e7ff; border-radius: 4px;")
+                self.setStyleSheet(f"background-color: {PALETTE['primary_tint']}; border-radius: 4px;")
 
     def dragLeaveEvent(self, event):
         """Reset styling when drag leaves."""
@@ -642,7 +561,7 @@ class ChapterArcWidget(QWidget):
         arc_height = height - 40
 
         # Draw background
-        painter.fillRect(self.rect(), QColor("#fafafa"))
+        painter.fillRect(self.rect(), QColor(PALETTE["surface_soft"]))
 
         # Draw arc path (Freytag's pyramid style)
         path = QPainterPath()
@@ -671,7 +590,7 @@ class ChapterArcWidget(QWidget):
         )
 
         # Draw arc line
-        pen = QPen(QColor("#e5e7eb"), 3)
+        pen = QPen(QColor(PALETTE["border"]), 3)
         painter.setPen(pen)
         painter.drawPath(path)
 
@@ -680,10 +599,10 @@ class ChapterArcWidget(QWidget):
         fill_path.lineTo(end_x, base_y)
         fill_path.lineTo(start_x, base_y)
         fill_path.closeSubpath()
-        painter.fillPath(fill_path, QBrush(QColor("#f3f4f6")))
+        painter.fillPath(fill_path, QBrush(QColor(PALETTE["surface_muted"])))
 
         # Draw stage labels - abbreviated for compact display
-        painter.setPen(QPen(QColor("#9ca3af")))
+        painter.setPen(QPen(QColor(PALETTE["ink_disabled"])))
         font = painter.font()
         font.setPointSize(7)  # Smaller font for small screens
         painter.setFont(font)
@@ -702,13 +621,7 @@ class ChapterArcWidget(QWidget):
                            Qt.AlignmentFlag.AlignCenter, label)
 
         # Draw event markers
-        stage_colors = {
-            "exposition": QColor("#3b82f6"),
-            "rising": QColor("#22c55e"),
-            "climax": QColor("#ef4444"),
-            "falling": QColor("#f97316"),
-            "resolution": QColor("#8b5cf6")
-        }
+        stage_colors = {stage: QColor(c) for stage, c in ARC_COLOURS.items()}
 
         for event in self.events:
             pos = event.get('arc_position', 50) / 100.0
@@ -739,19 +652,19 @@ class ChapterArcWidget(QWidget):
                 y = (1 - t) * (1 - t) * p0y + 2 * (1 - t) * t * p1y + t * t * p2y
 
             # Draw marker
-            color = stage_colors.get(stage, QColor("#6366f1"))
+            color = stage_colors.get(stage, QColor(PALETTE["primary"]))
             if completed:
-                color = QColor("#9ca3af")
+                color = QColor(PALETTE["ink_disabled"])
 
             painter.setPen(QPen(color.darker(120), 2))
-            painter.setBrush(QBrush(color if not completed else QColor("#d1d5db")))
+            painter.setBrush(QBrush(color if not completed else QColor(PALETTE["border_strong"])))
 
             radius = 7 if not completed else 5  # Slightly smaller for compact arc
             painter.drawEllipse(QPointF(x, y), radius, radius)
 
             # Draw event number
             order = event.get('order', 0)
-            painter.setPen(QPen(QColor("white" if not completed else "#666")))
+            painter.setPen(QPen(QColor("white" if not completed else PALETTE["ink_faint"])))
             font.setPointSize(6)  # Smaller font for compact markers
             font.setBold(True)
             painter.setFont(font)
@@ -830,12 +743,12 @@ class ChapterPlannerWidget(QWidget):
 
         # Header
         header = QLabel("Chapter Planning")
-        header.setStyleSheet("font-size: 14px; font-weight: 600; color: #1a1a1a; padding: 4px;")
+        header.setStyleSheet(text_style("ink", 14, extra="font-weight: 600; padding: 4px;"))
         upper_layout.addWidget(header)
 
         # Info label
         info_label = QLabel("Plan your chapter here. Planning data is NOT exported with your manuscript.")
-        info_label.setStyleSheet("color: #666; font-size: 11px; font-style: italic; padding: 2px;")
+        info_label.setStyleSheet(text_style("ink_faint", 11, italic=True, extra="padding: 2px;"))
         info_label.setWordWrap(True)
         upper_layout.addWidget(info_label)
 
@@ -867,12 +780,12 @@ class ChapterPlannerWidget(QWidget):
         events_header = QHBoxLayout()
         events_header.setSpacing(4)
         events_label = QLabel("Chapter events:")
-        events_label.setStyleSheet("font-size: 11px; color: #666;")
+        events_label.setStyleSheet(text_style("ink_faint", 11))
         events_header.addWidget(events_label)
         events_header.addStretch()
 
-        add_event_btn = QPushButton("+ Add")
-        add_event_btn.setStyleSheet("font-size: 11px; padding: 2px 6px;")
+        add_event_btn = self.add_event_btn = QPushButton("+ Add")
+        add_event_btn.setStyleSheet(plain_qss(pad="2px 6px"))
         add_event_btn.clicked.connect(lambda: self._add_event_item())
         events_header.addWidget(add_event_btn)
 
@@ -902,7 +815,7 @@ class ChapterPlannerWidget(QWidget):
         self.generate_events_btn.setToolTip(
             "Generate story events with AI (from the chapter's prose, "
             "description or project context). Replaces any existing outline.")
-        self.generate_events_btn.setStyleSheet("font-size: 11px; padding: 3px 6px;")
+        self.generate_events_btn.setStyleSheet(plain_qss(pad="3px 6px"))
         self.generate_events_btn.clicked.connect(self._generate_events)
         events_actions.addWidget(self.generate_events_btn)
 
@@ -912,13 +825,13 @@ class ChapterPlannerWidget(QWidget):
             "comes from what's actually written, start to finish (or from the "
             "selected passage, if you've selected text in the editor).\n"
             "If an outline already exists it is erased first and replaced.")
-        self.outline_from_text_btn.setStyleSheet("font-size: 11px; padding: 3px 6px;")
+        self.outline_from_text_btn.setStyleSheet(plain_qss(pad="3px 6px"))
         self.outline_from_text_btn.clicked.connect(self._populate_outline_from_text)
         events_actions.addWidget(self.outline_from_text_btn)
 
         self.reorder_events_btn = QPushButton("Auto-Order")
         self.reorder_events_btn.setToolTip("Reorder events by arc position")
-        self.reorder_events_btn.setStyleSheet("font-size: 11px; padding: 3px 6px;")
+        self.reorder_events_btn.setStyleSheet(plain_qss(pad="3px 6px"))
         self.reorder_events_btn.clicked.connect(self._reorder_events_by_arc)
         events_actions.addWidget(self.reorder_events_btn)
 
@@ -934,14 +847,10 @@ class ChapterPlannerWidget(QWidget):
             "Remove every beat from this chapter's plot arc and "
             "drop the matching outline. The chapter prose is left "
             "untouched.")
-        self.clear_events_btn.setStyleSheet(
-            "QPushButton { font-size: 11px; padding: 3px 8px; "
-            " color: #b91c1c; border: 1px solid #fecaca; "
-            " border-radius: 3px; background: #fef2f2; } "
-            "QPushButton:hover { background: #fee2e2; "
-            " border-color: #fca5a5; } "
-            "QPushButton:disabled { color: #9ca3af; "
-            " background: transparent; border-color: #e5e7eb; }")
+        self.clear_events_btn.setStyleSheet(   # destructive: plain, in the error colours
+            f"QPushButton {{ font-size: 11px; padding: 3px 8px; color: {PALETTE['error_ink']}; border: 1px solid {PALETTE['error_border']};"
+            f" border-radius: 3px; background: {PALETTE['error_tint']}; }} QPushButton:hover {{ border-color: {PALETTE['error']}; }}"
+            f" QPushButton:disabled {{ color: {PALETTE['ink_disabled']}; background: transparent; border-color: {PALETTE['border']}; }}")
         self.clear_events_btn.clicked.connect(
             self._on_clear_events_clicked)
         events_actions.addWidget(self.clear_events_btn)
@@ -1118,7 +1027,7 @@ class ChapterPlannerWidget(QWidget):
         todo_header.addWidget(todo_label)
 
         add_todo_btn = QPushButton("+ Add")
-        add_todo_btn.setStyleSheet("font-size: 11px; padding: 2px 6px;")
+        add_todo_btn.setStyleSheet(plain_qss(pad="2px 6px"))
         add_todo_btn.clicked.connect(lambda: self._add_todo_item())
         todo_header.addWidget(add_todo_btn)
 
@@ -1185,12 +1094,12 @@ class ChapterPlannerWidget(QWidget):
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.VLine)
         sep.setFixedHeight(20)
-        sep.setStyleSheet("color: #d1d5db;")
+        sep.setStyleSheet(text_style("border_strong"))
         toolbar.addWidget(sep)
 
         self.add_note_btn = QPushButton("+ Note")
         self.add_note_btn.setFixedHeight(24)
-        self.add_note_btn.setStyleSheet("font-size: 11px; padding: 2px 8px;")
+        self.add_note_btn.setStyleSheet(plain_qss(pad="2px 8px"))
         self.add_note_btn.clicked.connect(self._add_note_entry)
         toolbar.addWidget(self.add_note_btn)
 
@@ -1231,7 +1140,7 @@ class ChapterPlannerWidget(QWidget):
 
         add_subplot_btn = QPushButton("+ Subplot")
         add_subplot_btn.setFixedHeight(24)
-        add_subplot_btn.setStyleSheet("font-size: 11px; padding: 2px 8px;")
+        add_subplot_btn.setStyleSheet(plain_qss(pad="2px 8px"))
         add_subplot_btn.clicked.connect(self._add_subplot_note)
         subplots_header.addWidget(add_subplot_btn)
 
@@ -1267,13 +1176,8 @@ class ChapterPlannerWidget(QWidget):
 
         # === COLLAPSIBLE AI ASSISTANT PANEL ===
         self.ai_panel = QFrame()
-        self.ai_panel.setStyleSheet("""
-            QFrame#ai_panel {
-                border: 1px solid #8b5cf6;
-                border-radius: 4px;
-                background-color: #faf5ff;
-            }
-        """)
+        self.ai_panel.setStyleSheet(f"QFrame#ai_panel {{ border: 1px solid {PALETTE['border_strong']}; border-radius: 4px;"
+                                    f" background-color: {PALETTE['surface_soft']}; }}")
         self.ai_panel.setObjectName("ai_panel")
         ai_panel_layout = QVBoxLayout(self.ai_panel)
         ai_panel_layout.setContentsMargins(4, 4, 4, 4)
@@ -1284,21 +1188,9 @@ class ChapterPlannerWidget(QWidget):
         ai_header.setSpacing(4)
 
         self.ai_toggle_btn = QPushButton("🤖 AI Assistant ▶")
-        self.ai_toggle_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #8b5cf6;
-                color: white;
-                font-weight: bold;
-                font-size: 11px;
-                padding: 4px 8px;
-                border-radius: 3px;
-                text-align: left;
-            }
-            QPushButton:hover {
-                background-color: #7c3aed;
-            }
-        """)
+        self.ai_toggle_btn.setStyleSheet(plain_qss(pad="4px 8px", bold=True) + "QPushButton { text-align: left; }")
         self.ai_toggle_btn.clicked.connect(self._toggle_ai_panel)
+        from src.ui import planner_main_button; planner_main_button.install(self)   # the one coloured button (D.8)
         ai_header.addWidget(self.ai_toggle_btn)
         ai_header.addStretch()
 
@@ -1307,12 +1199,7 @@ class ChapterPlannerWidget(QWidget):
         # already-discarded turns next time). Doesn't touch the
         # chapter's actual planning data; only the conversation.
         self.clear_chat_btn = QPushButton("🗑 Clear")
-        self.clear_chat_btn.setStyleSheet(
-            "QPushButton { padding: 3px 10px; font-size: 11px; "
-            " border: 1px solid #d1d5db; border-radius: 4px; "
-            " background: white; color: #374151; }"
-            "QPushButton:hover { border-color: #6b7280; "
-            " color: #111827; }")
+        self.clear_chat_btn.setStyleSheet(plain_qss(pad="4px 11px"))
         self.clear_chat_btn.setToolTip(
             "Clear the AI chat history (transcript + tracked "
             "context). Your planning data is unaffected.")
@@ -1329,10 +1216,7 @@ class ChapterPlannerWidget(QWidget):
 
         # Model info label - model is now configured in Settings
         info_label = QLabel("💡 Using model from Settings > Model Configuration")
-        info_label.setStyleSheet(
-            "font-size: 10px; color: #6b7280; padding: 4px; "
-            "background-color: #f0f9ff; border-radius: 4px;"
-        )
+        info_label.setStyleSheet(text_style("ink_faint", 10, extra=f"padding: 4px; background-color: {PALETTE['info_tint']}; border-radius: 4px;"))
         info_label.setWordWrap(True)
         ai_content_layout.addWidget(info_label)
 
@@ -1340,7 +1224,7 @@ class ChapterPlannerWidget(QWidget):
         self.chat_history = QTextEdit()
         self.chat_history.setReadOnly(True)
         self.chat_history.setFont(QFont(SYSTEM_FONT, 9))
-        self.chat_history.setStyleSheet("background-color: #f8f9fa;")
+        self.chat_history.setStyleSheet(f"background-color: {PALETTE['surface_soft']};")
         self.chat_history.setPlaceholderText("AI responses...")
         self.chat_history.setMinimumHeight(100)
         self.chat_history.setMaximumHeight(250)
@@ -1370,7 +1254,7 @@ class ChapterPlannerWidget(QWidget):
         input_layout.addWidget(self.chat_input)
 
         self.send_btn = QPushButton("Send")
-        self.send_btn.setStyleSheet("font-size: 11px; padding: 3px 8px;")
+        self.send_btn.setStyleSheet(plain_qss())
         self.send_btn.clicked.connect(self._send_chat_message)
         input_layout.addWidget(self.send_btn)
 
@@ -1394,14 +1278,14 @@ class ChapterPlannerWidget(QWidget):
 
         # Consistency check section at bottom - compact for small screens
         check_frame = QFrame()
-        check_frame.setStyleSheet("background-color: #fff3cd; border-radius: 3px;")
+        check_frame.setStyleSheet(f"background-color: {PALETTE['warning_tint']}; border-radius: 3px;")
         check_layout = QHBoxLayout(check_frame)
         check_layout.setContentsMargins(6, 3, 6, 3)
 
         self.check_plan_btn = QPushButton("Check vs Chapter")
         self.check_plan_btn.setToolTip("Verify if chapter content follows the plan")
         self.check_plan_btn.clicked.connect(self._check_plan_consistency)
-        self.check_plan_btn.setStyleSheet("background-color: #ffc107; color: black; font-size: 11px; padding: 3px 8px;")
+        self.check_plan_btn.setStyleSheet(plain_qss())
         check_layout.addWidget(self.check_plan_btn)
 
         check_layout.addStretch()
@@ -1573,13 +1457,7 @@ class ChapterPlannerWidget(QWidget):
 
         frame = QFrame()
         frame.setAttribute(wa_no_activate)
-        frame.setStyleSheet("""
-            QFrame#noteCard {
-                border: 1px solid #d1d5db;
-                border-radius: 4px;
-                background: #fefefe;
-            }
-        """)
+        frame.setStyleSheet(f"QFrame#noteCard {{ border: 1px solid {PALETTE['border_strong']}; border-radius: 4px; background: {PALETTE['surface']}; }}")
         frame.setObjectName("noteCard")
         frame_layout = QVBoxLayout(frame)
         frame_layout.setContentsMargins(0, 0, 0, 0)
@@ -1588,14 +1466,14 @@ class ChapterPlannerWidget(QWidget):
         # Header bar: toggle + inline title edit + delete
         header = QWidget()
         header.setAttribute(wa_no_activate)
-        header.setStyleSheet("background: #f3f4f6; border-top-left-radius: 4px; border-top-right-radius: 4px;")
+        header.setStyleSheet(f"background: {PALETTE['surface_muted']}; border-top-left-radius: 4px; border-top-right-radius: 4px;")
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(6, 3, 4, 3)
         header_layout.setSpacing(4)
 
         toggle_btn = QPushButton("\u25b6" if collapsed else "\u25bc")
         toggle_btn.setFixedSize(18, 18)
-        toggle_btn.setStyleSheet("border: none; font-size: 9px; color: #6b7280; padding: 0;")
+        toggle_btn.setStyleSheet(text_style("ink_faint", 9, extra="border: none; padding: 0;"))
         compact_button(toggle_btn)  # narrow: show its symbol
         toggle_btn.setToolTip("Collapse/expand")
         toggle_btn.setAttribute(wa_no_activate)
@@ -1606,7 +1484,7 @@ class ChapterPlannerWidget(QWidget):
         title_edit.setAttribute(wa_no_activate)
         title_edit.setPlaceholderText("Note title...")
         title_edit.setStyleSheet(
-            "font-weight: 600; font-size: 11px; color: #374151; background: transparent;"
+            f"font-weight: 600; font-size: 11px; color: {PALETTE['ink_soft']}; background: transparent;"
             "border: none; padding: 0px 2px;"
         )
         title_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -1616,7 +1494,7 @@ class ChapterPlannerWidget(QWidget):
         del_btn.setFixedSize(20, 18)
         del_btn.setToolTip("Remove note")
         del_btn.setAttribute(wa_no_activate)
-        del_btn.setStyleSheet("border: none; font-size: 13px; font-weight: bold; color: #9ca3af; padding: 0;")
+        del_btn.setStyleSheet(text_style("ink_disabled", 13, bold=True, extra="border: none; padding: 0;"))
         compact_button(del_btn)  # narrow: show its symbol
         del_btn.clicked.connect(lambda _, idx=index: self._remove_note_entry(idx))
         header_layout.addWidget(del_btn)
@@ -1730,13 +1608,7 @@ class ChapterPlannerWidget(QWidget):
 
         frame = QFrame()
         frame.setAttribute(wa_no_activate)
-        frame.setStyleSheet("""
-            QFrame#subplotCard {
-                border: 1px solid #c4b5fd;
-                border-radius: 4px;
-                background: #faf5ff;
-            }
-        """)
+        frame.setStyleSheet(f"QFrame#subplotCard {{ border: 1px solid {PALETTE['violet_tint']}; border-radius: 4px; background: {PALETTE['surface']}; }}")
         frame.setObjectName("subplotCard")
         frame_layout = QVBoxLayout(frame)
         frame_layout.setContentsMargins(0, 0, 0, 0)
@@ -1745,7 +1617,7 @@ class ChapterPlannerWidget(QWidget):
         # Header bar
         header = QWidget()
         header.setAttribute(wa_no_activate)
-        header.setStyleSheet("background: #ede9fe; border-top-left-radius: 4px; border-top-right-radius: 4px;")
+        header.setStyleSheet(f"background: {PALETTE['violet_tint']}; border-top-left-radius: 4px; border-top-right-radius: 4px;")
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(6, 3, 4, 3)
         header_layout.setSpacing(4)
@@ -1753,7 +1625,7 @@ class ChapterPlannerWidget(QWidget):
         toggle_btn = QPushButton("\u25b6" if collapsed else "\u25bc")
         toggle_btn.setFixedSize(18, 18)
         toggle_btn.setAttribute(wa_no_activate)
-        toggle_btn.setStyleSheet("border: none; font-size: 9px; color: #6d28d9; padding: 0;")
+        toggle_btn.setStyleSheet(text_style("violet_ink", 9, extra="border: none; padding: 0;"))
         compact_button(toggle_btn)  # narrow: show its symbol
         toggle_btn.setToolTip("Collapse/expand")
         toggle_btn.clicked.connect(lambda _, idx=index: self._toggle_subplot_collapsed(idx))
@@ -1763,7 +1635,7 @@ class ChapterPlannerWidget(QWidget):
         title_edit.setAttribute(wa_no_activate)
         title_edit.setPlaceholderText("Subplot name...")
         title_edit.setStyleSheet(
-            "font-weight: 600; font-size: 11px; color: #5b21b6; background: transparent;"
+            f"font-weight: 600; font-size: 11px; color: {PALETTE['violet_ink']}; background: transparent;"
             "border: none; padding: 0px 2px;"
         )
         title_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -1775,14 +1647,14 @@ class ChapterPlannerWidget(QWidget):
         status_combo.addItems(["active", "resolved", "dormant"])
         status_combo.setCurrentText(status)
         status_combo.setFixedWidth(70)
-        status_combo.setStyleSheet("font-size: 9px; padding: 0px 2px; border: 1px solid #c4b5fd; border-radius: 2px;")
+        status_combo.setStyleSheet(f"font-size: 9px; padding: 0px 2px; border: 1px solid {PALETTE['violet_tint']}; border-radius: 2px;")
         header_layout.addWidget(status_combo)
 
         del_btn = QPushButton("\u00d7")
         del_btn.setFixedSize(20, 18)
         del_btn.setToolTip("Remove subplot note")
         del_btn.setAttribute(wa_no_activate)
-        del_btn.setStyleSheet("border: none; font-size: 13px; font-weight: bold; color: #8b5cf6; padding: 0;")
+        del_btn.setStyleSheet(text_style("violet", 13, bold=True, extra="border: none; padding: 0;"))
         compact_button(del_btn)  # narrow: show its symbol
         del_btn.clicked.connect(lambda _, idx=index: self._remove_subplot_note(idx))
         header_layout.addWidget(del_btn)
@@ -2548,19 +2420,19 @@ class ChapterPlannerWidget(QWidget):
             html_content = self._markdown_to_html(message)
             cursor.insertHtml(
                 f'<div style="margin: 6px 0;">'
-                f'<b style="color: #006600;">AI:</b>'
-                f'<div style="color: #1a1a1a; margin-top: 4px;">{html_content}</div>'
+                f'<b style="color: {PALETTE["success_ink"]};">AI:</b>'
+                f'<div style="color: {PALETTE["ink"]}; margin-top: 4px;">{html_content}</div>'
                 f'</div>'
             )
         else:
             import html
             escaped_message = html.escape(message)
             if role == "user":
-                cursor.insertHtml(f'<p style="color: #0066cc;"><b>You:</b> {escaped_message}</p>')
+                cursor.insertHtml(f'<p style="color: {PALETTE["info_ink"]};"><b>You:</b> {escaped_message}</p>')
             elif role == "system":
-                cursor.insertHtml(f'<p style="color: #666666;"><i>{escaped_message}</i></p>')
+                cursor.insertHtml(f'<p style="color: {PALETTE["ink_faint"]};"><i>{escaped_message}</i></p>')
             elif role == "error":
-                cursor.insertHtml(f'<p style="color: #cc0000;"><b>Error:</b> {escaped_message}</p>')
+                cursor.insertHtml(f'<p style="color: {PALETTE["error_ink"]};"><b>Error:</b> {escaped_message}</p>')
 
         cursor.insertHtml("<br>")
         self.chat_history.setTextCursor(cursor)
@@ -2591,7 +2463,7 @@ class ChapterPlannerWidget(QWidget):
                         html_lines.append('</ul>')
                         in_list = False
                     html_lines.append(
-                        '<pre style="background-color: #eef2f7; padding: 6px; '
+                        f'<pre style="background-color: {PALETTE["surface_muted"]}; padding: 6px; '
                         'border-radius: 4px; font-family: monospace; font-size: 11px; '
                         'white-space: pre-wrap; margin: 4px 0;">')
                     in_code_block = True
@@ -2609,7 +2481,7 @@ class ChapterPlannerWidget(QWidget):
                     in_list = False
                 title = html_mod.escape(stripped[4:])
                 html_lines.append(
-                    f'<div style="color: #4f46e5; font-weight: bold; font-size: 11px; '
+                    f'<div style="color: {PALETTE["primary_dark"]}; font-weight: bold; font-size: 11px; '
                     f'margin-top: 8px; margin-bottom: 2px;">{title}</div>')
                 continue
             if stripped.startswith('## '):
@@ -2618,7 +2490,7 @@ class ChapterPlannerWidget(QWidget):
                     in_list = False
                 title = html_mod.escape(stripped[3:])
                 html_lines.append(
-                    f'<div style="color: #4f46e5; font-weight: bold; font-size: 12px; '
+                    f'<div style="color: {PALETTE["primary_dark"]}; font-weight: bold; font-size: 12px; '
                     f'margin-top: 10px; margin-bottom: 2px;">{title}</div>')
                 continue
             if stripped.startswith('# '):
@@ -2627,7 +2499,7 @@ class ChapterPlannerWidget(QWidget):
                     in_list = False
                 title = html_mod.escape(stripped[2:])
                 html_lines.append(
-                    f'<div style="color: #312e81; font-weight: bold; font-size: 13px; '
+                    f'<div style="color: {PALETTE["primary_ink"]}; font-weight: bold; font-size: 13px; '
                     f'margin-top: 12px; margin-bottom: 4px;">{title}</div>')
                 continue
 
@@ -2684,7 +2556,7 @@ class ChapterPlannerWidget(QWidget):
         # Inline code
         text = re.sub(
             r'`([^`]+)`',
-            r'<code style="background-color: #eef2f7; padding: 1px 3px; border-radius: 3px; font-family: monospace; font-size: 11px;">\1</code>',
+            rf'<code style="background-color: {PALETTE["surface_muted"]}; padding: 1px 3px; border-radius: 3px; font-family: monospace; font-size: 11px;">\1</code>',
             text
         )
         return text
@@ -3512,14 +3384,13 @@ Respond conversationally otherwise — quotes from the project, references to sp
         from PyQt6.QtWidgets import QHBoxLayout, QFrame
         card = QFrame()
         card.setStyleSheet(
-            "QFrame { background-color: #f0f9ff; "
-            "border: 1px solid #bfdbfe; border-radius: 6px; }")
+            f"QFrame {{ background-color: {PALETTE['info_tint']}; border: 1px solid {PALETTE['primary_border']}; border-radius: 6px; }}")
         v = QVBoxLayout(card)
         v.setContentsMargins(8, 6, 8, 6)
         v.setSpacing(4)
 
         kind_label = QLabel(
-            "<span style='background:#dbeafe;color:#1d4ed8;"
+            f"<span style='background:{PALETTE['primary_tint']};color:{PALETTE['primary_dark']};"
             "padding:1px 6px;border-radius:3px;font-size:10px;"
             "font-weight:600;'>+ EVENT</span> suggestion")
         kind_label.setStyleSheet("font-size: 11px;")
@@ -3537,7 +3408,7 @@ Respond conversationally otherwise — quotes from the project, references to sp
                 badge_bits.append(stage)
             if isinstance(arc, (int, float)):
                 badge_bits.append(f"arc {int(arc)}")
-            badge = (f" <span style='color:#6b7280;font-size:10px;'>"
+            badge = (f" <span style='color:{PALETTE['ink_faint']};font-size:10px;'>"
                      f"({' • '.join(badge_bits)})</span>"
                      if badge_bits else "")
             summary_html = (
@@ -3545,11 +3416,11 @@ Respond conversationally otherwise — quotes from the project, references to sp
                 f"<b>{self._html_escape(text)}</b>{badge}</span>")
             if description:
                 summary_html += (
-                    f"<br/><span style='color:#475569;font-size:11px;'>"
+                    f"<br/><span style='color:{PALETTE['ink_soft']};font-size:11px;'>"
                     f"{self._html_escape(description)}</span>")
             if why:
                 summary_html += (
-                    f"<br/><span style='color:#9ca3af;"
+                    f"<br/><span style='color:{PALETTE['ink_disabled']};"
                     f"font-size:10px;font-style:italic;'>"
                     f"why: {self._html_escape(why)}</span>")
             summary = QLabel(summary_html)
@@ -3562,11 +3433,11 @@ Respond conversationally otherwise — quotes from the project, references to sp
                 "<i>(couldn't parse the AI's suggestion JSON; raw "
                 "text below — copy if you'd like to add it manually)"
                 "</i>")
-            err.setStyleSheet("color: #b91c1c; font-size: 11px;")
+            err.setStyleSheet(text_style("error_ink", 11))
             err.setWordWrap(True)
             v.addWidget(err)
             raw = QLabel(
-                f"<pre style='font-size:10px;color:#374151;"
+                f"<pre style='font-size:10px;color:{PALETTE['ink_soft']};"
                 f"white-space:pre-wrap;'>"
                 f"{self._html_escape(suggestion.get('raw', ''))}"
                 f"</pre>")
@@ -3580,20 +3451,11 @@ Respond conversationally otherwise — quotes from the project, references to sp
         action_row.addStretch()
 
         skip_btn = QPushButton("✕ Skip")
-        skip_btn.setStyleSheet(
-            "QPushButton { padding: 4px 12px; font-size: 11px; "
-            " border: 1px solid #d1d5db; border-radius: 4px; "
-            " background: white; color: #374151; }"
-            "QPushButton:hover { border-color: #6b7280; }")
+        skip_btn.setStyleSheet(plain_qss(pad="5px 13px"))
         action_row.addWidget(skip_btn)
 
         add_btn = QPushButton("➕ Add to chapter")
-        add_btn.setStyleSheet(
-            "QPushButton { background-color: #2563eb; color: white; "
-            " padding: 4px 14px; border-radius: 4px; font-size: 11px;"
-            " font-weight: 600; }"
-            "QPushButton:hover { background-color: #1d4ed8; }"
-            "QPushButton:disabled { background-color: #93c5fd; }")
+        add_btn.setStyleSheet(PRIMARY_BUTTON)
         add_btn.setEnabled(bool(data))
         if not data:
             add_btn.setToolTip(
@@ -3628,7 +3490,7 @@ Respond conversationally otherwise — quotes from the project, references to sp
             if not text:
                 _replace_with_banner(
                     "✗ Skipped: beat name was empty.",
-                    "#b91c1c")
+                    PALETTE["error_ink"])
                 return
             try:
                 self._add_event_item(
@@ -3642,14 +3504,14 @@ Respond conversationally otherwise — quotes from the project, references to sp
                 _replace_with_banner(
                     f"✓ <b>Added</b> — "
                     f"{self._html_escape(text)}",
-                    "#15803d")
+                    PALETTE["success_ink"])
             except Exception as e:
                 _replace_with_banner(
                     f"✗ Couldn't add — {self._html_escape(str(e))}",
-                    "#b91c1c")
+                    PALETTE["error_ink"])
 
         def on_skip():
-            _replace_with_banner("— Skipped —", "#6b7280")
+            _replace_with_banner("— Skipped —", PALETTE["ink_faint"])
 
         add_btn.clicked.connect(on_add)
         skip_btn.clicked.connect(on_skip)
@@ -3668,14 +3530,13 @@ Respond conversationally otherwise — quotes from the project, references to sp
         from PyQt6.QtWidgets import QHBoxLayout, QFrame
         card = QFrame()
         card.setStyleSheet(
-            "QFrame { background-color: #fdf4ff; "
-            "border: 1px solid #f5d0fe; border-radius: 6px; }")
+            f"QFrame {{ background-color: {PALETTE['surface_soft']}; border: 1px solid {PALETTE['violet_tint']}; border-radius: 6px; }}")
         v = QVBoxLayout(card)
         v.setContentsMargins(8, 6, 8, 6)
         v.setSpacing(4)
 
         kind_label = QLabel(
-            "<span style='background:#f3e8ff;color:#7e22ce;"
+            f"<span style='background:{PALETTE['violet_tint']};color:{PALETTE['violet_ink']};"
             "padding:1px 6px;border-radius:3px;font-size:10px;"
             "font-weight:600;'>+ THEME</span> suggestion")
         kind_label.setStyleSheet("font-size: 11px;")
@@ -3692,11 +3553,11 @@ Respond conversationally otherwise — quotes from the project, references to sp
                 f"<b>{self._html_escape(title)}</b></span>")
             if description:
                 summary_html += (
-                    f"<br/><span style='color:#475569;font-size:11px;'>"
+                    f"<br/><span style='color:{PALETTE['ink_soft']};font-size:11px;'>"
                     f"{self._html_escape(description)}</span>")
             if statement:
                 summary_html += (
-                    f"<br/><span style='color:#7e22ce;font-size:11px;"
+                    f"<br/><span style='color:{PALETTE['violet_ink']};font-size:11px;"
                     f"font-style:italic;'>"
                     f"statement: {self._html_escape(statement)}</span>")
             if isinstance(motifs, list) and motifs:
@@ -3704,7 +3565,7 @@ Respond conversationally otherwise — quotes from the project, references to sp
                     str(m) for m in motifs[:6] if m)
                 if motif_text:
                     summary_html += (
-                        f"<br/><span style='color:#9ca3af;"
+                        f"<br/><span style='color:{PALETTE['ink_disabled']};"
                         f"font-size:10px;'>"
                         f"motifs: {self._html_escape(motif_text)}</span>")
             summary = QLabel(summary_html)
@@ -3716,11 +3577,11 @@ Respond conversationally otherwise — quotes from the project, references to sp
             err = QLabel(
                 "<i>(couldn't parse the AI's theme JSON; raw text "
                 "below — copy if you'd like to add it manually)</i>")
-            err.setStyleSheet("color: #b91c1c; font-size: 11px;")
+            err.setStyleSheet(text_style("error_ink", 11))
             err.setWordWrap(True)
             v.addWidget(err)
             raw = QLabel(
-                f"<pre style='font-size:10px;color:#374151;"
+                f"<pre style='font-size:10px;color:{PALETTE['ink_soft']};"
                 f"white-space:pre-wrap;'>"
                 f"{self._html_escape(suggestion.get('raw', ''))}"
                 f"</pre>")
@@ -3734,20 +3595,11 @@ Respond conversationally otherwise — quotes from the project, references to sp
         action_row.addStretch()
 
         skip_btn = QPushButton("✕ Skip")
-        skip_btn.setStyleSheet(
-            "QPushButton { padding: 4px 12px; font-size: 11px; "
-            " border: 1px solid #d1d5db; border-radius: 4px; "
-            " background: white; color: #374151; }"
-            "QPushButton:hover { border-color: #6b7280; }")
+        skip_btn.setStyleSheet(plain_qss(pad="5px 13px"))
         action_row.addWidget(skip_btn)
 
         add_btn = QPushButton("➕ Add to chapter")
-        add_btn.setStyleSheet(
-            "QPushButton { background-color: #9333ea; color: white; "
-            " padding: 4px 14px; border-radius: 4px; font-size: 11px;"
-            " font-weight: 600; }"
-            "QPushButton:hover { background-color: #7e22ce; }"
-            "QPushButton:disabled { background-color: #d8b4fe; }")
+        add_btn.setStyleSheet(PRIMARY_BUTTON)
         add_btn.setEnabled(bool(data))
         if not data:
             add_btn.setToolTip(
@@ -3772,7 +3624,7 @@ Respond conversationally otherwise — quotes from the project, references to sp
             title = (data.get('title') or '').strip()
             if not title:
                 _replace_with_banner(
-                    "✗ Skipped: theme title was empty.", "#b91c1c")
+                    "✗ Skipped: theme title was empty.", PALETTE["error_ink"])
                 return
             # Append to the comma-separated themes_edit field, deduped
             # (case-insensitive). The textChanged signal triggers
@@ -3785,22 +3637,22 @@ Respond conversationally otherwise — quotes from the project, references to sp
                     _replace_with_banner(
                         f"✓ Already in chapter: "
                         f"<b>{self._html_escape(title)}</b>",
-                        "#15803d")
+                        PALETTE["success_ink"])
                     return
                 existing.append(title)
                 self.themes_edit.setText(", ".join(existing))
                 _replace_with_banner(
                     f"✓ <b>Added theme</b> — "
                     f"{self._html_escape(title)}",
-                    "#15803d")
+                    PALETTE["success_ink"])
             except Exception as e:
                 _replace_with_banner(
                     f"✗ Couldn't add — "
                     f"{self._html_escape(str(e))}",
-                    "#b91c1c")
+                    PALETTE["error_ink"])
 
         def on_skip():
-            _replace_with_banner("— Skipped —", "#6b7280")
+            _replace_with_banner("— Skipped —", PALETTE["ink_faint"])
 
         add_btn.clicked.connect(on_add)
         skip_btn.clicked.connect(on_skip)

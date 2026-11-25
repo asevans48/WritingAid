@@ -363,14 +363,14 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 
 **Parity with ProWritingAid (after the foundations; alongside the path)**
 - [ ] [P.5](pieces/30-P.5-fix-or-hide-the-worst-checks.md) Fix or hide the worst checks (M, repeatable)
-- [ ] [P.2a](pieces/31-P.2a-missing-reports-transitions-pronouns-alliteratio.md) Missing reports: transitions, pronouns, alliteration, acronyms (M)
+- [x] [P.2a](pieces/31-P.2a-missing-reports-transitions-pronouns-alliteratio.md) Missing reports: transitions, pronouns, alliteration, acronyms (M) — built, for review; all four off until ticked
 - [ ] [P.2b](pieces/32-P.2b-missing-reports-homonyms-sensory-detail-sentence.md) Missing reports: homonyms, sensory detail, sentence structure, diction (M)
-- [ ] [P.3](pieces/33-P.3-every-measure-compared-with-the-genre.md) Every measure compared with the genre (M)
+- [x] [P.3](pieces/33-P.3-every-measure-compared-with-the-genre.md) Every measure compared with the genre (M) — built, for review; figures need `scripts/genre_baseline.py` run once, and a genre needs five downloaded books
 - [x] [P.4](pieces/34-P.4-deeper-proofreading-with-a-model.md) Deeper proofreading with a model (M)
 - [ ] [P.6](pieces/35-P.6-languagetool-in-full-with-its-larger-data-as-a-d.md) LanguageTool in full, with its larger data as a download (S)
 - [ ] [P.8](pieces/36-P.8-character-analysis.md) Character analysis (M)
 - [ ] [P.7](pieces/37-P.7-reader-s-eye-for-the-whole-book.md) Reader's eye for the whole book (M, best after 8.1)
-- [ ] [P.1](pieces/38-P.1-side-by-side-comparison.md) Side-by-side comparison (S, optional, part of it is yours to do)
+- ~~[P.1](pieces/38-P.1-side-by-side-comparison.md) Side-by-side comparison~~ Dropped 24 Nov 2026 (decision 6: the writer said it can go)
 
 **Ratings grouped by voice (after 0.3; in order)**
 - [ ] [V.1](pieces/39-V.1-a-voice-fingerprint-on-every-rating.md) A voice fingerprint on every rating (S)
@@ -379,15 +379,18 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 - [ ] [V.4](pieces/42-V.4-suggestions-learn-from-the-same-voice.md) Suggestions learn from the same voice (M)
 - [ ] [V.5](pieces/43-V.5-manage-ratings-by-voice.md) Manage ratings by voice (M)
 
+**The writing habit (added 24 Nov 2026, open decision 2)**
+- [ ] [H.1](pieces/67-H.1-the-writing-habit.md) The writing habit: daily and weekly goals, a shared streak, a gentle nudge to move on (M; brief reviewed with the writer, no model needed)
+
 **Declutter**
 - [x] [D.1](pieces/44-D.1-tidy-the-right-click-menu.md) Tidy the right-click menu (S) — built, for review
 - [ ] [D.2a](pieces/45-D.2a-one-improve-window-design.md) One Improve window: design (S, design, no code)
 - [ ] [D.2b](pieces/46-D.2b-one-improve-window-build-with-suggestions-and-ex.md) One Improve window: build, with Suggestions and Expand (M)
 - [ ] [D.2c](pieces/47-D.2c-one-improve-window-rephrase-joins.md) One Improve window: Rephrase joins (M)
-- [x] [D.3](pieces/48-D.3-one-issues-list-in-the-side-panel.md) One issues list in the side panel (M, after 3.2) — built; the Style tab stays until D.6
-- [ ] [D.6](pieces/48b-D.6-retire-the-trial-screens.md) Retire the trial screens, and bring the counts back down (S, added 24 Nov; after you have used 3.2, D.3 and 2.5)
+- [x] [D.3](pieces/48-D.3-one-issues-list-in-the-side-panel.md) One issues list in the side panel (M, after 3.2) — built; the Style tab retired in D.6
+- [x] [D.6](pieces/48b-D.6-retire-the-trial-screens.md) Retire the trial screens, and bring the counts back down (S, added 24 Nov; after you have used 3.2, D.3 and 2.5) — built, for review: the Style tab and Today's three fixes are gone (their actions are on the Companion card and in ✓ Checks ▾); menus counted by decision 11; every count at or under the baseline
 - [x] [D.7](pieces/48c-D.7-show-less-at-once.md) Show less at once: toolbar, hover card, Companion sections, Drafts into File (M, added 24 Nov) — built, for review
-- [ ] [D.8](pieces/48d-D.8-one-look.md) One look: the same buttons, colours and spacing everywhere (M, repeatable, added 24 Nov)
+- [~] [D.8](pieces/48d-D.8-one-look.md) One look: the same buttons, colours and spacing everywhere (M, repeatable, added 24 Nov) — first session done (24 Nov): Write and its side panel, the Companion, the Critique and Settings take their colours and button styles from `ui_kit`; the rest of `src/ui` is later sessions
 - [~] [D.9](pieces/48e-D.9-fewer-interruptions.md) Fewer interruptions: messages that do not need a click (M, repeatable, added 24 Nov) — first session done (24 Nov): 49 of the 68 boxes in Write, the Companion, the Critique and the main window are quiet; the rest of `src/ui` is later sessions
 - [ ] [D.4](pieces/49-D.4-fewer-top-level-tabs.md) Fewer top-level tabs (M, after 0.2)
 - [ ] [D.5](pieces/49b-D.5-analyses-run-as-critique-reports.md) Analyses run as Critique reports (M, after 2.1; added in 0.2)
@@ -397,14 +400,14 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 - [ ] [U.3b](pieces/51-U.3b-fit-and-scroll-sweep-the-remaining-screens.md) Fit-and-scroll sweep: the remaining screens (M, repeatable)
 
 **After the path, in any order**
-- [ ] [4.1](pieces/52-4.1-mark-as-intentional.md) Mark as intentional (S)
+- [x] [4.1](pieces/52-4.1-mark-as-intentional.md) Mark as intentional (S)
 - [ ] [4.2](pieces/53-4.2-voice-drift.md) Voice drift (M, experimental)
 - [ ] [4.3](pieces/54-4.3-checks-earn-their-place.md) Checks earn their place (S)
 - [ ] [6.1](pieces/55-6.1-listen-and-mark.md) Listen and mark (M)
 - [ ] [6.2](pieces/56-6.2-marks-become-notes.md) Marks become notes (S)
 - [x] [7.1](pieces/57-7.1-reverse-outline-without-a-model.md) Reverse outline without a model (M) — built, for review
 - [ ] [7.2](pieces/58-7.2-reverse-outline-with-a-model.md) Reverse outline with a model (M, experimental)
-- [ ] [7.3](pieces/59-7.3-draft-beside-plan-and-the-tension-curve.md) Draft beside plan, and the tension curve (M)
+- [x] [7.3](pieces/59-7.3-draft-beside-plan-and-the-tension-curve.md) Draft beside plan, and the tension curve (M) — built, for review: no-model tier; tension waits for 7.2
 - [ ] [9.1](pieces/60-9.1-final-sweep.md) Final sweep (M)
 - [x] [9.2](pieces/61-9.2-export-and-import-check.md) Export and import check (M) — built, for review
 - [ ] [9.3](pieces/62-9.3-submission-package-and-marketability.md) Submission package and marketability (M)
@@ -432,11 +435,11 @@ plus these:
 |---|---|---|
 | [0.2](pieces/02-0.2-map-the-screens-count-the-clutter-decide-what-me.md) | Counted every screen's clutter and agreed what merges ([screens.md](screens.md)) | Done |
 | [U.1](pieces/04-U.1-shared-interface-parts.md), [U.2](pieces/05-U.2-screenshot-and-clutter-count-harness.md) | Shared parts, and the harness that counts buttons, menu items and sections | Done |
-| [D.3](pieces/48-D.3-one-issues-list-in-the-side-panel.md) | One issues list in the side panel | Built; old Style tab still there |
-| [D.6](pieces/48b-D.6-retire-the-trial-screens.md) | Removes the old screens kept on trial; brings the counts under the baseline | Waiting for you |
+| [D.3](pieces/48-D.3-one-issues-list-in-the-side-panel.md) | One issues list in the side panel | Built; old Style tab retired in D.6 |
+| [D.6](pieces/48b-D.6-retire-the-trial-screens.md) | Removes the old screens kept on trial; brings the counts under the baseline | Built, for review: every count at or under the baseline |
 | [D.1](pieces/44-D.1-tidy-the-right-click-menu.md) | A short right-click menu (11 → 9 with a selection); flag fixes back in the Write tab | Built, for review |
 | [D.7](pieces/48c-D.7-show-less-at-once.md) | Write screen 24 buttons to 19, grouped by row; a shorter hover card; the Companion opens what fits the stage; Drafts into File | Built, for review |
-| [D.8](pieces/48d-D.8-one-look.md) | One main button a screen, one set of colours, one spacing (1,014 inline styles today) | Not started |
+| [D.8](pieces/48d-D.8-one-look.md) | One main button a screen, one set of colours, one spacing (1,014 inline styles today) | First session done: 10 files clean |
 | [D.9](pieces/48e-D.9-fewer-interruptions.md) | Messages that need no answer stop opening a box (329 today) | First session done: 49 quiet |
 | [D.2a–c](pieces/45-D.2a-one-improve-window-design.md) | Three help windows become one | Not started |
 | [D.4](pieces/49-D.4-fewer-top-level-tabs.md) | Ten top-level tabs become five; one way to detach a screen, and the "⧉ Own window" button goes | Not started |
@@ -452,11 +455,13 @@ older versions of the app stay safe.
 and is not done until every action has a home (rule 11, decision 10). Each
 follows rule 11's *Updating the app*.
 
-**Where the counts stand** (the harness, against `screens_baseline.json`):
-Companion 15 buttons (baseline 18) and 7 sections (7); Write menu 40 items
-(baseline 29), up because of the Style checks switches; Critique tab one
-button more. So far the app has gained more than it has shed, because the
-old screens are still on trial. D.6 and D.1 are what turn that round.
+**Where the counts stand** (the harness, against `screens_baseline.json`,
+after D.6, menus counted by decision 11): every count is at or under the
+baseline. Companion 15 buttons (baseline 18) and 7 sections (7); the Style
+tab's 15 buttons are gone (side panel 3 tabs, was 4); Write 19 buttons (24)
+and 29 menu items (29; 53 counting every item); right-click 9 entries
+without a selection (12) and 13 with one (22); Critique 6 buttons (11).
+New baselines wait for the writer's agreement.
 
 ## Decisions
 
@@ -481,8 +486,9 @@ old screens are still on trial. D.6 and D.1 are what turn that round.
 6. **LanguageTool.** Used whenever available, with its larger data offered among
    the downloads in configuration. (P.6)
 7. **ProWritingAid.** Feature parity is the aim for writing reports and story
-   analysis. Out of scope: integrations, plagiarism checking, and the writing
-   habit and community features. (Phase P, 7.3, 8.2, 9.3)
+   analysis, and the writing habit. Out of scope: plagiarism checking.
+   After the first working product: integrations (YouTube, KDP, Barnes &
+   Noble) and community (on its own web page). (Open decision 2.) (Phase P, 7.3, 8.2, 9.3)
 8. **Ratings.** Shared across projects and grouped by voice. (Phase V)
 9. **What publishable means.** The professional editing stages, in order, as
    defined by the Editorial Freelancers Association and Editors Canada.
@@ -508,7 +514,24 @@ old screens are still on trial. D.6 and D.1 are what turn that round.
 1. ~~**Look and feel.**~~ Settled: see settled decision 13.
 2. **Parity scope.** Confirm the three things left out of parity in settled
    decision 7.
-3. **Quality target.** A check is on by default only if four in five of its
+   *24 Nov 2026, the writer: "we want parity to place our app on par with
+   others." Parity stays the aim, measured against other writing apps as
+   well as ProWritingAid.*
+   *Settled 24 Nov 2026 for two of the three: plagiarism checking stays
+   out. Integrations come in and will be a major part of the app (publish
+   videos to YouTube, push to KDP and Barnes & Noble), but **later: after
+   the first working product**, so no piece in this plan builds them yet.
+   **The writing habit is in scope and important** (goals, streaks and
+   the like, as ProWritingAid offers); it needs a brief of its own.
+   **Community** comes after the first working product, on a web page of
+   its own rather than in the app.*
+3. ~~**Quality target.**~~ Settled 24 November 2026 by the writer: **style
+   checks must meet four in five** to be on by default; **spelling and
+   overused words stay on.** Built: a new project ticks only the style
+   checks that meet it (`check_switches.MEETS_TARGET`: weak intensifiers,
+   wordy phrases, hard-to-read sentences, pronouns, acronyms, and the
+   writer's own style sheet). Existing projects keep their ticks. Was: A
+   check is on by default only if four in five of its
    flags are right. Confirm or change after the first numbers from Q.2.
    **The first numbers are in** ([check_scores.md](check_scores.md)); see
    the Q.2 *Outcome* for a suggestion.
@@ -522,8 +545,8 @@ old screens are still on trial. D.6 and D.1 are what turn that round.
 5. **Voice groups.** My reading of "broad, manageable" at the top of phase V,
    the cap of about eight groups, and whether you also want a way to keep one
    project's ratings entirely to itself.
-6. **Side-by-side comparison.** P.1 is optional and needs access to
-   ProWritingAid. Say whether you want it.
+6. ~~**Side-by-side comparison.**~~ Settled 24 November 2026: P.1 is
+   dropped. (It was optional and needed access to ProWritingAid.)
 7. ~~**Readiness engine design (1.2a).**~~ Settled 23 November 2026 with the
    suggestions in its §10: R.6 first; "needs work" counts as half; overly
    descriptive is shown but left out of the figure until a model judges it.
@@ -531,17 +554,27 @@ old screens are still on trial. D.6 and D.1 are what turn that round.
 8. ~~**Shared state files.**~~ Settled 24 November 2026: each project gets
    its own state files; the old shared file is read once and never changed.
    ([R.7](pieces/22b-R.7-one-state-file-per-project.md))
-9. **Fix all, for every kind of flag.** 3.4's brief said mechanical fixes
+9. ~~**Fix all, for every kind of flag.**~~ Settled 24 November 2026:
+   every kind with a short fix, **except confused words** (their/there,
+   its/it's, then/than, a/an and the like), whose right form depends on the
+   sentence: "focus on things that produce value". Built: `fix_all.is_confusable`.
+   Was: 3.4's brief said mechanical fixes
    only. At your request the "Fix all N like this" box now covers every flag
    with a short fix, including words that are right in one sentence and
    wrong in the next (their/there). Confirm, or name the kinds to leave out.
-10. **Two ways to detach the Critique.** "⧉ Own window" (2.5) and
-    Multi-Window Mode. D.4 is to make them one mechanism; say if you would
-    rather drop one entry.
-11. **What to retire, and the counts.** Which trial screens may go, and
+10. ~~**Two ways to detach the Critique.**~~ Settled 24 November 2026:
+    merge them in D.4: "⧉ Own window" (2.5) and Multi-Window Mode become
+    one mechanism, and both entries keep working.
+11. ~~**What to retire, and the counts.**~~ Settled 24 November 2026: the
+    old three-fixes list and the Style tab may go (D.6). A submenu counts
+    as one entry when its items are one closely related group (a list of
+    synonyms, Novellas ▾, Drafts ▾); items that are different actions count
+    separately even inside one submenu (Rephrase, Suggestions and Critique
+    under Improve). Was: Which trial screens may go, and
     whether a submenu counts as one menu entry.
     ([D.6](pieces/48b-D.6-retire-the-trial-screens.md))
-12. **The on-device model cannot be shared.** A model job started while the
+12. ~~**The on-device model cannot be shared.**~~ Settled 24 November 2026:
+    accepted. A model job started while the
     app was using the on-device model crashed the app. Until 8.1 gives jobs
     and the app one queue, model measurements are run with the app closed.
 13. ~~**How far to group the Write screen's buttons.**~~ Settled 24 November

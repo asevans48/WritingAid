@@ -177,8 +177,9 @@ class Threshold:
 # Every check's threshold, in one place (per 1,000 words unless a count).
 # The line-check figures were set from the Q.1 benchmark's published prose:
 # "needs work" starts a little above what published books show, so a
-# published chapter reads as ready (P.3 replaces these with genre figures,
-# P.5 retunes them as the checks improve). Changing any figure: raise
+# published chapter reads as ready (P.5 retunes them as the checks improve).
+# Where the book's genre has figures from published books, those replace
+# the fixed ones for adverbs and passive (``genre_baseline``, P.3). Changing any figure: raise
 # THRESHOLDS_VERSION so cached results are recomputed.
 THRESHOLDS: Dict[str, "Threshold"] = {}
 
@@ -494,6 +495,8 @@ class CheckContext:
                  or (spec.threshold if spec else None))
         if found is None:
             return None
+        from src.ai import genre_baseline
+        found = genre_baseline.threshold(name, self.genre or "", found)
         if self.is_opening and spec is not None and spec.stage in ("line", "copyedit"):
             # The first pages are read hardest: a tighter bar, tightest for agents.
             f = OPENING_STRICTNESS[route]
@@ -921,8 +924,27 @@ def book_report(project, scope: Optional[str] = None, *, texts: Optional[Dict[st
     report.tier = ("model" if judged and all(judged) else
                    "mixed" if any(judged) else "scan")
     report.readiness, report.cells = _figure(report)
+    _note_genre_change(project, scope, report, goal.genre)
     _record_history(project, scope, report)
     return report
+
+
+def _note_genre_change(project, scope, report: BookReport, genre: str) -> None:
+    """Which genre figures this check used; said on the day that changed
+    since the last check on an earlier day (P.3), so no status changes
+    silently. Every check that day says it, so a refresh can't swallow it."""
+    from src.ai import genre_baseline
+    from src.data import readiness_state as rs
+    now = genre_baseline.fingerprint(genre or "", used_only=True)
+    report.info["baseline"] = now
+    try:
+        h = [e for e in rs.history(project, scope) if e.get("date") != _today()]
+    except Exception:
+        h = []
+    if h:
+        note = genre_baseline.change_note(genre or "", h[-1].get("baseline", ""), now)
+        if note:
+            report.info["genre_note"] = note
 
 
 def _snapshot(report: BookReport) -> BookReport:
@@ -1083,7 +1105,8 @@ def majors_change(report: BookReport) -> Optional[Tuple[int, str]]:
     for earlier in reversed(h[:-1]):
         if earlier.get("date") == today.get("date"):
             continue
-        if earlier.get("thresholds_version") != today.get("thresholds_version"):
+        if earlier.get("thresholds_version") != today.get("thresholds_version") \
+                or earlier.get("baseline", "") != today.get("baseline", ""):
             return None
         return today["majors"] - earlier["majors"], earlier["date"]
     return None
@@ -1103,6 +1126,8 @@ def _record_history(project, scope, report: BookReport) -> None:
                  "figure_version": FIGURE_VERSION, "thresholds_version": THRESHOLDS_VERSION,
                  "tier": report.tier, "cells": report.cells,
                  "verdict": v.level, "majors": v.majors, "polish": v.polish}
+        if report.info.get("baseline"):
+            entry["baseline"] = report.info["baseline"]     # genre figures used (P.3)
         rs.record_history(project, scope, entry)
     try:
         report.history = rs.history(project, scope)
@@ -1121,7 +1146,8 @@ def change_since_last(report: BookReport) -> Optional[Tuple[float, str]]:
         if earlier.get("date") == today.get("date"):
             continue
         same = (earlier.get("figure_version") == today.get("figure_version")
-                and earlier.get("thresholds_version") == today.get("thresholds_version"))
+                and earlier.get("thresholds_version") == today.get("thresholds_version")
+                and earlier.get("baseline", "") == today.get("baseline", ""))
         if not same:
             return None                         # measured differently: not comparable
         return round(today["readiness"] - earlier["readiness"], 4), earlier["date"]

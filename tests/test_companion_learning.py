@@ -280,10 +280,9 @@ def test_companion_panel_finds_fixes_and_jumps(app, project):
     for t in list(companion_panel._RUNNING):
         t.wait(5000)
     app.processEvents()
-    panel = ce.companion.panel
-    assert panel.fixes and "recieved" in panel.fixes[0].text
-    panel.fixes_list.setCurrentRow(0)
-    panel._go_to_fix()
+    card = ce.companion.panel.queue                 # D.6: the three show on the card
+    assert card.fix is not None and "recieved" in card.fix.text
+    card.goto_btn.click()
     assert ce.editor.textCursor().selectedText() == "He recieved it."
 
 

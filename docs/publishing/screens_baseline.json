@@ -1,23 +1,219 @@
 {
- "_about": "Clutter baseline from piece 0.2 (22 Nov 2026), measured at 1440x900 on a sample project; the same numbers as the table in screens.md. Rule 13: no piece may raise a count, and the declutter pieces lower them. scripts/screen_harness.py compares against this file.",
- "main_window": {"top_level_tabs": 10, "sidebar_tabs": 2, "side_panel_tabs": 4},
- "screens": {
-  "write":         {"buttons": 24, "menu_items": 29, "sections": 0, "inner_tabs": 1},
-  "planner":       {"buttons": 8,  "menu_items": 0,  "sections": 2, "inner_tabs": 5},
-  "style":         {"buttons": 15, "menu_items": 0,  "sections": 0, "inner_tabs": 0},
-  "feedback":      {"buttons": 3,  "menu_items": 0,  "sections": 0, "inner_tabs": 0},
-  "companion":     {"buttons": 18, "menu_items": 0,  "sections": 7, "inner_tabs": 0},
-  "plot":          {"buttons": 10, "menu_items": 0,  "sections": 0, "inner_tabs": 6},
-  "characters":    {"buttons": 3,  "menu_items": 0,  "sections": 0, "inner_tabs": 0},
-  "world":         {"buttons": 6,  "menu_items": 0,  "sections": 0, "inner_tabs": 0},
-  "attributions":  {"buttons": 1,  "menu_items": 0,  "sections": 1, "inner_tabs": 0},
-  "visuals":       {"buttons": 8,  "menu_items": 0,  "sections": 2, "inner_tabs": 0},
-  "prose_profile": {"buttons": 0,  "menu_items": 0,  "sections": 1, "inner_tabs": 0},
-  "critique":      {"buttons": 11, "menu_items": 0,  "sections": 4, "inner_tabs": 1},
-  "video_studio":  {"buttons": 12, "menu_items": 0,  "sections": 2, "inner_tabs": 0},
-  "publishing":    {"buttons": 4,  "menu_items": 0,  "sections": 1, "inner_tabs": 0},
-  "assistant":     {"buttons": 8,  "menu_items": 0,  "sections": 0, "inner_tabs": 0},
-  "outline":       {"buttons": 1,  "menu_items": 0,  "sections": 0, "inner_tabs": 0}
+ "_about": "Clutter baseline. Agreed by the writer on 24 Nov 2026 after D.1, D.6, D.7 and D.9, measured at 1440x900, with menu items counted as decision 11 says (a closely related submenu counts as one; different actions count one by one). Rule 13: no piece may raise a count. The first baseline, from piece 0.2 (22 Nov 2026), is kept below under 'baseline_0_2'.",
+ "main_window": {
+  "top_level_tabs": 10,
+  "sidebar_tabs": 2,
+  "side_panel_tabs": 3
  },
- "right_click": {"text_no_selection": 12, "text_selection": 22}
+ "screens": {
+  "write": {
+   "buttons": 19,
+   "menu_items": 29,
+   "sections": 0,
+   "inner_tabs": 1
+  },
+  "planner": {
+   "buttons": 8,
+   "menu_items": 0,
+   "sections": 2,
+   "inner_tabs": 5
+  },
+  "style": {
+   "buttons": 0,
+   "menu_items": 0,
+   "sections": 0,
+   "inner_tabs": 0
+  },
+  "feedback": {
+   "buttons": 3,
+   "menu_items": 0,
+   "sections": 0,
+   "inner_tabs": 0
+  },
+  "companion": {
+   "buttons": 15,
+   "menu_items": 0,
+   "sections": 7,
+   "inner_tabs": 0
+  },
+  "plot": {
+   "buttons": 10,
+   "menu_items": 0,
+   "sections": 0,
+   "inner_tabs": 6
+  },
+  "characters": {
+   "buttons": 3,
+   "menu_items": 0,
+   "sections": 0,
+   "inner_tabs": 0
+  },
+  "world": {
+   "buttons": 6,
+   "menu_items": 0,
+   "sections": 0,
+   "inner_tabs": 0
+  },
+  "attributions": {
+   "buttons": 1,
+   "menu_items": 0,
+   "sections": 1,
+   "inner_tabs": 0
+  },
+  "visuals": {
+   "buttons": 8,
+   "menu_items": 0,
+   "sections": 2,
+   "inner_tabs": 0
+  },
+  "prose_profile": {
+   "buttons": 0,
+   "menu_items": 0,
+   "sections": 1,
+   "inner_tabs": 0
+  },
+  "critique": {
+   "buttons": 6,
+   "menu_items": 0,
+   "sections": 2,
+   "inner_tabs": 1
+  },
+  "video_studio": {
+   "buttons": 12,
+   "menu_items": 0,
+   "sections": 2,
+   "inner_tabs": 0
+  },
+  "publishing": {
+   "buttons": 4,
+   "menu_items": 0,
+   "sections": 1,
+   "inner_tabs": 0
+  },
+  "assistant": {
+   "buttons": 8,
+   "menu_items": 0,
+   "sections": 0,
+   "inner_tabs": 0
+  },
+  "outline": {
+   "buttons": 1,
+   "menu_items": 0,
+   "sections": 0,
+   "inner_tabs": 0
+  }
+ },
+ "right_click": {
+  "text_no_selection": 9,
+  "text_selection": 13
+ },
+ "baseline_0_2": {
+  "main_window": {
+   "top_level_tabs": 10,
+   "sidebar_tabs": 2,
+   "side_panel_tabs": 4
+  },
+  "screens": {
+   "write": {
+    "buttons": 24,
+    "menu_items": 29,
+    "sections": 0,
+    "inner_tabs": 1
+   },
+   "planner": {
+    "buttons": 8,
+    "menu_items": 0,
+    "sections": 2,
+    "inner_tabs": 5
+   },
+   "style": {
+    "buttons": 15,
+    "menu_items": 0,
+    "sections": 0,
+    "inner_tabs": 0
+   },
+   "feedback": {
+    "buttons": 3,
+    "menu_items": 0,
+    "sections": 0,
+    "inner_tabs": 0
+   },
+   "companion": {
+    "buttons": 18,
+    "menu_items": 0,
+    "sections": 7,
+    "inner_tabs": 0
+   },
+   "plot": {
+    "buttons": 10,
+    "menu_items": 0,
+    "sections": 0,
+    "inner_tabs": 6
+   },
+   "characters": {
+    "buttons": 3,
+    "menu_items": 0,
+    "sections": 0,
+    "inner_tabs": 0
+   },
+   "world": {
+    "buttons": 6,
+    "menu_items": 0,
+    "sections": 0,
+    "inner_tabs": 0
+   },
+   "attributions": {
+    "buttons": 1,
+    "menu_items": 0,
+    "sections": 1,
+    "inner_tabs": 0
+   },
+   "visuals": {
+    "buttons": 8,
+    "menu_items": 0,
+    "sections": 2,
+    "inner_tabs": 0
+   },
+   "prose_profile": {
+    "buttons": 0,
+    "menu_items": 0,
+    "sections": 1,
+    "inner_tabs": 0
+   },
+   "critique": {
+    "buttons": 11,
+    "menu_items": 0,
+    "sections": 4,
+    "inner_tabs": 1
+   },
+   "video_studio": {
+    "buttons": 12,
+    "menu_items": 0,
+    "sections": 2,
+    "inner_tabs": 0
+   },
+   "publishing": {
+    "buttons": 4,
+    "menu_items": 0,
+    "sections": 1,
+    "inner_tabs": 0
+   },
+   "assistant": {
+    "buttons": 8,
+    "menu_items": 0,
+    "sections": 0,
+    "inner_tabs": 0
+   },
+   "outline": {
+    "buttons": 1,
+    "menu_items": 0,
+    "sections": 0,
+    "inner_tabs": 0
+   }
+  },
+  "right_click": {
+   "text_no_selection": 12,
+   "text_selection": 22
+  }
+ }
 }

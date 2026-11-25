@@ -149,22 +149,17 @@ def intended(project: Any) -> List[Dict[str, Any]]:
 
 
 def set_intended(project: Any, item: Any, label: str, chapter: str, on: bool = True) -> bool:
-    """Mark a query as intended (or take that back). Other keys are kept."""
-    from src.data import readiness_state as rs
+    """Mark a query as intended (or take that back). Other keys are kept.
+    Since 4.1 this is ``intentional.mark``: the pattern is dismissed
+    (``"as": "intended"``) and a line goes into the writer's style sheet;
+    taking it back removes both."""
+    from src.ai import intentional
     key = getattr(item, "key", "") if not isinstance(item, dict) else item.get("key", "")
     if not key:
         return False
-
-    def change(data):
-        d = data.get("dismissed")
-        if not isinstance(d, dict):
-            d = data["dismissed"] = {}
-        if on:
-            d[key] = {"text": item.text[:200], "reason": item.reason[:300], "label": label,
-                      "chapter": chapter, "at": time.strftime("%Y-%m-%d")}
-        else:
-            d.pop(key, None)
-    return bool(rs.update(project, change))
+    if on:
+        return intentional.mark_item(project, item, label, chapter)[0]
+    return intentional.unmark(project, key)[0]
 
 
 def brief(project: Any, scope: Optional[str], report: Any,
@@ -239,8 +234,11 @@ def brief(project: Any, scope: Optional[str], report: Any,
         pass
     try:
         from src.ai.style_sheet import describe, rules
-        for r in rules(project)[:40]:
-            out.append("- " + describe(r.kind, r.subject, getattr(r, "replacement", "") or ""))
+        from src.ai.intentional import linked_rules
+        linked = linked_rules(project)            # listed below as "Intended" (4.1)
+        for r in [r for r in rules(project) if r.id not in linked][:40]:
+            out.append("- " + (r.text if r.kind == "note" else
+                               describe(r.kind, r.subject, getattr(r, "replacement", "") or "")))
     except Exception:
         pass
     for c in choices[:60]:

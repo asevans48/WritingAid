@@ -12,6 +12,10 @@ and new ones are cheaper to build:
 * **Parts:** ``CollapsibleSection`` (moved here from the Companion, still
   importable there), ``card``, ``status_chip``, ``section_header``,
   ``primary_button`` and ``empty_state``.
+* **One look (D.8):** ``plain`` / ``plain_qss`` for every other button,
+  ``PRIMARY_BUTTON`` for an existing main button, ``text_style`` for a
+  label's colour and size, and the spacing ``GAP``, ``PANEL_MARGIN`` and
+  ``DIALOG_MARGIN``.
 * **Colours:** ``PALETTE`` (from ``styles.COLORS``), ``PROBLEM_COLOURS``
   (one colour per kind of problem, from ``style_checks.KINDS`` and the
   editor's flag colours) and ``STAGE_COLOURS``.
@@ -27,7 +31,7 @@ from typing import Dict, Optional
 from PyQt6.QtCore import QEvent, QObject, QPoint, QRect, QSettings, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtWidgets import (
-    QFrame, QLabel, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
+    QFrame, QLabel, QPushButton, QScrollArea, QSizePolicy, QToolButton, QVBoxLayout, QWidget,
 )
 
 from src.ui.styles import COLORS
@@ -67,6 +71,14 @@ STAGE_COLOURS: Dict[str, str] = {
     "line": COLORS["warning"],
     "copyedit": COLORS["success"],
     "proof": COLORS["accent"],
+}
+
+
+# The planner's story-arc stages (Freytag), used by its arc drawing and its
+# beat list alike.
+ARC_COLOURS: Dict[str, str] = {
+    "exposition": COLORS["info"], "rising": "#22c55e", "climax": COLORS["error"],
+    "falling": "#f97316", "resolution": COLORS["violet"],
 }
 
 
@@ -312,16 +324,66 @@ def status_chip(text: str, kind: str = "") -> QLabel:
     return chip
 
 
+PRIMARY_BUTTON = (
+    f"QPushButton {{ background: {COLORS['primary']}; color: white; font-weight: bold;"
+    " border: none; border-radius: 5px; padding: 6px 14px; }"
+    f"QPushButton:hover {{ background: {COLORS['primary_dark']}; }}"
+    f"QPushButton:disabled {{ background: {COLORS['primary_light']}; }}")
+
+
 def primary_button(text: str, parent: Optional[QWidget] = None) -> QPushButton:
     """The one main action on a screen, in the app's accent colour."""
     btn = QPushButton(text, parent)
     btn.setDefault(True)
     btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    btn.setStyleSheet(
-        f"QPushButton {{ background: {COLORS['primary']}; color: white; font-weight: bold;"
-        " border: none; border-radius: 5px; padding: 6px 14px; }"
-        f"QPushButton:hover {{ background: {COLORS['primary_dark']}; }}"
-        f"QPushButton:disabled {{ background: {COLORS['primary_light']}; }}")
+    btn.setStyleSheet(PRIMARY_BUTTON)
+    return btn
+
+
+# ── One look (D.8) ──────────────────────────────────────────────────────
+
+# Spacing: the same margins and gaps inside panels and dialogs.
+GAP = 6                 # between controls in a row or column
+PANEL_MARGIN = 8        # inside side panels and cards
+DIALOG_MARGIN = 12      # inside dialogs
+
+
+def text_style(tone: str = "ink_faint", size: Optional[int] = None, *,
+               bold: bool = False, italic: bool = False, extra: str = "") -> str:
+    """A label's style sheet from the palette: ``tone`` is a ``PALETTE``
+    name (or "" for the default text colour)."""
+    parts = [f"color: {COLORS[tone]};" if tone else ""]
+    if size:
+        parts.append(f"font-size: {size}px;")
+    if bold:
+        parts.append("font-weight: bold;")
+    if italic:
+        parts.append("font-style: italic;")
+    return " ".join(p for p in parts + [extra] if p)
+
+
+def plain_qss(selector: str = "QPushButton", size: int = 11, pad: str = "3px 8px",
+              bold: bool = False) -> str:
+    """Every button that is not the screen's main action: white, a thin
+    border, the palette's text colour; a checked toggle shows the tint.
+    ``pad`` includes the 1 px border, so a borderless button keeps its size."""
+    c, weight = COLORS, "bold" if bold else "normal"
+    inner = " ".join(f"{max(int(p.rstrip('px') or 0) - 1, 0)}px" for p in pad.split())
+    return (f"{selector} {{ background: {c['surface']}; color: {c['ink']}; font-weight: {weight};"
+            f" border: 1px solid {c['border_strong']}; border-radius: 4px; padding: {inner};"
+            f" font-size: {size}px; }}"
+            f"{selector}:hover {{ background: {c['surface_hover']}; }}"
+            f"{selector}:checked {{ background: {c['primary_tint']}; color: {c['primary_ink']};"
+            f" border-color: {c['primary_border']}; }}"
+            f"{selector}:disabled {{ background: {c['surface_muted']}; color: {c['ink_disabled']}; }}"
+            f"{selector}::menu-indicator {{ image: none; }}")
+
+
+def plain(btn, size: int = 11, pad: str = "3px 8px", bold: bool = False):
+    """Style an existing button or tool button as a plain one (keeps its
+    size, text, object name and default-button state)."""
+    selector = "QToolButton" if isinstance(btn, QToolButton) else "QPushButton"
+    btn.setStyleSheet(plain_qss(selector, size, pad, bold))
     return btn
 
 

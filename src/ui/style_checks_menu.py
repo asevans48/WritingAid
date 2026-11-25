@@ -1,9 +1,14 @@
 """The "Style checks" submenu of the editor's ✓ Checks ▾ menu (piece D.3).
 
-One switch per style check, as the Style tab has, each with how many it
-finds in the chapter now. A switch turns that check's highlighting (and
-listing) on or off; the Style tab's boxes follow, and the other way round.
+One switch per style check, each with how many it finds in the chapter
+now, and at the top the chapter's summary (issues, per 1,000 words, and the
+share of sentences with a transition while Few transitions is on). A
+switch turns that check's highlighting (and listing) on or off. Since D.6
+retired the side panel's Style tab, this is where its switches, counts and
+summary live; its list is the Companion's next-fix card.
 No new toolbar control: the menu was already there (agreed in 0.2).
+The ticks, and the Spelling / Grammar / Overused words / Style switches,
+are remembered per project (``src/data/check_switches.py``, 24 Nov 2026).
 """
 
 from __future__ import annotations
@@ -34,11 +39,34 @@ def counts(editor: Any) -> Dict[str, int]:
     return out
 
 
+def summary(editor: Any, found: Dict[str, int]) -> str:
+    """The retired Style tab's summary line: issues of the checks that are
+    on, per 1,000 words, and the transitions share (P.2a)."""
+    on = editor.writing_highlighter._style_kinds
+    total = sum(n for kind, n in found.items() if kind in on)
+    text = editor.toPlainText()
+    words = len(text.split())
+    line = f"{total} issue{'s' if total != 1 else ''}"
+    if words:
+        line += f" · {round(1000 * total / words, 1)}/1,000 words"
+    if "transition" in on:
+        from src.utils.style_reports import transition_share
+        used, sentences = transition_share(text)
+        if sentences:
+            line += f" · transitions in {round(100 * used / sentences)}% of sentences"
+    return line
+
+
 def install(chapter_editor: Any) -> QMenu:
     """Add the submenu above "Style issues panel…"."""
     menu = chapter_editor.checks_menu
     sub = QMenu("Style checks", menu)
     sub.setToolTipsVisible(True)
+    head = QAction("", sub)
+    head.setEnabled(False)                    # information, not an action
+    sub.addAction(head)
+    sub.addSeparator()
+    chapter_editor._style_summary_action = head
     actions: Dict[str, QAction] = {}
     for kind, (label, _colour, _sentence) in KINDS.items():
         act = QAction(label, sub)
@@ -52,6 +80,7 @@ def install(chapter_editor: Any) -> QMenu:
     def refresh() -> None:
         found = counts(chapter_editor.editor)
         on = chapter_editor.editor.writing_highlighter._style_kinds
+        head.setText(summary(chapter_editor.editor, found))
         for kind, act in actions.items():
             n = found.get(kind, 0)
             act.blockSignals(True)
@@ -64,6 +93,7 @@ def install(chapter_editor: Any) -> QMenu:
         menu.insertMenu(before, sub)
     else:
         menu.addMenu(sub)
+    _restore(chapter_editor)
     refresh()
     return sub
 
@@ -73,10 +103,35 @@ def _set(chapter_editor: Any, kind: str, on: bool) -> None:
     kinds = set(hl._style_kinds)
     (kinds.add if on else kinds.discard)(kind)
     hl.set_style_kinds(kinds)
-    panel = getattr(chapter_editor, "style_panel", None)      # the Style tab follows
-    if panel is not None and kind in getattr(panel, "kind_boxes", {}):
-        cb = panel.kind_boxes[kind][0]
-        cb.blockSignals(True)
-        cb.setChecked(on)
-        cb.blockSignals(False)
-        panel.refresh()
+    _remember(chapter_editor)
+
+
+def _restore(chapter_editor: Any) -> None:
+    """Apply the project's remembered switches (without opening the style
+    list, as ticking Style by hand does) and save every later change."""
+    project = getattr(chapter_editor, "project", None)
+    switches = getattr(chapter_editor, "_check_actions", None)
+    if project is None or not switches:
+        return
+    from src.data import check_switches
+    kinds, on = check_switches.resolve(project)
+    chapter_editor.editor.writing_highlighter.set_style_kinds(kinds)
+    for key, act in switches.items():
+        if key in on:
+            act.blockSignals(True)
+            act.setChecked(on[key])
+            act.blockSignals(False)
+    chapter_editor._apply_check_modes()
+    for act in switches.values():
+        act.toggled.connect(lambda _on: _remember(chapter_editor))
+
+
+def _remember(chapter_editor: Any) -> None:
+    project = getattr(chapter_editor, "project", None)
+    switches = getattr(chapter_editor, "_check_actions", None) or {}
+    if project is None:
+        return
+    from src.data import check_switches
+    check_switches.remember(project,
+                            set(chapter_editor.editor.writing_highlighter._style_kinds),
+                            {k: a.isChecked() for k, a in switches.items()})

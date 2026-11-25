@@ -4,9 +4,10 @@ One command draws screens at every size the plan supports, checks them, and
 counts their clutter against the 0.2 baseline:
 
     venv/bin/python scripts/screen_harness.py                  # every screen
-    venv/bin/python scripts/screen_harness.py suggestions companion style
+    venv/bin/python scripts/screen_harness.py suggestions companion write
     venv/bin/python scripts/screen_harness.py --list
     venv/bin/python scripts/screen_harness.py --compare <earlier run folder>
+    venv/bin/python scripts/screen_harness.py --menus write     # menus as counted
 
 Each screen is opened on a small sample project built in code (never a real
 project), drawn at 1024×600, 1440×900 and 2560×1440, and once at 150%
@@ -20,6 +21,9 @@ The report lists:
 * text-holding widgets drawn smaller than a readable height (rule 12);
 * tabs, sections, menu items and visible buttons per screen, compared with
   ``docs/publishing/screens_baseline.json`` (rule 13: no count may rise).
+  Menu items follow decision 11: a menu of one closely related group
+  (``GROUPED_MENUS``) counts as one entry; the every-item count is in the
+  report beside it.
 
 ``--compare`` checks every image against an earlier run, pixel for pixel:
 the proof that a refactor changed nothing visible.
@@ -49,7 +53,7 @@ SCREENS = {
     # name: (kind, description)  kind: "dialog" | "page" | "panel"
     "suggestions": ("dialog", "Suggestions window (passage critique), with a sample reply"),
     "companion": ("panel", "Write side panel: Companion"),
-    "style": ("panel", "Write side panel: Style"),
+    "style": ("retired", "Write side panel: Style (retired in D.6)"),
     "planner": ("panel", "Write side panel: Planner"),
     "feedback": ("panel", "Write side panel: Feedback"),
     "write": ("page", "Write tab (chapter list and editor)"),
@@ -65,7 +69,35 @@ SCREENS = {
     "assistant": ("page", "Sidebar: AI Assistant"),
     "outline": ("page", "Sidebar: Chapter Outline"),
 }
-PANEL_INDEX = {"planner": 0, "style": 1, "feedback": 2, "companion": 3}
+# The side panel's tabs, by the widget each is (D.6 retired the Style tab,
+# so numbers would shift; the widgets do not).
+PANELS = {"planner": lambda ed: ed.planner_widget,
+          "feedback": lambda ed: ed.feedback_widget,
+          "companion": lambda ed: ed.companion.panel}
+# Screens retired by a piece: not drawn, counted as empty, and where they went.
+RETIRED = {"style": "D.6: its list is the Companion's next-fix card (✓ Checks ▾ → Style "
+                    "issues panel…), its switches are ✓ Checks ▾ → Style checks"}
+
+# How menu items are counted (decision 11, 24 Nov 2026). A menu whose items
+# are one closely related group counts as ONE entry: a list of words, one
+# setting's choices, one subject's handful of actions. Every other item
+# counts on its own, even inside a submenu (✨ Improve's Rephrase,
+# Suggestions and Overly descriptive? are three). A submenu or menu button
+# is grouped when its title starts with one of these. Change the list, not
+# the code, if the writer regroups. Documented in docs/publishing/screens.md.
+GROUPED_MENUS = (
+    "Style checks",             # ✓ Checks ▾ → one switch per style check
+    "Mode",                     # ✓ Checks ▾ → drafting / revising / switch as I write
+    "📖 Synonyms for",          # right-click: a list of words (its Antonyms too)
+    "Antonyms",
+    "Look Up Context",          # right-click: the reference look-ups
+    "Heading Style",            # right-click → More: Normal, Heading 1 to 3
+    "🔊 Text to Speech",        # right-click → More: read and generate aloud
+    "🗣 Read Aloud",            # Write toolbar: the same, as a split button
+    "Novellas",                 # Write header: Novellas ▾
+    "Drafts",                   # Write header: Drafts ▾ (manuscript drafts)
+    "📝",                       # Write toolbar: annotations (add, view all)
+)
 
 SAMPLE_TEXT = (
     "The storm broke at dusk. Mara ran to the pier, where Dr. Voss waited. "
@@ -197,6 +229,8 @@ def main(argv: List[str]) -> int:
     ap.add_argument("--list", action="store_true", help="list the screens and stop")
     ap.add_argument("--out", help="folder for the images (default: a new scratch folder)")
     ap.add_argument("--compare", help="an earlier run's folder to compare images with")
+    ap.add_argument("--menus", action="store_true",
+                    help="also print the Write menus and right-click menus as counted")
     ap.add_argument("--child", help=argparse.SUPPRESS)
     ap.add_argument("--child-report", help=argparse.SUPPRESS)
     ap.add_argument("--count", dest="count", action="store_true", help=argparse.SUPPRESS)
@@ -227,14 +261,28 @@ def main(argv: List[str]) -> int:
     print(f"  {out}")
     counts = next((r.get("counts") for r in results.values() if r.get("counts")), None)
     if counts:
-        print("Counts at 1440x900 (baseline in brackets):")
+        print("Counts at 1440x900 (baseline in brackets; menu items grouped as decision 11 "
+              "says, every item in braces):")
         for name, c in counts["screens"].items():
             b = baseline.get("screens", {}).get(name, {})
             print("  " + f"{name:14}" + "  ".join(
-                f"{k} {c[k]}" + (f" ({b[k]})" if k in b else "") for k in
-                ("buttons", "menu_items", "sections", "inner_tabs")))
+                f"{k} {c[k]}" + (f" ({b[k]})" if k in b else "")
+                + (f" {{{c['menu_items_itemised']}}}" if k == "menu_items"
+                   and "menu_items_itemised" in c else "") for k in
+                ("buttons", "menu_items", "sections", "inner_tabs"))
+                + ("  — retired" if SCREENS.get(name, ("",))[0] == "retired" else ""))
+        every = counts.get("right_click_itemised", {})
         for key, value in counts.get("right_click", {}).items():
-            print(f"  right-click {key}: {value} ({baseline.get('right_click', {}).get(key, '?')})")
+            print(f"  right-click {key}: {value} ({baseline.get('right_click', {}).get(key, '?')})"
+                  + (f" {{{every[key]}}}" if key in every else ""))
+        if args.menus:
+            for head, tree in counts.get("menus", {}).items():
+                print(f"  {head}")
+                for line in tree:
+                    print(f"      {line}")
+    for name in names:
+        if name in RETIRED:
+            print(f"  {name}: retired ({RETIRED[name]})")
     if args.compare:
         same, different = compare_images(Path(args.compare), out)
         print(f"Compared with {args.compare}: {len(same)} identical, {len(different)} different")
@@ -269,6 +317,9 @@ def child(tag: str, names: List[str], out: Path, report_path: Path, count: bool)
     report: Dict[str, Any] = {"screen": _screen_info(app), "screens": {}}
     project = _sample_project()
     for name in names:
+        if SCREENS[name][0] == "retired":
+            report["screens"][name] = {"retired": RETIRED.get(name, "")}
+            continue
         try:
             top, focus = _build(name, project)
             _settle(app)
@@ -373,7 +424,7 @@ def _build(name: str, project):
         return _suggestions(project)
     if kind == "panel":
         ed = _chapter_editor(project)
-        panel = ed.right_panel.widget(PANEL_INDEX[name])
+        panel = PANELS[name](ed)
         ed._show_right_panel(panel)
         return ed, panel
     widget = _page(name, project)
@@ -505,13 +556,52 @@ def _check(top, focus, app) -> List[str]:
 
 # ── Counts (rule 13) ───────────────────────────────────────────────────
 
-def _menu_items(menu) -> int:
+def grouped(title: str) -> bool:
+    """Is a menu with this title (or a menu button with this text) one
+    closely related group, counted as one entry (decision 11)?"""
+    title = (title or "").replace("&&", "&").strip()
+    return any(title.startswith(p) for p in GROUPED_MENUS)
+
+
+def _menu_items(menu, itemised: bool = False) -> int:
+    """Entries in ``menu``. A grouped submenu counts as one, unless
+    ``itemised`` (the count before decision 11: every item)."""
     n = 0
     for a in menu.actions():
         if a.isSeparator() or not a.isVisible():
             continue
-        n += _menu_items(a.menu()) if a.menu() is not None else 1
+        sub = a.menu()
+        if sub is None:
+            n += 1
+        elif not itemised and grouped(sub.title()):
+            n += 1
+        else:
+            n += _menu_items(sub, itemised)
     return n
+
+
+def _button_menu_items(button, itemised: bool = False) -> int:
+    if not itemised and grouped(button.text()):
+        return 1
+    return _menu_items(button.menu(), itemised)
+
+
+def _tree(menu, indent: str = "") -> List[str]:
+    """The menu as lines, each grouped menu marked "= 1" (``--menus``)."""
+    lines = []
+    for a in menu.actions():
+        if a.isSeparator() or not a.isVisible():
+            continue
+        sub = a.menu()
+        text = a.text().replace("&&", "&")
+        if sub is None:
+            lines.append(f"{indent}{text}")
+        elif grouped(sub.title()):
+            lines.append(f"{indent}{text} ▸  = 1 ({_menu_items(sub, True)} items)")
+        else:
+            lines.append(f"{indent}{text} ▸")
+            lines.extend(_tree(sub, indent + "    "))
+    return lines
 
 
 def count_widget(top) -> Dict[str, int]:
@@ -523,8 +613,9 @@ def count_widget(top) -> Dict[str, int]:
         return w.isVisibleTo(top)
     buttons = [b for b in top.findChildren((QPushButton, QToolButton))
                if vis(b) and (b.text().strip() or not b.icon().isNull())]
-    menu_items = sum(_menu_items(b.menu()) for b in buttons
-                     if isinstance(b, QToolButton) and b.menu() is not None)
+    with_menu = [b for b in buttons if isinstance(b, QToolButton) and b.menu() is not None]
+    menu_items = sum(_button_menu_items(b) for b in with_menu)
+    itemised = sum(_button_menu_items(b, itemised=True) for b in with_menu)
     sections = ([s for s in top.findChildren(CollapsibleSection) if vis(s)]
                 + [g for g in top.findChildren(QGroupBox) if vis(g)])
     toolbox = sum(t.count() for t in top.findChildren(QToolBox) if vis(t))
@@ -532,7 +623,19 @@ def count_widget(top) -> Dict[str, int]:
     tabs += sum(b.count() for b in top.findChildren(QTabBar)
                 if vis(b) and not isinstance(b.parent(), QTabWidget))
     return {"buttons": len(buttons), "menu_items": menu_items,
-            "sections": len(sections) + toolbox, "inner_tabs": tabs}
+            "sections": len(sections) + toolbox, "inner_tabs": tabs,
+            "menu_items_itemised": itemised}
+
+
+def _write_menus(top, out: Dict[str, Any]) -> None:
+    """The Write screen's menu buttons as trees, for ``--menus``."""
+    from PyQt6.QtWidgets import QToolButton
+    for b in top.findChildren(QToolButton):
+        if b.isVisibleTo(top) and b.menu() is not None:
+            head = f"write: {b.text().replace('&&', '&')}"
+            out.setdefault("menus", {})[head] = (
+                [f"= 1 ({_menu_items(b.menu(), True)} items)"] if grouped(b.text())
+                else _tree(b.menu()))
 
 
 def _counts(names: List[str], project, app) -> Dict[str, Any]:
@@ -542,13 +645,17 @@ def _counts(names: List[str], project, app) -> Dict[str, Any]:
         if name == "suggestions":
             continue                                    # not in the 0.2 baseline
         try:
+            if SCREENS[name][0] == "retired":
+                out["screens"][name] = {"buttons": 0, "menu_items": 0, "sections": 0,
+                                        "inner_tabs": 0, "menu_items_itemised": 0}
+                continue
             if SCREENS[name][0] == "panel":
                 from src.ui.manuscript_editor import ChapterEditor
                 ed = ChapterEditor(project.manuscript.chapters[0], project=project)
                 _show_full(ed)
-                ed._show_right_panel(PANEL_INDEX[name])
+                panel = PANELS[name](ed)
+                ed._show_right_panel(panel)
                 _settle(app)
-                panel = ed.right_panel.widget(PANEL_INDEX[name])
                 panel.resize(panel.size())
                 out["screens"][name] = count_widget(panel)
                 ed.close()
@@ -557,6 +664,8 @@ def _counts(names: List[str], project, app) -> Dict[str, Any]:
                 _show_full(w)
                 _settle(app)
                 out["screens"][name] = count_widget(w)
+                if name == "write":
+                    _write_menus(w, out)
                 w.close()
         except Exception as e:
             out["screens"][name] = {"error": str(e)[:200]}
@@ -586,6 +695,12 @@ def _counts(names: List[str], project, app) -> Dict[str, Any]:
         if len(captured) == 2:
             out["right_click"] = {"text_no_selection": _menu_items(captured[0]),
                                   "text_selection": _menu_items(captured[1])}
+            out["right_click_itemised"] = {
+                "text_no_selection": _menu_items(captured[0], itemised=True),
+                "text_selection": _menu_items(captured[1], itemised=True)}
+            out.setdefault("menus", {}).update({
+                "right-click, no selection": _tree(captured[0]),
+                "right-click, with a selection": _tree(captured[1])})
         ed.close()
     except Exception as e:
         out["right_click_error"] = str(e)[:200]

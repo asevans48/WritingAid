@@ -180,7 +180,16 @@ class AgentManagerWidget(QWidget):
         # The publishing route, per manuscript (piece 1.1).
         from src.ui.publishing_route import RouteForm
         self.route_form = RouteForm()
-        publishing_layout.addWidget(self.route_form)
+        # Beside it, the writer's name, pen name, phone, email and address
+        # for the standard manuscript title page (9.2 addendum), stored as
+        # typed. Side by side so the tab still fits a 600-pixel screen.
+        from src.ui.writer_contact_form import ContactForm
+        self.contact_form = ContactForm()
+        self.contact_form.changed.connect(self.content_changed.emit)
+        route_row = QHBoxLayout()
+        route_row.addWidget(self.route_form, 1, Qt.AlignmentFlag.AlignTop)
+        route_row.addWidget(self.contact_form, 1, Qt.AlignmentFlag.AlignTop)
+        publishing_layout.addLayout(route_row)
 
         publish_kindle_button = QPushButton("Publish to Kindle Direct Publishing")
         publish_kindle_button.clicked.connect(lambda: self._publish_to_platform("Kindle"))
@@ -270,6 +279,7 @@ class AgentManagerWidget(QWidget):
     def set_project(self, project) -> None:
         """The project whose manuscripts' publishing routes are shown."""
         self.route_form.set_project(project)
+        self.contact_form.set_project(project)
 
     def load_data(self, agents: List[AgentContact]):
         """Load agent contacts."""

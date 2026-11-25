@@ -8,6 +8,10 @@ instead of a box the writer has to close:
   for as long as the message is there.
 * ``empty(parent, title, text)``: nothing to do ("Select some text first",
   "No drafts yet").
+* ``notice(parent, title, text)``: something the writer should see but need
+  not click ("Draft #3 saved", "Created draft …"; the writer's choice, 24
+  November 2026: "visible but no box"). Shown longer (``NOTICE_MS``) on a
+  tinted status bar, so it stands out.
 
 Both take the same arguments as ``QMessageBox.information``, so a call
 site changes one word. Warnings, errors, questions and anything about
@@ -44,6 +48,7 @@ from PyQt6.QtWidgets import (
 
 KEY_BOXES = "notify_show_boxes"
 SHOW_MS = 8000
+NOTICE_MS = 20000
 KEEP = 100
 
 
@@ -165,6 +170,21 @@ def _show_file_button(window: QMainWindow, path: Optional[str]) -> None:
     btn.setVisible(bool(path))
 
 
+def _tint(window: QMainWindow, shown: str) -> None:
+    """Tint the status bar while ``shown`` is its message (a notice)."""
+    from src.ui.ui_kit import PALETTE
+    bar = window.statusBar()
+    if not getattr(window, "_notify_tint_hooked", False):
+        window._notify_tint_hooked = True
+        bar.messageChanged.connect(
+            lambda m, w=window: w.statusBar().setStyleSheet(
+                w._notify_tint_qss if m and m == getattr(w, "_notify_tinted", None) else ""))
+    window._notify_tint_qss = (f"QStatusBar {{ background: {PALETTE['primary_tint']};"
+                               f" color: {PALETTE['primary_ink']}; font-weight: bold; }}")
+    window._notify_tinted = shown
+    bar.setStyleSheet(window._notify_tint_qss)
+
+
 def _notify(parent: Any, title: str, text: str, kind: str, path: Optional[str]):
     _recent.append(Message(datetime.now(), kind, str(title or ""), str(text or ""), path))
     window = None if boxes_wanted() else _main_window(parent)
@@ -172,7 +192,11 @@ def _notify(parent: Any, title: str, text: str, kind: str, path: Optional[str]):
         return QMessageBox.information(parent, title, text)
     shown = _plain(text)
     window._notify_text = shown if path else None
-    window.statusBar().showMessage(shown, SHOW_MS)
+    if kind == "notice":
+        _tint(window, shown)
+    else:
+        window._notify_tinted = None
+    window.statusBar().showMessage(shown, NOTICE_MS if kind == "notice" else SHOW_MS)
     _show_file_button(window, path)
     return QMessageBox.StandardButton.Ok
 
@@ -185,6 +209,11 @@ def done(parent: Any, title: str, text: str, path: Optional[str] = None):
 def empty(parent: Any, title: str, text: str):
     """Nothing to do (no selection, no chapters …)."""
     return _notify(parent, title, text, "empty", None)
+
+
+def notice(parent: Any, title: str, text: str):
+    """Should be seen, needs no click: longer, on a tinted status bar."""
+    return _notify(parent, title, text, "notice", None)
 
 
 # ── Reading them again ─────────────────────────────────────────────────

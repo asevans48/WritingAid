@@ -19,9 +19,13 @@ def test_draws_the_three_screens_the_brief_names(tmp_path):
     results = h.run(["suggestions", "companion", "style"], tmp_path, sizes=[(1440, 900, 1.0)])
     report = results["1440x900"]
     assert report["screen"]["available"] == [1440, 900]
-    for name in ("suggestions", "companion", "style"):
+    for name in ("suggestions", "companion"):
         assert "error" not in report["screens"][name], report["screens"][name]
         assert (tmp_path / f"{name}_1440x900.png").stat().st_size > 1000
+    # D.6 retired the Style tab: not drawn, counted as empty, and says where it went.
+    assert "retired" in report["screens"]["style"]
+    assert not (tmp_path / "style_1440x900.png").exists()
+    assert report["counts"]["screens"]["style"]["buttons"] == 0
     # Counts were taken at the baseline size and match it.
     baseline = json.loads(h.BASELINE.read_text())
     assert h.compare_counts(report["counts"], baseline) == []

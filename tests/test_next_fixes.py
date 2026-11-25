@@ -159,13 +159,17 @@ def test_the_older_sections_stay_but_start_closed(app, tmp_path):
     panel = ed.companion.panel
     assert len(panel.sections) == 7                              # none added (rule 13)
     assert panel.sections["fixes"].is_open() and not panel.sections["overdescribed"].is_open()
-    assert not panel.older_fixes.isVisibleTo(panel)            # three fixes behind a link
-    panel.show_older_fixes(True)
-    assert panel.fixes_btn.isVisibleTo(panel)                  # still there
+    # D.6: Today's three fixes is retired; the model's three show on the card.
+    assert not hasattr(panel, "older_fixes") and not hasattr(panel, "fixes_btn")
+    assert "href='three'" not in panel.queue.status.text()    # no model here: not offered
+    from src.ui import companion_panel
+    companion_panel._companion_ai_enabled = lambda: True      # a model may be set up
+    ed.companion._no_model = False                            # (the fixture puts it back)
+    ed.companion.queue.chapter_loaded()
+    assert "href='three'" in panel.queue.status.text()
     from src.ai.companion import Fix
-    panel.show_older_fixes(False)
-    panel.set_fixes([Fix("Spelling: x", excerpt="Teh")], "From the scorecard")
-    assert panel.older_fixes.isVisibleTo(panel)                # 2.2 still shows its fixes
+    ed.companion.queue.show_fixes([Fix("Spelling: Teh", excerpt="Teh")], "The three that matter most")
+    assert panel.queue.fix is not None and "The three that matter most" in panel.queue.status.text()
 
 
 # ── 3.3: Skip and Not a problem ─────────────────────────────────────
@@ -246,7 +250,8 @@ def test_every_style_issue_is_in_the_queue_and_can_be_fixed_or_rewritten(app, tm
     queue.find()
     wait_tasks(app)
     in_queue = {(e.item.kind, e.item.start) for e in queue.entries}
-    style_tab = {(i.kind, s) for s, _e, i in ed.style_panel.collect()}
+    # D.6: the Style tab's list is the card's "every style issue" list.
+    style_tab = {(e.item.kind, e.item.start) for e in queue._style_flags(every_kind=True)}
     assert style_tab and style_tab <= in_queue          # everything the Style tab lists
     assert any(e.check.startswith("style:") for e in queue.entries)
     entry = next(e for e in queue.entries if e.check.startswith("style:"))
@@ -273,14 +278,16 @@ def test_the_style_switches_are_in_the_checks_menu_and_the_style_tab_follows(app
     sub = next(a.menu() for a in ed.checks_menu.actions() if a.menu() is not None
                and a.text() == "Style checks")
     sub.aboutToShow.emit()                              # counted as the menu opens
-    labels = [a.text() for a in sub.actions()]
+    labels = [a.text() for a in sub.actions() if a.isCheckable()]
     assert len(labels) == len(KINDS) and any("(" in l and not l.endswith("(0)") for l in labels)
+    assert "issue" in sub.actions()[0].text() and not sub.actions()[0].isEnabled()  # the summary
     names = [a.text() for a in ed.checks_menu.actions()]
     assert names.index("Style checks") == names.index("Style issues panel…") - 1
     act = ed._style_check_actions["adverb"]
     act.setChecked(False)
     assert "adverb" not in ed.editor.writing_highlighter._style_kinds
-    assert not ed.style_panel.kind_boxes["adverb"][0].isChecked()      # the tab follows
     act.setChecked(True)
-    assert ed.style_panel.kind_boxes["adverb"][0].isChecked()
-    assert "Style" in [ed.right_panel.tabText(i) for i in range(ed.right_panel.count())]
+    assert "adverb" in ed.editor.writing_highlighter._style_kinds
+    # D.6: the Style tab is retired; the panel has Planner, Feedback, Companion.
+    tabs = [ed.right_panel.tabText(i) for i in range(ed.right_panel.count())]
+    assert "Style" not in tabs and len(tabs) == 3

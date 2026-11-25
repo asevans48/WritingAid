@@ -54,10 +54,11 @@ def test_checks_menu_controls_modes(editor):
     assert editor.editor.get_spell_mode() == CheckMode.ON_DEMAND
     acts["style"].setChecked(True)
     assert editor.editor.get_style_mode() == CheckMode.ON_DEMAND
-    assert editor.right_panel.currentWidget() is editor.style_panel
-    # The Style panel's own toggle stays in sync with the menu.
-    editor.style_panel.highlight_cb.setChecked(False)
-    assert not acts["style"].isChecked()
+    # D.6: switching Style on opens the Style tab's list, now the Companion's card.
+    assert editor.right_panel.currentWidget() is editor.companion.panel
+    assert editor.companion.queue.given == "Every style issue in this chapter"
+    acts["style"].setChecked(False)
+    assert editor.editor.get_style_mode() == CheckMode.OFF
 
 
 def test_every_analysis_and_draft_action_is_in_a_menu(editor):

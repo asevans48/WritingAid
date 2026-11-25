@@ -46,18 +46,22 @@ class Entry:
 
 
 # The Style tab's kinds that no readiness check reports (D.3): the queue's
-# line stage takes them from the editor's live style flags.
-STYLE_ONLY_KINDS = ("repeated_start", "long_sentence", "hard_sentence")
+# line stage takes them from the editor's live style flags. The P.2a kinds
+# (transitions, pronouns, alliteration, acronyms) join only when ticked.
+STYLE_ONLY_KINDS = ("repeated_start", "long_sentence", "hard_sentence",
+                    "transition", "pronoun", "alliteration", "acronym")
 STYLE_WEIGHT = 10
 
 
-def style_entries(issues: Iterable[Any]) -> List[Entry]:
-    """Entries for the editor's style flags of ``STYLE_ONLY_KINDS``;
+def style_entries(issues: Iterable[Any],
+                  only: Optional[Iterable[str]] = STYLE_ONLY_KINDS) -> List[Entry]:
+    """Entries for the editor's style flags of ``STYLE_ONLY_KINDS`` (of
+    every kind with ``only=None``: the retired Style tab's list, D.6);
     ``issues``: [(absolute start, StyleIssue)]."""
     from src.utils.style_checks import KINDS
     out = []
     for start, issue in issues:
-        if issue.kind not in STYLE_ONLY_KINDS or issue.end <= issue.start:
+        if (only is not None and issue.kind not in only) or issue.end <= issue.start:
             continue
         item = rd.Item(start=start, end=start + (issue.end - issue.start), text=issue.text[:200],
                        reason=issue.message or issue.kind, kind=issue.kind,
@@ -123,26 +127,17 @@ NOT_A_PROBLEM = "not a problem"
 def dismiss(project: Any, entry: Entry, chapter_title: str = "") -> bool:
     """Stop this pattern being raised again in this project."""
     import time
-    from src.data import readiness_state as rs
+    from src.ai import intentional
     item = entry.item
     if not item.key:
         return False
-
-    def change(data):
-        d = data.get("dismissed")
-        if not isinstance(d, dict):
-            d = data["dismissed"] = {}
-        d[item.key] = {"text": item.text[:200], "reason": item.reason[:300],
-                       "label": entry.label, "chapter": chapter_title,
-                       "at": time.strftime("%Y-%m-%d"), "as": NOT_A_PROBLEM}
-    return bool(rs.update(project, change))
+    return intentional.store(project, item.key, {
+        "text": item.text[:200], "reason": item.reason[:300], "label": entry.label,
+        "chapter": chapter_title, "at": time.strftime("%Y-%m-%d"), "as": NOT_A_PROBLEM})
 
 
 def undismiss(project: Any, key: str) -> bool:
-    from src.data import readiness_state as rs
-
-    def change(data):
-        d = data.get("dismissed")
-        if isinstance(d, dict):
-            d.pop(key, None)
-    return bool(rs.update(project, change))
+    """Take a dismissal back; one marked intentional (4.1) takes its style
+    sheet line with it."""
+    from src.ai import intentional
+    return intentional.unmark(project, key)[0]

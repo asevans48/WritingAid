@@ -56,10 +56,52 @@ def is_mechanical(error: Any) -> bool:
     return kind == ErrorType.GRAMMAR and getattr(error, "rule_id", "") in SURE_RULES
 
 
+# Words that are right in one sentence and wrong in the next. Fixing every
+# one alike would break the right ones, so "Fix all" is never offered for
+# them (decision 9, the writer, 24 November 2026: "leave out their/there and
+# its/it's; focus on things that produce value"). Each is still fixed one
+# at a time from its card or the right-click menu.
+CONFUSABLE_SETS = [
+    {"their", "there", "they're", "theyre"}, {"its", "it's"}, {"your", "you're", "youre"},
+    {"whose", "who's"}, {"to", "too", "two"}, {"then", "than"}, {"affect", "effect"},
+    {"lose", "loose"}, {"accept", "except"}, {"lead", "led"}, {"past", "passed"},
+    {"principal", "principle"}, {"stationary", "stationery"}, {"complement", "compliment"},
+    {"breath", "breathe"}, {"weather", "whether"}, {"lie", "lay"}, {"lightning", "lightening"},
+    {"discreet", "discrete"}, {"elicit", "illicit"}, {"peak", "peek", "pique"},
+    {"rein", "reign", "rain"}, {"site", "sight", "cite"}, {"hear", "here"},
+    {"were", "where", "we're"}, {"of", "have", "'ve"}, {"a", "an"},
+]
+CONFUSION_RULES = {"THEIR_THEYRE", "THEIR_THERE", "THERE_THEIR", "YOUR_YOURE", "ITS_ITS",
+                   "ITS_OWN", "THEN_THAN", "MODAL_OF", "AN_VS_A"}
+
+
+def _norm(w: str) -> str:
+    return (w or "").strip().lower().replace("\u2019", "'")
+
+
+def is_confusable(error: Any) -> bool:
+    """A confused-word flag: their/there, its/it's, then/than, a/an …
+    (the editor's own rules, or LanguageTool's confusion rules)."""
+    rule = (getattr(error, "rule_id", "") or "").upper()
+    if rule in CONFUSION_RULES or "CONFUS" in rule:
+        return True
+    word = _norm(getattr(error, "word", ""))
+    fixes = [_norm(s) for s in (getattr(error, "suggestions", None) or []) if s]
+    if not word or not fixes:
+        return False
+    last = word.split()[-1] if " " in word else word
+    for group in CONFUSABLE_SETS:
+        if (word in group or last in group) and any(
+                f in group or (f.split() and f.split()[-1] in group) for f in fixes):
+            return True
+    return False
+
+
 def can_fix_everywhere(error: Any) -> bool:
-    """Any flag with a short fix: spelling, grammar, overused words, style."""
+    """Any flag with a short fix (spelling, grammar, overused words, style),
+    except confused words, whose right form depends on the sentence."""
     return error is not None and getattr(error, "error_type", None) is not None \
-        and bool(_fixes(error))
+        and bool(_fixes(error)) and not is_confusable(error)
 
 
 def _fixes(error: Any) -> List[str]:

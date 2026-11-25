@@ -103,25 +103,23 @@ class RevisionController:
         ce.expand_statement(start, start + len(sentence))
 
     def open_fixes(self, chapter_id: str, label: str, items: Sequence[Any]) -> bool:
-        """Open the chapter with these readiness findings as the Companion's
-        fixes, the first selected in the text (2.2)."""
-        from src.ui.readiness_fixes import fixes_from_items
+        """Open the chapter with these readiness findings on the Companion's
+        next-fix card, the first selected in the text (2.2; on the card
+        since D.6 retired Today's three fixes)."""
         if not chapter_id:
             return False
         ce = self.open_chapter(chapter_id)
         if ce is None or getattr(ce, "companion", None) is None:
             return False
-        text = ce.editor.toPlainText()
         mine = [i for i in items if not i.chapter_id or i.chapter_id == chapter_id]
-        fixes = fixes_from_items(label, mine, text)
+        queue = ce.companion.queue
+        queue.show_items(label, mine)
         panel = ce.companion.panel
-        panel.set_fixes(fixes, f"From the scorecard: {label}. Pick one, edit it if you like, "
-                               "then Accept; 💡 More options… asks the model for rewrites."
-                        if fixes else f"{label}: nothing left to fix in this chapter.")
         ce._show_right_panel(panel)
         panel.open_section("fixes")
-        if fixes:
-            self.select(ce.editor, fixes[0].excerpt, mine[0].start if mine else 0)
+        fix = queue.card.fix
+        if fix is not None:
+            self.select(ce.editor, fix.excerpt, mine[0].start if mine else 0)
             ce.editor.setFocus()
         return True
 

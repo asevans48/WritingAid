@@ -66,13 +66,16 @@ def test_one_click_to_the_sentence_and_accept(qapp, tmp_path):
     ce = me.current_chapter_editor
     assert ce.chapter.id == "c2"                                 # the chapter opened
     panel = ce.companion.panel
-    assert len(panel.fixes) == len(items) > 0
+    queue = ce.companion.queue                                   # D.6: on the next-fix card
+    assert len(queue.entries) == len(items) > 0
+    assert queue.given.startswith("From the scorecard: Spelling and grammar left")
     assert ce.right_panel.currentWidget() is panel               # the Companion is showing
-    assert ce.editor.textCursor().selectedText() == panel.fixes[0].excerpt
+    assert ce.editor.textCursor().selectedText() == panel.queue.fix.excerpt
     # Accept the editor's own suggestion through the Companion.
-    fix = next(f for f in panel.fixes if f.options)
+    fixes = [queue._fix_for(e) for e in queue.entries]
+    fix = next(f for f in fixes if f is not None and f.options)
     before = ce.editor.toPlainText()
-    panel.fix_accepted.emit(fix, fix.options[0].text)
+    ce.companion.accept_fix(fix, fix.options[0].text)
     qapp.processEvents()
     assert ce.editor.toPlainText() != before
     assert fix.options[0].text in ce.editor.toPlainText()

@@ -10,7 +10,7 @@ from typing import Any, Callable, List, Optional, Set
 from PyQt6.QtCore import QThread, Qt, QUrl, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox, QFrame, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QPushButton, QScrollArea, QSizePolicy, QTextBrowser, QTextEdit,
+    QListWidgetItem, QPushButton, QScrollArea, QSizePolicy, QTextBrowser,
     QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -28,17 +28,17 @@ def run_background(fn: Callable[[], Any], on_done: Callable[[Any, str], None]) -
 
 # Moved to the shared kit (U.1); imported here so every existing
 # ``from src.ui.companion_panel import CollapsibleSection`` keeps working.
-from src.ui.ui_kit import CollapsibleSection, section_header  # noqa: E402
+from src.ui.ui_kit import PALETTE, CollapsibleSection, plain_qss, section_header, text_style  # noqa: E402
 
 
 def _divider(text: str) -> QLabel:
     return section_header(text)
 
 
-def _small(text: str = "", color: str = "#6b7280") -> QLabel:
+def _small(text: str = "", tone: str = "ink_faint") -> QLabel:
     label = QLabel(text)
     label.setWordWrap(True)
-    label.setStyleSheet(f"color: {color}; font-size: 10px;")
+    label.setStyleSheet(text_style(tone, 10))
     return label
 
 
@@ -48,9 +48,6 @@ class CompanionPanel(QWidget):
     note_dismissed = pyqtSignal(object)         # companion.Note
     note_fix_requested = pyqtSignal(object)     # companion.Note → Suggestions
     reader_pass_requested = pyqtSignal()
-    fixes_requested = pyqtSignal()
-    fix_accepted = pyqtSignal(object, str)      # companion.Fix, replacement sentence
-    fix_more_requested = pyqtSignal(object)     # companion.Fix → Suggestions
     overdescribed_requested = pyqtSignal()      # check this chapter (with the model if any)
     expand_requested = pyqtSignal(object)       # overdescription.Flag → Expand dialog
     ask_requested = pyqtSignal(object)          # companion.Note
@@ -62,7 +59,6 @@ class CompanionPanel(QWidget):
         self.project = None
         self.chapter_text = ""
         self.notes: list = []
-        self.fixes: list = []
         self.flags: list = []
         self.sections: dict = {}
         outer = QVBoxLayout(self)
@@ -74,7 +70,7 @@ class CompanionPanel(QWidget):
         top.setContentsMargins(6, 4, 4, 0)
         self.chapter_label = QLabel("")
         self.chapter_label.setWordWrap(True)
-        self.chapter_label.setStyleSheet("font-weight: bold; color: #312e81; font-size: 12px;")
+        self.chapter_label.setStyleSheet(text_style("primary_ink", 12, bold=True))
         self.chapter_label.linkActivated.connect(self._on_stage_link)   # its stage (3.1)
         top.addWidget(self.chapter_label, 1)
         for label, tip, is_open in (("▾ all", "Open every section", True),
@@ -83,9 +79,8 @@ class CompanionPanel(QWidget):
             btn.setText(label)
             btn.setToolTip(tip)
             btn.setAutoRaise(True)
-            btn.setStyleSheet("QToolButton { border: none; color: #4b5563; font-size: 10px;"
-                              " padding: 1px 4px; } QToolButton:hover { background: #e5e7eb;"
-                              " border-radius: 3px; }")
+            btn.setStyleSheet(f"QToolButton {{ border: none; color: {PALETTE['ink_soft']}; font-size: 10px; padding: 1px 4px; }}"
+                              f" QToolButton:hover {{ background: {PALETTE['surface_hover']}; border-radius: 3px; }}")
             btn.clicked.connect(lambda _=False, o=is_open: self.set_all_open(o))
             top.addWidget(btn)
         outer.addLayout(top)
@@ -110,7 +105,7 @@ class CompanionPanel(QWidget):
         v.addWidget(self.left_off_label)
         self.recap_label = QLabel("")
         self.recap_label.setWordWrap(True)
-        self.recap_label.setStyleSheet("color: #4338ca;")
+        self.recap_label.setStyleSheet(text_style("primary_dark"))
         v.addWidget(self.recap_label)
 
         # Notes
@@ -140,54 +135,11 @@ class CompanionPanel(QWidget):
         v.addLayout(row)
         self.notes_list.currentRowChanged.connect(self._update_note_buttons)
 
-        # Next fixes: the chapter's queue for its stage (3.2), with Today's
-        # three fixes kept underneath behind a link while on trial.
+        # Next fixes: the chapter's queue for its stage (3.2). Today's three
+        # fixes, on trial below it, were retired in D.6: the model's three and
+        # the scorecard's fixes now show on the card.
         v = self._section(layout, "Next fixes", "fixes")
-        from src.ui import next_fixes; self.queue, v = next_fixes.install(self, v)
-        self.fixes_btn = QPushButton("🎯 Find the three fixes that matter most")
-        self.fixes_btn.clicked.connect(self.fixes_requested.emit)
-        v.addWidget(self.fixes_btn)
-        self.fixes_status = _small("")
-        v.addWidget(self.fixes_status)
-        self.fixes_list = QListWidget()
-        self.fixes_list.setWordWrap(True)
-        self.fixes_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.fixes_list.setMaximumHeight(110)
-        self.fixes_list.itemDoubleClicked.connect(lambda _i: self._go_to_fix())
-        self.fixes_list.currentRowChanged.connect(self._show_fix)
-        v.addWidget(self.fixes_list)
-        # The chosen fix: suggested rewrites, an editable preview, Accept.
-        self.fix_detail = QWidget()
-        outer_v, v = v, QVBoxLayout(self.fix_detail)
-        v.setContentsMargins(0, 0, 0, 0)
-        outer_v.addWidget(self.fix_detail)
-        self.fix_options = QListWidget()
-        self.fix_options.setWordWrap(True)
-        self.fix_options.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.fix_options.setMaximumHeight(80)
-        self.fix_options.currentRowChanged.connect(self._show_fix_option)
-        v.addWidget(self.fix_options)
-        self.fix_option_notes = _small("", "#b45309")
-        v.addWidget(self.fix_option_notes)
-        self.fix_preview = QTextEdit()
-        self.fix_preview.setMaximumHeight(80)
-        self.fix_preview.setPlaceholderText("The sentence — pick a suggestion or edit it here, "
-                                            "then Accept.")
-        v.addWidget(self.fix_preview)
-        row = QHBoxLayout()
-        self.fix_accept_btn = QPushButton("✓ Accept")
-        self.fix_accept_btn.setToolTip("Put this in place of the sentence in the chapter")
-        self.fix_accept_btn.clicked.connect(self._accept_fix)
-        self.fix_more_btn = QPushButton("💡 More options…")
-        self.fix_more_btn.setToolTip("Open Suggestions on this sentence, focused on the problem")
-        self.fix_more_btn.clicked.connect(self._more_fix)
-        go = QPushButton("Go to")
-        go.clicked.connect(self._go_to_fix)
-        for b in (self.fix_accept_btn, self.fix_more_btn, go):
-            row.addWidget(b)
-        row.addStretch()
-        v.addLayout(row)
-        self._show_fix(-1)
+        from src.ui import next_fixes; self.queue = next_fixes.install(self, v)
 
         # Overly descriptive statements
         v = self._section(layout, "Overly descriptive", "overdescribed")
@@ -264,11 +216,13 @@ class CompanionPanel(QWidget):
         v.addWidget(_small("Your own rules — learned from what you ignore and fix, or typed in: "
                            "“allow vethari” · “prefer grey over gray” · “avoid very” · "
                            "“keep passive voice” · or any note."))
-        self.style_status = _small("", "#be185d")
+        self.style_status = _small("", "accent_ink")
         v.addWidget(self.style_status)
         self.sheet_list = QListWidget()
         self.sheet_list.setWordWrap(True)
         self.sheet_list.setMinimumHeight(90)
+        self.sheet_list.setToolTip("Double-click a rule to reword it.")
+        self.sheet_list.itemDoubleClicked.connect(lambda _i: self._reword_rule())   # 4.1
         v.addWidget(self.sheet_list)
         row = QHBoxLayout()
         self.sheet_edit = QLineEdit()
@@ -334,7 +288,7 @@ class CompanionPanel(QWidget):
         words = len(self.chapter_text.split())
         name = " — ".join(p for p in (f"Chapter {number}" if number else "", title) if p)
         self.chapter_label.setText(f"📖 {html.escape(name or 'This chapter')}"
-                                   f"<span style='color:#6b7280;font-weight:normal;"
+                                   f"<span style='color:{PALETTE['ink_faint']};font-weight:normal;"
                                    f"font-size:10px'> · {words:,} words</span>"
                                    + self._stage_html(chapter))
         self._apply_collapsed()                     # D.7: sections that fit its stage
@@ -434,7 +388,7 @@ class CompanionPanel(QWidget):
     def set_reader_report(self, report, error: str = "") -> None:
         self.reader_btn.setEnabled(True)
         if report is None:
-            self.reader_view.setHtml(f"<p style='color:#b00020'>{html.escape(error)}</p>")
+            self.reader_view.setHtml(f"<p style='color:{PALETTE['error_ink']}'>{html.escape(error)}</p>")
             return
 
         def quote(q, note):
@@ -471,100 +425,6 @@ class CompanionPanel(QWidget):
         self.refresh_memory()
         self.refresh_style_sheet()
         self.refresh_stage()
-
-    # ── Today's three fixes ─────────────────────────────────────────
-
-    def set_fixes_busy(self, message: str = "Looking…") -> None:
-        self.fixes_btn.setEnabled(False)
-        self.fixes_list.clear()
-        self.fixes_list.addItem(message)
-        self.fixes_status.setText("")
-        self._show_fix(-1)
-
-    def set_fixes(self, fixes, status: str = "") -> None:
-        if fixes:
-            self.show_older_fixes(True)             # e.g. sent from the scorecard (2.2)
-        self.fixes_btn.setEnabled(True)
-        self.fixes = list(fixes or [])
-        self.fixes_list.clear()
-        for n, f in enumerate(self.fixes, 1):
-            item = QListWidgetItem(f"{n}. {f.text}" + (f"\n   → {f.why}" if f.why else ""))
-            item.setToolTip(f.excerpt)
-            self.fixes_list.addItem(item)
-        if not self.fixes and fixes is not None:
-            self.fixes_list.addItem("Nothing flagged — nice work.")
-        self.sections["fixes"].set_count(len(self.fixes))
-        self.fixes_status.setText(status)
-        if self.fixes:
-            self.fixes_list.setCurrentRow(0)
-        else:
-            self._show_fix(-1)
-
-    def set_fix_options(self, options_by_fix: dict, status: str = "") -> None:
-        """Suggested rewrites arrived (fix index → [FixOption])."""
-        for i, options in (options_by_fix or {}).items():
-            if 0 <= i < len(self.fixes) and options:
-                self.fixes[i].options = options
-        self.fixes_status.setText(status)
-        self._show_fix(self.fixes_list.currentRow())
-
-    def current_fix(self):
-        row = self.fixes_list.currentRow()
-        return self.fixes[row] if 0 <= row < len(self.fixes) else None
-
-    def _show_fix(self, row: int) -> None:
-        fix = self.fixes[row] if 0 <= row < len(self.fixes) else None
-        self.fix_options.clear()
-        self.fix_preview.clear()
-        self.fix_option_notes.setText("")
-        for o in (fix.options if fix else []):
-            fit = f" · voice {o.voice_fit:.0%}" if o.voice_fit is not None else ""
-            tag = "✨ suggested" if o.by_ai else "quick fix (no AI)"
-            item = QListWidgetItem(f"{tag}{fit}{' ⚠' if o.notes else ''}: {o.text}")
-            item.setToolTip(o.why or o.text)
-            self.fix_options.addItem(item)
-        has = fix is not None
-        self.fix_detail.setVisible(has)
-        self.fixes_list.setVisible(bool(self.fixes) or self.fixes_list.count() > 0)
-        self.fix_options.setVisible(bool(fix and fix.options))
-        self.fix_preview.setEnabled(has)
-        self.fix_accept_btn.setEnabled(has)          # your own edit counts too
-        self.fix_more_btn.setEnabled(has)
-        if fix and fix.options:
-            self.fix_options.setCurrentRow(0)
-        elif fix:
-            self.fix_preview.setPlainText(fix.sentence or "")
-
-    def _show_fix_option(self, row: int) -> None:
-        fix = self.current_fix()
-        if fix is None or not (0 <= row < len(fix.options)):
-            return
-        o = fix.options[row]
-        self.fix_preview.setPlainText(o.text)
-        self.fix_accept_btn.setEnabled(True)
-        self.fix_option_notes.setText("⚠ This rewrite " + "; ".join(o.notes) + "."
-                                      if o.notes else "")
-
-    def _accept_fix(self) -> None:
-        fix = self.current_fix()
-        text = self.fix_preview.toPlainText().strip()
-        if fix is not None and text:
-            self.fix_accepted.emit(fix, text)
-
-    def _more_fix(self) -> None:
-        fix = self.current_fix()
-        if fix is not None:
-            self.fix_more_requested.emit(fix)
-
-    def remove_fix(self, fix, message: str = "") -> None:
-        if fix in self.fixes:
-            self.fixes.remove(fix)
-        self.set_fixes(self.fixes, message)
-
-    def _go_to_fix(self):
-        row = self.fixes_list.currentRow()
-        if 0 <= row < len(self.fixes) and self.fixes[row].excerpt:
-            self.jump_requested.emit(self.fixes[row].excerpt)
 
     # ── Overly descriptive ─────────────────────────────────────────
 
@@ -656,6 +516,21 @@ class CompanionPanel(QWidget):
         r = self._current_rule()
         if r is not None:
             ss.remove(self.project, r.id)
+            from src.ai.intentional import rule_removed
+            if rule_removed(self.project, r.id):       # 4.1: flagged again
+                self.style_status.setText("Deleted; it will be flagged again.")
+            self._sheet_changed()
+
+    def _reword_rule(self):
+        """Double-click: reword a rule (4.1)."""
+        from PyQt6.QtWidgets import QInputDialog
+        from src.ai.intentional import reword
+        r = self._current_rule()
+        if r is None:
+            return
+        text, ok = QInputDialog.getText(self, "Reword this rule", "Your style sheet says:",
+                                        text=r.text)
+        if ok and reword(self.project, r.id, text) is not None:
             self._sheet_changed()
 
     def refresh_memory(self) -> None:
@@ -737,7 +612,7 @@ from PyQt6.QtCore import QObject, QTimer
 from PyQt6.QtWidgets import QFrame, QToolButton
 
 
-def close_button(tooltip: str, color: str = "#4b5563", hover: str = "#e5e7eb",
+def close_button(tooltip: str, color: str = PALETTE["ink_soft"], hover: str = PALETTE["surface_hover"],
                  label: str = "✕") -> QToolButton:
     """A small, always-visible ✕. A QToolButton, so the app-wide
     QPushButton style (padding, blue fill) can't squeeze the glyph out."""
@@ -762,22 +637,21 @@ class CompanionBanner(QFrame):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setStyleSheet("CompanionBanner { background: #eef2ff; border: 1px solid #c7d2fe;"
-                           " border-radius: 4px; }")
+        self.setStyleSheet(f"CompanionBanner {{ background: {PALETTE['primary_tint']};"
+                           f" border: 1px solid {PALETTE['primary_border']}; border-radius: 4px; }}")
         row = QHBoxLayout(self)
         row.setContentsMargins(8, 3, 4, 3)
         self.label = QLabel("")
-        self.label.setStyleSheet("color: #3730a3; font-size: 11px;")
+        self.label.setStyleSheet(text_style("primary_ink", 11))
         self.label.setWordWrap(False)
         row.addWidget(self.label, 1)
         self.details_btn = QPushButton("Details")
         self.details_btn.setToolTip("Show or hide the Companion tab in the side panel")
-        self.details_btn.setStyleSheet("QPushButton { font-size: 10px; padding: 1px 8px;"
-                                       " min-height: 18px; }")
+        self.details_btn.setStyleSheet(plain_qss(size=10, pad="1px 8px") + "QPushButton { min-height: 18px; }")
         self.details_btn.clicked.connect(self.open_requested.emit)
         row.addWidget(self.details_btn)
         self.close_btn = close_button("Hide this line (it comes back next time you open "
-                                      "the chapter)", "#3730a3", "#c7d2fe")
+                                      "the chapter)", PALETTE["primary_ink"], PALETTE["primary_border"])
         self.close_btn.clicked.connect(self.hide)
         row.addWidget(self.close_btn)
         self.hide()
@@ -824,11 +698,8 @@ class CompanionController(QObject):
         self.panel.note_action.connect(self._on_note_action)
         self.panel.note_dismissed.connect(self._on_note_dismissed)
         self.panel.reader_pass_requested.connect(self.run_reader_pass)
-        self.panel.fixes_requested.connect(self.find_three_fixes)
         self.panel.ask_requested.connect(self.ask_about_note)
         self.panel.note_fix_requested.connect(self.suggest_note_fix)
-        self.panel.fix_accepted.connect(self.accept_fix)
-        self.panel.fix_more_requested.connect(self.more_fix_options)
         self.panel.overdescribed_requested.connect(self.check_overdescribed)
         self.panel.expand_requested.connect(self.expand_flag)
         self.panel.style_sheet_changed.connect(self._style_sheet_edited)
@@ -871,7 +742,6 @@ class CompanionController(QObject):
         self.panel.set_chapter(self.chapter, text)
         self.panel.set_project(self.project)
         self.panel.set_notes([], "Notes appear here when you finish a paragraph.")
-        self.panel.set_fixes(None, "")           # nothing searched yet
         self.queue.chapter_loaded()               # the next-fix queue (3.2)
         self._quick_overdescribed(text)
         if self.project is None or self.chapter is None:
@@ -1080,10 +950,13 @@ class CompanionController(QObject):
         except Exception:
             return ""
 
+    THREE = "The three that matter most"
+
     def find_three_fixes(self) -> None:
-        """The three fixes that matter most, each with suggested rewrites:
-        the model (local, server or cloud) picks them with the writer's
-        taste and voice and writes the rewrites like Suggestions does;
+        """The three fixes that matter most, shown on the next-fix card
+        (D.6; they had their own list before): the model (local, server or
+        cloud) picks them with the writer's taste and voice, and the card
+        writes rewrites in the writer's voice for each as it shows it;
         without one, the heaviest flags with the editor's own fixes."""
         from src.ai import companion, overdescription as od
         hl = self.ce.editor.writing_highlighter
@@ -1096,7 +969,7 @@ class CompanionController(QObject):
         candidates = companion.fix_candidates(hl, self.ce.editor.document(), self.panel.notes,
                                               flags, text)
         if not candidates:
-            self.panel.set_fixes([])
+            self.queue.show_fixes([], self.THREE)
             return
         project, chapter = self.project, self.chapter
         context = companion.judge_context(project, chapter, text[:4000]) \
@@ -1105,7 +978,7 @@ class CompanionController(QObject):
         if voice is not None and hasattr(voice, "to_critique_prompt"):
             context = (context + "\n\n" + voice.to_critique_prompt()).strip()
         taste = self._taste(text)
-        self.panel.set_fixes_busy()
+        self.queue.card.show_busy("Picking the three fixes that matter most…")
 
         def work():
             llm = self._llm()
@@ -1115,49 +988,12 @@ class CompanionController(QObject):
 
         def done(result, error):
             if not result:
-                self.panel.set_fixes([], error or "")
+                self.queue.card.show_empty(error or "The pick didn't finish.")
                 return
             fixes, used_model = result
-            self.panel.set_fixes(fixes, "Writing suggested fixes in your voice…"
-                                 if used_model and fixes else
-                                 "" if used_model else
-                                 "Quick picks (no AI) — set up a local, server or cloud model "
-                                 "for suggested rewrites.")
-            if used_model and fixes:
-                self._suggest_fix_rewrites(fixes, text)
-
-        run_background(work, done)
-
-    def _suggest_fix_rewrites(self, fixes, text: str) -> None:
-        from src.ai import companion
-        project, chapter = self.project, self.chapter
-        voice = self._voice
-
-        def work():
-            llm = self._llm()
-            if llm is None:
-                return {}
-            from src.ai.chapter_analysis_agent import is_local_llm
-            compact = is_local_llm(llm)
-            out = {}
-            for i, fix in enumerate(fixes):
-                try:
-                    out[i] = companion.suggest_fix_options(llm, project, chapter, text, fix,
-                                                           voice, compact)
-                except Exception as e:
-                    print(f"[companion] fix rewrite failed: {e}")
-            return out
-
-        def done(options, error):
-            for i, found in (options or {}).items():
-                if found:
-                    fixes[i].options = found        # by object: accepted fixes may be gone
-            if not any(f is p for f in fixes for p in self.panel.fixes):
-                return                    # a newer search replaced these
-            got = sum(1 for o in (options or {}).values() if any(x.by_ai for x in o))
-            self.panel.set_fix_options({}, (
-                "Suggested fixes are ready — pick one, edit it if you like, then Accept."
-                if got else (error or "No suggested rewrites — try 💡 More options…")))
+            self.queue.show_fixes(fixes, self.THREE if used_model else
+                                  self.THREE + " (quick picks, no AI: set up a model for "
+                                               "suggested rewrites)")
 
         run_background(work, done)
 
@@ -1167,11 +1003,8 @@ class CompanionController(QObject):
                                          sentence)
 
     def accept_fix(self, fix, replacement: str) -> None:
-        problem = self.apply_fix(fix, replacement)
-        if problem is None:
-            self.panel.remove_fix(fix, "Fixed. Your choice teaches future suggestions.")
-        elif problem:
-            self.panel.fixes_status.setText(problem)
+        """Kept for callers: the card's Accept, for a fix it is showing."""
+        self.queue.accept(fix, replacement)
 
     def apply_fix(self, fix, replacement: str):
         """Put ``replacement`` in place of the fix's sentence, if it is still
@@ -1183,7 +1016,7 @@ class CompanionController(QObject):
         text = self.ce.editor.toPlainText()
         original = text[span[0]:span[1]]
         if " ".join(original.split()) == " ".join(replacement.split()):
-            return "No change — edit the sentence above or pick a suggestion first."
+            return "No change — ✎ edit the sentence or pick a suggestion first."
         if not self.ce._replace_span(text, span[0], span[1], replacement, "Companion"):
             return ""
         from src.ai.rewrite_quality import log_rated_rewrite
@@ -1195,10 +1028,11 @@ class CompanionController(QObject):
     def more_fix_options(self, fix) -> None:
         span = self._span_for(fix.paragraph, fix.excerpt, fix.sentence)
         if span is None:
-            self.panel.fixes_status.setText("That sentence has changed — find the fixes again.")
+            self.queue.card.status.setText("That sentence has changed — "
+                                           "<a href='find'>Check again</a>")
             return
         if self.ce.suggest_for_span(span[0], span[1], focus=fix.text):
-            self.panel.remove_fix(fix, "Fixed with Suggestions.")
+            self.queue.done_with(fix, "Fixed with Suggestions.")
 
     def suggest_note_fix(self, note) -> None:
         span = self._span_for(note.paragraph, note.excerpt)

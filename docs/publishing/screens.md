@@ -17,6 +17,32 @@ sees **on first open**:
   counted item by item.
 - **Sections:** collapsible sections and group boxes.
 
+**How menu items are counted since decision 11 (24 Nov 2026, built in D.6).**
+A menu whose items are one closely related group counts as **one** entry:
+a list of words, one setting's choices, one subject's handful of actions.
+Items that are different actions count one each, even inside a submenu
+(✨ Improve's Rephrase, Suggestions and Overly descriptive? are three). The
+groups are a list of titles in `scripts/screen_harness.py`
+(`GROUPED_MENUS`); a submenu or menu button whose title starts with one
+counts as one:
+
+| Grouped (counts as 1) | Where |
+|---|---|
+| Style checks | ✓ Checks ▾ (one switch per style check, and the summary line) |
+| Mode | ✓ Checks ▾ (drafting, revising, switch as I write) |
+| 📖 Synonyms for "…", Antonyms | right-click, one word selected |
+| Look Up Context | right-click |
+| Heading Style | right-click → More |
+| 🔊 Text to Speech | right-click → More |
+| 🗣 Read Aloud | Write toolbar |
+| Novellas ▾, Drafts ▾ | Write header |
+| 📝 | Write toolbar (add an annotation, view all) |
+
+Not grouped, so each item counts: ✓ Checks ▾ itself, 🔍 Analyze ▾,
+📄 Draft ▾, ✨ Improve this, More. To regroup, change the list, not the code.
+The harness prints the every-item count beside each figure in braces, and
+`--menus` prints the menus as counted.
+
 Some counts move with the project. Plot shows one "+ Add event" button per
 act, and Companion section headers show counts once there are items. So treat
 a difference of one or two as noise, not as a change.
@@ -34,9 +60,9 @@ a difference of one or two as noise, not as a change.
 | Screen | Buttons | Items behind menu buttons | Sections | Inner tabs |
 |---|---|---|---|---|
 | Write (chapter editor, panel closed) | **24** | **29** (✓ Checks ▾, 🔍 Analyze ▾, 📄 Draft ▾, 🗣 Read Aloud ▾) | 0 | manuscript bar (main + one per novella) |
-| Write side panel | — | — | — | **4**: Planner, Style, Feedback, Companion |
+| Write side panel | — | — | — | **4**: Planner, Style, Feedback, Companion (since D.6: **3**, the Style tab retired) |
 | · Planner | 8 | 0 | 2 | 5: Events, Description, Todo List, Notes, Subplots |
-| · Style | 15 | 0 | 0 | 0 |
+| · Style (retired in D.6) | 15 (now 0) | 0 | 0 | 0 |
 | · Feedback | 3 | 0 | 0 | 0 |
 | · Companion | 18 | 0 | **7** | 0 |
 | Plot | 10 | 0 | 0 | 6: Plot Events, Subplots, Promises, Tensions, Themes, Discuss with AI |
@@ -84,7 +110,7 @@ The right-click menu itself has 12 to 22 items.
 |---|---|---|---|---|
 | 1 | **Highlights + hover card** (`EnhancedTextEditor`, `ErrorCard`) | always on in the text | spelling, grammar, overused words, repeated phrases, style, each in its own colour | replace with a suggestion, ✨ Suggest in context, 💬 Ask, ✨ Rewrite with AI, Add to dictionary, Ignore |
 | 2 | **✓ Checks ▾** menu | Write toolbar | which checks are on (spelling, grammar, overuse, style), mode (drafting / revising / auto), focus mode | toggle checks, re-check now, open Style panel, open Consistency |
-| 3 | **Style** tab (`StyleIssuesPanel`) | side panel; Checks menu | every `style_checks` issue in the chapter, counts per check, one issue at a time | toggle each of the eleven checks, step through, apply the fix, ✨ Rewrite with AI, Ignore, open Consistency |
+| 3 | **Style** tab (`StyleIssuesPanel`) | side panel; Checks menu | every `style_checks` issue in the chapter, counts per check, one issue at a time | toggle each of the eleven checks, step through, apply the fix, ✨ Rewrite with AI, Ignore, open Consistency. **Retired in D.6:** the list is the Companion card (✓ Checks ▾ → Style issues panel…), the switches, counts and summary ✓ Checks ▾ → Style checks |
 | 4 | **Companion** tab (`CompanionPanel`), 7 sections | side panel; banner above the text | Where you left off · Notes as you write · Today's three fixes · Overly descriptive (n) · Reader's eye · Story memory · Your style sheet | find three fixes, suggest a fix, Expand…, Go to, Dismiss, read as a reader, Ask |
 | 5 | **Companion banner** | one line above the text | where you left off | Details opens the Companion |
 | 6 | **Rephrase** (`RephraseDialog`) | ✨ toolbar, Ctrl+R, right-click | rewrites of the selection, with voice fit | pick and edit, rate, accept |
@@ -135,7 +161,7 @@ The right-click menu itself has 12 to 22 items.
   `SecondaryWindow`, `src/ui/window_manager.py`.)
 - **Drafts** open in their own window (Drafts → Open Draft in New Window).
 - **Cannot be detached:** the sidebar (AI Assistant, Chapter Outline), which
-  collapses instead; and the Write side panel (Planner, Style, Feedback,
+  collapses instead; and the Write side panel (Planner, Feedback,
   Companion), which closes with Hide ✕ and reopens with ◧ Panel.
 
 ## What the Publishing and Feedback tabs already do

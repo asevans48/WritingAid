@@ -16,6 +16,8 @@ Checks (``KINDS``):
   sticky_sentence  — 45%+ glue words
   repeated_start   — 3+ consecutive sentences opening with the same word
   echo             — the same word again within a few words
+  transition, pronoun, alliteration, acronym — P.2a, in ``style_reports``;
+                     off until the writer ticks them (not in DEFAULT_KINDS)
 """
 
 from __future__ import annotations
@@ -23,6 +25,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Set, Tuple
+
+from src.ui.styles import COLORS as _PALETTE   # plain dict, no Qt
 
 
 @dataclass
@@ -49,8 +53,17 @@ KINDS: Dict[str, Tuple[str, str, bool]] = {
     "long_sentence": ("Long sentences", "#dbeafe", True),
     "hard_sentence": ("Hard-to-read sentences", "#fee2e2", True),
     "sticky_sentence": ("Sticky sentences", "#fef3c7", True),
+    # P.2a (style_reports.py), colours from the palette.
+    "transition": ("Few transitions", _PALETTE["info_tint"], True),
+    "pronoun": ("Pronouns", _PALETTE["violet"], False),
+    "alliteration": ("Alliteration", _PALETTE["accent"], False),
+    "acronym": ("Acronyms", _PALETTE["primary_dark"], False),
 }
-DEFAULT_KINDS = set(KINDS)
+# On in a fresh editor. The P.2a kinds stay off until the writer ticks them,
+# so every existing project shows what it showed before (rule 11).
+from src.utils.style_reports import NEW_KINDS  # noqa: E402
+DEFAULT_KINDS = set(KINDS) - set(NEW_KINDS)
+NEW_KIND_SET = frozenset(NEW_KINDS)
 
 GLUE = set("""the a an and or but in on at to for of with by from as is was are were been be
 have has had do does did will would could should may might must shall can need it its this
@@ -172,21 +185,25 @@ def sentences_with_offsets(text: str) -> List[Tuple[int, int, str]]:
     return out
 
 
-def analyze_paragraph(text: str, kinds: Optional[Iterable[str]] = None) -> List[StyleIssue]:
-    """Style issues in one paragraph, offsets relative to ``text``."""
+def analyze_paragraph(text: str, kinds: Optional[Iterable[str]] = None,
+                      document: Optional[str] = None) -> List[StyleIssue]:
+    """Style issues in one paragraph, offsets relative to ``text``.
+    ``document``: the whole chapter, for the checks that look beyond the
+    paragraph (acronyms: spelled out elsewhere?); without it the paragraph
+    stands alone."""
     kinds = set(kinds) if kinds is not None else DEFAULT_KINDS
     issues: List[StyleIssue] = []
     if not text or not text.strip():
         return issues
     from src.utils.proofing import normalize_apostrophes
     original, text = text, normalize_apostrophes(text)
-    issues = _analyze(text, kinds)
+    issues = _analyze(text, kinds, document)
     for i in issues:
         i.text = original[i.start:i.end]   # report what's actually on the page
     return issues
 
 
-def _analyze(text: str, kinds) -> List[StyleIssue]:
+def _analyze(text: str, kinds, document: Optional[str] = None) -> List[StyleIssue]:
     issues: List[StyleIssue] = []
     add = issues.append
     sentences = sentences_with_offsets(text)
@@ -288,6 +305,10 @@ def _analyze(text: str, kinds) -> List[StyleIssue]:
                 add(StyleIssue("echo", s, e, text[s:e],
                                f"“{text[s:e]}” repeats {i - j} word{'s' if i - j != 1 else ''} after its last use."))
             last[w] = i
+
+    if kinds & NEW_KIND_SET:
+        from src.utils import style_reports
+        style_reports.analyze(text, sentences, kinds, add, document)
     return sorted(issues, key=lambda x: (x.start, -(x.end - x.start)))
 
 
@@ -295,7 +316,7 @@ def analyze_document(text: str, kinds: Optional[Iterable[str]] = None) -> List[S
     """Style issues for a whole text, offsets into ``text`` (paragraph = line)."""
     out, pos = [], 0
     for line in text.split("\n"):
-        for issue in analyze_paragraph(line, kinds):
+        for issue in analyze_paragraph(line, kinds, document=text):
             issue.start += pos
             issue.end += pos
             out.append(issue)

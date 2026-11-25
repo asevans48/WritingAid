@@ -13,7 +13,7 @@ import uuid
 import copy
 
 from src.ui.styles import SYSTEM_FONT
-from src.ui.ui_kit import compact_button  # narrow buttons show their symbol
+from src.ui.ui_kit import PALETTE, PRIMARY_BUTTON, compact_button, plain_qss, text_style  # shared parts (U.1, D.8)
 
 
 # Common feedback source presets
@@ -58,7 +58,7 @@ class FeedbackWidget(QWidget):
 
         self.add_feedback_btn = QPushButton("+ Feedback")
         self.add_feedback_btn.setFixedHeight(24)
-        self.add_feedback_btn.setStyleSheet("font-size: 11px; padding: 2px 8px;")
+        self.add_feedback_btn.setStyleSheet(plain_qss(pad="2px 8px"))
         self.add_feedback_btn.clicked.connect(self._add_feedback_entry)
         header.addWidget(self.add_feedback_btn)
         layout.addLayout(header)
@@ -77,13 +77,7 @@ class FeedbackWidget(QWidget):
 
         # AI analysis section (collapsible)
         analysis_frame = QFrame()
-        analysis_frame.setStyleSheet("""
-            QFrame#analysisFrame {
-                border: 1px solid #d1d5db;
-                border-radius: 4px;
-                background: #f9fafb;
-            }
-        """)
+        analysis_frame.setStyleSheet(f"QFrame#analysisFrame {{ border: 1px solid {PALETTE['border_strong']}; border-radius: 4px; background: {PALETTE['surface_soft']}; }}")
         analysis_frame.setObjectName("analysisFrame")
         analysis_layout = QVBoxLayout(analysis_frame)
         analysis_layout.setContentsMargins(6, 4, 6, 6)
@@ -92,7 +86,7 @@ class FeedbackWidget(QWidget):
         analysis_header = QHBoxLayout()
         self.analysis_toggle = QPushButton("\u25bc Analysis")
         self.analysis_toggle.setStyleSheet(
-            "border: none; font-weight: 600; font-size: 11px; color: #4f46e5; text-align: left; padding: 0;"
+            text_style("primary_dark", 11, extra="border: none; font-weight: 600; text-align: left; padding: 0;")
         )
         self.analysis_toggle.clicked.connect(self._toggle_analysis)
         analysis_header.addWidget(self.analysis_toggle)
@@ -101,17 +95,7 @@ class FeedbackWidget(QWidget):
         self.analyze_btn = QPushButton("Analyze")
         self.analyze_btn.setFixedHeight(24)
         self.analyze_btn.setToolTip("Compare chapter against feedback using AI")
-        self.analyze_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #6366f1;
-                color: white;
-                font-size: 11px;
-                padding: 2px 10px;
-                border-radius: 3px;
-            }
-            QPushButton:hover { background-color: #4f46e5; }
-            QPushButton:disabled { background-color: #9ca3af; }
-        """)
+        self.analyze_btn.setStyleSheet(PRIMARY_BUTTON + "QPushButton { font-size: 11px; padding: 2px 10px; }")
         self.analyze_btn.clicked.connect(self._run_analysis)
         analysis_header.addWidget(self.analyze_btn)
         analysis_layout.addLayout(analysis_header)
@@ -222,13 +206,7 @@ class FeedbackWidget(QWidget):
 
         frame = QFrame()
         frame.setAttribute(wa_no_activate)
-        frame.setStyleSheet("""
-            QFrame#fbCard {
-                border: 1px solid #d1d5db;
-                border-radius: 4px;
-                background: #fefefe;
-            }
-        """)
+        frame.setStyleSheet(f"QFrame#fbCard {{ border: 1px solid {PALETTE['border_strong']}; border-radius: 4px; background: {PALETTE['surface']}; }}")
         frame.setObjectName("fbCard")
         frame_layout = QVBoxLayout(frame)
         frame_layout.setContentsMargins(0, 0, 0, 0)
@@ -237,7 +215,7 @@ class FeedbackWidget(QWidget):
         # Header
         header = QWidget()
         header.setAttribute(wa_no_activate)
-        header.setStyleSheet("background: #fef3c7; border-top-left-radius: 4px; border-top-right-radius: 4px;")
+        header.setStyleSheet(f"background: {PALETTE['warning_tint']}; border-top-left-radius: 4px; border-top-right-radius: 4px;")
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(6, 3, 4, 3)
         header_layout.setSpacing(4)
@@ -245,7 +223,7 @@ class FeedbackWidget(QWidget):
         toggle_btn = QPushButton("\u25b6" if collapsed else "\u25bc")
         toggle_btn.setFixedSize(18, 18)
         toggle_btn.setAttribute(wa_no_activate)
-        toggle_btn.setStyleSheet("border: none; font-size: 9px; color: #92400e; padding: 0;")
+        toggle_btn.setStyleSheet(text_style("warning_ink", 9, extra="border: none; padding: 0;"))
         compact_button(toggle_btn)  # narrow: show its symbol
         toggle_btn.clicked.connect(lambda _, idx=index: self._toggle_entry_collapsed(idx))
         header_layout.addWidget(toggle_btn)
@@ -254,7 +232,7 @@ class FeedbackWidget(QWidget):
         title_edit.setAttribute(wa_no_activate)
         title_edit.setPlaceholderText("Feedback title...")
         title_edit.setStyleSheet(
-            "font-weight: 600; font-size: 11px; color: #92400e; background: transparent;"
+            f"font-weight: 600; font-size: 11px; color: {PALETTE['warning_ink']}; background: transparent;"
             "border: none; padding: 0px 2px;"
         )
         title_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -264,7 +242,7 @@ class FeedbackWidget(QWidget):
         del_btn.setFixedSize(20, 18)
         del_btn.setToolTip("Remove feedback")
         del_btn.setAttribute(wa_no_activate)
-        del_btn.setStyleSheet("border: none; font-size: 13px; font-weight: bold; color: #92400e; padding: 0;")
+        del_btn.setStyleSheet(text_style("warning_ink", 13, bold=True, extra="border: none; padding: 0;"))
         compact_button(del_btn)  # narrow: show its symbol
         del_btn.clicked.connect(lambda _, idx=index: self._remove_entry(idx))
         header_layout.addWidget(del_btn)
@@ -282,7 +260,7 @@ class FeedbackWidget(QWidget):
         source_row = QHBoxLayout()
         source_row.setSpacing(4)
         source_label = QLabel("Source:")
-        source_label.setStyleSheet("font-size: 10px; color: #6b7280;")
+        source_label.setStyleSheet(text_style("ink_faint", 10))
         source_row.addWidget(source_label)
         source_combo = QComboBox()
         source_combo.setAttribute(wa_no_activate)
@@ -308,7 +286,7 @@ class FeedbackWidget(QWidget):
         editor.setFont(QFont(SYSTEM_FONT, 10))
         editor.setMinimumHeight(50)
         editor.setMaximumHeight(140)
-        editor.setStyleSheet("border: 1px solid #e5e7eb; border-radius: 3px; background: white;")
+        editor.setStyleSheet(f"border: 1px solid {PALETTE['border']}; border-radius: 3px; background: {PALETTE['surface']};")
         body_layout.addWidget(editor)
 
         body_widget.setVisible(not collapsed)
@@ -444,14 +422,14 @@ Keep your response concise and respectful of the writer's craft. Use a warm, col
                     html_lines.append('</ul>')
                     in_list = False
                 inner = html_mod.escape(stripped[2:-2])
-                html_lines.append(f'<div style="font-weight:bold;color:#4f46e5;margin-top:8px;">{inner}</div>')
+                html_lines.append(f'<div style="font-weight:bold;color:{PALETTE["primary_dark"]};margin-top:8px;">{inner}</div>')
                 continue
             if stripped.startswith('## '):
                 if in_list:
                     html_lines.append('</ul>')
                     in_list = False
                 inner = html_mod.escape(stripped[3:])
-                html_lines.append(f'<div style="font-weight:bold;color:#4f46e5;margin-top:8px;">{inner}</div>')
+                html_lines.append(f'<div style="font-weight:bold;color:{PALETTE["primary_dark"]};margin-top:8px;">{inner}</div>')
                 continue
             if stripped.startswith('- ') or stripped.startswith('* '):
                 if not in_list:

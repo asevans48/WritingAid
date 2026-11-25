@@ -1,5 +1,5 @@
 {
- "about": "Hand-marked passages for the style checks and the overly descriptive check (piece Q.1). Original text written for the benchmark. Each mark names a kind of check, a snippet of the passage, and whether a flag there would be RIGHT (flag: true, a real weakness an editor would want changed) or WRONG (flag: false, a deliberate choice: a character's voice, a fragment for effect, a passive that fits). The passages are fully marked: a flag of a kind that matches no mark of that kind counts as wrong. Marks are a draft by the session that built Q.1, for the writer to review. A mark covers every occurrence of its snippet in the passage.",
+ "about": "Hand-marked passages for the style checks and the overly descriptive check (piece Q.1). Original text written for the benchmark. Each mark names a kind of check, a snippet of the passage, and whether a flag there would be RIGHT (flag: true, a real weakness an editor would want changed) or WRONG (flag: false, a deliberate choice: a character's voice, a fragment for effect, a passive that fits). The passages are fully marked: a flag of a kind that matches no mark of that kind counts as wrong. Marks are a draft by the session that built Q.1, for the writer to review. A mark covers every occurrence of its snippet in the passage. Passages with a \"scores\" list (added in P.2a for transitions, pronouns, alliteration and acronyms) are fully marked only for those kinds and are scored only on them, so the earlier checks' numbers do not move.",
  "status": "draft — to be reviewed by the writer",
  "passages": [
   {
@@ -580,6 +580,227 @@
      "flag": true,
      "why": "The line already shows it."
     }
+   ]
+  },
+  {
+   "id": "pronoun-run",
+   "text": "Mara opened the door to the yard. She looked out at the rain. He came up behind her with the lamp. She took it from him. They stood there for a long time without speaking. It was Tobin who moved first.",
+   "marks": [
+    {
+     "kind": "pronoun",
+     "text": "They stood there",
+     "flag": true,
+     "why": "Four pronoun openings in a row; the paragraph loses its shape."
+    }
+   ],
+   "scores": [
+    "transition",
+    "pronoun",
+    "alliteration",
+    "acronym"
+   ]
+  },
+  {
+   "id": "pronoun-tangle",
+   "text": "Tobin found his brother at the harbour. He told him that he would meet him at his house after he had eaten, and walked off before either of them could argue.",
+   "marks": [
+    {
+     "kind": "pronoun",
+     "text": "He told him that he would meet him at his house after he",
+     "flag": true,
+     "why": "Two men, six he-forms: the reader can't tell who goes where."
+    }
+   ],
+   "scores": [
+    "transition",
+    "pronoun",
+    "alliteration",
+    "acronym"
+   ]
+  },
+  {
+   "id": "pronouns-in-dialogue",
+   "text": "\"I know. I said so. I meant it. You heard me,\" Ilse said, and turned back to the sink.",
+   "marks": [
+    {
+     "kind": "pronoun",
+     "text": "I meant it",
+     "flag": false,
+     "why": "A character's speech; her rhythm, not the narrator's."
+    }
+   ],
+   "scores": [
+    "transition",
+    "pronoun",
+    "alliteration",
+    "acronym"
+   ]
+  },
+  {
+   "id": "transitions-none",
+   "text": "The town had one road and one bridge over the river. The bridge had a toll house at the north end. A man named Pell kept the toll house for thirty years. Pell wrote every cart and every coin in a ledger. The ledger lived on a shelf above the stove. Nobody in the town ever asked to read it. The river took the bridge in the spring flood of that year.",
+   "marks": [
+    {
+     "kind": "transition",
+     "text": "The town had one road",
+     "flag": true,
+     "why": "Seven flat statements; nothing tells the reader how they connect, or that the last one is the turn."
+    }
+   ],
+   "scores": [
+    "transition",
+    "pronoun",
+    "alliteration",
+    "acronym"
+   ]
+  },
+  {
+   "id": "transitions-present",
+   "text": "The ferry was late again, so Tobin waited on the wall. When it came at last, the deck was crowded with cattle. He found a place by the rail, but the smell drove him inside. There the benches were wet. Still, it was warmer, and he slept until the engines changed note. Then he went up to watch the town come out of the mist.",
+   "marks": [],
+   "scores": [
+    "transition",
+    "pronoun",
+    "alliteration",
+    "acronym"
+   ]
+  },
+  {
+   "id": "transitions-deliberate-still-life",
+   "text": "Her coat hung on the hook by the door. Her boots stood under it with the laces tucked in. A cup sat upside down on the draining board. The calendar on the wall showed the month she died. The radio on the sill was tuned to the shipping forecast. Her reading glasses lay folded on the open book.",
+   "marks": [
+    {
+     "kind": "transition",
+     "text": "Her coat hung on the hook",
+     "flag": false,
+     "why": "An inventory of a dead woman's kitchen; the missing links are the point."
+    }
+   ],
+   "scores": [
+    "transition",
+    "pronoun",
+    "alliteration",
+    "acronym"
+   ]
+  },
+  {
+   "id": "alliteration-accidental",
+   "text": "She put the plastic plates on the porch and went back for the bread. Gran was asleep in the chair with the cat on her knee.",
+   "marks": [
+    {
+     "kind": "alliteration",
+     "text": "plastic plates on the porch",
+     "flag": true,
+     "why": "An accidental tongue-twister in plain narration."
+    }
+   ],
+   "scores": [
+    "transition",
+    "pronoun",
+    "alliteration",
+    "acronym"
+   ]
+  },
+  {
+   "id": "alliteration-deliberate",
+   "text": "Beyond the harbour wall the sea lay silver, slow and sliding, and the boats came home one by one with their lamps lit.",
+   "marks": [
+    {
+     "kind": "alliteration",
+     "text": "silver, slow and sliding",
+     "flag": false,
+     "why": "Lyrical on purpose: the sound is the sea."
+    }
+   ],
+   "scores": [
+    "transition",
+    "pronoun",
+    "alliteration",
+    "acronym"
+   ]
+  },
+  {
+   "id": "acronym-never-spelled-out",
+   "text": "The NTSB team arrived at noon. Nobody had told Ruiz they were coming, and the lead investigator made it clear he did not want her near his wreckage.",
+   "marks": [
+    {
+     "kind": "acronym",
+     "text": "NTSB",
+     "flag": true,
+     "why": "Many readers won't know it; the full name is needed once."
+    }
+   ],
+   "scores": [
+    "transition",
+    "pronoun",
+    "alliteration",
+    "acronym"
+   ]
+  },
+  {
+   "id": "acronym-two-forms",
+   "text": "The FDR was found in the mud by the fence. Okafor wanted the F.D.R. sent to the lab before dark, and Ruiz carried the FDR to the van herself.",
+   "marks": [
+    {
+     "kind": "acronym",
+     "text": "F.D.R.",
+     "flag": true,
+     "why": "Written two ways in one passage."
+    },
+    {
+     "kind": "acronym",
+     "text": "FDR was found",
+     "flag": false,
+     "why": "The form used most; it is the other one to change."
+    }
+   ],
+   "scores": [
+    "transition",
+    "pronoun",
+    "alliteration",
+    "acronym"
+   ]
+  },
+  {
+   "id": "acronym-spelled-out",
+   "text": "The Air Accidents Investigation Branch (AAIB) sent two inspectors from Farnborough. By evening the AAIB had taken over the hangar, and nobody else was allowed inside.",
+   "marks": [
+    {
+     "kind": "acronym",
+     "text": "AAIB",
+     "flag": false,
+     "why": "Spelled out at first use, as it should be."
+    }
+   ],
+   "scores": [
+    "transition",
+    "pronoun",
+    "alliteration",
+    "acronym"
+   ]
+  },
+  {
+   "id": "shouting-is-not-an-acronym",
+   "text": "\"STOP!\" Ruiz shouted. \"Get BACK from the edge!\" The boy froze with one foot on the rail.",
+   "marks": [
+    {
+     "kind": "acronym",
+     "text": "BACK",
+     "flag": false,
+     "why": "Shouting, not an acronym."
+    },
+    {
+     "kind": "acronym",
+     "text": "STOP",
+     "flag": false,
+     "why": "Shouting, not an acronym."
+    }
+   ],
+   "scores": [
+    "transition",
+    "pronoun",
+    "alliteration",
+    "acronym"
    ]
   }
  ]

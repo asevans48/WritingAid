@@ -22,6 +22,7 @@ from src.ai.chapter_analysis_agent import (
 )
 from src.ui.rating_bar import RatingBar
 from src.ui import notify  # quiet messages (D.9)
+from src.ui.ui_kit import PALETTE, PRIMARY_BUTTON, plain_qss, text_style  # shared parts (D.8)
 from src.config.ai_config import get_ai_config
 from src.ai.craft_explanations import CRAFT_EXPLANATIONS
 
@@ -580,6 +581,7 @@ class GraderWidget(QWidget):
         # Header
         header = QLabel("Writing Critique & Reports")
         header.setStyleSheet("font-size: 18px; font-weight: bold; padding: 5px;")
+        self.setStyleSheet(plain_qss(size=13, pad="8px 16px"))     # D.8: one main button, the rest plain
         layout.addWidget(header)
 
         description = QLabel(
@@ -589,7 +591,7 @@ class GraderWidget(QWidget):
             "or a metrics dashboard when one isn't."
         )
         description.setWordWrap(True)
-        description.setStyleSheet("padding: 5px; color: #666;")
+        description.setStyleSheet(text_style(extra="padding: 5px;"))
         layout.addWidget(description)
 
         # ── Scope ────────────────────────────────────────────────
@@ -633,8 +635,7 @@ class GraderWidget(QWidget):
 
         # Current chapter info (for Single scope)
         self.chapter_info_label = QLabel("No chapter selected")
-        self.chapter_info_label.setStyleSheet(
-            "color: #666; font-style: italic; padding: 5px;")
+        self.chapter_info_label.setStyleSheet(text_style(italic=True, extra="padding: 5px;"))
         scope_outer.addWidget(self.chapter_info_label)
 
         # Multi-select chapter picker (for Selected chapters scope)
@@ -655,8 +656,7 @@ class GraderWidget(QWidget):
 
         # Manuscript info label (for Full manuscript scope)
         self.manuscript_info_label = QLabel("")
-        self.manuscript_info_label.setStyleSheet(
-            "color: #666; font-style: italic; padding: 5px;")
+        self.manuscript_info_label.setStyleSheet(text_style(italic=True, extra="padding: 5px;"))
         self.manuscript_info_label.setVisible(False)
         scope_outer.addWidget(self.manuscript_info_label)
 
@@ -750,12 +750,10 @@ class GraderWidget(QWidget):
         # Select-all / clear shortcuts
         select_row = QHBoxLayout()
         all_btn = QPushButton("All")
-        all_btn.setStyleSheet(
-            "QPushButton { padding: 3px 8px; font-size: 11px; }")
+        all_btn.setStyleSheet(plain_qss())
         all_btn.clicked.connect(self._select_all_reports)
         none_btn = QPushButton("None")
-        none_btn.setStyleSheet(
-            "QPushButton { padding: 3px 8px; font-size: 11px; }")
+        none_btn.setStyleSheet(plain_qss())
         none_btn.clicked.connect(self._select_no_reports)
         select_row.addWidget(all_btn)
         select_row.addWidget(none_btn)
@@ -843,45 +841,19 @@ class GraderWidget(QWidget):
         self.import_planner_btn = QPushButton("Import from Planner")
         self.import_planner_btn.setToolTip("Import tone, voice, style from this chapter's planner")
         self.import_planner_btn.clicked.connect(self._import_from_chapter_planner)
-        self.import_planner_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #8b5cf6;
-                color: white;
-                padding: 5px 12px;
-                border-radius: 3px;
-                font-size: 11px;
-            }
-            QPushButton:hover { background-color: #7c3aed; }
-        """)
+        self.import_planner_btn.setStyleSheet(plain_qss(pad="5px 12px"))
         context_controls_layout.addWidget(self.import_planner_btn)
 
         self.save_context_btn = QPushButton("Save Context")
         self.save_context_btn.setToolTip("Save this context (persists across sessions)")
         self.save_context_btn.clicked.connect(self._save_context)
-        self.save_context_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #3b82f6;
-                color: white;
-                padding: 5px 15px;
-                border-radius: 3px;
-            }
-            QPushButton:hover { background-color: #2563eb; }
-            QPushButton:disabled { background-color: #9ca3af; }
-        """)
+        self.save_context_btn.setStyleSheet(plain_qss(size=13, pad="5px 15px"))
         context_controls_layout.addWidget(self.save_context_btn)
 
         self.load_context_btn = QPushButton("Load")
         self.load_context_btn.setToolTip("Load saved context")
         self.load_context_btn.clicked.connect(self._load_context)
-        self.load_context_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #059669;
-                color: white;
-                padding: 5px 12px;
-                border-radius: 3px;
-            }
-            QPushButton:hover { background-color: #047857; }
-        """)
+        self.load_context_btn.setStyleSheet(plain_qss(size=13, pad="5px 12px"))
         context_controls_layout.addWidget(self.load_context_btn)
 
         self.clear_context_btn = QPushButton("Clear")
@@ -893,7 +865,7 @@ class GraderWidget(QWidget):
 
         # Status label on its own row
         self.context_status_label = QLabel("")
-        self.context_status_label.setStyleSheet("color: #059669; font-size: 11px;")
+        self.context_status_label.setStyleSheet(text_style("success_ink", 11))
         context_layout.addWidget(self.context_status_label)
 
         context_group.setLayout(context_layout)
@@ -905,18 +877,7 @@ class GraderWidget(QWidget):
         run_row = QHBoxLayout()
         run_row.addStretch()
         self.critique_btn = QPushButton("Run Critique")
-        self.critique_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #6366f1;
-                color: white;
-                padding: 10px 22px;
-                border-radius: 4px;
-                font-weight: bold;
-                font-size: 14px;
-            }
-            QPushButton:hover { background-color: #4f46e5; }
-            QPushButton:disabled { background-color: #9ca3af; }
-        """)
+        self.critique_btn.setStyleSheet(PRIMARY_BUTTON + "QPushButton { font-size: 14px; padding: 10px 22px; }")   # the main one (writer, D.8)
         self.critique_btn.setToolTip(
             "Run the selected reports across the chosen scope.")
         self.critique_btn.clicked.connect(self._run_reports)
@@ -930,7 +891,7 @@ class GraderWidget(QWidget):
         layout.addWidget(self.progress_bar)
 
         self.status_label = QLabel("")
-        self.status_label.setStyleSheet("color: #666; font-style: italic;")
+        self.status_label.setStyleSheet(text_style(italic=True))
         self.status_label.setVisible(False)
         layout.addWidget(self.status_label)
 
@@ -949,7 +910,7 @@ class GraderWidget(QWidget):
         self._summary_browser.setOpenLinks(False)
         self._summary_browser.anchorClicked.connect(self._handle_link_click)
         self._summary_browser.setHtml(
-            "<p style='color:#888'>No critique run yet. Pick a scope, "
+            f"<p style='color:{PALETTE['ink_faint']}'>No critique run yet. Pick a scope, "
             "select reports, and click <b>Run Critique</b>.</p>")
         self.results_tabs.addTab(self._summary_browser, "Summary")
         # Backwards-compat alias used by older helpers (e.g. _quick_stats).
@@ -964,37 +925,18 @@ class GraderWidget(QWidget):
         self.save_critique_btn.setToolTip("Save this critique to work on later")
         self.save_critique_btn.clicked.connect(self._save_critique_results)
         self.save_critique_btn.setEnabled(False)
-        self.save_critique_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #3b82f6;
-                color: white;
-                padding: 6px 12px;
-                border-radius: 4px;
-                font-weight: 500;
-            }
-            QPushButton:hover { background-color: #2563eb; }
-            QPushButton:disabled { background-color: #9ca3af; color: #e5e7eb; }
-        """)
+        self.save_critique_btn.setStyleSheet(plain_qss(size=13, pad="6px 12px"))
         export_layout.addWidget(self.save_critique_btn)
 
         self.load_critique_btn = QPushButton("Load Critique")
         self.load_critique_btn.setToolTip("Load a previously saved critique")
         self.load_critique_btn.clicked.connect(self._load_critique_results)
-        self.load_critique_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #059669;
-                color: white;
-                padding: 6px 12px;
-                border-radius: 4px;
-                font-weight: 500;
-            }
-            QPushButton:hover { background-color: #047857; }
-        """)
+        self.load_critique_btn.setStyleSheet(plain_qss(size=13, pad="6px 12px"))
         export_layout.addWidget(self.load_critique_btn)
 
         # Saved critique indicator
         self.saved_critique_label = QLabel("")
-        self.saved_critique_label.setStyleSheet("color: #6b7280; font-size: 11px;")
+        self.saved_critique_label.setStyleSheet(text_style("ink_faint", 11))
         export_layout.addWidget(self.saved_critique_label)
 
         export_layout.addStretch()
@@ -1745,34 +1687,34 @@ class GraderWidget(QWidget):
         ReportType.CONTINUITY: "Continuity",
     }
 
-    REPORT_STYLE_BLOCK = """
+    REPORT_STYLE_BLOCK = f"""
     <style>
-        body { font-family: -apple-system, sans-serif; }
-        h2 { color: #1f2937; margin-top: 14px; margin-bottom: 6px; }
-        h3 { color: #374151; margin-top: 12px; margin-bottom: 4px; }
-        h4 { color: #4b5563; margin: 8px 0 4px; font-size: 13px; }
-        .chapter-block { background:#f8fafc; border:1px solid #e2e8f0;
-                         border-radius:6px; padding:10px 12px; margin:10px 0; }
-        .chapter-title { font-weight:600; color:#1f2937; font-size:14px; }
-        .chapter-meta { color:#6b7280; font-size:11px; }
-        .summary { color:#1f2937; margin:6px 0; }
-        .narrative { color:#1f2937; margin:8px 0;
-                     padding:10px; background:#fff; border-left:3px solid #6366f1;
-                     border-radius:4px; white-space:pre-wrap; }
-        .findings, .suggestions { margin:6px 0; }
-        .findings li { color:#dc2626; margin:2px 0; }
-        .findings li.ok { color:#059669; }
-        .suggestions li { color:#0369a1; margin:2px 0; }
-        .metric-table { font-size:12px; border-collapse:collapse; margin:6px 0; }
-        .metric-table td { padding:2px 8px; border-bottom:1px solid #f1f5f9; }
-        .metric-table td:first-child { color:#6b7280; }
-        .metric-table td:last-child { color:#1f2937; font-weight:500; }
-        .badge { display:inline-block; padding:2px 8px; border-radius:10px;
-                 font-size:11px; font-weight:600; margin-right:6px; }
-        .badge-llm { background:#ede9fe; color:#5b21b6; }
-        .badge-dash { background:#fef3c7; color:#92400e; }
-        .badge-genre { background:#e0f2fe; color:#075985; }
-        .empty { color:#888; padding:8px; }
+        body {{ font-family: -apple-system, sans-serif; }}
+        h2 {{ color: {PALETTE['ink']}; margin-top: 14px; margin-bottom: 6px; }}
+        h3 {{ color: {PALETTE['ink_soft']}; margin-top: 12px; margin-bottom: 4px; }}
+        h4 {{ color: {PALETTE['ink_soft']}; margin: 8px 0 4px; font-size: 13px; }}
+        .chapter-block {{ background:{PALETTE['surface_soft']}; border:1px solid {PALETTE['border']};
+                         border-radius:6px; padding:10px 12px; margin:10px 0; }}
+        .chapter-title {{ font-weight:600; color:{PALETTE['ink']}; font-size:14px; }}
+        .chapter-meta {{ color:{PALETTE['ink_faint']}; font-size:11px; }}
+        .summary {{ color:{PALETTE['ink']}; margin:6px 0; }}
+        .narrative {{ color:{PALETTE['ink']}; margin:8px 0;
+                     padding:10px; background:{PALETTE['surface']}; border-left:3px solid {PALETTE['primary']};
+                     border-radius:4px; white-space:pre-wrap; }}
+        .findings, .suggestions {{ margin:6px 0; }}
+        .findings li {{ color:{PALETTE['error_ink']}; margin:2px 0; }}
+        .findings li.ok {{ color:{PALETTE['success_ink']}; }}
+        .suggestions li {{ color:{PALETTE['info_ink']}; margin:2px 0; }}
+        .metric-table {{ font-size:12px; border-collapse:collapse; margin:6px 0; }}
+        .metric-table td {{ padding:2px 8px; border-bottom:1px solid {PALETTE['surface_muted']}; }}
+        .metric-table td:first-child {{ color:{PALETTE['ink_faint']}; }}
+        .metric-table td:last-child {{ color:{PALETTE['ink']}; font-weight:500; }}
+        .badge {{ display:inline-block; padding:2px 8px; border-radius:10px;
+                 font-size:11px; font-weight:600; margin-right:6px; }}
+        .badge-llm {{ background:{PALETTE['violet_tint']}; color:{PALETTE['violet_ink']}; }}
+        .badge-dash {{ background:{PALETTE['warning_tint']}; color:{PALETTE['warning_ink']}; }}
+        .badge-genre {{ background:{PALETTE['info_tint']}; color:{PALETTE['info_ink']}; }}
+        .empty {{ color:{PALETTE['ink_faint']}; padding:8px; }}
     </style>
     """
 
@@ -1869,7 +1811,7 @@ class GraderWidget(QWidget):
         from src.ui.overdescription_panel import flag_html
         if not hasattr(self, "_overdesc_links"):
             self._overdesc_links = {}
-        parts = ["<p style='color:#555'>Statements that tell the reader how something is "
+        parts = [f"<p style='color:{PALETTE['ink_soft']}'>Statements that tell the reader how something is "
                  "instead of showing it. Words like “too” and “almost” are clues, not proof"
                  " — open one in the editor for expansions written in your voice, and "
                  "accept the ones you like.</p>"]
@@ -1881,7 +1823,7 @@ class GraderWidget(QWidget):
                       else "word scan (no AI)")
             cleared = entry.get("cleared", 0)
             parts.append(f"<h3>{_html.escape(title)} — {len(flags)} "
-                         f"<span style='color:#666;font-weight:normal;font-size:11px'>"
+                         f"<span style='color:{PALETTE['ink_faint']};font-weight:normal;font-size:11px'>"
                          f"({source}{f'; {cleared} cleared as fine' if cleared else ''})"
                          f"</span></h3>")
             if not flags:
@@ -1894,14 +1836,14 @@ class GraderWidget(QWidget):
                     k = len(self._overdesc_links)
                     self._overdesc_links[k] = (entry.get("id", ""), title, f.text, f.start)
                     link = f" <a href='overdesc:{k}'>Expand in the editor →</a>"
-                hints = "".join(f"<li style='color:#555'>{_html.escape(h)}</li>"
+                hints = "".join(f"<li style='color:{PALETTE['ink_soft']}'>{_html.escape(h)}</li>"
                                 for h in f.hints)
                 trims = "".join(
-                    f"<li style='color:#555'>Or cut the qualifiers: "
+                    f"<li style='color:{PALETTE['ink_soft']}'>Or cut the qualifiers: "
                     f"“{_html.escape(x.text)}”</li>" for x in f.expansions if not x.by_ai)
-                ai = " <span style='color:#7c3aed'>· AI</span>" if f.source in ("ai", "both") \
+                ai = f" <span style='color:{PALETTE['violet_ink']}'>· AI</span>" if f.source in ("ai", "both") \
                     else ""
-                rows.append(f"<li><span style='background:#fde68a'>{flag_html(f)}</span>{ai}"
+                rows.append(f"<li><span style='background:{PALETTE['warning_border']}'>{flag_html(f)}</span>{ai}"
                             f"<br><small>{_html.escape(f.reason)}</small>{link}"
                             f"<ul>{hints}{trims}</ul></li>")
             parts.append("<ul>" + "".join(rows) + "</ul>")
@@ -2067,14 +2009,14 @@ class GraderWidget(QWidget):
         lines.append(
             f"<h2>Critique Summary</h2>"
             f"<p>{mode_badge}{genre_badge}"
-            f"<span style='color:#6b7280; font-size:11px;'>"
+            f"<span style='color:{PALETTE['ink_faint']}; font-size:11px;'>"
             f"{n_chapters} chapter{'s' if n_chapters != 1 else ''}, "
             f"{total_words:,} words</span></p>"
         )
         if getattr(report, "scope_label", ""):
             lines.append(f"<p><b>Scope:</b> {self._escape_html(report.scope_label)}</p>")
         lines.append(
-            f"<p style='color:#4b5563;'>"
+            f"<p style='color:{PALETTE['ink_soft']};'>"
             f"<em>{report.genre.notes}</em></p>")
         if report.overall_summary:
             lines.append(
@@ -2084,10 +2026,10 @@ class GraderWidget(QWidget):
         from src.data.critique_history import format_progress_markdown
         progress_md = format_progress_markdown(getattr(report, "progress", None))
         if progress_md:
-            lines.append(f"<div class='narrative' style='border-left-color:#059669;'>"
+            lines.append(f"<div class='narrative' style='border-left-color:{PALETTE['success_ink']};'>"
                          f"{self._render_markdown(progress_md)}</div>")
         elif getattr(report, "style_stats", None):
-            lines.append("<p style='color:#6b7280; font-size:11px;'>First critique of this "
+            lines.append(f"<p style='color:{PALETTE['ink_faint']}; font-size:11px;'>First critique of this "
                          "scope — the next run will show what changed.</p>")
         # Per-chapter rollup
         for c in report.chapters:
@@ -2136,7 +2078,7 @@ class GraderWidget(QWidget):
         title = self.REPORT_TAB_LABELS.get(rt, rt.value.title())
         lines.append(
             f"<h2>{title} — {report.genre.name}</h2>"
-            f"<p style='color:#6b7280; font-size:11px;'>"
+            f"<p style='color:{PALETTE['ink_faint']}; font-size:11px;'>"
             f"{len(sections)} chapter section(s).</p>")
         for s in sections:
             lines.append(self._format_section_html(s))
@@ -2157,7 +2099,7 @@ class GraderWidget(QWidget):
     def _item_links(self, uid: str, list_idx: int, item_idx: int, item: str) -> str:
         current = self._item_ratings.get(uid, {}).get(item, "")
         if current:
-            return (f" <span style='color:#6b7280;font-size:11px'>"
+            return (f" <span style='color:{PALETTE['ink_faint']};font-size:11px'>"
                     f"[rated {current}]</span>")
         base = f"rate-item:{uid}:{list_idx}:{item_idx}"
         return (f" <a href='{base}:good' title='Good finding — save for training'>👍</a>"

@@ -6,9 +6,11 @@ manuscript format as his sample manuscript shows it
 taken from the common standard; ``docs/publishing/export_checklist.md``
 says which is which. An agent's or publisher's own guidelines override.
 
-* **Title page**, no header: the author's name at the top left (the app
-  holds no address, phone or email), the title about halfway down with
-  "A Novel by …" under it, and "about N words" near the bottom.
+* **Title page**, no header: at the top left the writer's real name,
+  address, phone and email (single-spaced; from ``writer_contact``, the
+  manuscript's author when no name is set; empty fields left out), the
+  title about halfway down with "A Novel by <byline>" under it (the pen
+  name, else the name), and "about N words" near the bottom.
 * **Every text page** has a header at the right: "Surname / Title / N",
   numbered from 1 on the first page of text.
 * **Body:** Times New Roman 12 point, double-spaced, 1-inch margins, the
@@ -29,7 +31,7 @@ Reads the manuscript only; writes only the file it is given.
 from __future__ import annotations
 
 import re
-from typing import Any, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional
 
 from docx import Document
 from docx.enum.section import WD_SECTION
@@ -165,12 +167,19 @@ def _body(doc, content: str, heading_lines: Iterable[str]) -> None:
                 run.italic = True
 
 
-def write(manuscript: Any, output_path: str, kind: str = "Novel") -> bool:
-    """Write ``manuscript`` (a ``Manuscript``) in standard manuscript format."""
+def write(manuscript: Any, output_path: str, kind: str = "Novel",
+          contact: Optional[Dict[str, str]] = None) -> bool:
+    """Write ``manuscript`` (a ``Manuscript``) in standard manuscript format.
+    ``contact`` is the writer's details (``writer_contact.load()`` when not
+    given)."""
+    from src.data import writer_contact
+    if contact is None:
+        contact = writer_contact.load()
     doc = Document()
     _style(doc)
     title = (getattr(manuscript, "title", "") or "Untitled").strip()
-    author = (getattr(manuscript, "author", "") or "").strip()
+    author = writer_contact.byline(getattr(manuscript, "author", "") or "", contact)
+    block = writer_contact.contact_block(getattr(manuscript, "author", "") or "", contact)
     chapters = list(getattr(manuscript, "chapters", None) or [])
     # Counted from the text (the stored total can be out of date).
     from src.utils.markdown_editor import strip_markdown
@@ -180,9 +189,13 @@ def write(manuscript: Any, output_path: str, kind: str = "Novel") -> bool:
     # Title page (its own section: no header, not numbered).
     first = doc.sections[0]
     _margins(first)
-    if author:
-        _plain(doc, author)
-    _plain(doc, title, align=WD_ALIGN_PARAGRAPH.CENTER, before=TITLE_DROP)
+    for line in block:
+        p = _plain(doc, line)
+        if len(block) > 1:                    # Shunn's contact block is single-spaced
+            p.paragraph_format.line_spacing = 1.0
+    # The title stays about halfway down however long the block is.
+    drop = TITLE_DROP if len(block) <= 1 else max(Inches(1), TITLE_DROP - Pt(12) * (len(block) - 1))
+    _plain(doc, title, align=WD_ALIGN_PARAGRAPH.CENTER, before=drop)
     if author:
         _plain(doc, f"A {kind} by {author}", align=WD_ALIGN_PARAGRAPH.CENTER)
     _plain(doc, approximate_words(words), align=WD_ALIGN_PARAGRAPH.CENTER, before=WORDS_DROP)
