@@ -21,6 +21,7 @@ from src.ai.chapter_analysis_agent import (
     CritiqueOrchestrator,
 )
 from src.ui.rating_bar import RatingBar
+from src.ui import notify  # quiet messages (D.9)
 from src.config.ai_config import get_ai_config
 from src.ai.craft_explanations import CRAFT_EXPLANATIONS
 
@@ -2391,7 +2392,7 @@ class GraderWidget(QWidget):
                     (f"[{shown}] {pretty} ({c.get('type', '?')})",
                      ct, c["id"]))
         if not all_entries:
-            QMessageBox.information(
+            notify.empty(
                 self, "No Saved Critiques",
                 "No saved critiques found for this project.")
             return
@@ -2505,9 +2506,9 @@ class GraderWidget(QWidget):
         try:
             with open(file_path, 'w', encoding='utf-8') as f:
                 f.write(self._format_report_markdown(self._last_report))
-            QMessageBox.information(
+            notify.done(
                 self, "Export Complete",
-                f"Critique exported to:\n{file_path}")
+                f"Critique exported to:\n{file_path}", path=file_path)
         except Exception as e:
             QMessageBox.critical(
                 self, "Export Failed",

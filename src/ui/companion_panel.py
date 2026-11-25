@@ -302,9 +302,9 @@ class CompanionPanel(QWidget):
         return section.body_layout
 
     def _apply_collapsed(self) -> None:
-        from src.data import companion_state as cs
-        closed = cs.collapsed_sections(self.project) if self.project is not None \
-            else set(cs.DEFAULT_COLLAPSED)
+        from src.ui import companion_stage_sections                      # D.7
+        closed = companion_stage_sections.closed(self.project, getattr(self, "_chapter", None),
+                                                 self.sections)
         for key, section in self.sections.items():
             section.set_open(key not in closed)
 
@@ -337,6 +337,7 @@ class CompanionPanel(QWidget):
                                    f"<span style='color:#6b7280;font-weight:normal;"
                                    f"font-size:10px'> · {words:,} words</span>"
                                    + self._stage_html(chapter))
+        self._apply_collapsed()                     # D.7: sections that fit its stage
 
     # ── The chapter's stage (3.1) ────────────────────────────────────
 

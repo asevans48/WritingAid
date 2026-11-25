@@ -1028,6 +1028,7 @@ class ErrorCard(QWidget):
             self._action(actions, "Add to dictionary", self._add_word)
         from src.ui import fix_all; fix_all.add_to_card(self, actions, error)   # 3.4
         self._action(actions, "Ignore", self._ignore)
+        from src.ui import write_toolbar; write_toolbar.fold_card_row(self, actions)   # D.7
         actions.addStretch()
         self._layout.addLayout(actions)
 

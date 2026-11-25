@@ -117,12 +117,29 @@ def collapsed_sections(project: Any) -> set:
     return set(ui.get("collapsed") or [])
 
 
+ALL_TOUCHED = "*"
+
+
+def touched_sections(project: Any) -> set:
+    """Sections the writer opened or closed by hand (D.7). A file from
+    before D.7 that already holds section states counts every section as
+    set by hand ({"*"}), so nothing the writer chose ever moves."""
+    ui = load(project).get("ui", {}) if project is not None else {}
+    if "touched" in ui:
+        return set(ui.get("touched") or [])
+    return {ALL_TOUCHED} if "collapsed" in ui else set()
+
+
 def set_section_collapsed(project: Any, key: str, collapsed: bool) -> None:
     if project is None:
         return
     data = load(project)
     ui = data.setdefault("ui", {})
+    if "touched" not in ui:
+        ui["touched"] = [ALL_TOUCHED] if "collapsed" in ui else []
     keys = set(ui.get("collapsed", DEFAULT_COLLAPSED))
     (keys.add if collapsed else keys.discard)(key)
     ui["collapsed"] = sorted(keys)
+    if key not in ui["touched"]:
+        ui["touched"] = sorted(set(ui["touched"]) | {key})
     save(project, data)

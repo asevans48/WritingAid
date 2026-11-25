@@ -2863,6 +2863,8 @@ class SettingsDialog(QDialog):
 
         writing_group.setLayout(writing_layout)
         layout.addWidget(writing_group)
+        from src.ui.notify import BoxesOption   # "Show a box for every message" (D.9)
+        self.notify_option = BoxesOption(layout, self.settings)
 
         # Rephrasing Settings
         rephrase_group = QGroupBox("Rephrasing Settings")
@@ -3953,6 +3955,7 @@ class SettingsDialog(QDialog):
             "show_craft_tips": self.show_craft_tips.isChecked(),
             "enable_spell_check": self.enable_spell_check.isChecked(),
             **self.spelling_options.values(),
+            **self.notify_option.values(),
             "enable_grammar_check_editor": self.enable_grammar_check_editor.isChecked(),
             "enable_overuse_check": self.enable_overuse_check.isChecked(),
             "overuse_threshold": self.overuse_threshold_spin.value(),

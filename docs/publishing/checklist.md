@@ -17,13 +17,12 @@ and each brief's *When you finish* say the same):
 
 The writer ticks sections 1 to 3. A session never ticks those for them.
 
-**Where things stand** (24 November, evening): phase 3 (3.1 to 3.4), D.3, 2.5
-and 0.5 are **committed** (7e48893). R.7, D.1, 9.2 and 7.1 are built and
-**not committed**. Tests: 1,282 pass, 1 fails on purpose: the screen
-harness's right-click counts (22 → 26, 12 → 15) wait for your decision in section 3.
-(The 4 "old failures" were the test setup hiding the WordNet dictionary;
-fixed.) The crash log has three app starts since the crash fix and no
-crash recorded. Nothing in section 1 has been ticked yet.
+**Where things stand** (24 November, evening): everything up to D.1's
+right-click change is **committed** (206300a). D.7 is built and **not
+committed**. D.9's first session (49 message boxes made quiet) is built
+and **not committed** either. Tests: 1,309 pass, 1 fails on purpose: the screen harness's
+counts (right-click 22 → 26 and 12 → 15; Write's menu items 40 → 48) wait
+for your decision in section 3. Nothing in section 1 has been ticked yet.
 
 ## 1. Try what is built
 
@@ -117,10 +116,32 @@ Do this in the app, on a real project. Restart the app first.
       marked with a line of *** (or * * *, #) or two blank lines; say how
       you mark them and the splitter can learn it.
 
+**Show less at once (D.7)**
+- [ ] Write: the novella buttons are one "Novellas ▾"; the manuscript-draft
+      ＋, 🗑 and ↗ are one "Drafts ▾" beside "Editing:"; 📝 adds an
+      annotation and its arrow lists them. Ctrl+Shift+N still adds one.
+- [ ] Hover a flagged word: fixes, the Fix-all box and Ignore in view;
+      "More ▾" shows Ask, Suggest in context and See all on the card.
+- [ ] Set a chapter to Copyedit: the Companion opens "Your style sheet" and
+      closes Reader's eye and Story memory. Open one by hand: it stays open
+      when you come back to the chapter.
+- [ ] File ▸ Drafts holds the four items the Drafts menu had.
+
+**Fewer interruptions (D.9, first session: Write, Companion, Critique, main window)**
+- [ ] Right-click a blank line ▸ More ▸ … or press Rephrase with nothing
+      selected: "Select some text first" appears at the bottom of the
+      window, no box to close.
+- [ ] Export a chapter or the manuscript: the bottom line says where, with
+      **Show file** beside it (opens Finder at the file).
+- [ ] Help ▸ Recent messages lists every quiet message of the session.
+- [ ] Settings ▸ Features ▸ Messages ▸ "Show a box for every message" on:
+      the boxes come back. Off again: quiet.
+- [ ] Anything about deleting, moving, replacing or an error still opens a
+      box (for example Drafts ▾ ▸ Drop this draft).
+
 **When you are happy**
 Already committed by you: phase 3, D.3, 2.5 and 0.5 (7e48893).
-- [ ] Commit this session's pieces. Suggested split: R.7 with the test fix
-      in `tests/conftest.py`; D.1; 9.2; 7.1; the documents.
+- [ ] Commit D.7 and D.9's first session.
 - [ ] For anything you reject, untick it in the README tracker and write why
       under the piece's *Review notes*.
 
@@ -155,18 +176,23 @@ Write each answer in the README under *Decisions*, or tell the session.
 - [ ] **Still open from before:** 2 (what is left out of parity), 3 (the
       four-in-five quality target), 5 (voice groups), 6 (whether you want
       P.1).
-- [ ] **Right-click count (D.1).** The harness counts every item in the
-      right-click menu. With a selection it is 26 (baseline 22); without one,
-      15 (baseline 12). The top levels are 9 (was 11) and 6 (was 6). The rise
-      is:
-      - entries the old menu meant to show but never did (Cut, Copy,
-        Look Up "…", Find Similar);
-      - the group headings (✨ Improve this, More);
-      - Rephrase, Suggestions and Overly descriptive? now available without
-        a selection, for the sentence you right-click.
+- [ ] **The new counts (D.1, D.7).** The harness counts every menu item as
+      clutter. What changed:
 
-      Agree the new figures and a session updates `screens_baseline.json`,
-      which makes the one failing test pass.
+      | Menu or screen | Before | Now | Baseline |
+      |---|---|---|---|
+      | Right-click, with a selection | 22 | 26 | 22 |
+      | Right-click, without one | 12 | 15 | 12 |
+      | Write, visible buttons | 24 | 19 | 24 |
+      | Write, items behind menu buttons | 40 | 48 | 29 |
+
+      - The top levels of the right-click menus are 9 (was 11) and 6.
+      - The right-click rise is entries that were hidden by a bug, the two
+        group headings, and Improve without a selection.
+      - Write's 8 new menu items are the 8 buttons now in Novellas ▾,
+        Drafts ▾ and 📝 ▾.
+      - Agree the new figures and a session updates `screens_baseline.json`,
+        which makes the one failing test pass.
 - [ ] **Contact details for the title page (9.2).** Standard manuscript format
       puts your address, phone and email under your name. The app has nowhere
       to keep them. Add a place (Publishing tab), or keep adding them by hand?
@@ -175,8 +201,21 @@ Write each answer in the README under *Decisions*, or tell the session.
       projects is set up that way). Want a warning when saving a project into
       a folder that already holds another project file? That would be a
       small piece of its own, since it touches saving.
-- [ ] **For D.9:** its first session lists every message and whether it
-      stays a box, before changing any. Read that list when it arrives.
+- [ ] **D.9: did a quiet message go somewhere you'd rather keep a box?**
+      You said you'd likely have notes once you see it. Each moved message
+      is one word to move back (``notify.done``/``notify.empty`` →
+      ``QMessageBox.information``); name it under D.9's *Review notes*. Also
+      still open: "Draft #N saved" and "Created draft …" stay boxes unless
+      you say move them.
+- *(Answered 24 Nov: you said go; left here for reference.)* **D.9's list has arrived.** Read the table in
+      [D.9's Outcome](pieces/48e-D.9-fewer-interruptions.md#outcome). It
+      sorts 68 message boxes:
+      - 9 "done" messages become a status-bar line;
+      - 40 "nothing to do" messages become a quiet line;
+      - 19 stay boxes.
+
+      Two of the boxes could also move if you agree: "Draft #N saved" and
+      "Created draft …". Mark changes under its *Review notes* and say go.
 
 ## 4. For every piece from here on
 
@@ -202,8 +241,8 @@ The routine from the README, as a checklist:
 - [x] [R.7](pieces/22b-R.7-one-state-file-per-project.md) One state file per project — built, for review
 - [ ] [D.6](pieces/48b-D.6-retire-the-trial-screens.md) Retire the trial screens (needs decision 11)
 - [x] [D.1](pieces/44-D.1-tidy-the-right-click-menu.md) Tidy the right-click menu — built, for review
-- [ ] [D.7](pieces/48c-D.7-show-less-at-once.md) Show less at once
-- [ ] [D.9](pieces/48e-D.9-fewer-interruptions.md) Fewer interruptions
+- [x] [D.7](pieces/48c-D.7-show-less-at-once.md) Show less at once — built, for review
+- [~] [D.9](pieces/48e-D.9-fewer-interruptions.md) Fewer interruptions (first session done: 49 boxes quiet in Write, Companion, Critique and the main window; the other screens are later sessions)
 - [ ] [D.8](pieces/48d-D.8-one-look.md) One look (repeatable)
 - [ ] [D.4](pieces/49-D.4-fewer-top-level-tabs.md) Fewer top-level tabs (reads saved window layouts)
 - [ ] [D.2a](pieces/45-D.2a-one-improve-window-design.md) One Improve window: design. **Review the design before D.2b.**

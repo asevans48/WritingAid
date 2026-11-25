@@ -30,6 +30,7 @@ from src.ui.chat_widget import ChatWidget
 from src.ui.attributions_tab import AttributionsTab
 from src.ui.prose_profile_widget import ProseProfileWidget
 from src.ui.window_manager import WindowManager
+from src.ui import notify  # quiet messages (D.9)
 from src.ui.secondary_window import SecondaryWindow
 from src.ui.import_guide_dialog import ImportGuideDialog
 from src.ui.json_import_dialog import JSONImportDialog
@@ -3430,8 +3431,10 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
-        # Drafts menu
-        drafts_menu = menubar.addMenu("&Drafts")
+        # Drafts menu: a submenu of File (D.7), just above Exit; same items
+        drafts_menu = QMenu("&Drafts", self)
+        file_menu.insertMenu(exit_action, drafts_menu)
+        file_menu.insertSeparator(exit_action)
 
         save_as_draft_action = QAction("Save Current Manuscript as &New Draft...", self)
         save_as_draft_action.setToolTip(
@@ -3602,6 +3605,8 @@ class MainWindow(QMainWindow):
         import_json_action.setToolTip("Import AI-generated JSON data into your project")
         import_json_action.triggered.connect(self._show_json_import)
         help_menu.addAction(import_json_action)
+
+        notify.install_menu(help_menu, self)   # Help ▸ Recent messages (D.9)
 
         help_menu.addSeparator()
 
@@ -8025,13 +8030,13 @@ class MainWindow(QMainWindow):
         public ``add_event_from_external`` API.
         """
         if not ai_text or not ai_text.strip():
-            QMessageBox.information(
+            notify.empty(
                 self, "No AI response",
                 "Ask the AI for an event idea first, then click "
                 "+ Arc event.")
             return
         if not self.current_project:
-            QMessageBox.information(
+            notify.empty(
                 self, "No project",
                 "Open a project before adding events.")
             return
@@ -8040,7 +8045,7 @@ class MainWindow(QMainWindow):
                 and self.current_project.manuscript.chapters):
             chapters = list(self.current_project.manuscript.chapters)
         if not chapters:
-            QMessageBox.information(
+            notify.empty(
                 self, "No chapters",
                 "Create a chapter before adding events to its arc.")
             return
@@ -13969,7 +13974,7 @@ class MainWindow(QMainWindow):
     def _export_audio_book(self):
         """Export chapters as audio files."""
         if not self.current_project or not self.current_project.manuscript.chapters:
-            QMessageBox.information(self, "No Content", "No chapters to export.")
+            notify.empty(self, "No Content", "No chapters to export.")
             return
 
         # Sync current editor content to the chapter model so export
@@ -14019,10 +14024,10 @@ class MainWindow(QMainWindow):
     def _save_current_as_draft(self):
         """Snapshot the current manuscript into a new ManuscriptDraft."""
         if not self.current_project:
-            QMessageBox.information(self, "No Project", "Open a project first.")
+            notify.empty(self, "No Project", "Open a project first.")
             return
         if not self.current_project.manuscript.chapters:
-            QMessageBox.information(self, "No Chapters",
+            notify.empty(self, "No Chapters",
                                     "Write some chapters before saving a draft.")
             return
 
@@ -14042,7 +14047,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self, "Draft Created",
             f"Created draft '{draft.name}' with {len(draft.chapters)} chapters.\n\n"
-            f"Open it via Drafts > Open Draft in New Window...")
+            f"Open it via File ▸ Drafts ▸ Open Draft in New Window...")
 
         # Persist immediately so the user doesn't lose the snapshot
         try:
@@ -14053,10 +14058,10 @@ class MainWindow(QMainWindow):
     def _open_draft_window(self):
         """Open a secondary editor pointed at a draft of the user's choosing."""
         if not self.current_project:
-            QMessageBox.information(self, "No Project", "Open a project first.")
+            notify.empty(self, "No Project", "Open a project first.")
             return
         if not self.current_project.drafts:
-            QMessageBox.information(
+            notify.empty(
                 self, "No Drafts",
                 "There are no drafts yet. Use 'Save Current Manuscript as "
                 "New Draft...' to create one first.")
@@ -14112,13 +14117,13 @@ class MainWindow(QMainWindow):
              draft stays a complete manuscript.
         """
         if not self.current_project:
-            QMessageBox.information(
+            notify.empty(
                 self, "No Project", "Open a project first.")
             return
         chapters = (self.current_project.manuscript.chapters
                     if self.current_project.manuscript else [])
         if not chapters:
-            QMessageBox.information(
+            notify.empty(
                 self, "No Chapters",
                 "This project has no chapters yet — add one before "
                 "creating a checkpoint draft.")
@@ -14164,7 +14169,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         if not chapter_text.strip():
-            QMessageBox.information(
+            notify.empty(
                 self, "Empty Chapter",
                 f"Chapter '{chapter.title}' has no content to "
                 f"review.")
@@ -14237,19 +14242,19 @@ class MainWindow(QMainWindow):
             self.current_project.save_project()
         except Exception:
             pass
-        QMessageBox.information(
+        notify.done(
             self, "Checkpoint draft created",
             f"Draft <b>{draft_name}</b> created with the kept "
             f"paragraphs of Ch {chapter.number}. Open it via "
-            f"Drafts → Open Draft in New Window.")
+            f"File ▸ Drafts ▸ Open Draft in New Window.")
 
     def _manage_drafts(self):
         """Show a simple list/manage dialog for drafts (rename, delete)."""
         if not self.current_project:
-            QMessageBox.information(self, "No Project", "Open a project first.")
+            notify.empty(self, "No Project", "Open a project first.")
             return
         if not self.current_project.drafts:
-            QMessageBox.information(self, "No Drafts",
+            notify.empty(self, "No Drafts",
                                     "No drafts to manage yet.")
             return
 
@@ -14360,13 +14365,13 @@ class MainWindow(QMainWindow):
 
             if success:
                 total_chapters = len(self.current_project.manuscript.chapters)
-                QMessageBox.information(
+                notify.done(
                     self,
                     "Export Successful",
                     f"Book outline exported successfully!\n\n"
                     f"File: {file_path}\n"
                     f"Total Chapters: {total_chapters}\n"
-                    f"Chapters with Plans: {chapters_with_plans}"
+                    f"Chapters with Plans: {chapters_with_plans}", path=file_path
                 )
             else:
                 QMessageBox.critical(
@@ -14451,11 +14456,11 @@ class MainWindow(QMainWindow):
             ok = False
             print(f"[export] document export error: {e}")
         if ok:
-            QMessageBox.information(
+            notify.done(
                 self, "Export Successful",
                 f"Exported {len(chapters)} "
                 f"chapter{'s' if len(chapters) != 1 else ''} to:\n"
-                f"{file_path}")
+                f"{file_path}", path=file_path)
         else:
             QMessageBox.critical(
                 self, "Export Failed",
@@ -14514,14 +14519,14 @@ class MainWindow(QMainWindow):
 
             if success:
                 stats = exporter.get_manuscript_statistics()
-                QMessageBox.information(
+                notify.done(
                     self,
                     "Export Successful",
                     f"Manuscript exported successfully!\n\n"
                     f"File: {file_path}\n"
                     f"Chapters: {stats['total_chapters']}\n"
                     f"Words: {stats['total_words']:,}\n"
-                    f"Estimated Pages: {stats['estimated_pages']}"
+                    f"Estimated Pages: {stats['estimated_pages']}", path=file_path
                 )
             else:
                 QMessageBox.critical(
@@ -14567,13 +14572,12 @@ class MainWindow(QMainWindow):
                     file_path
                 )
 
-                QMessageBox.information(
+                notify.done(
                     self,
                     "Export Successful",
                     f"LLM context exported successfully to:\n{file_path}\n\n"
-                    f"You can now use this markdown file to provide context to LLMs."
-                )
-                self.statusBar().showMessage(f"Exported LLM context to {file_path}")
+                    f"You can now use this markdown file to provide context to LLMs.",
+                    path=file_path)
 
             except Exception as e:
                 QMessageBox.critical(

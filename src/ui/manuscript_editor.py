@@ -23,6 +23,7 @@ from src.ai.chapter_memory import ChapterMemoryManager
 from src.utils.markdown_editor import MarkdownStyle, toggle_inline_style
 from src.utils.thesaurus import get_synonyms, get_antonyms
 from src.ui.styles import SYSTEM_FONT
+from src.ui import notify  # quiet messages (D.9)
 from src.ui.ui_kit import compact_button  # narrow buttons show their symbol
 
 
@@ -398,12 +399,12 @@ class ChapterEditor(QWidget):
         annotation_action.setShortcut("Ctrl+Shift+N")
         annotation_action.triggered.connect(lambda: self._add_annotation())
         annotation_action.setToolTip("Add annotation at current line (Ctrl+Shift+N)")
-        toolbar.addAction(annotation_action)
 
         view_annotations_action = QAction("📋", self)
         view_annotations_action.triggered.connect(self._view_annotations_list)
         view_annotations_action.setToolTip("View all annotations")
-        toolbar.addAction(view_annotations_action)
+        from src.ui import write_toolbar                                  # D.7: one 📝 ▾
+        write_toolbar.annotations_button(toolbar, annotation_action, view_annotations_action)
 
         toolbar.addSeparator()
 
@@ -1648,7 +1649,7 @@ class ChapterEditor(QWidget):
         selected_text = cursor.selectedText()
 
         if not selected_text or len(selected_text.strip()) < 3:
-            QMessageBox.information(
+            notify.empty(
                 self,
                 "No Selection",
                 "Please select some text to rephrase."
@@ -1690,7 +1691,7 @@ class ChapterEditor(QWidget):
         offer three rewrites; the chosen one replaces the passage."""
         cursor = self.editor.textCursor()
         if not cursor.hasSelection() or len(cursor.selectedText().strip()) < 3:
-            QMessageBox.information(self, "No Selection",
+            notify.empty(self, "No Selection",
                                     "Highlight the text you'd like suggestions for.")
             return
         from src.ai.passage_critique import (
@@ -1720,7 +1721,7 @@ class ChapterEditor(QWidget):
         to whole sentences), with ways to expand them."""
         cursor = self.editor.textCursor()
         if not cursor.hasSelection() or len(cursor.selectedText().strip()) < 3:
-            QMessageBox.information(self, "No Selection",
+            notify.empty(self, "No Selection",
                                     "Highlight the text you'd like checked.")
             return
         from src.ai.passage_critique import expand_to_sentences, qt_to_py_index
@@ -1763,7 +1764,7 @@ class ChapterEditor(QWidget):
         selected_text = cursor.selectedText()
 
         if not selected_text or not selected_text.strip():
-            QMessageBox.information(
+            notify.empty(
                 self, "No Selection",
                 "Please select a word or phrase to find a world-appropriate replacement."
             )
@@ -1797,7 +1798,7 @@ class ChapterEditor(QWidget):
     def _request_ai_hints(self):
         """Request AI hints for improving the chapter."""
         # TODO: Integrate with AI client
-        QMessageBox.information(
+        notify.empty(
             self,
             "AI Hints",
             "AI chapter hints will be integrated soon."
@@ -1835,7 +1836,7 @@ class ChapterEditor(QWidget):
                 })
 
         if not promises and not characters:
-            QMessageBox.information(
+            notify.empty(
                 self,
                 "No Promises Defined",
                 "No story promises or characters defined.\n\n"
@@ -2500,7 +2501,7 @@ Provide 3-4 specific, actionable suggestions for improving THIS chapter's plot e
         from src.ui.enhanced_text_editor import ContextLookupDialog, QuickReferenceDialog
         characters = self.editor.get_character_list_callback()
         if not characters:
-            QMessageBox.information(self, "No Characters", "No characters defined in your project yet.")
+            notify.empty(self, "No Characters", "No characters defined in your project yet.")
             return
 
         dialog = QuickReferenceDialog(characters, "Character", self)
@@ -2519,7 +2520,7 @@ Provide 3-4 specific, actionable suggestions for improving THIS chapter's plot e
         from src.ui.enhanced_text_editor import ContextLookupDialog, QuickReferenceDialog
         sections = self.editor.get_worldbuilding_sections_callback()
         if not sections:
-            QMessageBox.information(self, "No Worldbuilding", "No worldbuilding sections defined yet.")
+            notify.empty(self, "No Worldbuilding", "No worldbuilding sections defined yet.")
             return
 
         dialog = QuickReferenceDialog(sections, "Worldbuilding Section", self)
@@ -2547,7 +2548,7 @@ Provide 3-4 specific, actionable suggestions for improving THIS chapter's plot e
 
         wb = self.project.worldbuilding
         if not hasattr(wb, 'technologies') or not wb.technologies:
-            QMessageBox.information(self, "No Technologies", "No technologies defined in worldbuilding.")
+            notify.empty(self, "No Technologies", "No technologies defined in worldbuilding.")
             return
 
         tech_names = [t.name for t in wb.technologies]
@@ -3076,10 +3077,10 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
         if file_path:
             success = self.editor.export_to_docx(file_path, self.chapter.title)
             if success:
-                QMessageBox.information(
+                notify.done(
                     self,
                     "Export Successful",
-                    f"Chapter exported to: {file_path}"
+                    f"Chapter exported to: {file_path}", path=file_path
                 )
             else:
                 QMessageBox.critical(
@@ -3390,7 +3391,7 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
             text = self.editor.toPlainText()
 
         if not text.strip():
-            QMessageBox.information(self, "No Text", "No text to read aloud.")
+            notify.empty(self, "No Text", "No text to read aloud.")
             return
 
         # Guard against a rapid second click slipping a fresh reading
@@ -3430,11 +3431,11 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
             return
 
         if not self.manuscript or not self.manuscript.chapters:
-            QMessageBox.information(self, "No Chapters", "No chapters available to read.")
+            notify.empty(self, "No Chapters", "No chapters available to read.")
             return
 
         if self.editor.is_tts_speaking():
-            QMessageBox.information(
+            notify.empty(
                 self, "Already Reading",
                 "Audio is currently playing. Stop the current playback "
                 "before starting a new one.")
@@ -3459,7 +3460,7 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
                 parts.append(f"Chapter {ch.number}. {ch.title}.\n\n{text}")
 
         if not parts:
-            QMessageBox.information(self, "No Text", "The selected chapters have no text to read.")
+            notify.empty(self, "No Text", "The selected chapters have no text to read.")
             return
 
         combined = "\n\n".join(parts)
@@ -3489,7 +3490,7 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
         """Generate a TTS document for this chapter."""
         text = self.editor.toPlainText()
         if not text.strip():
-            QMessageBox.information(self, "No Content", "The chapter is empty.")
+            notify.empty(self, "No Content", "The chapter is empty.")
             return
 
         # Get chapter name for file naming
@@ -3510,7 +3511,7 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
             return
 
         if self.editor.is_tts_speaking():
-            QMessageBox.information(
+            notify.empty(
                 self, "Already Reading",
                 "Audio is currently playing. Stop the current playback "
                 "before starting a new one.")
@@ -3519,7 +3520,7 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
         # Replace paragraph separator with newline
         text = selected_text.replace('\u2029', '\n')
         if not text.strip():
-            QMessageBox.information(self, "No Text", "No text selected to read aloud.")
+            notify.empty(self, "No Text", "No text selected to read aloud.")
             return
 
         self.editor.speak_text(text)
@@ -3529,7 +3530,7 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
         # Replace paragraph separator with newline
         text = selected_text.replace('\u2029', '\n')
         if not text.strip():
-            QMessageBox.information(self, "No Selection", "No text selected.")
+            notify.empty(self, "No Selection", "No text selected.")
             return
 
         # Show the TTS document generator dialog with selection
@@ -3894,6 +3895,7 @@ class ManuscriptEditor(QWidget):
         header_layout.addWidget(self.popout_draft_btn)
 
         layout.addLayout(header_layout)
+        from src.ui import write_toolbar; write_toolbar.install(self)     # D.7: Novellas ▾, Drafts ▾
 
         # Splitter for chapter list and editor
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -4336,7 +4338,7 @@ class ManuscriptEditor(QWidget):
         """Rename selected chapter."""
         current_item = self.chapter_list.currentItem()
         if not current_item:
-            QMessageBox.information(
+            notify.empty(
                 self,
                 "No Selection",
                 "Please select a chapter to rename."
@@ -4461,7 +4463,7 @@ class ManuscriptEditor(QWidget):
         repaints after the bulk delete.
         """
         if not self.manuscript or not self.manuscript.chapters:
-            QMessageBox.information(
+            notify.empty(
                 self, "No Chapters",
                 "There are no chapters to cut.")
             return
@@ -5179,7 +5181,7 @@ class ManuscriptEditor(QWidget):
             return False
         main = self.project.get_main_manuscript()
         if not main.chapters:
-            QMessageBox.information(self, "Nothing to Move",
+            notify.empty(self, "Nothing to Move",
                                     "The main manuscript has no chapters.")
             return False
         named = self._ask_novella_name_and_description(
@@ -5248,7 +5250,7 @@ class ManuscriptEditor(QWidget):
             return
         main = self.project.get_main_manuscript()
         if not main.chapters:
-            QMessageBox.information(self, "Nothing to Move",
+            notify.empty(self, "Nothing to Move",
                                     "The main manuscript has no chapters.")
             return
         if not self.project.subprojects:
@@ -5275,7 +5277,7 @@ class ManuscriptEditor(QWidget):
         if not self.project:
             return
         if not self.project.subprojects:
-            QMessageBox.information(self, "No Novellas",
+            notify.empty(self, "No Novellas",
                                     "This project has no novellas to drop.")
             return
         sp_id = self.project.active_subproject_id
@@ -5598,7 +5600,7 @@ class ManuscriptEditor(QWidget):
         """
         from PyQt6.QtWidgets import QInputDialog, QMessageBox
         if not self.project or not self.project.manuscript.chapters:
-            QMessageBox.information(
+            notify.empty(
                 self, "No Content",
                 "Add some chapters before saving a draft.")
             return
@@ -5642,7 +5644,7 @@ class ManuscriptEditor(QWidget):
 
         source_name = (self._active_draft.name
                        if self._active_draft else "the main manuscript")
-        QMessageBox.information(
+        notify.done(
             self, "Draft Created",
             f"'{draft.name}' created with {len(draft.chapters)} chapters "
             f"(snapshotted from {source_name}).\n"
@@ -5664,10 +5666,10 @@ class ManuscriptEditor(QWidget):
         if not self.project:
             return
         if not self._active_draft:
-            QMessageBox.information(
+            notify.empty(
                 self, "No Draft Selected",
-                "Switch the 'Editing:' dropdown to a draft, then click 🗑 "
-                "to drop it.")
+                "Switch the 'Editing:' dropdown to a draft, then choose "
+                "Drafts ▾ ▸ Drop this draft.")
             return
         draft = self._active_draft
 
@@ -5727,10 +5729,10 @@ class ManuscriptEditor(QWidget):
         if checked:
             # Need at least one draft to show in the side panel
             if not self._scoped_drafts():
-                QMessageBox.information(
+                notify.empty(
                     self, "No Drafts",
-                    "Create a draft first (＋ button) so there's something "
-                    "to compare against.")
+                    "Create a draft first (Drafts ▾ ▸ Save the manuscript as a "
+                    "new draft) so there's something to compare against.")
                 self.compare_drafts_btn.setChecked(False)
                 return
             self._show_split_panel()
@@ -5789,9 +5791,9 @@ class ManuscriptEditor(QWidget):
             return
         drafts = self._scoped_drafts()
         if not drafts:
-            QMessageBox.information(
+            notify.empty(
                 self, "No Drafts",
-                "Create a draft first by clicking the ＋ button.")
+                "Create a draft first: Drafts ▾ ▸ Save the manuscript as a new draft.")
             return
         # Prefer a draft that's NOT the currently active one
         options = [d for d in drafts if
@@ -6200,7 +6202,7 @@ class ProseAnalysisDialog(QDialog):
         text = self._results.toPlainText()
         if text:
             QApplication.clipboard().setText(text)
-            QMessageBox.information(self, "Copied", "Analysis copied to clipboard.")
+            notify.done(self, "Copied", "Analysis copied to clipboard.")
 
 
 class PromiseCheckDialog(QDialog):

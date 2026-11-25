@@ -386,9 +386,9 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 - [ ] [D.2c](pieces/47-D.2c-one-improve-window-rephrase-joins.md) One Improve window: Rephrase joins (M)
 - [x] [D.3](pieces/48-D.3-one-issues-list-in-the-side-panel.md) One issues list in the side panel (M, after 3.2) — built; the Style tab stays until D.6
 - [ ] [D.6](pieces/48b-D.6-retire-the-trial-screens.md) Retire the trial screens, and bring the counts back down (S, added 24 Nov; after you have used 3.2, D.3 and 2.5)
-- [ ] [D.7](pieces/48c-D.7-show-less-at-once.md) Show less at once: toolbar, hover card, Companion sections, Drafts into File (M, added 24 Nov)
+- [x] [D.7](pieces/48c-D.7-show-less-at-once.md) Show less at once: toolbar, hover card, Companion sections, Drafts into File (M, added 24 Nov) — built, for review
 - [ ] [D.8](pieces/48d-D.8-one-look.md) One look: the same buttons, colours and spacing everywhere (M, repeatable, added 24 Nov)
-- [ ] [D.9](pieces/48e-D.9-fewer-interruptions.md) Fewer interruptions: messages that do not need a click (M, repeatable, added 24 Nov)
+- [~] [D.9](pieces/48e-D.9-fewer-interruptions.md) Fewer interruptions: messages that do not need a click (M, repeatable, added 24 Nov) — first session done (24 Nov): 49 of the 68 boxes in Write, the Companion, the Critique and the main window are quiet; the rest of `src/ui` is later sessions
 - [ ] [D.4](pieces/49-D.4-fewer-top-level-tabs.md) Fewer top-level tabs (M, after 0.2)
 - [ ] [D.5](pieces/49b-D.5-analyses-run-as-critique-reports.md) Analyses run as Critique reports (M, after 2.1; added in 0.2)
 
@@ -435,9 +435,9 @@ plus these:
 | [D.3](pieces/48-D.3-one-issues-list-in-the-side-panel.md) | One issues list in the side panel | Built; old Style tab still there |
 | [D.6](pieces/48b-D.6-retire-the-trial-screens.md) | Removes the old screens kept on trial; brings the counts under the baseline | Waiting for you |
 | [D.1](pieces/44-D.1-tidy-the-right-click-menu.md) | A short right-click menu (11 → 9 with a selection); flag fixes back in the Write tab | Built, for review |
-| [D.7](pieces/48c-D.7-show-less-at-once.md) | Write screen 24 buttons to 18, grouped by row; a shorter hover card; the Companion opens what fits the stage; Drafts into File | Not started |
+| [D.7](pieces/48c-D.7-show-less-at-once.md) | Write screen 24 buttons to 19, grouped by row; a shorter hover card; the Companion opens what fits the stage; Drafts into File | Built, for review |
 | [D.8](pieces/48d-D.8-one-look.md) | One main button a screen, one set of colours, one spacing (1,014 inline styles today) | Not started |
-| [D.9](pieces/48e-D.9-fewer-interruptions.md) | Messages that need no answer stop opening a box (329 today) | Not started |
+| [D.9](pieces/48e-D.9-fewer-interruptions.md) | Messages that need no answer stop opening a box (329 today) | First session done: 49 quiet |
 | [D.2a–c](pieces/45-D.2a-one-improve-window-design.md) | Three help windows become one | Not started |
 | [D.4](pieces/49-D.4-fewer-top-level-tabs.md) | Ten top-level tabs become five; one way to detach a screen, and the "⧉ Own window" button goes | Not started |
 | [D.5](pieces/49b-D.5-analyses-run-as-critique-reports.md) | Six analysis windows become Critique reports | Not started |
