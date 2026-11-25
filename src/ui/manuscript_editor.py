@@ -1791,188 +1791,8 @@ class ChapterEditor(QWidget):
 
     def _show_context_menu(self, position):
         """Show custom context menu with annotation option."""
-        # Get cursor at click position
-        cursor = self.editor.cursorForPosition(position)
-        line_number = cursor.blockNumber() + 1
-
-        # Create context menu
-        menu = QMenu(self.editor)
-
-        # Add annotation action
-        add_annotation_action = menu.addAction("📝 Add Annotation")
-        add_annotation_action.triggered.connect(lambda: self._add_annotation(line_number))
-
-        # Check if there are annotations on this line
-        line_annotations = [a for a in self.chapter.annotations if a.line_number == line_number]
-
-        if line_annotations:
-            view_annotations_action = menu.addAction(f"📋 View Annotations ({len(line_annotations)})")
-            view_annotations_action.triggered.connect(lambda: self._on_margin_clicked(line_number))
-
-        menu.addSeparator()
-
-        # Standard edit actions
-        undo_action = menu.addAction("Undo")
-        undo_action.triggered.connect(self.editor.undo)
-        undo_action.setEnabled(self.editor.document().isUndoAvailable())
-
-        redo_action = menu.addAction("Redo")
-        redo_action.triggered.connect(self.editor.redo)
-        redo_action.setEnabled(self.editor.document().isRedoAvailable())
-
-        menu.addSeparator()
-
-        # Copy/Paste actions
-        if cursor.hasSelection():
-            cut_action = menu.addAction("Cut")
-            cut_action.triggered.connect(self.editor.cut)
-
-            copy_action = menu.addAction("Copy")
-            copy_action.triggered.connect(self.editor.copy)
-
-        paste_action = menu.addAction("Paste")
-        paste_action.triggered.connect(self.editor.paste)
-
-        menu.addSeparator()
-
-        # Context lookup menu
-        lookup_menu = menu.addMenu("Look Up Context")
-
-        # Get selected text
-        selected_text = cursor.selectedText()
-
-        if selected_text:
-            # Lookup selected text
-            lookup_selected = lookup_menu.addAction(f'Look Up "{selected_text[:30]}..."')
-            lookup_selected.triggered.connect(lambda: self._lookup_selected_text(selected_text))
-
-            # Find similar content (semantic search)
-            find_similar = lookup_menu.addAction(f'Find Similar Content')
-            find_similar.triggered.connect(lambda: self._find_similar_content(selected_text))
-
-            lookup_menu.addSeparator()
-
-        # Character lookup
-        character_action = lookup_menu.addAction("Character Reference")
-        character_action.triggered.connect(self._lookup_character)
-
-        # Worldbuilding lookup
-        worldbuilding_action = lookup_menu.addAction("Worldbuilding Reference")
-        worldbuilding_action.triggered.connect(self._lookup_worldbuilding)
-
-        # Plot lookup
-        plot_action = lookup_menu.addAction("Plot Reference")
-        plot_action.triggered.connect(self._lookup_plot)
-
-        # Technology lookup
-        tech_action = lookup_menu.addAction("Technology Reference")
-        tech_action.triggered.connect(self._lookup_technology)
-
-        # Advanced search
-        lookup_menu.addSeparator()
-        advanced_search = lookup_menu.addAction("Advanced Search...")
-        advanced_search.triggered.connect(self._show_advanced_search)
-
-        # AI Rephrase option (only if text selected)
-        text_cursor = self.editor.textCursor()
-        if text_cursor.hasSelection():
-            menu.addSeparator()
-
-            # Get the selected text for thesaurus lookup
-            selected_text = text_cursor.selectedText().strip()
-
-            # Thesaurus/Synonyms submenu - only for single words (no spaces)
-            # Strip punctuation for display but keep original for replacement
-            import re
-            clean_word = re.sub(r'^[^\w]+|[^\w]+$', '', selected_text)
-
-            if clean_word and ' ' not in clean_word and len(clean_word) <= 30:
-                synonyms = get_synonyms(clean_word, max_results=12)
-                antonyms = get_antonyms(clean_word, max_results=5)
-
-                # Always show the thesaurus menu for single words
-                display_word = clean_word[:15] + "..." if len(clean_word) > 15 else clean_word
-                thesaurus_menu = menu.addMenu(f"📖 Synonyms for \"{display_word}\"")
-
-                if synonyms:
-                    for synonym in synonyms:
-                        action = thesaurus_menu.addAction(synonym)
-                        # Capture synonym in lambda
-                        action.triggered.connect(
-                            lambda checked, s=synonym: self._replace_selection_with(s)
-                        )
-
-                    if antonyms:
-                        thesaurus_menu.addSeparator()
-                        antonyms_submenu = thesaurus_menu.addMenu("Antonyms")
-                        for antonym in antonyms:
-                            action = antonyms_submenu.addAction(antonym)
-                            action.triggered.connect(
-                                lambda checked, a=antonym: self._replace_selection_with(a)
-                            )
-                else:
-                    # Show "no synonyms found" when word not in thesaurus
-                    no_syn_action = thesaurus_menu.addAction("(no synonyms found)")
-                    no_syn_action.setEnabled(False)
-
-                # AI options inside the thesaurus submenu
-                thesaurus_menu.addSeparator()
-                ai_thesaurus_action = thesaurus_menu.addAction("🤖 AI Suggestions (world-aware)...")
-                ai_thesaurus_action.triggered.connect(self._world_word_selection)
-
-            else:
-                # Multi-word selection — show AI thesaurus as top-level option
-                ai_thesaurus_action = menu.addAction("🤖 AI Thesaurus (world-aware)...")
-                ai_thesaurus_action.triggered.connect(self._world_word_selection)
-
-            rephrase_action = menu.addAction("✨ Rephrase with AI...")
-            rephrase_action.triggered.connect(self._rephrase_selection)
-            suggest_action = menu.addAction("💡 Suggestions (critique + rewrites)...")
-            suggest_action.setToolTip(
-                "Critique the highlighted sentences against your characters, world, "
-                "plot and outline, with three rewrites")
-            suggest_action.triggered.connect(self._suggest_for_selection)
-            expand_action = menu.addAction("🔍 Overly descriptive? (ways to expand)...")
-            expand_action.setToolTip(
-                "Find statements that tell instead of show (words like “too” and “almost” "
-                "are clues) and expand them in your voice")
-            expand_action.triggered.connect(self._expand_selection)
-
-            # Heading style submenu
-            heading_menu = menu.addMenu("Heading Style")
-            for level in ["Normal", "Heading 1", "Heading 2", "Heading 3"]:
-                action = heading_menu.addAction(level)
-                action.triggered.connect(lambda checked, l=level: self.editor.apply_heading(l))
-
-            # TTS options for selected text
-            menu.addSeparator()
-            tts_menu = menu.addMenu("🔊 Text to Speech")
-
-            # Capture the selected text now (not lazily in lambda)
-            selected_text = text_cursor.selectedText()
-
-            speak_selection_action = tts_menu.addAction("Read Selection Aloud")
-            speak_selection_action.triggered.connect(lambda checked, txt=selected_text: self._tts_speak_selection(txt))
-
-            generate_tts_selection = tts_menu.addAction("Generate TTS Doc from Selection...")
-            generate_tts_selection.triggered.connect(lambda checked, txt=selected_text: self._tts_generate_from_selection(txt))
-
-        # TTS options always available (for full chapter)
-        if not text_cursor.hasSelection():
-            menu.addSeparator()
-            tts_menu = menu.addMenu("🔊 Text to Speech")
-
-        speak_chapter_action = tts_menu.addAction("Read Entire Chapter")
-        speak_chapter_action.triggered.connect(self._tts_speak_chapter)
-
-        generate_tts_chapter = tts_menu.addAction("Generate TTS Doc for Chapter...")
-        generate_tts_chapter.triggered.connect(self._tts_generate_document)
-
-        stop_tts_action = tts_menu.addAction("Stop Playback")
-        stop_tts_action.triggered.connect(self._tts_stop)
-
-        # Show menu at cursor position
-        menu.exec(self.editor.mapToGlobal(position))
+        from src.ui import write_menu                     # D.1: the short menu
+        write_menu.show(self, position)
 
     def _request_ai_hints(self):
         """Request AI hints for improving the chapter."""
@@ -3225,12 +3045,16 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
         )
 
         if file_path:
+            from src.ui import import_guard                        # 9.2: ask first
+            if not import_guard.may_replace(self, self.editor.toPlainText()):
+                return
             success = self.editor.import_from_docx(file_path)
             if success:
                 QMessageBox.information(
                     self,
                     "Import Successful",
-                    "Chapter content imported from Word document."
+                    "Chapter content imported from Word document. "
+                    "Edit ▸ Undo (Ctrl+Z) puts the previous text back."
                 )
                 self.content_changed.emit()
             else:

@@ -3543,6 +3543,7 @@ class MainWindow(QMainWindow):
         export_docx_action = QAction("Export as &Word Document", self)
         export_docx_action.triggered.connect(lambda: self._export_manuscript("docx"))
         export_menu.addAction(export_docx_action)
+        from src.ui import export_route; export_route.install(self, export_menu)   # 9.2
 
         export_menu.addSeparator()
 
@@ -14506,7 +14507,8 @@ class MainWindow(QMainWindow):
             elif format_type == "barnes_noble":
                 success = exporter.export_for_barnes_noble(file_path)
             elif format_type == "publisher":
-                success = exporter.export_publisher_ready(file_path)
+                from src.ui.export_route import kind_label                # 9.2
+                success = exporter.export_publisher_ready(file_path, kind=kind_label(self.current_project))
             elif format_type == "docx":
                 success = exporter.export_to_docx(file_path)
 

@@ -1869,10 +1869,10 @@ class EnhancedTextEditor(QTextEdit):
         }
         return style_to_level.get(md_style, HeadingLevel.NORMAL)
 
-    def _show_context_menu(self, position):
-        """Show custom context menu with error handling options."""
-        menu = QMenu(self)
-
+    def add_flag_section(self, menu, position) -> bool:
+        """The flagged word's part of a right-click menu (its fixes, Ask,
+        Ignore, …), added to ``menu``. True when the click was on a flag.
+        Used by this menu and by the Write tab's (D.1)."""
         # Get cursor position for error detection
         click_cursor = self.cursorForPosition(position)
         block = click_cursor.block()
@@ -1975,6 +1975,12 @@ class EnhancedTextEditor(QTextEdit):
                 add_dict_action.triggered.connect(lambda: self._add_to_dictionary(error.word))
 
             menu.addSeparator()
+        return error is not None
+
+    def _show_context_menu(self, position):
+        """Show custom context menu with error handling options."""
+        menu = QMenu(self)
+        self.add_flag_section(menu, position)
 
         # Standard edit actions
         undo_action = QAction("Undo", self)
@@ -2348,108 +2354,21 @@ class EnhancedTextEditor(QTextEdit):
             dialog.exec()
 
     def import_from_docx(self, file_path: str) -> bool:
-        """Import content from Word document with full formatting and heading recognition."""
+        """Replace the text with a Word document's, as the editor's Markdown
+        (italics, bold and headings kept: ``docx_import``). One undo step
+        puts the old text back (9.2: it used to clear the undo history)."""
         try:
-            doc = Document(file_path)
-
-            # Clear current content
-            self.clear()
-
-            # Import paragraphs with formatting
-            cursor = self.textCursor()
-            cursor.movePosition(QTextCursor.MoveOperation.Start)
-
-            for para in doc.paragraphs:
-                # Check for heading styles
-                style_name = para.style.name if para.style else ""
-
-                block_format = QTextBlockFormat()
-                heading_level = HeadingLevel.NORMAL
-
-                # Handle heading styles from Word
-                if style_name == "Title":
-                    heading_level = HeadingLevel.TITLE
-                    style_def = self.HEADING_STYLES["Title"]
-                elif style_name.startswith("Heading"):
-                    try:
-                        level = int(style_name.split()[-1])
-                        level_map = {
-                            1: ("Heading 1", HeadingLevel.HEADING_1),
-                            2: ("Heading 2", HeadingLevel.HEADING_2),
-                            3: ("Heading 3", HeadingLevel.HEADING_3),
-                            4: ("Heading 4", HeadingLevel.HEADING_4),
-                        }
-                        style_name, heading_level = level_map.get(level, ("Normal", HeadingLevel.NORMAL))
-                        style_def = self.HEADING_STYLES.get(style_name, self.HEADING_STYLES["Normal"])
-                    except (ValueError, IndexError):
-                        style_def = self.HEADING_STYLES["Normal"]
-                else:
-                    style_def = self.HEADING_STYLES["Normal"]
-
-                # Apply heading style if it's a heading
-                if heading_level != HeadingLevel.NORMAL:
-                    font_size, bold, top_margin, bottom_margin, _ = style_def
-                    char_format = QTextCharFormat()
-                    char_format.setFontPointSize(font_size)
-                    char_format.setFontWeight(QFont.Weight.Bold if bold else QFont.Weight.Normal)
-                    block_format.setTopMargin(top_margin)
-                    block_format.setBottomMargin(bottom_margin)
-                    cursor.setBlockFormat(block_format)
-                    cursor.insertText(para.text, char_format)
-
-                    # Store heading level metadata
-                    cursor.block().setUserData(BlockData(heading_level))
-
-                    cursor.insertBlock()
-                    continue
-
-                # Handle paragraph alignment
-                if para.alignment == WD_ALIGN_PARAGRAPH.CENTER:
-                    block_format.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                    cursor.setBlockFormat(block_format)
-
-                # Process runs (formatted text segments)
-                for run in para.runs:
-                    # Create text format
-                    char_format = QTextCharFormat()
-
-                    # Font family
-                    if run.font.name:
-                        char_format.setFontFamily(run.font.name)
-
-                    # Font size
-                    if run.font.size and run.font.size.pt and run.font.size.pt > 0:
-                        char_format.setFontPointSize(run.font.size.pt)
-
-                    # Bold
-                    if run.font.bold:
-                        char_format.setFontWeight(QFont.Weight.Bold)
-
-                    # Italic
-                    if run.font.italic:
-                        char_format.setFontItalic(True)
-
-                    # Underline
-                    if run.font.underline:
-                        char_format.setFontUnderline(True)
-
-                    # Color
-                    if run.font.color and run.font.color.rgb:
-                        rgb = run.font.color.rgb
-                        color = QColor(rgb[0], rgb[1], rgb[2])
-                        char_format.setForeground(color)
-
-                    # Insert text with formatting
-                    cursor.insertText(run.text, char_format)
-
-                # New paragraph
-                cursor.insertBlock()
-
-            return True
-
+            from src.export.docx_import import docx_to_markdown
+            text = docx_to_markdown(file_path)
         except Exception as e:
             print(f"Error importing Word document: {e}")
             return False
+        cursor = QTextCursor(self.document())
+        cursor.beginEditBlock()
+        cursor.select(QTextCursor.SelectionType.Document)
+        cursor.insertText(text)
+        cursor.endEditBlock()
+        return True
 
     def export_to_docx(self, file_path: str, title: str = "") -> bool:
         """Export content to Word document with full formatting preservation.
@@ -2508,37 +2427,16 @@ class EnhancedTextEditor(QTextEdit):
     def _add_markdown_runs_to_paragraph(self, para, text: str):
         """Parse Markdown inline formatting and add runs to a Word paragraph.
 
-        Handles **bold**, *italic*, ***bold italic***, and plain text.
+        Handles **bold**, *italic*, ***bold italic***, and plain text
+        (the parsing is shared: ``markdown_editor.inline_runs``).
         """
-        # Pattern to match bold-italic, bold, or italic markers
-        pattern = r'(\*\*\*(.+?)\*\*\*|\*\*(.+?)\*\*|(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)|_(.+?)_)'
-        last_end = 0
-
-        for match in re.finditer(pattern, text):
-            # Add text before this match as plain
-            if match.start() > last_end:
-                para.add_run(text[last_end:match.start()])
-
-            # Determine which group matched
-            if match.group(2):  # ***bold italic***
-                run = para.add_run(match.group(2))
+        from src.utils.markdown_editor import inline_runs
+        for chunk, bold, italic in inline_runs(text):
+            run = para.add_run(chunk)
+            if bold:
                 run.bold = True
+            if italic:
                 run.italic = True
-            elif match.group(3):  # **bold**
-                run = para.add_run(match.group(3))
-                run.bold = True
-            elif match.group(4):  # *italic*
-                run = para.add_run(match.group(4))
-                run.italic = True
-            elif match.group(5):  # _italic_
-                run = para.add_run(match.group(5))
-                run.italic = True
-
-            last_end = match.end()
-
-        # Add remaining text
-        if last_end < len(text):
-            para.add_run(text[last_end:])
 
     def set_callbacks(
         self,

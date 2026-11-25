@@ -1,5 +1,13 @@
-"""Manuscript export functionality for various formats."""
+"""Manuscript export functionality for various formats.
 
+Chapter text is stored as the editor writes it: Markdown (``*italic*``,
+``**bold**``, ``# heading`` lines). Every format here turns that into the
+format's own italics, bold and headings, or plain text, never asterisks
+(piece 9.2). Standard manuscript format: ``standard_manuscript``.
+"""
+
+import html
+import uuid
 import zipfile
 from typing import List, Optional
 from xml.sax.saxutils import escape as _xml_escape
@@ -10,6 +18,31 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from ebooklib import epub
 
 from src.models.project import Chapter, Manuscript
+from src.utils.markdown_editor import (MarkdownStyle, get_line_style, inline_runs,
+                                       is_scene_break, strip_markdown)
+
+
+def _add_runs(paragraph, text: str) -> None:
+    """A Word paragraph's runs from the editor's Markdown."""
+    for chunk, bold, italic in inline_runs(text):
+        run = paragraph.add_run(chunk)
+        if bold:
+            run.bold = True
+        if italic:
+            run.italic = True
+
+
+def _html_runs(text: str) -> str:
+    """The editor's Markdown as escaped XHTML with <em> and <strong>."""
+    out = []
+    for chunk, bold, italic in inline_runs(text):
+        piece = html.escape(chunk, quote=False)
+        if italic:
+            piece = f"<em>{piece}</em>"
+        if bold:
+            piece = f"<strong>{piece}</strong>"
+        out.append(piece)
+    return "".join(out)
 
 
 # Office / document formats offered to the writer, in menu order.
@@ -103,7 +136,11 @@ class ManuscriptExporter:
         for i, chapter in enumerate(chapters):
             doc.add_heading(chapter.title or f"Chapter {i + 1}", 1)
             for para in _paragraphs(chapter.content):
-                doc.add_paragraph(para)
+                style, text = get_line_style(para)
+                if style != MarkdownStyle.NORMAL:
+                    doc.add_paragraph(text.strip()).alignment = WD_ALIGN_PARAGRAPH.CENTER
+                else:
+                    _add_runs(doc.add_paragraph(), para)
             if i < len(chapters) - 1:
                 doc.add_page_break()
         doc.save(output_path)
@@ -124,7 +161,7 @@ class ManuscriptExporter:
             lines.append(chapter.title or f"Chapter {i + 1}")
             lines.append("")
             for para in _paragraphs(chapter.content):
-                lines.append(para)
+                lines.append(strip_markdown(para))
                 lines.append("")
             lines.append("")
         with open(output_path, "w", encoding="utf-8") as f:
@@ -168,7 +205,16 @@ class ManuscriptExporter:
                 + esc(chapter.title or f"Chapter {i + 1}")
                 + r"\b0\fs24\par")
             for para in _paragraphs(chapter.content):
-                parts.append(esc(para) + r"\par")
+                style, text = get_line_style(para)
+                if style != MarkdownStyle.NORMAL:
+                    parts.append(r"\qc " + esc(text.strip()) + r"\par\ql")
+                    continue
+                runs = []
+                for chunk, bold, italic in inline_runs(para):
+                    on = (r"\b " if bold else "") + (r"\i " if italic else "")
+                    off = (r"\b0 " if bold else "") + (r"\i0 " if italic else "")
+                    runs.append(on + esc(chunk) + off)
+                parts.append("".join(runs) + r"\par")
             parts.append(r"\par")
         parts.append("}")
         with open(output_path, "w", encoding="ascii",
@@ -198,7 +244,7 @@ class ManuscriptExporter:
                 + '</text:h>')
             for para in _paragraphs(chapter.content):
                 body.append(
-                    '<text:p>' + _xml_escape(para) + '</text:p>')
+                    '<text:p>' + _xml_escape(strip_markdown(para)) + '</text:p>')
         content = (
             '<?xml version="1.0" encoding="UTF-8"?>'
             '<office:document-content '
@@ -236,7 +282,7 @@ class ManuscriptExporter:
         rows = [row([cell("Chapter"), cell("Words"),
                      cell("Content")])]
         for i, ch in enumerate(chapters):
-            text = "\n\n".join(_paragraphs(ch.content))
+            text = "\n\n".join(strip_markdown(p) for p in _paragraphs(ch.content))
             words = str(len((ch.content or "").split()))
             rows.append(row([
                 cell(ch.title or f"Chapter {i + 1}"),
@@ -300,53 +346,59 @@ class ManuscriptExporter:
         Export manuscript for Kindle Direct Publishing (EPUB format).
 
         KDP accepts EPUB, MOBI, and Word formats. EPUB is recommended.
+        Every chapter's text is escaped XHTML with real italics and bold;
+        scene breaks are a centered "* * *"; each chapter has its own file
+        and a table-of-contents entry; the book's identifier is stable
+        for the same title and author (9.2).
         """
         try:
             book = epub.EpubBook()
-
-            # Set metadata
-            book.set_identifier(f'id-{self.manuscript.title}')
-            book.set_title(self.manuscript.title)
+            title = self.manuscript.title or "Untitled"
+            author = self.manuscript.author or ""
+            book.set_identifier(
+                "urn:uuid:" + str(uuid.uuid5(uuid.NAMESPACE_URL,
+                                             f"writingaid:{title}:{author}")))
+            book.set_title(title)
             book.set_language('en')
+            if author:
+                book.add_author(author)
+            style = epub.EpubItem(
+                uid="style", file_name="style/book.css", media_type="text/css",
+                content=("p { text-indent: 1.5em; margin: 0; }\n"
+                         "p.first, p.break { text-indent: 0; }\n"
+                         "p.break { text-align: center; margin: 1em 0; }\n"
+                         "h1, h2 { text-align: center; }\n"))
+            book.add_item(style)
 
-            if self.manuscript.author:
-                book.add_author(self.manuscript.author)
-
-            # Create chapters
             epub_chapters = []
-
-            for chapter in self.manuscript.chapters:
-                # Create EPUB chapter
-                c = epub.EpubHtml(
-                    title=chapter.title,
-                    file_name=f'chapter_{chapter.number}.xhtml',
-                    lang='en'
-                )
-
-                # Format content
-                content = f'<h1>{chapter.title}</h1>'
-                # Convert plain text to HTML paragraphs
-                paragraphs = chapter.content.split('\n\n')
-                for para in paragraphs:
-                    if para.strip():
-                        content += f'<p>{para.strip()}</p>'
-
-                c.content = content
-
+            for i, chapter in enumerate(self.manuscript.chapters, 1):
+                heading = (chapter.title or "").strip() or f"Chapter {i}"
+                c = epub.EpubHtml(title=heading, file_name=f'chapter_{i:03d}.xhtml', lang='en')
+                c.add_item(style)
+                parts = [f'<h1>{html.escape(heading, quote=False)}</h1>']
+                first = True
+                for para in _paragraphs(chapter.content or ""):
+                    if is_scene_break(para):
+                        parts.append('<p class="break">* * *</p>')
+                        first = True
+                        continue
+                    kind, text = get_line_style(para)
+                    if kind != MarkdownStyle.NORMAL:
+                        if text.strip().lower() != heading.lower():
+                            parts.append(f'<h2>{html.escape(text.strip(), quote=False)}</h2>')
+                        first = True
+                        continue
+                    cls = ' class="first"' if first else ''
+                    parts.append(f'<p{cls}>{_html_runs(para)}</p>')
+                    first = False
+                c.content = "".join(parts)
                 book.add_item(c)
                 epub_chapters.append(c)
 
-            # Define Table of Contents
             book.toc = tuple(epub_chapters)
-
-            # Add default NCX and Nav files
             book.add_item(epub.EpubNcx())
             book.add_item(epub.EpubNav())
-
-            # Basic spine
             book.spine = ['nav'] + epub_chapters
-
-            # Write EPUB file
             epub.write_epub(output_path, book)
             return True
 
@@ -364,75 +416,18 @@ class ManuscriptExporter:
         # B&N Press uses standard EPUB format
         return self.export_for_kindle(output_path)
 
-    def export_publisher_ready(self, output_path: str) -> bool:
+    def export_publisher_ready(self, output_path: str, kind: str = "Novel") -> bool:
         """
-        Export manuscript in publisher-ready format (DOCX).
-
-        Standard manuscript format:
-        - 12pt Times New Roman
-        - Double-spaced
-        - 1-inch margins
-        - Chapter titles on new pages
-        - Page numbers
+        Export manuscript in standard manuscript format (DOCX) for agent
+        submissions: see ``standard_manuscript`` (9.2). Title page with an
+        approximate word count, a running header "Surname / Title / N",
+        12pt Times New Roman, double-spaced, 1-inch margins, half-inch
+        indents, each chapter on a new page, "#" scene breaks, real
+        italics.
         """
         try:
-            doc = Document()
-
-            # Set up standard manuscript formatting
-            style = doc.styles['Normal']
-            font = style.font
-            font.name = 'Times New Roman'
-            font.size = Pt(12)
-
-            # Set paragraph formatting
-            paragraph_format = style.paragraph_format
-            paragraph_format.line_spacing = 2.0  # Double-spaced
-            paragraph_format.space_after = Pt(0)
-
-            # Set margins (1 inch)
-            sections = doc.sections
-            for section in sections:
-                section.top_margin = Inches(1)
-                section.bottom_margin = Inches(1)
-                section.left_margin = Inches(1)
-                section.right_margin = Inches(1)
-
-            # Title page
-            title = doc.add_heading(self.manuscript.title, 0)
-            title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-
-            if self.manuscript.author:
-                author = doc.add_paragraph(f"by {self.manuscript.author}")
-                author.alignment = WD_ALIGN_PARAGRAPH.CENTER
-
-            # Word count
-            word_count = doc.add_paragraph(f"Word Count: {self.manuscript.total_word_count:,}")
-            word_count.alignment = WD_ALIGN_PARAGRAPH.CENTER
-
-            doc.add_page_break()
-
-            # Add chapters
-            for chapter in self.manuscript.chapters:
-                # Chapter title - centered
-                chapter_title = doc.add_heading(chapter.title, 1)
-                chapter_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-
-                # Chapter content - double-spaced
-                if chapter.content:
-                    # Split into paragraphs
-                    paragraphs = chapter.content.split('\n\n')
-                    for para in paragraphs:
-                        if para.strip():
-                            p = doc.add_paragraph(para.strip())
-                            # Indent first line
-                            p.paragraph_format.first_line_indent = Inches(0.5)
-
-                doc.add_page_break()
-
-            # Save document
-            doc.save(output_path)
-            return True
-
+            from src.export import standard_manuscript
+            return standard_manuscript.write(self.manuscript, output_path, kind=kind)
         except Exception as e:
             print(f"Error exporting publisher-ready manuscript: {e}")
             return False

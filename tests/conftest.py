@@ -1,6 +1,35 @@
 """Shared test fixtures."""
 
+import os
+import pwd
+from pathlib import Path
+
 import pytest
+
+
+def _share_dictionary_data() -> None:
+    """Tests run with HOME set to a scratch folder, which hides the WordNet
+    data installed in the user's real ``~/nltk_data``. That data is a
+    read-only dictionary, not the writer's work, so let the tests find it.
+    Without it the WordNet tests fail for a reason unrelated to the code."""
+    if os.environ.get("NLTK_DATA"):
+        return
+    try:
+        real_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except Exception:
+        return
+    data = real_home / "nltk_data"
+    if data.is_dir() and Path.home() != real_home:
+        os.environ["NLTK_DATA"] = str(data)
+        try:
+            import nltk
+            if str(data) not in nltk.data.path:
+                nltk.data.path.insert(0, str(data))
+        except Exception:
+            pass
+
+
+_share_dictionary_data()
 
 
 @pytest.fixture(autouse=True)

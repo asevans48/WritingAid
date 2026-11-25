@@ -218,7 +218,8 @@ def test_a_1_1_file_is_read_kept_and_copied_aside(tmp_path):
     data = json.loads(rs.readiness_path(p).read_text())
     assert data["manuscripts"]["main"]["route"] == "self" and data["extra"] == {"x": 1}
     assert data["manuscripts"]["main"]["chapters"]
-    aside = rs.readiness_path(p).with_name("readiness.before-1.2.json")
+    path = rs.readiness_path(p)
+    aside = path.with_name(path.stem + ".before-1.2.json")
     assert json.loads(aside.read_text()) == old
     assert pg.route_for(p) == "self"
 
@@ -241,7 +242,7 @@ def test_an_unreadable_file_is_set_aside_not_overwritten(tmp_path):
     path = rs.readiness_path(p)
     path.write_text("{not json")
     rd.book_report(p)
-    asides = [f for f in tmp_path.iterdir() if f.name.startswith("readiness") and f != path]
+    asides = [f for f in tmp_path.iterdir() if "readiness" in f.name and f != path]
     assert any(f.read_text() == "{not json" for f in asides)
 
 

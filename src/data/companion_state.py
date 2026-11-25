@@ -3,13 +3,15 @@
 Per chapter: when you last worked on it, how many words it had when you
 opened and when you left, and where you stopped. Per day: words written.
 Plus margin notes you dismissed (so they stay dismissed). Stored next to
-the project file (``companion_state.json``), or under
-``~/.creativeos/companion/`` for unsaved projects.
+the project file and named after it (``<project>.companion_state.json``,
+piece R.7), or under ``~/.creativeos/companion/`` for unsaved projects.
+Until a project has its own file, the folder's old shared
+``companion_state.json`` is read, and never written again
+(``state_files``).
 """
 
 from __future__ import annotations
 
-import re
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict
@@ -17,19 +19,27 @@ from typing import Any, Dict
 from src.data import safe_store
 
 
+LEGACY_NAME = "companion_state.json"     # shared by the folder, before R.7
+
+
 def state_path(project: Any) -> Path:
-    pp = getattr(project, "project_path", "") or ""
-    if pp:
-        return Path(pp).parent / "companion_state.json"
-    name = re.sub(r"[^\w-]+", "_", getattr(project, "name", "") or "untitled")
-    return Path.home() / ".creativeos" / "companion" / f"{name}.json"
+    """Where this project's companion file is written."""
+    from src.data import state_files
+    return state_files.own_path(project, "companion_state", "companion")
 
 
 def load(project: Any) -> Dict[str, Any]:
     # Missing → {}. Unreadable → set aside and the writer told, then {}
-    # (never saved over: see safe_store).
+    # (never saved over: see safe_store). The folder's old shared file is
+    # read until the project has its own, and never changed (R.7).
     try:
-        return safe_store.load(state_path(project), {}, expect=dict)
+        from src.data import state_files
+        own = state_path(project)
+        legacy = state_files.legacy_path(project, LEGACY_NAME)
+        path = state_files.read_path(own, legacy)
+        if state_files.is_legacy(path, legacy):
+            return state_files.read_legacy(path, {}, expect=dict)
+        return safe_store.load(path, {}, expect=dict)
     except Exception as e:
         print(f"[companion] could not load state: {e}")
         return {}

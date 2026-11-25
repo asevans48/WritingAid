@@ -31,7 +31,16 @@ For each piece, in tracker order:
 3. **The session ends with** the tests passing, screenshots for any piece with a
    screen, and the piece's *Outcome* section filled in: what was built, the
    names of new files and functions, and what was left out. Nothing is
-   committed.
+   committed. **It also updates three things before it stops:**
+   - the [tracker](#tracker) below (tick the piece, with a short note if it
+     is on trial or part-built);
+   - [checklist.md](checklist.md): tick the piece in its section 5, add what
+     the writer should try to section 1 as tick boxes, add any decision it
+     needs to section 3, and correct the test totals and counts at the top;
+   - the *What has changed since this brief was written* section of every
+     later brief whose assumptions this piece changed.
+   A session that cannot finish says so in *Outcome* (what is done, what is
+   not, and why) and leaves the tracker box as `[~]`.
 4. **Try it, then commit** if you are happy. The tracker is ticked by the
    session; untick it if you reject the work.
 
@@ -39,8 +48,10 @@ For each piece, in tracker order:
 
 - **One piece per session.** A fresh session carries no earlier conversation.
   Clear the session between pieces.
-- **A session reads four short files,** not the whole plan: this one, the
-  piece, the inventory, and (for screens) look and feel. It learns what earlier
+- **A session reads five short files,** not the whole plan: this one, the
+  piece (with its *What has changed* and *Build notes* sections),
+  [checklist.md](checklist.md), the inventory, and (for screens) look and
+  feel. It learns what earlier
   pieces built from their *Outcome* sections, not by searching the code.
 - **The piece names the code to read first.**
 - **Run only the piece's own tests while working,** and the full suite once at
@@ -116,6 +127,14 @@ These are the specs agreed earlier. A piece is not done unless it meets all of t
       shortcuts keep working, and tabs that can be detached into their own
       window can still be detached. Anything retired under 0.2 leaves a pointer to
       where it went for at least one release.
+    - **Updating the app.** A piece that simplifies a screen changes what is
+      shown, never what is stored. After an update, every project, settings
+      file and saved window layout from the version before opens with
+      nothing missing; settings no longer used are left in place and
+      ignored, never deleted, so the older version still finds them. Each
+      declutter piece proves it with a test that opens a project and settings
+      saved before the piece and checks the chapter text is unchanged after
+      open, save and reopen.
     - **Code.** Functions used elsewhere keep their signatures; new parameters
       are optional. Existing tests pass unchanged, or the piece explains why
       one had to change.
@@ -257,12 +276,20 @@ ways:
   - [R.4](pieces/11-R.4-one-style-analyser-not-two.md) One style analyser, not two
   - [R.5](pieces/22-R.5-take-the-revision-wiring-out-of-the-main-window.md) Take the revision wiring out of the 15,000-line main window
   - [R.6](pieces/13b-R.6-one-function-for-the-editors-flags.md) One function for the editor's flags (added by 1.2a)
-- **The declutter pieces** (D.1 to D.5) are the equivalent for screens.
+- **One more, which does change where state is stored,** and so needs your
+  decision first: [R.7](pieces/22b-R.7-one-state-file-per-project.md) One
+  state file per project, not per folder (found in 3.3).
+- **The declutter pieces** (D.1 to D.9) are the equivalent for screens. That
+  group, with the interface sweep (U.3a, U.3b), is where the interface gets
+  simpler: see [Where the interface gets simpler](#where-the-interface-gets-simpler).
 
 A general split of the main window and the settings dialog is not in the plan
 (open decision 4).
 
 ## Other documents
+
+**What to do next:** [checklist.md](checklist.md) has the order of work from
+here: what to try, what to decide, and the remaining pieces in sequence.
 
 This plan governs new work on the revision features. The other documents
 describe the app as it is:
@@ -301,6 +328,7 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 - [x] [0.2](pieces/02-0.2-map-the-screens-count-the-clutter-decide-what-me.md) Map the screens, count the clutter, decide what merges (S, no code)
 - [~] [0.3](pieces/03-0.3-safety-net-for-your-two-projects.md) Safety net for your two projects (S) — check built, both projects pass; screen check to follow
 - [x] [0.4](pieces/03b-0.4-harden-saving.md) Harden saving (M, before any piece that stores data)
+- [~] [0.5](pieces/03c-0.5-crash-log-and-safe-clicks.md) Crash log and safe clicks (S, added 24 Nov) — built; waiting to hear the scorecard crash is gone
 - [x] [U.1](pieces/04-U.1-shared-interface-parts.md) Shared interface parts (M)
 - [x] [U.2](pieces/05-U.2-screenshot-and-clutter-count-harness.md) Screenshot and clutter-count harness (S)
 - [x] [R.1](pieces/06-R.1-one-list-of-model-providers.md) One list of model providers (S)
@@ -323,13 +351,15 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 - [x] [1.7](pieces/20-1.7-model-judging-for-the-checks.md) Model judging for the checks (M)
 - [x] [1.8](pieces/21-1.8-opening-pages.md) Opening pages (S)
 - [x] [R.5](pieces/22-R.5-take-the-revision-wiring-out-of-the-main-window.md) Take the revision wiring out of the main window (M)
+- [x] [R.7](pieces/22b-R.7-one-state-file-per-project.md) One state file per project, not per folder (S, added 24 Nov) — built, for review
 - [x] [2.2](pieces/23-2.2-from-a-cell-to-the-fix.md) From a cell to the fix (S)
 - [x] [2.3](pieces/24-2.3-check-the-book-in-the-background.md) Check the book in the background (M)
 - [x] [2.4](pieces/25-2.4-progress-over-time.md) Progress over time (S)
-- [x] [3.1](pieces/26-3.1-chapter-stages.md) Chapter stages (S)
-- [x] [3.2](pieces/27-3.2-the-next-fix-queue.md) The next-fix queue (M)
-- [x] [3.3](pieces/28-3.3-skip-and-not-a-problem.md) Skip and Not a problem (M)
-- [x] [3.4](pieces/29-3.4-accept-all-like-this.md) Accept all like this (S)
+- [x] [2.5](pieces/25b-2.5-critique-beside-write.md) Critique beside Write: links and its own window (S, added 24 Nov) — built, for review
+- [x] [3.1](pieces/26-3.1-chapter-stages.md) Chapter stages (S) — built, for review
+- [x] [3.2](pieces/27-3.2-the-next-fix-queue.md) The next-fix queue (M) — built, on trial
+- [x] [3.3](pieces/28-3.3-skip-and-not-a-problem.md) Skip and Not a problem (M) — built, for review
+- [x] [3.4](pieces/29-3.4-accept-all-like-this.md) Accept all like this (S) — changed after review: a "Fix all N" tick box, for every kind of flag
 
 **Parity with ProWritingAid (after the foundations; alongside the path)**
 - [ ] [P.5](pieces/30-P.5-fix-or-hide-the-worst-checks.md) Fix or hide the worst checks (M, repeatable)
@@ -350,11 +380,15 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 - [ ] [V.5](pieces/43-V.5-manage-ratings-by-voice.md) Manage ratings by voice (M)
 
 **Declutter**
-- [ ] [D.1](pieces/44-D.1-tidy-the-right-click-menu.md) Tidy the right-click menu (S)
+- [x] [D.1](pieces/44-D.1-tidy-the-right-click-menu.md) Tidy the right-click menu (S) — built, for review
 - [ ] [D.2a](pieces/45-D.2a-one-improve-window-design.md) One Improve window: design (S, design, no code)
 - [ ] [D.2b](pieces/46-D.2b-one-improve-window-build-with-suggestions-and-ex.md) One Improve window: build, with Suggestions and Expand (M)
 - [ ] [D.2c](pieces/47-D.2c-one-improve-window-rephrase-joins.md) One Improve window: Rephrase joins (M)
-- [x] [D.3](pieces/48-D.3-one-issues-list-in-the-side-panel.md) One issues list in the side panel (M, after 3.2)
+- [x] [D.3](pieces/48-D.3-one-issues-list-in-the-side-panel.md) One issues list in the side panel (M, after 3.2) — built; the Style tab stays until D.6
+- [ ] [D.6](pieces/48b-D.6-retire-the-trial-screens.md) Retire the trial screens, and bring the counts back down (S, added 24 Nov; after you have used 3.2, D.3 and 2.5)
+- [ ] [D.7](pieces/48c-D.7-show-less-at-once.md) Show less at once: toolbar, hover card, Companion sections, Drafts into File (M, added 24 Nov)
+- [ ] [D.8](pieces/48d-D.8-one-look.md) One look: the same buttons, colours and spacing everywhere (M, repeatable, added 24 Nov)
+- [ ] [D.9](pieces/48e-D.9-fewer-interruptions.md) Fewer interruptions: messages that do not need a click (M, repeatable, added 24 Nov)
 - [ ] [D.4](pieces/49-D.4-fewer-top-level-tabs.md) Fewer top-level tabs (M, after 0.2)
 - [ ] [D.5](pieces/49b-D.5-analyses-run-as-critique-reports.md) Analyses run as Critique reports (M, after 2.1; added in 0.2)
 
@@ -368,11 +402,11 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 - [ ] [4.3](pieces/54-4.3-checks-earn-their-place.md) Checks earn their place (S)
 - [ ] [6.1](pieces/55-6.1-listen-and-mark.md) Listen and mark (M)
 - [ ] [6.2](pieces/56-6.2-marks-become-notes.md) Marks become notes (S)
-- [ ] [7.1](pieces/57-7.1-reverse-outline-without-a-model.md) Reverse outline without a model (M)
+- [x] [7.1](pieces/57-7.1-reverse-outline-without-a-model.md) Reverse outline without a model (M) — built, for review
 - [ ] [7.2](pieces/58-7.2-reverse-outline-with-a-model.md) Reverse outline with a model (M, experimental)
 - [ ] [7.3](pieces/59-7.3-draft-beside-plan-and-the-tension-curve.md) Draft beside plan, and the tension curve (M)
 - [ ] [9.1](pieces/60-9.1-final-sweep.md) Final sweep (M)
-- [ ] [9.2](pieces/61-9.2-export-and-import-check.md) Export and import check (M)
+- [x] [9.2](pieces/61-9.2-export-and-import-check.md) Export and import check (M) — built, for review
 - [ ] [9.3](pieces/62-9.3-submission-package-and-marketability.md) Submission package and marketability (M)
 
 **When the server is connected**
@@ -382,6 +416,47 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 - [ ] [8.3](pieces/66-8.3-server-prompts.md) Server prompts (M)
 
 **Cut** (see [cut.md](cut.md)): 5.1, 5.2, U.4, U.5, 9.4, 10.1
+
+**Briefs brought up to date.** On 24 November 2026 every remaining brief that
+phase 3, D.3 or 2.5 affects gained a section, *What has changed since this
+brief was written*, above its *Review notes*. A session reads it with the
+brief. When a later piece changes what a remaining brief assumes, add to that
+section in the same session.
+
+### Where the interface gets simpler
+
+Simplifying the interface is not one piece. It is rule 13 on every piece,
+plus these:
+
+| Piece | What it simplifies | State |
+|---|---|---|
+| [0.2](pieces/02-0.2-map-the-screens-count-the-clutter-decide-what-me.md) | Counted every screen's clutter and agreed what merges ([screens.md](screens.md)) | Done |
+| [U.1](pieces/04-U.1-shared-interface-parts.md), [U.2](pieces/05-U.2-screenshot-and-clutter-count-harness.md) | Shared parts, and the harness that counts buttons, menu items and sections | Done |
+| [D.3](pieces/48-D.3-one-issues-list-in-the-side-panel.md) | One issues list in the side panel | Built; old Style tab still there |
+| [D.6](pieces/48b-D.6-retire-the-trial-screens.md) | Removes the old screens kept on trial; brings the counts under the baseline | Waiting for you |
+| [D.1](pieces/44-D.1-tidy-the-right-click-menu.md) | A short right-click menu (11 → 9 with a selection); flag fixes back in the Write tab | Built, for review |
+| [D.7](pieces/48c-D.7-show-less-at-once.md) | Write screen 24 buttons to 18, grouped by row; a shorter hover card; the Companion opens what fits the stage; Drafts into File | Not started |
+| [D.8](pieces/48d-D.8-one-look.md) | One main button a screen, one set of colours, one spacing (1,014 inline styles today) | Not started |
+| [D.9](pieces/48e-D.9-fewer-interruptions.md) | Messages that need no answer stop opening a box (329 today) | Not started |
+| [D.2a–c](pieces/45-D.2a-one-improve-window-design.md) | Three help windows become one | Not started |
+| [D.4](pieces/49-D.4-fewer-top-level-tabs.md) | Ten top-level tabs become five; one way to detach a screen, and the "⧉ Own window" button goes | Not started |
+| [D.5](pieces/49b-D.5-analyses-run-as-critique-reports.md) | Six analysis windows become Critique reports | Not started |
+| [U.3a](pieces/50-U.3a-fit-and-scroll-sweep-the-screens-used-most.md), [U.3b](pieces/51-U.3b-fit-and-scroll-sweep-the-remaining-screens.md) | Every screen fits and scrolls | Not started |
+
+**Suggested order:** D.6, D.1, D.7, D.9, D.8, D.4, D.2, D.5, then U.3. The
+first five change only what is shown. D.4 also reads saved window layouts and
+D.5 adds kinds to critique history; their briefs say how older files and
+older versions of the app stay safe.
+
+**No piece here removes a feature.** Each starts with a capability checklist
+and is not done until every action has a home (rule 11, decision 10). Each
+follows rule 11's *Updating the app*.
+
+**Where the counts stand** (the harness, against `screens_baseline.json`):
+Companion 15 buttons (baseline 18) and 7 sections (7); Write menu 40 items
+(baseline 29), up because of the Style checks switches; Critique tab one
+button more. So far the app has gained more than it has shed, because the
+old screens are still on trial. D.6 and D.1 are what turn that round.
 
 ## Decisions
 
@@ -453,3 +528,27 @@ Work top to bottom within a group. A piece's file lists what it depends on.
    suggestions in its §10: R.6 first; "needs work" counts as half; overly
    descriptive is shown but left out of the figure until a model judges it.
    Built in R.6, 1.2b and 2.1.
+8. ~~**Shared state files.**~~ Settled 24 November 2026: each project gets
+   its own state files; the old shared file is read once and never changed.
+   ([R.7](pieces/22b-R.7-one-state-file-per-project.md))
+9. **Fix all, for every kind of flag.** 3.4's brief said mechanical fixes
+   only. At your request the "Fix all N like this" box now covers every flag
+   with a short fix, including words that are right in one sentence and
+   wrong in the next (their/there). Confirm, or name the kinds to leave out.
+10. **Two ways to detach the Critique.** "⧉ Own window" (2.5) and
+    Multi-Window Mode. D.4 is to make them one mechanism; say if you would
+    rather drop one entry.
+11. **What to retire, and the counts.** Which trial screens may go, and
+    whether a submenu counts as one menu entry.
+    ([D.6](pieces/48b-D.6-retire-the-trial-screens.md))
+12. **The on-device model cannot be shared.** A model job started while the
+    app was using the on-device model crashed the app. Until 8.1 gives jobs
+    and the app one queue, model measurements are run with the app closed.
+13. ~~**How far to group the Write screen's buttons.**~~ Settled 24 November
+    2026: by row, 24 to 18, nothing hidden more than one click away. (D.7)
+14. ~~**How a book-wide fix is made safe.**~~ Settled 24 November 2026:
+    chapter by chapter through the editor, each chapter with its own undo.
+    No one-click change to chapters that are not open. (9.1)
+15. ~~**Where the reverse outline shows.**~~ Settled 24 November 2026: in
+    the Critique, so it moves with the Critique into its own window. (7.1,
+    7.3)

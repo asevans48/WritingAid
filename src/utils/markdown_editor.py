@@ -4,7 +4,7 @@ Provides bidirectional conversion between rich text display and Markdown storage
 """
 
 import re
-from typing import Tuple
+from typing import List, Tuple
 from enum import Enum
 
 
@@ -120,6 +120,61 @@ def is_text_italic(text: str) -> bool:
         return False  # Bold, not italic
     return (text.startswith("*") and text.endswith("*") and len(text) > 2) or \
            (text.startswith("_") and text.endswith("_") and len(text) > 2)
+
+
+# **bold**, *italic*, ***bold italic*** and _italic_, as the editor stores
+# them. One pattern, shared by the editor's Word export and the manuscript
+# exporter (piece 9.2).
+INLINE_PATTERN = re.compile(
+    r'(\*\*\*(.+?)\*\*\*|\*\*(.+?)\*\*|(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)|_(.+?)_)')
+
+
+def inline_runs(text: str) -> List[Tuple[str, bool, bool]]:
+    """``text`` as [(run text, bold, italic)], the Markdown markers removed."""
+    runs: List[Tuple[str, bool, bool]] = []
+    last = 0
+    for m in INLINE_PATTERN.finditer(text):
+        if m.start() > last:
+            runs.append((text[last:m.start()], False, False))
+        if m.group(2):
+            runs.append((m.group(2), True, True))
+        elif m.group(3):
+            runs.append((m.group(3), True, False))
+        elif m.group(4):
+            runs.append((m.group(4), False, True))
+        elif m.group(5):
+            runs.append((m.group(5), False, True))
+        last = m.end()
+    if last < len(text):
+        runs.append((text[last:], False, False))
+    return runs
+
+
+def runs_to_markdown(runs) -> str:
+    """The reverse of ``inline_runs``: [(text, bold, italic)] as Markdown.
+    Spaces at a run's edges stay outside the markers (``*word* `` not
+    ``*word *``), so the result reads back the same."""
+    out = []
+    for text, bold, italic in runs:
+        if not text:
+            continue
+        mark = "***" if bold and italic else "**" if bold else "*" if italic else ""
+        core = text.strip()
+        if not mark or not core:
+            out.append(text)
+            continue
+        lead = text[:len(text) - len(text.lstrip())]
+        tail = text[len(text.rstrip()):]
+        out.append(f"{lead}{mark}{core}{mark}{tail}")
+    return "".join(out)
+
+
+# Lines that mark a scene break in a chapter's text.
+SCENE_BREAKS = {"***", "---", "* * *", "—", "⁂", "#", "# # #", "~~~", "* * * *"}
+
+
+def is_scene_break(line: str) -> bool:
+    return line.strip() in SCENE_BREAKS
 
 
 def strip_markdown(markdown_text: str) -> str:

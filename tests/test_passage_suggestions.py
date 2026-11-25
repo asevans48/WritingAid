@@ -304,8 +304,13 @@ def test_context_menu_offers_suggestions(app, project, chapter, monkeypatch):
     cursor.setPosition(10, cursor.MoveMode.KeepAnchor)
     ed.editor.setTextCursor(cursor)
     labels = []
-    monkeypatch.setattr(QMenu, "exec", lambda self, *a: labels.extend(
-        x.text() for x in self.actions()))
+
+    def walk(menu):                     # D.1: it sits in the "✨ Improve this" submenu
+        for x in menu.actions():
+            labels.append(x.text())
+            if x.menu() is not None:
+                walk(x.menu())
+    monkeypatch.setattr(QMenu, "exec", lambda self, *a: walk(self))
     ed._show_context_menu(ed.editor.rect().center())
     assert any(label.startswith("💡 Suggestions") for label in labels)
 

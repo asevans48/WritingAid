@@ -85,7 +85,7 @@ def load(project: Any) -> None:
     project file and change of it)."""
     try:
         from src.data import readiness_state as rs
-        path = rs.readiness_path(project)
+        path = rs.read_path(project)
         stamp = f"{path}:{path.stat().st_mtime_ns}" if path.exists() else ""
         if not stamp or stamp == _state["loaded"]:
             return

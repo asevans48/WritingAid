@@ -39,8 +39,9 @@ def test_route_survives_save_and_load(tmp_path):
     assert pg.set_route(p, None, "self")
     again = WriterProject.load_project(str(path))
     assert pg.route_for(again) == "self"
-    assert pg.readiness_path(again) == tmp_path / "readiness.json"
-    data = json.loads((tmp_path / "readiness.json").read_text())
+    own = tmp_path / f"{path.stem}.readiness.json"             # named after the project (R.7)
+    assert pg.readiness_path(again) == own
+    data = json.loads(own.read_text())
     assert data == {"format_version": 1, "manuscripts": {"main": {"route": "self"}}}
 
 

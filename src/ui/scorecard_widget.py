@@ -218,6 +218,7 @@ class ScorecardWidget(QWidget):
         self.issues.brief_requested.connect(self._save_brief)
         self.issues.chapter_requested.connect(self._show_chapter_row)
         from src.ui import chapter_stage_ui; chapter_stage_ui.install_on_scorecard(self)   # 3.1
+        from src.ui import outline_section; outline_section.install(self)   # 7.1
         self.issues.show_all_requested.connect(
             lambda: self._select_chapter(self._selected, None))
         outer.addWidget(self.issues)

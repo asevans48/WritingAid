@@ -87,6 +87,8 @@ class ChapterIssues(QTextBrowser):
         self._chapter = chapter_report
         self._links = []
         self._titles = titles or {}
+        self._shown = (chapter_report, checks, text, titles)
+        live_text = text                           # the outline reads the text as it is (7.1)
         ch = chapter_report
         if text is not None and ch.text_hash and rd.text_hash(text) != ch.text_hash:
             text, stale = None, True
@@ -102,6 +104,8 @@ class ChapterIssues(QTextBrowser):
                      if ch.is_opening else "")) + "</div>"]
         if ch.chapter_id not in (rd.BOOK_ROW, rd.OPENING_ROW):
             parts.append(self._stage_html(ch))
+            from src.ui import outline_section
+            parts.append(outline_section.html(self, ch, live_text))
         names = ([s.name for s in rd.checks_for() if s.name in ch.results] if checks is None
                  else [n for n in checks if n in ch.results])
         if checks is not None:
@@ -422,6 +426,10 @@ class ChapterIssues(QTextBrowser):
         ch = self._chapter
         if kind == "all":
             self.show_all_requested.emit()
+        elif kind == "outline":                    # open or close the scene outline (7.1)
+            self.outline_open = not getattr(self, "outline_open", False)
+            if getattr(self, "_shown", None):
+                self.show_chapter(*self._shown)
         elif kind == "sheet":
             self.show_style_sheet()
         elif kind in ("intend", "unintend"):

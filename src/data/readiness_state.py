@@ -1,7 +1,10 @@
-"""The readiness file, ``readiness.json`` (pieces 1.1 and 1.2b).
+"""The readiness file (pieces 1.1 and 1.2b).
 
-One file per project, beside the project file (``~/.creativeos/readiness/``
-for a project not yet saved). It holds each manuscript's publishing route
+One file per project, beside the project file and named after it
+(``<project>.readiness.json``, piece R.7; ``~/.creativeos/readiness/`` for
+a project not yet saved). Until a project has its own file, the folder's
+old shared ``readiness.json`` is read, and never written again
+(``state_files``). It holds each manuscript's publishing route
 (1.1), the readiness results per chapter (1.2b) and, later, stages,
 dismissals and history; the voice reading (``voice_profile``) lives here
 too. Layout: piece 1.2a, *Design* §7.
@@ -20,7 +23,6 @@ too. Layout: piece 1.2a, *Design* §7.
 
 from __future__ import annotations
 
-import re
 import shutil
 import threading
 from pathlib import Path
@@ -33,12 +35,21 @@ MAIN = "main"
 _lock = threading.RLock()
 
 
+LEGACY_NAME = "readiness.json"     # shared by the folder, before R.7
+
+
 def readiness_path(project: Any) -> Path:
-    pp = getattr(project, "project_path", "") or ""
-    if pp:
-        return Path(pp).parent / "readiness.json"
-    name = re.sub(r"[^\w-]+", "_", getattr(project, "name", "") or "untitled")
-    return Path.home() / ".creativeos" / "readiness" / f"{name}.json"
+    """Where this project's readiness file is written."""
+    from src.data import state_files
+    return state_files.own_path(project, "readiness", "readiness")
+
+
+def read_path(project: Any) -> Path:
+    """The file read for this project: its own, or the folder's old shared
+    one until its own exists (R.7)."""
+    from src.data import state_files
+    return state_files.read_path(readiness_path(project),
+                                 state_files.legacy_path(project, LEGACY_NAME))
 
 
 def scope_key(scope: Optional[str]) -> str:
@@ -49,7 +60,12 @@ def scope_key(scope: Optional[str]) -> str:
 def load(project: Any) -> Dict[str, Any]:
     """The whole file, or an empty one. Missing → empty, quietly;
     unreadable → set aside, the writer told, then empty."""
-    data = safe_store.load(readiness_path(project), {}, expect=dict)
+    from src.data import state_files
+    path = read_path(project)
+    if state_files.is_legacy(path, state_files.legacy_path(project, LEGACY_NAME)):
+        data = state_files.read_legacy(path, {}, expect=dict)
+    else:
+        data = safe_store.load(path, {}, expect=dict)
     data.setdefault("format_version", FORMAT_VERSION)
     if not isinstance(data.get("manuscripts"), dict):
         data["manuscripts"] = {}
