@@ -130,6 +130,7 @@ def score_errors(passages: List[Dict[str, Any]], llm=None) -> Dict[str, Any]:
     from src.utils import proof_store
     by_kind = defaultdict(lambda: {"caught": 0, "missed": 0, "examples": []})
     wrong = words = clean_flags = clean_words = 0
+    clean_examples: List[str] = []
     for n, ps in enumerate(passages):
         proof_store.clear()
         with tempfile.TemporaryDirectory() as tmp:
@@ -150,8 +151,14 @@ def score_errors(passages: List[Dict[str, Any]], llm=None) -> Dict[str, Any]:
                      if not any(_overlaps((i.start, i.end), (x["start"] - 1, x["end"] + 1))
                                 for x in ps["insertions"]))
         words += len(ps["text"].split())
-        clean_flags += sum(1 for i in clean.results["spelling_grammar"].items
-                           if i.verdict != "cleared")
+        clean_live = [i for i in clean.results["spelling_grammar"].items
+                      if i.verdict != "cleared"]
+        clean_flags += len(clean_live)
+        for i in clean_live:                   # what they were, to see where false alarms come from
+            source = "the model" if "found by the model" in (i.reason or "") else (
+                "a rule the model kept" if i.verdict == "problem" else "a rule")
+            if len(clean_examples) < 12:
+                clean_examples.append(f"“{i.text[:40]}” ({source}: {(i.reason or '')[:60]})")
         clean_words += len(ps["clean"].split())
         if llm is not None:
             print(f"  proofread {n + 1}/{len(passages)} ({time.strftime('%H:%M:%S')})",
@@ -160,7 +167,8 @@ def score_errors(passages: List[Dict[str, Any]], llm=None) -> Dict[str, Any]:
     missed = sum(v["missed"] for v in by_kind.values())
     return {"by_kind": dict(by_kind), "caught": caught, "missed": missed,
             "wrong_per_1000": round(wrong * 1000.0 / max(words, 1), 2),
-            "clean_per_1000": round(clean_flags * 1000.0 / max(clean_words, 1), 2)}
+            "clean_per_1000": round(clean_flags * 1000.0 / max(clean_words, 1), 2),
+            "clean_examples": clean_examples}
 
 
 STORY_CHECKS = ("character_disconnects", "plot_jumps", "continuity")
@@ -321,6 +329,10 @@ def to_markdown(res: Dict[str, Any]) -> str:
               f"- Flags on the untouched passages: {rules['clean_per_1000']} per 1,000 words "
               "with the rules alone"
               + (f", {model['errors']['clean_per_1000']} with the model." if model else "."), ""]
+    examples = (model["errors"] if model else rules).get("clean_examples") or []
+    if examples:
+        lines += ["**Flags on the untouched passages" + (" with the model" if model else "")
+                  + ", for example:**", ""] + [f"- {e}" for e in examples] + [""]
     missed = {k: v["examples"] for k, v in (model["errors"] if model else rules)["by_kind"].items()
               if v["examples"]}
     if missed:

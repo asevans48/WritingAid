@@ -635,6 +635,7 @@ class ChapterEditor(QWidget):
         self.style_panel.consistency_requested.connect(self.consistency_requested.emit)
         self.right_panel.addTab(self.style_panel, "Style")
         self.editor.style_rewrite_requested.connect(self._rewrite_span_with_ai)
+        from src.ui import style_checks_menu; style_checks_menu.install(self)   # D.3
         self.editor.phase_changed.connect(lambda _p: self._update_checks_button())
 
         from src.ui.feedback_widget import FeedbackWidget

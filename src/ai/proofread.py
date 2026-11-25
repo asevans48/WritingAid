@@ -224,8 +224,15 @@ def add_findings(result: Any, llm: Any, text: str, ctx: Any, compact: bool = Fal
     for para in text.split("\n"):
         for c in proof_store.corrections(para) if para.strip() else ():
             s, e = pos + c["s"], pos + c["e"]
-            if text[s:e] != c["t"] or any(i.start < e and s < i.end for i in result.items):
-                continue                               # a rule already flags these words
+            if text[s:e] != c["t"]:
+                continue
+            over = [i for i in result.items if i.start < e and s < i.end]
+            if over:                                   # a rule already flags these words
+                for i in over:                         # two reads agree: it stays flagged
+                    if i.verdict == "cleared":
+                        i.verdict = "problem"
+                        i.note = "The proofreading pass found it too."
+                continue
             result.items.append(Item(
                 start=s, end=e, text=c["t"][:200],
                 reason=(c.get("w") or "Possible error") + " (found by the model)",

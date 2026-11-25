@@ -96,7 +96,8 @@ def dismiss(project: Any, key: str) -> None:
 
 
 # Companion sections the writer collapsed (or opened), by key.
-DEFAULT_COLLAPSED = {"memory", "style_sheet"}       # whole-book sections start closed
+DEFAULT_COLLAPSED = {"memory", "style_sheet",       # whole-book sections start closed
+                     "overdescribed"}              # on trial beside the queue (3.2)
 
 
 def collapsed_sections(project: Any) -> set:

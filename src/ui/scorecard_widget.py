@@ -21,7 +21,7 @@ from __future__ import annotations
 import textwrap
 from typing import Any, Dict, List, Optional, Set
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
     QAbstractItemView, QComboBox, QHBoxLayout, QHeaderView, QLabel, QProgressBar, QSizePolicy,
@@ -182,10 +182,15 @@ class ScorecardWidget(QWidget):
         self.table.verticalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignLeft
                                                         | Qt.AlignmentFlag.AlignVCenter)
         self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self.table.cellDoubleClicked.connect(self._fix_cell)       # to the fix (2.2)
-        self.table.verticalHeader().sectionDoubleClicked.connect(self._choose_row)
-        self.table.cellClicked.connect(self._on_cell)
-        self.table.verticalHeader().sectionClicked.connect(lambda row: self._select_row(row, None))
+        # Each click is handled once Qt has finished with it: opening a
+        # chapter or redrawing the table inside the table's own mouse
+        # handling can crash the app (a crash seen on double-click).
+        later = lambda fn: (lambda *a: QTimer.singleShot(0, lambda: fn(*a)))
+        self.table.cellDoubleClicked.connect(later(self._fix_cell))       # to the fix (2.2)
+        self.table.verticalHeader().sectionDoubleClicked.connect(later(self._choose_row))
+        self.table.cellClicked.connect(later(self._on_cell))
+        self.table.verticalHeader().sectionClicked.connect(
+            later(lambda row: self._select_row(row, None)))
         self.table.setToolTip("Click a chapter to see what the checks found, or a cell for "
                               "one check. Double-click a cell to fix it in the chapter; "
                               "double-click a chapter's name for its detailed critique.")
@@ -212,6 +217,7 @@ class ScorecardWidget(QWidget):
         self.issues.intended_requested.connect(self._set_intended)
         self.issues.brief_requested.connect(self._save_brief)
         self.issues.chapter_requested.connect(self._show_chapter_row)
+        from src.ui import chapter_stage_ui; chapter_stage_ui.install_on_scorecard(self)   # 3.1
         self.issues.show_all_requested.connect(
             lambda: self._select_chapter(self._selected, None))
         outer.addWidget(self.issues)
@@ -650,6 +656,7 @@ class ScorecardWidget(QWidget):
 
     def _fill_grid(self, report) -> None:
         from src.ai import readiness as rd
+        from src.ui import chapter_stage_ui
         g = rd.grid(report)
         groups = g.stages()
         self.ribbon.setText(self._ribbon_html([s for s, _ in groups]))
@@ -688,7 +695,7 @@ class ScorecardWidget(QWidget):
         self._rows = [ch for ch, _cells in g.rows]
         for r, (ch, cells) in enumerate(g.rows):
             name = f"{ch.number}. {ch.title}" if ch.number else ch.title
-            head = QTableWidgetItem(name if len(name) <= 36 else name[:35] + "…")
+            head = QTableWidgetItem(chapter_stage_ui.row_name(name, ch))   # with its stage (3.1)
             if ch.chapter_id == rd.BOOK_ROW:
                 font = head.font()
                 font.setItalic(True)
@@ -884,6 +891,10 @@ class ScorecardWidget(QWidget):
         self.issues.show_chapter(self._row_report(row), self._selected_checks,
                                  None if self._selected == BOOK_ROW
                                  else self._chapter_text(self._selected), titles)
+
+    def apply_stages(self) -> None:
+        """The chapters' stages changed: show them (3.1)."""
+        from src.ui import chapter_stage_ui; chapter_stage_ui.apply_stages(self)
 
     def _titles(self) -> Dict[str, str]:
         return {ch.chapter_id: ch.title for ch in self.report.chapters} if self.report else {}

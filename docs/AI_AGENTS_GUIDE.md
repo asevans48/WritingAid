@@ -185,6 +185,33 @@ The AI recognizes when you want to **create** vs. just **discuss**:
 - "Maybe a corrupt merchant?" (use "yes, add them" to confirm)
 - "Give me some ideas for..."
 
+#### Moving chapters to a stage
+
+Each chapter sits at one stage of the path to publish: structure, scene,
+line, copyedit or proof. You can move chapters by asking:
+
+```
+"Move chapters 3 to 7 to copyedit"
+
+"Move chapter 4 to proof"
+
+"Put chapters 1, 2 and 5 into the line stage"
+
+"Move this chapter to scene"
+
+"Put the novella back to line"
+
+"Move chapter 2 of The Long Night to proof"
+```
+
+The assistant first tells you which chapters it will move, and moves them only
+after you confirm. It works with any model, because the request is recognised
+in your message without the model's help. Naming a chapter that doesn't exist
+changes nothing; the assistant says which chapters the manuscript has. Chapters
+moved this way can be moved again by hand: right-click a chapter's name in the
+Critique's scorecard, or click the stage in the Companion's header. A novella's
+chapters have stages of their own.
+
 ---
 
 ## Chapter Focus Mode

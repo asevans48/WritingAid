@@ -141,7 +141,8 @@ def intended(project: Any) -> List[Dict[str, Any]]:
     try:
         from src.data import readiness_state as rs
         d = rs.load(project).get("dismissed")
-        return [dict(v, key=k) for k, v in d.items() if isinstance(v, dict)] \
+        return [dict(v, key=k) for k, v in d.items()           # not "not a problem" (3.3)
+                if isinstance(v, dict) and v.get("as") != "not a problem"] \
             if isinstance(d, dict) else []
     except Exception:
         return []

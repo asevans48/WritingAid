@@ -71,7 +71,9 @@ def detect_intent(message: str) -> Optional[Dict[str, str]]:
     Returns ``{"kind": "critique", "scope": "chapter"|"manuscript"}``,
     ``{"kind": "chapter_outline", "source": "text"|"plan"}``,
     ``{"kind": "story_outline", "data": {field: value}}`` (a dictated
-    main-plot / Freytag-stage change, applied verbatim) or None.
+    main-plot / Freytag-stage change, applied verbatim),
+    ``{"kind": "stage"}`` (move chapters to a stage of the path to publish;
+    ``chapter_stages`` reads which) or None.
     Deliberately conservative: only clear requests trigger an action;
     everything else stays a normal conversation turn.
     """
@@ -85,6 +87,9 @@ def detect_intent(message: str) -> Optional[Dict[str, str]]:
         return {"kind": "story_outline", "data": {key: value}}
     if len(text) > 600:
         return None
+    from src.ai import chapter_stages               # "move chapters 3 to 7 to copyedit" (3.1)
+    if chapter_stages._REQUEST.match(text):
+        return {"kind": "stage"}
     if any(rx.search(text) for rx in _CHAPTER_OUTLINE_RX) and not _STORY_OUTLINE_RX.search(text):
         return {"kind": "chapter_outline",
                 "source": "plan" if _FROM_PLAN_RX.search(text) else "text"}

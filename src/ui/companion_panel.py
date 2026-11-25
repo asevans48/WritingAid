@@ -75,6 +75,7 @@ class CompanionPanel(QWidget):
         self.chapter_label = QLabel("")
         self.chapter_label.setWordWrap(True)
         self.chapter_label.setStyleSheet("font-weight: bold; color: #312e81; font-size: 12px;")
+        self.chapter_label.linkActivated.connect(self._on_stage_link)   # its stage (3.1)
         top.addWidget(self.chapter_label, 1)
         for label, tip, is_open in (("▾ all", "Open every section", True),
                                     ("▸ all", "Close every section", False)):
@@ -139,8 +140,10 @@ class CompanionPanel(QWidget):
         v.addLayout(row)
         self.notes_list.currentRowChanged.connect(self._update_note_buttons)
 
-        # Today's three fixes
-        v = self._section(layout, "Today's three fixes", "fixes")
+        # Next fixes: the chapter's queue for its stage (3.2), with Today's
+        # three fixes kept underneath behind a link while on trial.
+        v = self._section(layout, "Next fixes", "fixes")
+        from src.ui import next_fixes; self.queue, v = next_fixes.install(self, v)
         self.fixes_btn = QPushButton("🎯 Find the three fixes that matter most")
         self.fixes_btn.clicked.connect(self.fixes_requested.emit)
         v.addWidget(self.fixes_btn)
@@ -322,6 +325,7 @@ class CompanionPanel(QWidget):
     def set_chapter(self, chapter, text: str = "") -> None:
         """The chapter everything above “Whole book” is about."""
         self.chapter_text = text or ""
+        self._chapter = chapter
         if chapter is None:
             self.chapter_label.setText("")
             return
@@ -331,7 +335,24 @@ class CompanionPanel(QWidget):
         name = " — ".join(p for p in (f"Chapter {number}" if number else "", title) if p)
         self.chapter_label.setText(f"📖 {html.escape(name or 'This chapter')}"
                                    f"<span style='color:#6b7280;font-weight:normal;"
-                                   f"font-size:10px'> · {words:,} words</span>")
+                                   f"font-size:10px'> · {words:,} words</span>"
+                                   + self._stage_html(chapter))
+
+    # ── The chapter's stage (3.1) ────────────────────────────────────
+
+    def _stage_html(self, chapter) -> str:
+        from src.ui.chapter_stage_ui import header_html
+        return header_html(self.project, chapter)
+
+    def refresh_stage(self) -> None:
+        chapter = getattr(self, "_chapter", None)
+        if chapter is not None:
+            self.set_chapter(chapter, self.chapter_text)
+
+    def _on_stage_link(self, href: str) -> None:
+        from src.ui.chapter_stage_ui import on_header_link
+        on_header_link(self, self.project, getattr(self, "_chapter", None), href,
+                       self.refresh_stage)
 
     # ── Where you left off ───────────────────────────────────────────
 
@@ -448,6 +469,7 @@ class CompanionPanel(QWidget):
         self._apply_collapsed()
         self.refresh_memory()
         self.refresh_style_sheet()
+        self.refresh_stage()
 
     # ── Today's three fixes ─────────────────────────────────────────
 
@@ -459,6 +481,8 @@ class CompanionPanel(QWidget):
         self._show_fix(-1)
 
     def set_fixes(self, fixes, status: str = "") -> None:
+        if fixes:
+            self.show_older_fixes(True)             # e.g. sent from the scorecard (2.2)
         self.fixes_btn.setEnabled(True)
         self.fixes = list(fixes or [])
         self.fixes_list.clear()
@@ -809,6 +833,7 @@ class CompanionController(QObject):
         self.panel.style_sheet_changed.connect(self._style_sheet_edited)
         chapter_editor.editor.style_sheet_changed.connect(self._style_sheet_learned)
         self.panel.memory_changed.connect(chapter_editor.content_changed.emit)
+        from src.ui.next_fixes import Queue; self.queue = Queue(self)   # 3.2
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.setInterval(self.NOTES_DELAY_MS)
@@ -846,6 +871,7 @@ class CompanionController(QObject):
         self.panel.set_project(self.project)
         self.panel.set_notes([], "Notes appear here when you finish a paragraph.")
         self.panel.set_fixes(None, "")           # nothing searched yet
+        self.queue.chapter_loaded()               # the next-fix queue (3.2)
         self._quick_overdescribed(text)
         if self.project is None or self.chapter is None:
             return
@@ -1140,23 +1166,30 @@ class CompanionController(QObject):
                                          sentence)
 
     def accept_fix(self, fix, replacement: str) -> None:
+        problem = self.apply_fix(fix, replacement)
+        if problem is None:
+            self.panel.remove_fix(fix, "Fixed. Your choice teaches future suggestions.")
+        elif problem:
+            self.panel.fixes_status.setText(problem)
+
+    def apply_fix(self, fix, replacement: str):
+        """Put ``replacement`` in place of the fix's sentence, if it is still
+        where it was. None when done; else why not ("" when the editor
+        refused and said so itself). Shared by the fixes and the queue."""
         span = self._span_for(fix.paragraph, fix.excerpt, fix.sentence)
         if span is None:
-            self.panel.fixes_status.setText("That sentence has changed — find the fixes again.")
-            return
+            return "That sentence has changed — find the fixes again."
         text = self.ce.editor.toPlainText()
         original = text[span[0]:span[1]]
         if " ".join(original.split()) == " ".join(replacement.split()):
-            self.panel.fixes_status.setText("No change — edit the sentence above or pick a "
-                                            "suggestion first.")
-            return
+            return "No change — edit the sentence above or pick a suggestion first."
         if not self.ce._replace_span(text, span[0], span[1], replacement, "Companion"):
-            return
+            return ""
         from src.ai.rewrite_quality import log_rated_rewrite
         log_rated_rewrite(original, replacement, "good", accepted=True,
                           project_path=str(getattr(self.project, "project_path", "") or ""),
                           style="fix")
-        self.panel.remove_fix(fix, "Fixed. Your choice teaches future suggestions.")
+        return None
 
     def more_fix_options(self, fix) -> None:
         span = self._span_for(fix.paragraph, fix.excerpt, fix.sentence)

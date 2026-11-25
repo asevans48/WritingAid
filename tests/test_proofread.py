@@ -150,3 +150,51 @@ def test_small_models_get_smaller_pieces():
     text = "\n".join(f"Paragraph {i} " + "word " * 120 for i in range(10))
     assert proofread.requests_needed(text) == 2
     assert proofread.requests_needed(text, compact=True) == 5
+
+
+class ClearingLLM(FakeLLM):
+    """Clears every flag it is asked to judge, but proofreads the misspelling."""
+
+    def generate_text(self, prompt, system="", **kw):
+        if prompt.startswith("Proofread the text below") or "Outline this chapter" in prompt \
+                or prompt.startswith("OUTLINE OF THE BOOK") \
+                or "Look for three kinds of problem" in prompt:
+            return super().generate_text(prompt, system, **kw)
+        self.prompts.append(prompt)
+        n = len(re.findall(r"^\d+\. \[", prompt, re.M))
+        return "\n".join(f"{i + 1}. FINE — deliberate" for i in range(n))
+
+
+def test_a_sure_mistake_is_not_put_to_the_model_and_stays_flagged(tmp_path):
+    p = _project(tmp_path)
+    p.manuscript.chapters[0].content = "He went to the the town , slowly.\n"
+    llm = ClearingLLM()
+    r = rd.chapter_report(p, p.manuscript.chapters[0], llm=llm).results["spelling_grammar"]
+    live = sorted(i.text.strip() for i in r.items if i.verdict != "cleared")
+    assert "the the" in live and "," in live                    # not cleared
+    judged = [x for x in llm.prompts if "REAL" in x and "FINE" in x]
+    assert all("“the the”" not in x for x in judged)            # never asked
+
+
+def test_a_flag_the_model_cleared_but_also_proofread_stays_flagged(tmp_path):
+    p = _project(tmp_path)
+    llm = ClearingLLM()                    # clears "allways", then proofreads it as wrong
+    r = rd.chapter_report(p, p.manuscript.chapters[0], llm=llm).results["spelling_grammar"]
+    item = next(i for i in r.items if i.text == "allways")
+    assert item.verdict == "problem" and "proofreading pass found it too" in item.note
+
+
+def test_agreement_in_narration_is_not_put_to_the_model_but_in_speech_it_is(tmp_path):
+    from src.ai.readiness_judge import in_dialogue
+    p = _project(tmp_path)
+    p.manuscript.chapters[0].content = ('You was late again, and the tide had turned.\n'
+                                        '“You was late,” Dorcas said.\n')
+    llm = ClearingLLM()
+    r = rd.chapter_report(p, p.manuscript.chapters[0], llm=llm).results["spelling_grammar"]
+    flags = [(i.start, i.verdict) for i in r.items if "agreement" in i.reason.lower()]
+    narrated, spoken = sorted(flags)
+    assert narrated[1] != "cleared"                         # narration: stays flagged
+    assert spoken[1] == "cleared"                           # speech: the model may keep dialect
+    text = p.manuscript.chapters[0].content
+    assert not in_dialogue(text, text.index("was")) and in_dialogue(text, text.rindex("was"))
+    assert in_dialogue('He said "you was', 12) and not in_dialogue('"Go," he said. You', 17)

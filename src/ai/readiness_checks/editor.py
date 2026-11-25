@@ -129,6 +129,27 @@ THREADS_SYSTEM = ("You are a developmental editor checking a novel's outline for
                   "left hanging. You answer only from the outline you are given.")
 
 
+# One unpaid setup per line, in the ways models write a numbered list:
+# "3 | why", "3. why", "3) why", "3 - why", "#3: why", "Setup 3: why",
+# "**3.** why". A bare number on its own line counts too.
+_THREAD = re.compile(r"^[ \t*#>\-•]*(?:setup[ \t]*)?#?[ \t]*(\d{1,3})[ \t]*\**[ \t]*"
+                     r"(?:[|.):\-–—]+|$)[ \t]*\**[ \t]*(.*)$", re.I | re.M)
+
+
+def parse_threads(reply: str, n_setups: int):
+    """[(number, why)] for the setups the model says are never paid off;
+    [] when it says none are; None when its answer can't be read."""
+    hits = [(n, why.strip().strip("*_ ")) for n, why in _THREAD.findall(reply or "")
+            if 1 <= int(n) <= n_setups]
+    if hits:
+        return hits
+    text = (reply or "").strip().upper()
+    if re.search(r"\bNONE\b|\bNO SETUPS\b|\bALL (?:OF THEM |SETUPS )?(?:ARE )?PAID OFF\b",
+                 text):
+        return []
+    return None
+
+
 @check(name="loose_threads", stage="structure", label="Setups never paid off", level="book",
        needs_model=True, judge=False, version=1, weight=80,
        description="Something the story gives weight to (a threat, a question, a promise, "
@@ -161,9 +182,15 @@ def loose_threads(ctx: CheckContext) -> CheckOutput:
     reply = ctx.llm.generate_text(prompt, THREADS_SYSTEM, max_tokens=500, temperature=0.1) or ""
     if reply.startswith("Error generating text:"):
         raise RuntimeError(reply.split(":", 1)[1].strip())
-    hits = re.findall(r"^\W*(\d+)\W*\|\s*(.+)$", reply, re.M)
-    if not hits and "NONE" not in reply.upper():
-        raise RuntimeError("the model's answer couldn't be read")
+    try:
+        from src.ai.output_sanitizer import strip_meta_tokens
+        reply = strip_meta_tokens(reply)
+    except Exception:
+        pass
+    hits = parse_threads(reply, len(setups))
+    if hits is None:
+        snippet = " ".join(reply.split())[:160]
+        raise RuntimeError(f"the model's answer couldn't be read: “{snippet}”")
     items, seen = [], set()
     for number, why in hits:
         n = int(number)
@@ -171,10 +198,12 @@ def loose_threads(ctx: CheckContext) -> CheckOutput:
             continue
         seen.add(n)
         ch, s = setups[n - 1]
+        why = why.strip().rstrip(".")
         items.append(Item(
             start=s["start"], end=s["end"], text=s["quote"][:200],
             reason=f"Set up in “{chapter_digest.title_of(ch)}”: {s['what']}. "
-                   f"{why.strip().rstrip('.')}. Is it paid off, or left open on purpose?",
+                   + (f"{why}. " if why else "")
+                   + "Is it paid off, or left open on purpose?",
             kind="loose_thread", key=f"loose_thread:{s['what'][:60].lower()}",
             verdict="problem", chapter_id=ch.id))
     partial = "" if len(current) == len(ctx.book.chapters) else \

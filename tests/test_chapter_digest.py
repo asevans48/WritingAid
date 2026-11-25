@@ -134,3 +134,24 @@ def test_a_character_who_drops_out_is_asked_about(tmp_path):
     assert "last seen in “Chapter 2” (2 of 8). Is their thread closed?" in r.items[0].reason
     # A short book isn't judged this way.
     assert "character_threads" not in rd.book_report(_project(tmp_path)).book_results
+
+
+def test_the_threads_answer_is_read_however_the_model_numbers_it():
+    from src.ai.readiness_checks.editor import parse_threads
+    for reply in ("2 | never told", "2. never told", "2) never told", "2 - never told",
+                  "#2: never told", "Setup 2: never told", "**2.** never told",
+                  "- 2 — never told", "Here are the unpaid setups:\n\n2. never told"):
+        assert parse_threads(reply, 3) == [(("2"), "never told")], reply
+    assert parse_threads("2\n3", 3) == [("2", ""), ("3", "")]
+    assert parse_threads("9. not a setup", 3) is None            # out of range: not read
+    for none in ("NONE", "None.", "All setups are paid off.", "No setups are left hanging: NONE"):
+        assert parse_threads(none, 3) == [], none
+    assert parse_threads("I think the story is lovely.", 3) is None
+
+
+def test_an_unreadable_threads_answer_says_what_the_model_said(tmp_path):
+    p = _project(tmp_path)
+    report = rd.book_report(p, llm=FakeLLM(unpaid="The ledgers are interesting but I am unsure."))
+    r = report.book_results["loose_threads"]
+    assert r.status == rd.Status.COULD_NOT_CHECK
+    assert "The ledgers are interesting but I am unsure." in r.error

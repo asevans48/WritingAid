@@ -1,74 +1,179 @@
 {
- "date": "2026-11-23",
+ "date": "2026-11-24",
  "rounds": 5,
- "passages": 60,
+ "passages": 3,
  "languagetool": false,
- "story_cases": 15,
+ "story_cases": 4,
  "rules": {
   "by_kind": {
    "punctuation": {
-    "caught": 54,
-    "missed": 6,
+    "caught": 2,
+    "missed": 1,
     "examples": [
-     "missing apostrophe",
-     "missing apostrophe",
-     "missing apostrophe",
-     "missing apostrophe",
      "missing apostrophe"
     ]
    },
    "agreement": {
-    "caught": 49,
+    "caught": 3,
     "missed": 0,
     "examples": []
    },
    "harder_confusion": {
     "caught": 0,
-    "missed": 60,
+    "missed": 3,
     "examples": [
      "his \u2192 he's",
-     "his \u2192 he's",
      "of \u2192 off",
-     "his \u2192 he's",
-     "of \u2192 off"
+     "from \u2192 form"
     ]
    },
    "repeated_word": {
-    "caught": 60,
+    "caught": 3,
     "missed": 0,
     "examples": []
    },
    "spelling": {
-    "caught": 60,
+    "caught": 3,
     "missed": 0,
     "examples": []
    },
    "missing_word": {
     "caught": 0,
-    "missed": 60,
+    "missed": 3,
     "examples": [
      "\u201cthe\u201d dropped",
      "\u201cthe\u201d dropped",
-     "\u201cthe\u201d dropped",
-     "\u201cthe\u201d dropped",
-     "\u201cthe\u201d dropped"
+     "\u201cto\u201d dropped"
     ]
    },
    "confused_word": {
-    "caught": 7,
-    "missed": 53,
+    "caught": 0,
+    "missed": 3,
     "examples": [
      "where \u2192 were",
-     "where \u2192 were",
-     "where \u2192 were",
-     "where \u2192 were",
+     "there \u2192 their",
      "to \u2192 too"
     ]
    }
   },
-  "caught": 230,
-  "missed": 179,
-  "wrong_per_1000": 4.75,
-  "clean_per_1000": 4.75
+  "caught": 11,
+  "missed": 10,
+  "wrong_per_1000": 8.91,
+  "clean_per_1000": 8.93,
+  "clean_examples": [
+   "\u201cAgathon\u201d (a rule: Possible misspelling.)",
+   "\u201cbloweth\u201d (a rule: Possible misspelling.)",
+   "\u201clisteth\u201d (a rule: Possible misspelling.)",
+   "\u201cmarvellous\u201d (a rule: Possible misspelling.)",
+   "\u201cun\u201d (a rule: Possible misspelling.)",
+   "\u201cpeu\u201d (a rule: Possible misspelling.)",
+   "\u201csauvage\u201d (a rule: Possible misspelling.)",
+   "\u201csplendour\u201d (a rule: Possible misspelling.)",
+   "\u201cOldring\u201d (a rule: Possible misspelling.)"
+  ]
+ },
+ "model_name": "mlx-community/Cydonia-24B-v3.1-4bit",
+ "model": {
+  "editor": {
+   "caught": 2,
+   "missed": 2,
+   "missed_cases": [
+    "flat-scene (a chapter of chores after which nothing is different)",
+    "head-hop (the bailiff's private thoughts inside Ilse's scene)"
+   ],
+   "in_letter": 4,
+   "flawed": 4,
+   "control_findings": 6,
+   "control_cases": [
+    "ok-paid: 6"
+   ],
+   "letters_unreadable": 0
+  },
+  "story": {
+   "caught": 1,
+   "missed": 2,
+   "missed_cases": [
+    "eyes (appearance changed)",
+    "letter (ability contradicted)"
+   ],
+   "controls": 1,
+   "false_findings": 3,
+   "false_cases": [
+    "ok-learned: \u201cAll that summer Tobias taught Mara to swim in the shallows b\u201d"
+   ],
+   "other_findings": 2,
+   "could_not_read": 0,
+   "facts": 39
+  },
+  "errors": {
+   "by_kind": {
+    "punctuation": {
+     "caught": 2,
+     "missed": 1,
+     "examples": [
+      "missing apostrophe"
+     ]
+    },
+    "agreement": {
+     "caught": 2,
+     "missed": 1,
+     "examples": [
+      "you were \u2192 you was"
+     ]
+    },
+    "harder_confusion": {
+     "caught": 1,
+     "missed": 2,
+     "examples": [
+      "of \u2192 off",
+      "from \u2192 form"
+     ]
+    },
+    "repeated_word": {
+     "caught": 3,
+     "missed": 0,
+     "examples": []
+    },
+    "spelling": {
+     "caught": 3,
+     "missed": 0,
+     "examples": []
+    },
+    "missing_word": {
+     "caught": 1,
+     "missed": 2,
+     "examples": [
+      "\u201cthe\u201d dropped",
+      "\u201cthe\u201d dropped"
+     ]
+    },
+    "confused_word": {
+     "caught": 1,
+     "missed": 2,
+     "examples": [
+      "where \u2192 were",
+      "to \u2192 too"
+     ]
+    }
+   },
+   "caught": 13,
+   "missed": 8,
+   "wrong_per_1000": 1.98,
+   "clean_per_1000": 11.9,
+   "clean_examples": [
+    "\u201cAgathon\u201d (a rule the model kept: Possible misspelling.)",
+    "\u201cmarvellous\u201d (a rule the model kept: Possible misspelling.)",
+    "\u201csplendour\u201d (a rule the model kept: Possible misspelling.)",
+    "\u201cgirl\u201d (the model: missing comma after introductory phrase (found by the model))",
+    "\u201cCannes\u201d (the model: missing comma after introductory phrase (found by the model))",
+    "\u201cDeauville\u201d (the model: missing comma after introductory phrase (found by the model))",
+    "\u201cknow\u201d (the model: missing period at end of sentence (found by the model))",
+    "\u201cdoesn\u2019t\u201d (the model: tense slip (past tense context) (found by the model))",
+    "\u201cthis\u201d (the model: missing comma after introductory phrase (found by the model))",
+    "\u201cdriving\u201d (the model: missing comma after introductory phrase (found by the model))",
+    "\u201ctwilight:\u201d (the model: colon should be period (not a complete sentence) (found by t)",
+    "\u201cOldring\u201d (a rule the model kept: Possible misspelling.)"
+   ]
+  }
  }
 }

@@ -14,6 +14,11 @@ The author's voice reading (``voice_profile``), when there is one, goes in
 the prompt so their deliberate habits are let through. Local models get a
 shorter prompt and fewer items. A failed or unreadable reply leaves the
 scan's result as it was.
+
+Near-certain mechanical flags (a doubled word, a space before a comma, and
+subject–verb agreement outside dialogue) are not sent: there is nothing for
+a model to weigh, and it can only clear a real mistake
+(``docs/publishing/miss_rates.md``: the model cleared a narrated "you was").
 """
 
 from __future__ import annotations
@@ -24,6 +29,33 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 MAX_ITEMS = 40               # per stage per chapter (cloud models)
 MAX_ITEMS_COMPACT = 20       # on-device models
 LAZY_SHARE = 0.9             # a model that clears nearly everything isn't trusted
+SURE_RULES = frozenset({"REPEATED_WORD", "SPACE_BEFORE_PUNCT", "SPACE_AFTER_PUNCT",
+                        "SPACE_AFTER_PERIOD", "DOUBLE_SPACE", "LOWERCASE_I"})
+
+
+NARRATION_SURE_RULES = frozenset({"AGREEMENT"})    # "you was": dialect only in speech
+
+
+def in_dialogue(text: str, start: int) -> bool:
+    """Whether ``start`` falls inside quoted speech in its paragraph."""
+    para_start = text.rfind("\n", 0, start) + 1
+    before = text[para_start:start]
+    if "“" in before or "”" in before:
+        return before.count("“") > before.count("”")
+    return before.count('"') % 2 == 1
+
+
+def is_sure(item: Any, text: str = "") -> bool:
+    """A rule flag that is right whenever it fires; the model doesn't judge
+    it. Agreement ("you was") is sure in narration; in speech it may be the
+    character's dialect, so there the model judges it."""
+    parts = str(getattr(item, "key", "") or "").split(":")
+    if len(parts) < 2 or parts[0] != "grammar":
+        return False
+    if parts[1] in SURE_RULES:
+        return True
+    return (parts[1] in NARRATION_SURE_RULES and bool(text)
+            and not in_dialogue(text, getattr(item, "start", 0)))
 
 SYSTEM = ("You are an experienced fiction editor reviewing an automatic checker's flags in "
           "one chapter. You keep real problems a good editor would fix, and clear false "
@@ -76,7 +108,7 @@ def candidates(stage_results: Sequence[Tuple[Any, Any]], text: str, limit: int) 
     ordered = sorted(stage_results, key=lambda sr: -sr[0].weight)
     for spec, result in ordered:
         for item in result.items:
-            if item.verdict or item.end <= item.start or item.chapter_id:
+            if item.verdict or item.end <= item.start or item.chapter_id or is_sure(item, text):
                 continue
             out.append({"spec": spec, "item": item,
                         "sentence": sentence_around(text, item.start, item.end) or item.text})

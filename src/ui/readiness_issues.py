@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import QSizePolicy, QTextBrowser
 from src.ui.ui_kit import PALETTE, STAGE_COLOURS
 
 MAX_PER_CHECK = 60          # groups shown per check; the rest are counted
+MAX_PLACES = 12             # links to each place of a repeated finding
 STATUS_WORDS = {"ready": "ready", "needs_work": "needs work", "problem": "a problem",
                 "needs_model": "needs a model to judge", "could_not_check": "could not check",
                 "info": "information"}
@@ -54,6 +55,8 @@ class ChapterIssues(QTextBrowser):
     intended_requested = pyqtSignal(object, str, bool)
     # save the editor's brief (the document to send with the manuscript)
     brief_requested = pyqtSignal()
+    # "menu" (change the chapter's stage) or a stage to move it to (3.1).
+    stage_requested = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -97,6 +100,8 @@ class ChapterIssues(QTextBrowser):
                      rd.OPENING_ROW: " · the first pages, read as an agent reads them"}.get(
                      ch.chapter_id, " · the opening chapter, held to a stricter bar"
                      if ch.is_opening else "")) + "</div>"]
+        if ch.chapter_id not in (rd.BOOK_ROW, rd.OPENING_ROW):
+            parts.append(self._stage_html(ch))
         names = ([s.name for s in rd.checks_for() if s.name in ch.results] if checks is None
                  else [n for n in checks if n in ch.results])
         if checks is not None:
@@ -240,6 +245,9 @@ class ChapterIssues(QTextBrowser):
                 f"{_e(rd.STAGE_LABELS.get(stage, stage))} › {_e(label)}</span> "
                 f"<span style='color:{PALETTE['ink_soft']}'>— {_e(summary)}</span></div>")
         out = [head]
+        if result.status in ("needs_work", "problem") and spec is not None and spec.description:
+            out.append(f"<div style='color:{PALETTE['ink_faint']}'>What it looks for: "
+                       f"{_e(spec.description[:240])}</div>")
         if result.message:
             out.append(f"<div style='color:{PALETTE['ink_faint']}'>{_e(result.message)}</div>")
         cleared = [i for i in result.items if i.verdict == "cleared"]
@@ -278,6 +286,20 @@ class ChapterIssues(QTextBrowser):
                        f"{len(result.items)} of {result.found} are kept.</div>")
         return "".join(out) + self._meant_html(name, meant) + self._cleared_html(cleared)
 
+    def _stage_html(self, ch) -> str:
+        """The chapter's stage, a link to change it, and the suggestion
+        to move on when every check of the stage passes (3.1)."""
+        from src.ai import chapter_stages as cst
+        stage = getattr(ch, "stage", "") or ""
+        out = (f"<div style='color:{PALETTE['ink_soft']}'>Stage: <b>{_e(cst.label(stage))}</b>"
+               f" · <a href='{self._link('stage', 'menu')}'>change</a>")
+        nxt = cst.suggestion(ch)
+        if nxt:
+            out += (f"<br><span style='color:{PALETTE['success']}'>Every "
+                    f"{_e(cst.label(stage))} check passes.</span> "
+                    f"<a href='{self._link('stage', nxt)}'>Move it to {_e(cst.label(nxt))}</a>")
+        return out + "</div>"
+
     def _meant_html(self, name: str, meant) -> str:
         """What the writer said is intended: listed, not counted, undoable."""
         if not meant:
@@ -287,7 +309,8 @@ class ChapterIssues(QTextBrowser):
             f"<a href='{self._link('unintend', (i, name))}'>take that back</a></div>"
             for i in meant[:12])
         return (f"<div style='color:{PALETTE['ink_faint']}; margin-top:4px'>You said these are "
-                f"intended (they go in the editor's brief):{rows}</div>")
+                f"intended or not a problem; they don't count (what's intended goes in the "
+                f"editor's brief):{rows}</div>")
 
     def _cleared_html(self, cleared) -> str:
         """What the model judged fine: shown, not counted."""
@@ -330,7 +353,10 @@ class ChapterIssues(QTextBrowser):
                         f"<a href='{self._link('expand', first)}'>Ways to expand it…</a>")
             return "".join(bits) + where
         kind = {"spelling": "Spelling", "grammar": "Grammar"}.get(first.kind, "")
-        bits.append(f"<b>{_e(first.text)}</b>{times} "
+        showable = self._showable(first, ch)
+        shown = (f"<a href='{self._link('show', first)}'><b>{_e(first.text)}</b></a>"
+                 if showable else f"<b>{_e(first.text)}</b>")
+        bits.append(f"{shown}{times} "
                     + (f"<span style='color:{PALETTE['ink_faint']}'>{_e(kind)}</span>"
                        if kind else ""))
         reason = first.reason
@@ -349,14 +375,37 @@ class ChapterIssues(QTextBrowser):
             bits.append(f"<br><span style='color:{PALETTE['ink_faint']}'>Try: "
                         + ", ".join(f"“{_e(s)}”" for s in first.suggestions[:4]) + "</span>")
         links = []
-        if first.end > first.start or first.chapter_id:
+        if showable:
             links.append(f"<a href='{self._link('show', first)}'>Show in chapter</a>")
+        places = self._places_html(group, ch)
+        if places:
+            links.append(places)
         from src.ai.editor_pass import is_query
         if is_query(first) and first.key:
             links.append(f"<a href='{self._link('intend', (first, name))}'>That's intended</a>")
         if links:
             bits.append("<br>" + " · ".join(links))
         return "".join(bits) + where
+
+    @staticmethod
+    def _showable(item, ch) -> bool:
+        """Can "Show in chapter" find it: it has a place, or a chapter, or
+        it is quoted from the chapter shown."""
+        from src.ai import readiness as rd
+        if item.end > item.start or item.chapter_id:
+            return True
+        return bool((item.text or "").strip()) and \
+            getattr(ch, "chapter_id", None) not in (None, rd.BOOK_ROW, rd.OPENING_ROW)
+
+    def _places_html(self, group, ch) -> str:
+        """For a finding repeated in several places: a link to each."""
+        spots = [i for i in group if i.end > i.start]
+        if len(spots) < 2:
+            return ""
+        links = [f"<a href='{self._link('show', i)}'>{n}</a>"
+                 for n, i in enumerate(spots[:MAX_PLACES], 1)]
+        more = f" (+{len(spots) - MAX_PLACES})" if len(spots) > MAX_PLACES else ""
+        return "Each place: " + " ".join(links) + more
 
     # ── Links ────────────────────────────────────────────────────
 
@@ -379,6 +428,8 @@ class ChapterIssues(QTextBrowser):
             self.intended_requested.emit(item[0], item[1], kind == "intend")
         elif kind == "brief":
             self.brief_requested.emit()
+        elif kind == "stage":
+            self.stage_requested.emit(item)
         elif kind.startswith("letter-"):
             self.letter_requested.emit(kind[7:])
         elif kind == "chapter":

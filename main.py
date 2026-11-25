@@ -151,6 +151,26 @@ def qt_message_handler(mode, context, message):
         print(f"Qt Fatal: {message}", file=sys.stderr)
 
 
+_CRASH_LOG = None
+
+
+def _record_crashes() -> None:
+    """On a hard crash, write the Python stack to ~/.creativeos/crash.log
+    (macOS's own report shows only Qt's side), so the cause can be found."""
+    global _CRASH_LOG
+    try:
+        import faulthandler
+        import time
+        folder = Path.home() / ".creativeos"
+        folder.mkdir(parents=True, exist_ok=True)
+        _CRASH_LOG = open(folder / "crash.log", "a", encoding="utf-8")
+        _CRASH_LOG.write(f"\n--- started {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
+        _CRASH_LOG.flush()
+        faulthandler.enable(file=_CRASH_LOG, all_threads=True)
+    except Exception as e:
+        print(f"[crash log] not set up: {e}")
+
+
 def main():
     """Initialize and run CreativeOS — the launcher shell that hosts the
     Writing Tool today and additional creative/business tools in future.
@@ -158,6 +178,8 @@ def main():
     Pass ``--writer`` to skip the launcher and open the Writing Tool
     directly (useful for shortcuts, file associations, and tests).
     """
+    _record_crashes()
+
     # Install custom message handler to suppress known Qt warnings
     qInstallMessageHandler(qt_message_handler)
 

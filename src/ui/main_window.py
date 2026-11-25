@@ -3281,6 +3281,7 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(self.grader_widget, f"{get_icon('grader')} Critique")
         self.tab_widget.addTab(self.video_studio_widget, "🎬 Video Studio")
         self.tab_widget.addTab(self.agent_manager, f"{get_icon('agents')} Publishing")
+        from src.ui import critique_window; critique_window.install(self)   # Critique beside Write
 
         # Sidebar — chat assistant + chapter outline as stacked
         # tabs sharing the same right-hand slot. The outline used to
@@ -12043,6 +12044,7 @@ class MainWindow(QMainWindow):
             menu.addSeparator()
             menu.addAction("Open Critique Tab").triggered.connect(
                 lambda: self.tab_widget.setCurrentWidget(self.grader_widget))
+            from src.ui import critique_window; critique_window.add_to_menu(self, menu)
             return
         from src.ai.continuity_analysis import has_cross_manuscript_content
         main_label = project.scope_label(None)
@@ -12067,6 +12069,7 @@ class MainWindow(QMainWindow):
             self._open_consistency_dialog)
         menu.addAction("Open Critique Tab").triggered.connect(
             lambda: self.tab_widget.setCurrentWidget(self.grader_widget))
+        from src.ui import critique_window; critique_window.add_to_menu(self, menu)
 
     # ── Consistency check ───────────────────────────────────────
 
@@ -12297,6 +12300,8 @@ class MainWindow(QMainWindow):
             return self._start_chat_critique(intent.get("scope", "chapter"), message)
         if kind == "chapter_outline":
             return self._chat_regenerate_chapter_outline(intent.get("source", "text"), message)
+        if kind == "stage":                                        # chapter stages (3.1)
+            from src.ui.chapter_stage_ui import run_chat; return run_chat(self, message)
         if kind == "story_outline" and self.current_project:
             notes, _ = self._apply_chat_actions([("update_story_outline", intent.get("data") or {})])
             if not notes:

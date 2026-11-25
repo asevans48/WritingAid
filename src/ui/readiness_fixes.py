@@ -13,6 +13,7 @@ Companion's own Accept, which goes through the editor's ``_replace_span``.
 
 from __future__ import annotations
 
+import re
 from typing import Any, List, Sequence
 
 MAX_FIXES = 25
@@ -46,11 +47,14 @@ def fixes_from_items(label: str, items: Sequence[Any], text: str) -> List[Any]:
         sentence = text[s0:s1].strip()
         options = []
         for sug in item.suggestions[:2]:
-            if sug and sug != item.text:
+            if sug is not None and sug != item.text:
                 rel = start - s0
                 fixed = (text[s0:start] + sug + text[end:s1]).strip()
+                if not sug:                      # a cut ("very"): no double space left
+                    fixed = re.sub(r"  +", " ", re.sub(r" +([,.;:!?])", r"\1", fixed))
                 if fixed and fixed != sentence and rel >= 0:
-                    options.append(FixOption(fixed, "Applies the editor's suggestion.",
+                    options.append(FixOption(fixed, "Cuts it, as the editor suggests."
+                                             if not sug else "Applies the editor's suggestion.",
                                              by_ai=False))
         short = item.text if len(item.text) <= 40 else item.text[:39] + "…"
         out.append(Fix(f"{label}: “{short}” — {item.reason[:90]}", item.note or "",

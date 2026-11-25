@@ -1026,6 +1026,7 @@ class ErrorCard(QWidget):
             self._action(actions, "✨ Rewrite with AI", self._rewrite)
         if kind == "spelling":
             self._action(actions, "Add to dictionary", self._add_word)
+        from src.ui import fix_all; fix_all.add_to_card(self, actions, error)   # 3.4
         self._action(actions, "Ignore", self._ignore)
         actions.addStretch()
         self._layout.addLayout(actions)
@@ -1190,6 +1191,7 @@ class ErrorCard(QWidget):
 
     def hideEvent(self, event):
         self._hide_timer.stop()
+        from src.ui import fix_all; fix_all.card_hidden(self)   # 3.4
         super().hideEvent(event)
 
 
@@ -1453,6 +1455,9 @@ class EnhancedTextEditor(QTextEdit):
 
     def _apply_fix(self, cursor: QTextCursor, suggestion: str, error) -> None:
         """Apply a suggested fix, and learn from which words get cut."""
+        from src.ui import fix_all                                   # 3.4: "Fix all N" ticked
+        if fix_all.everywhere(self, suggestion, error):
+            return
         self._replace_word(cursor, suggestion)
         if error is not None and error.error_type in (ErrorType.OVERUSE, ErrorType.STYLE) \
                 and len((error.word or "").split()) == 1:
@@ -1925,6 +1930,7 @@ class EnhancedTextEditor(QTextEdit):
                         lambda checked, s=suggestion, c=QTextCursor(span_cursor), e=error:
                             self._apply_fix(c, s, e)
                     )
+                from src.ui import fix_all; fix_all.add_to_menu(self, menu, error)   # 3.4
 
                 menu.addSeparator()
 

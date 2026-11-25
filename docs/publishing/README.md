@@ -326,10 +326,10 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 - [x] [2.2](pieces/23-2.2-from-a-cell-to-the-fix.md) From a cell to the fix (S)
 - [x] [2.3](pieces/24-2.3-check-the-book-in-the-background.md) Check the book in the background (M)
 - [x] [2.4](pieces/25-2.4-progress-over-time.md) Progress over time (S)
-- [ ] [3.1](pieces/26-3.1-chapter-stages.md) Chapter stages (S)
-- [ ] [3.2](pieces/27-3.2-the-next-fix-queue.md) The next-fix queue (M)
-- [ ] [3.3](pieces/28-3.3-skip-and-not-a-problem.md) Skip and Not a problem (M)
-- [ ] [3.4](pieces/29-3.4-accept-all-like-this.md) Accept all like this (S)
+- [x] [3.1](pieces/26-3.1-chapter-stages.md) Chapter stages (S)
+- [x] [3.2](pieces/27-3.2-the-next-fix-queue.md) The next-fix queue (M)
+- [x] [3.3](pieces/28-3.3-skip-and-not-a-problem.md) Skip and Not a problem (M)
+- [x] [3.4](pieces/29-3.4-accept-all-like-this.md) Accept all like this (S)
 
 **Parity with ProWritingAid (after the foundations; alongside the path)**
 - [ ] [P.5](pieces/30-P.5-fix-or-hide-the-worst-checks.md) Fix or hide the worst checks (M, repeatable)
@@ -354,7 +354,7 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 - [ ] [D.2a](pieces/45-D.2a-one-improve-window-design.md) One Improve window: design (S, design, no code)
 - [ ] [D.2b](pieces/46-D.2b-one-improve-window-build-with-suggestions-and-ex.md) One Improve window: build, with Suggestions and Expand (M)
 - [ ] [D.2c](pieces/47-D.2c-one-improve-window-rephrase-joins.md) One Improve window: Rephrase joins (M)
-- [ ] [D.3](pieces/48-D.3-one-issues-list-in-the-side-panel.md) One issues list in the side panel (M, after 3.2)
+- [x] [D.3](pieces/48-D.3-one-issues-list-in-the-side-panel.md) One issues list in the side panel (M, after 3.2)
 - [ ] [D.4](pieces/49-D.4-fewer-top-level-tabs.md) Fewer top-level tabs (M, after 0.2)
 - [ ] [D.5](pieces/49b-D.5-analyses-run-as-critique-reports.md) Analyses run as Critique reports (M, after 2.1; added in 0.2)
 
