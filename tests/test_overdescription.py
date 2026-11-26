@@ -60,6 +60,8 @@ def test_looking_at_something_is_an_action():
     ("The room was almost too dark to see.", "The room was too dark to see."),
     ("She almost fell on the stairs.", "She almost fell on the stairs."),   # an action
     ("He would rather than not.", "He would rather than not."),
+    ("It was very, very cold.", "It was cold."),
+    ("It was very very cold.", "It was cold."),
 ])
 def test_trimmed(before, after):
     assert od.trimmed(before) == after
@@ -324,3 +326,18 @@ def test_critique_tab_lists_statements_and_links_to_the_editor(app):
     from PyQt6.QtCore import QUrl
     w._handle_link_click(QUrl("overdesc:0"))
     assert got and got[0][0] == "ch" and got[0][2] == "The room was almost too dark to see."
+
+
+def test_hints_show_apostrophes_as_written():
+    """The hint read "can&#x27;t": the label does not read that code."""
+    from PyQt6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from src.ui.overdescription_panel import OverdescriptionPanel
+    import inspect
+    src = inspect.getsource(OverdescriptionPanel)
+    assert "html.escape(h, quote=False)" in src
+    flag = od.scan("It was very, very cold.")[0]
+    assert any("can't" in h for h in flag.hints)
+    import html
+    shown = "<br>".join(f"• {html.escape(h, quote=False)}" for h in flag.hints)
+    assert "&#x27;" not in shown and "can't" in shown

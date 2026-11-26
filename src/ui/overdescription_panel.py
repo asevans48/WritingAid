@@ -245,8 +245,8 @@ class OverdescriptionPanel(QWidget):
             self._clear_detail()
             return
         self.statement.setHtml(flag_html(flag))
-        self.reason.setText(f"<b>Why:</b> {html.escape(flag.reason)}" if flag.reason else "")
-        self.hints.setText("<br>".join(f"• {html.escape(h)}" for h in flag.hints))
+        self.reason.setText(f"<b>Why:</b> {html.escape(flag.reason, quote=False)}" if flag.reason else "")
+        self.hints.setText("<br>".join(f"• {html.escape(h, quote=False)}" for h in flag.hints))
         self.expansion_list.clear()
         for x in flag.expansions:
             tag = x.approach or ("expansion" if x.by_ai else "edit")

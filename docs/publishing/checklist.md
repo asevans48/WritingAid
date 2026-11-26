@@ -43,15 +43,28 @@ three rounds:**
   check also opens every screen on a copy, saves it from the window and
   compares). The D.2a design for the One Improve window (for your
   review).
+- **D.2b** (25 November): the One Improve window. Suggestions and Overly
+  descriptive? open one window with tabs 💡 Suggestions · 📝 Critique ·
+  🔍 Expand; the old windows are one tick away (Settings ▸ Features ▸
+  Improve window, ticked by default). The right-click is counted 7 / 11
+  (was 9 / 13), as decision 16 says; the baseline was lowered to match.
+- **D.2c** (26 November): Rephrase joins as the third tab (✨ Rephrase,
+  Ctrl+3). Ctrl+R, ✨, the right-click, a style flag's ✨ Rewrite with AI
+  and the draft window's Rephrase open the Improve window on it; its 25
+  options sit behind ▸ Change options; no "Discard your edit?". Rating
+  rows are the same as the old window's (tested column by column). The
+  old Rephrase window is behind the same switch. Every D.2 piece is done.
 
-Tests: 1,846 pass in one run, none fail. No screen count rose above
+Tests: 1,894 pass in one run, none fail (after D.2c). No screen count rose above
 `screens_baseline.json` in any of these (D.4's 5 top-level tabs, against
-10 in the baseline, is still yours to agree).
+10 in the baseline, is still yours to agree; the Improve window's own
+figures too, section 3).
 
 What is waiting for you:
 
 - **Try it (section 1).** Nothing there is ticked yet. The newest items,
-  from the end: the screen check (0.3; run it on both projects), D.9's
+  from the end: Rephrase in the Improve window (D.2c), the One Improve
+  window (D.2b), the screen check (0.3; run it on both projects), D.9's
   other screens, the model naming groups (V.3), managing groups (V.5),
   rewrites in the same voice (V.4), marks becoming notes (6.2), listen
   and mark (6.1), LanguageTool in full (P.6), voice groups (V.2), character
@@ -61,18 +74,18 @@ What is waiting for you:
   with the app closed: `pkill -f languagetool-server`.
 - **Run the genre script (P.3)** with the app closed:
   `venv/bin/python scripts/genre_baseline.py`, then `--show`.
-- **The D.2a design is reviewed** (25 Nov). Its seven questions are
-  answered (README decision 16), so D.2b can start when you say go.
+- **D.2b and D.2c are built** on the reviewed D.2a design (decision 16);
+  try them (section 1) and say whether their figures become the window's
+  baseline (section 3).
 - **Decide (section 3).** Open: D.4 (three), D.5 (two), 4.3, the
   Companion's chat, V.1 (the 1.9 GB copy; which rows shape groups), P.8
   (three), P.6 (keep the data), V.2 (two calibration choices), 6.1, V.4
   (three), V.5 (two), 6.2 (two), V.3 (two), D.9 (four
-  kinds of box), D.8 (three), 0.3 (three). The rest are answered and
-  marked so; their boxes are yours to tick.
-- **Commit rounds 1, 2 and 3** when you are happy with them (end of
-  section 1).
+  kinds of box), D.8 (three), 0.3 (three), D.2b (two), D.2c (three). The
+  rest are answered and marked so; their boxes are yours to tick.
+- **Commit rounds 1, 2 and 3, D.2b and D.2c,** when you are happy with
+  them (end of section 1).
 - **Next pieces (section 5): what remains.**
-  - D.2b, then D.2c (D.2a is reviewed).
   - More one-look and fewer-interruptions sessions if you want them:
     Training Studio, the assistant, Video Studio's editors (D.8); boxes in
     separate windows (D.9, section 3).
@@ -768,6 +781,83 @@ start the app once and wait a minute)
       so no word is clipped. Also try Space while listening and marking,
       and pausing in the short gap between paragraphs.
 
+**The One Improve window (D.2b)**
+- [ ] Highlight a sentence or two, right-click ▸ ✨ Improve this ▸ 💡
+      Suggestions…: one window, "Improve — …", with tabs 💡 Suggestions ·
+      📝 Critique · 🔍 Expand. Suggestions runs at once; the versions list,
+      Your version, the changes and the rating row are below the tabs.
+- [ ] Click 📝 Critique: the critique is there with no second wait (same
+      model call). Click 🔍 Expand: the overly descriptive statements are
+      there too, also without a new wait.
+- [ ] Right-click ▸ 🔍 Overly descriptive?…: the same window opens on
+      Expand. Apply an expansion with **Apply to passage**: "Your text,
+      expanded" appears at the top of the versions. Rate it (it can be
+      rated now), then ✓ Accept: the passage changes in the chapter, and
+      Ctrl+Z undoes it.
+- [ ] Edit a version in Your version (✏ edited shows), pick another
+      version, come back: your edit is still there, with no question.
+      ↺ Reset brings the original back.
+- [ ] Rate a suggestion, use 🚫 Avoid a phrase… on a selected phrase, and
+      Talk it through ("make it darker"): new versions go to the top.
+- [ ] From the Companion: the next-fix card's 💡 More options… and a
+      note's 💡 Suggest fix open the window on Suggestions with Focus
+      filled; accept from any tab and the note or fix clears. The
+      Companion's Expand… and the Critique's "Ways to expand it…" open it
+      on Expand.
+- [ ] Keys: Ctrl+1 / Ctrl+2 / Ctrl+4 switch tabs, Ctrl+Return accepts,
+      Esc closes, Return in Focus regenerates (and does not accept).
+- [ ] On the small laptop screen (1024 × 600): the window fits, the middle
+      scrolls, Close and ✓ Accept stay in view. Talk it through is a
+      closed section there; on a wide window (drag it past 1,200 px) it is
+      a column beside Your version.
+- [ ] With AI off: Suggestions says there is no model and links to
+      🔍 Expand, which shows the word scan.
+- [ ] Settings ▸ Features ▸ Improve window: untick it, and the old
+      Suggestions and Overly descriptive? windows open exactly as before;
+      tick it again for the new one. Rephrase (Ctrl+R, ✨) is unchanged
+      until D.2c.
+
+**The One Improve window: Rephrase joins (D.2c)**
+- [ ] Highlight a phrase and press Ctrl+R (or ✨ on the toolbar): the
+      Improve window opens on ✨ Rephrase, the third of four tabs. The
+      line under the tabs says it works on exactly what you highlighted;
+      the summary line shows your styles, tone, point of view and Cloud or
+      Local.
+- [ ] Open ▸ Change options: genre, the seven styles, point of view,
+      character voice, the twelve tones with Custom, Cloud / Local are all
+      there. Change a few: the summary line follows. Close the window and
+      reopen it: the section is open or closed as you left it.
+- [ ] Check the Scene (↻ Refresh rebuilds it), then Generate Options: the
+      options come in as "Rephrase · concise", "Rephrase · clearer", … in
+      the versions list, with Why and the changes from your highlight.
+- [ ] Edit one option in Your version, pick another, come back: your edit
+      is still there and no "Discard your edit?" question appears.
+      ↺ Reset brings the option back.
+- [ ] Rate an option and keep editing: the status says "Saving as … after
+      you finish editing…", then "✓ Saved as … (edited) for training".
+      Rate another Poor, then ✓ Accept it anyway.
+- [ ] ✓ Accept: exactly your highlighted text is replaced (not the whole
+      sentence), and Ctrl+Z undoes it.
+- [ ] Talk it through on the Rephrase tab ("make it darker"): new versions
+      go to the top; edits on the earlier ones stay.
+- [ ] Switch to 💡 Suggestions in the same window: it runs on the whole
+      sentence. Pick a suggestion or a rephrase and accept either.
+- [ ] A style flag's hover card ▸ ✨ Rewrite with AI, and the next-fix
+      card's 💡 More options… on a style flag: the window opens on
+      Rephrase with the flag's hint at the top of Scene.
+- [ ] Right-click ▸ ✨ Improve this ▸ ✨ Rephrase with AI…: the same.
+- [ ] In a draft window, right-click ▸ ✨ Rephrase with AI…: the whole
+      Improve window opens over the draft window (Suggestions and Expand
+      work there too); Accept changes the draft and marks it unsaved.
+- [ ] ▾ context beside the passage shows the text around it.
+- [ ] With AI off: Rephrase says it uses the Python libraries, and
+      Suggestions' no-model line links to ✨ Rephrase and 🔍 Expand.
+- [ ] Settings ▸ Features ▸ Improve window: untick it, and Ctrl+R opens
+      the old Rephrase window exactly as before (with its question); tick
+      it again.
+- [ ] If you train on your ratings: rate and accept a few rephrases, and
+      check they appear in Training Studio ▸ Browse rows as before.
+
 **When you are happy**
 Already committed by you: phase 3, D.3, 2.5 and 0.5 (7e48893); R.7, D.1,
 9.2, 7.1 (206300a); D.7 and D.9 (ccc779b); D.8, P.2a, 4.1, 7.3, P.3, D.6,
@@ -782,6 +872,21 @@ chapter's prose profile (d0d347e, 58226e9).
       (`src/ui/listen_mark.py`), and pause without the stutter
       (`src/services/tts_service.py`, `tests/test_tts_pause.py`). The D.2a
       answers (decision 16) are in the docs.
+- [ ] Commit D.2b: the One Improve window with Suggestions, Critique and
+      Expand (`src/ui/improve.py`, `improve_window.py`, `improve_tabs.py`,
+      the helpers moved in `passage_critique_dialog.py`, call lines in
+      `manuscript_editor.py` and `settings_dialog.py`, the harness and
+      baseline (right-click 7 / 11), `tests/test_improve_window.py` and the
+      test changes named in D.2b's *Outcome*), and two old Expand glitches
+      fixed after review ("can't" shown as code; "very, very cold" cut to
+      "very, cold": `overdescription_panel.py`, `src/ai/overdescription.py`).
+- [ ] Commit D.2c: Rephrase joins the Improve window
+      (`src/ui/improve_rephrase.py`, `tests/test_improve_rephrase.py`; changes
+      in `improve.py`, `improve_window.py`, `improve_tabs.py`,
+      `rephrase_dialog.py` (`hosted`, two signals); call lines in
+      `manuscript_editor.py` and `draft_editor_window.py`; the harness's
+      `improve_rephrase` screen; `tests/test_improve_window.py` and
+      `tests/test_one_look.py` as D.2c's *Outcome* says; the docs).
 - [ ] For anything you reject, untick it in the README tracker and write why
       under the piece's *Review notes*.
 
@@ -1158,6 +1263,33 @@ Write each answer in the README under *Decisions*, or tell the session.
       (d) 165 boxes in separate windows (Training Studio 47, Video Studio's
       editors 74, Settings 10, others): give those windows a status line
       so they can go quiet too?
+- [ ] **D.2b: the Improve window's figures and Talk it through.**
+      (a) Agree the window's counts as its baseline: Suggestions tab 10
+      buttons, Critique 9, Expand 12; 1 section; 3 tabs (4 after D.2c).
+      Recommended: agree (the three old windows had 24 buttons between
+      them). (b) Talk it through is a column only when the window is
+      1,200 px wide or more (the app's rule for "narrow"); the window opens
+      1,100 wide, so it starts as a closed section until you widen it.
+      Keep that, or open the window wider (about 1,250) where the screen
+      allows, so the column shows at once? Recommended: keep; the window
+      remembers its size once you widen it.
+- [ ] **D.2c: the Rephrase tab's figures.** Agree them as part of the
+      window's baseline: 12 buttons, 2 sections (▸ Change options, Talk it
+      through), 4 tabs, the 25 options out of view until opened (the old
+      window: 9 buttons and the 25 options in view). Recommended: agree.
+- [ ] **D.2c: two old Rephrase slips, found while building (not changed,
+      so the rows stay the same as before).** (a) Every Rephrase rating
+      row is stamped with the *first* option's style ("concise/neutral"),
+      whichever option you rated, so the training data cannot tell styles
+      apart. Fix it, as a small piece of its own (new rows only; old rows
+      stay as they are)? Recommended: yes. (b) "Auto-detect from text" never
+      shows in the character-voice list, so speaker detection never runs
+      from it. Fix it in the same small piece? Recommended: yes.
+- [ ] **D.2c: when to retire the three old windows.** Once you have used
+      the Improve window on both projects, retiring the old Rephrase,
+      Suggestions and Overly descriptive? windows (and the switch) is its
+      own small step (rule 11). Recommended: after a week of use on both
+      projects.
 - [ ] **6.2: order and undo.** Marks come before other line fixes of the
       same standing. Clearing a mark has no undo (like Dismiss on notes
       today). Both fine?
@@ -1191,7 +1323,8 @@ The routine from the README, as a checklist:
 - [x] [D.8](pieces/48d-D.8-one-look.md) One look — two sessions built, for review (Write, Companion, Critique, Settings; then Plot, Characters, World, Visuals, Video Studio, Publishing, Drafts, Print). Left for a later session if wanted: Training Studio, the assistant, Video Studio's editors
 - [x] [D.4](pieces/49-D.4-fewer-top-level-tabs.md) Fewer top-level tabs (reads saved window layouts) — built, for review
 - [x] [D.2a](pieces/45-D.2a-one-improve-window-design.md) One Improve window: design — written and reviewed 25 Nov; the seven questions are answered (README open decision 16). D.2b can start.
-- [ ] [D.2b](pieces/46-D.2b-one-improve-window-build-with-suggestions-and-ex.md), then [D.2c](pieces/47-D.2c-one-improve-window-rephrase-joins.md)
+- [x] [D.2b](pieces/46-D.2b-one-improve-window-build-with-suggestions-and-ex.md) — built 25 Nov, for review (section 1, "The One Improve window (D.2b)")
+- [x] then [D.2c](pieces/47-D.2c-one-improve-window-rephrase-joins.md) — built 26 Nov, for review (section 1, "The One Improve window: Rephrase joins (D.2c)"). Every D.2 piece is done.
 - [x] [D.5](pieces/49b-D.5-analyses-run-as-critique-reports.md) Analyses run as Critique reports (adds kinds to critique history) — built, for review
 - [ ] [U.3a](pieces/50-U.3a-fit-and-scroll-sweep-the-screens-used-most.md), then [U.3b](pieces/51-U.3b-fit-and-scroll-sweep-the-remaining-screens.md) Fit-and-scroll sweep (last, so it sweeps the final screens)
 

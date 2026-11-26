@@ -385,8 +385,8 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 **Declutter**
 - [x] [D.1](pieces/44-D.1-tidy-the-right-click-menu.md) Tidy the right-click menu (S) — built, for review
 - [x] [D.2a](pieces/45-D.2a-one-improve-window-design.md) One Improve window: design (S, design, no code) — written and reviewed 25 Nov; the seven questions are answered (open decision 16)
-- [ ] [D.2b](pieces/46-D.2b-one-improve-window-build-with-suggestions-and-ex.md) One Improve window: build, with Suggestions and Expand (M)
-- [ ] [D.2c](pieces/47-D.2c-one-improve-window-rephrase-joins.md) One Improve window: Rephrase joins (M)
+- [x] [D.2b](pieces/46-D.2b-one-improve-window-build-with-suggestions-and-ex.md) One Improve window: build, with Suggestions and Expand (M) — built 25 Nov, for review: one window with 💡 Suggestions · 📝 Critique · 🔍 Expand (Rephrase's place kept for D.2c); the old windows one tick away (Settings ▸ Features ▸ Improve window); right-click 7 / 11
+- [x] [D.2c](pieces/47-D.2c-one-improve-window-rephrase-joins.md) One Improve window: Rephrase joins (M) — built 26 Nov, for review: ✨ Rephrase is the third tab (Ctrl+3); Ctrl+R, ✨, the right-click, a style flag's ✨ Rewrite with AI and the draft window's Rephrase open the window on it; its 25 options behind ▸ Change options; no "Discard your edit?"; rating rows the same as the old window's (tested); the old window one tick away
 - [x] [D.3](pieces/48-D.3-one-issues-list-in-the-side-panel.md) One issues list in the side panel (M, after 3.2) — built; the Style tab retired in D.6
 - [x] [D.6](pieces/48b-D.6-retire-the-trial-screens.md) Retire the trial screens, and bring the counts back down (S, added 24 Nov; after you have used 3.2, D.3 and 2.5) — built, for review: the Style tab and Today's three fixes are gone (their actions are on the Companion card and in ✓ Checks ▾); menus counted by decision 11; every count at or under the baseline
 - [x] [D.7](pieces/48c-D.7-show-less-at-once.md) Show less at once: toolbar, hover card, Companion sections, Drafts into File (M, added 24 Nov) — built, for review
@@ -441,7 +441,7 @@ plus these:
 | [D.7](pieces/48c-D.7-show-less-at-once.md) | Write screen 24 buttons to 19, grouped by row; a shorter hover card; the Companion opens what fits the stage; Drafts into File | Built, for review |
 | [D.8](pieces/48d-D.8-one-look.md) | One main button a screen, one set of colours, one spacing (1,014 inline styles today) | First session done: 10 files clean |
 | [D.9](pieces/48e-D.9-fewer-interruptions.md) | Messages that need no answer stop opening a box (329 today) | First session done: 49 quiet |
-| [D.2a–c](pieces/45-D.2a-one-improve-window-design.md) | Three help windows become one | Designed and reviewed (D.2a); D.2b next |
+| [D.2a–c](pieces/45-D.2a-one-improve-window-design.md) | Three help windows become one | Built, for review (D.2b, D.2c): Rephrase, Suggestions and Overly descriptive? open one Improve window (tabs Suggestions · Critique · Rephrase · Expand), from every place that opened them, the draft window too; right-click counted 7 / 11 (was 9 / 13); the old three windows behind one switch until you retire them |
 | [D.4](pieces/49-D.4-fewer-top-level-tabs.md) | Ten top-level tabs become five; one way to detach a screen, and the "⧉ Own window" button goes | Built, for review: 5 top-level tabs (baseline 10); the old ten one switch away in Settings |
 | [D.5](pieces/49b-D.5-analyses-run-as-critique-reports.md) | Six analysis windows become Critique reports | Built, for review: no count rises (Analyze ▾ keeps its eight entries; the links are inside the report); old windows retired after the trial |
 | [U.3a](pieces/50-U.3a-fit-and-scroll-sweep-the-screens-used-most.md), [U.3b](pieces/51-U.3b-fit-and-scroll-sweep-the-remaining-screens.md) | Every screen fits and scrolls | Not started |
@@ -462,6 +462,12 @@ tab's 15 buttons are gone (side panel 3 tabs, was 4); Write 19 buttons (24)
 and 29 menu items (29; 53 counting every item); right-click 9 entries
 without a selection (12) and 13 with one (22); Critique 6 buttons (11).
 After D.4: 5 top-level tabs (baseline 10), now counted by the harness.
+After D.2b: right-click 7 and 11 (✨ Improve this ▸ counted as one group,
+decision 16; the baseline was lowered to match). The Improve window is
+counted (Suggestions tab 10 buttons, 1 section, 3 tabs) but not yet in the
+baseline. After D.2c: 4 tabs; the Rephrase tab 12 buttons and 2 sections
+(▸ Change options and Talk it through), its 25 options out of view until
+opened (the old Rephrase window had 9 buttons and the 25 options in view).
 New baselines wait for the writer's agreement.
 
 ## Decisions

@@ -153,12 +153,24 @@ _RUNNING_MOMENTS = background._RUNNING
 
 
 class RephraseDialog(QDialog):
-    """Dialog for rephrasing selected text with AI."""
+    """Dialog for rephrasing selected text with AI.
+
+    ``hosted=True`` (D.2c): the dialog lives inside the Improve window's
+    ✨ Rephrase tab (``improve_rephrase``), which shows its options and talk
+    and forwards picks, edits, ratings and Accept to it. Every rating and
+    log call stays here. Hosted, there is no "Discard your edit?" question
+    (edits stay with their version in the window)."""
+
+    # The options shown (after Generate, or new versions from the talk), and
+    # the rating save status: for the Improve window (unused otherwise).
+    options_ready = pyqtSignal(object)
+    save_status = pyqtSignal(str)
 
     def __init__(self, text: str, project=None, parent=None,
                  surrounding_context: tuple = None,
                  chapter_content: str = "", chapter=None,
-                 instruction: str = "", text_before: str = ""):
+                 instruction: str = "", text_before: str = "",
+                 hosted: bool = False):
         """Initialize rephrase dialog.
 
         Args:
@@ -170,6 +182,7 @@ class RephraseDialog(QDialog):
             chapter: Chapter object (for arc context)
         """
         super().__init__(parent)
+        self.hosted = hosted
         # Qt marks paragraph breaks in a selection with U+2029; keep them as
         # real line breaks so dialogue stays one speaker per paragraph.
         from src.ai.dialogue_craft import normalize_breaks
@@ -1209,6 +1222,7 @@ class RephraseDialog(QDialog):
         # Select first option
         if self.options_list.count() > 0:
             self.options_list.setCurrentRow(0)
+        self.options_ready.emit(result)
 
     def _on_generation_error(self, error: str):
         """Handle generation error."""
@@ -1250,8 +1264,9 @@ class RephraseDialog(QDialog):
             self._save_timer.stop()
             self._flush_pending_rating_save()
 
-        # Confirm before discarding an in-progress edit.
-        if self._preview_dirty:
+        # Confirm before discarding an in-progress edit (not when hosted:
+        # the Improve window keeps each version's edit).
+        if self._preview_dirty and not self.hosted:
             from PyQt6.QtWidgets import QMessageBox
             current = self.preview_edit.toPlainText().strip()
             original = (self._original_option_text or '').strip()
@@ -1435,6 +1450,7 @@ class RephraseDialog(QDialog):
         self._save_status_label.setText(text)
         self._save_status_label.setStyleSheet(
             f"color: {color}; font-size: 11px; font-style: italic;")
+        self.save_status.emit(text)
 
     def _use_selected(self):
         """Use the selected/edited text and (if opted in) log the pair.

@@ -77,7 +77,16 @@ SCREENS = {
     "critique_character_check": ("report", "Critique: Analyze ▾ ▸ Characters with no model, the scan across the book (P.8)"),
     "character_book": ("page", "Characters: a character's Across the book section, open, on a 12-chapter sample (P.8)"),
     "ratings_by_voice": ("dialog", "Training Studio ▸ Browse rows…, Source: rated rewrites, by voice, on sample ratings (V.5)"),
+    "improve": ("dialog", "Improve window: 💡 Suggestions tab, with a sample reply (D.2b)"),
+    "improve_critique": ("dialog", "Improve window: 📝 Critique tab, with a sample reply (D.2b)"),
+    "improve_expand": ("dialog", "Improve window: 🔍 Expand tab, word scan, no model (D.2b)"),
+    "improve_rephrase": ("dialog", "Improve window: ✨ Rephrase tab, with sample options, no "
+                                   "model (D.2c)"),
 }
+# The Improve window, one picture per tab (D.2b, D.2c): drawn and counted, but
+# not in the baseline until the writer agrees its figures.
+IMPROVE_SCREENS = {"improve": "suggestions", "improve_critique": "critique",
+                   "improve_expand": "expand", "improve_rephrase": "rephrase"}
 # The main window's ten screens, with the labels it gives them (D.4 groups
 # them; every screen is also drawn on its own above, as before).
 TAB_SCREENS = ("main_tabs", "main_tabs_ten")
@@ -106,8 +115,9 @@ RETIRED = {"style": "D.6: its list is the Companion's next-fix card (✓ Checks 
 # How menu items are counted (decision 11, 24 Nov 2026). A menu whose items
 # are one closely related group counts as ONE entry: a list of words, one
 # setting's choices, one subject's handful of actions. Every other item
-# counts on its own, even inside a submenu (✨ Improve's Rephrase,
-# Suggestions and Overly descriptive? are three). A submenu or menu button
+# counts on its own, even inside a submenu. ✨ Improve this ▸ was three
+# (Rephrase, Suggestions, Overly descriptive?) until decision 16 (25 Nov
+# 2026): they open one Improve window, so it counts as one. A submenu or menu button
 # is grouped when its title starts with one of these. Change the list, not
 # the code, if the writer regroups. Documented in docs/publishing/screens.md.
 GROUPED_MENUS = (
@@ -122,6 +132,7 @@ GROUPED_MENUS = (
     "Novellas",                 # Write header: Novellas ▾
     "Drafts",                   # Write header: Drafts ▾ (manuscript drafts)
     "📝",                       # Write toolbar: annotations (add, view all)
+    "✨ Improve this",          # right-click: Rephrase, Suggestions, Overly descriptive? (decision 16)
 )
 
 SAMPLE_TEXT = (
@@ -455,6 +466,8 @@ def _build(name: str, project):
     kind = SCREENS[name][0]
     if name == "suggestions":
         return _suggestions(project)
+    if name in IMPROVE_SCREENS:
+        return _improve(project, IMPROVE_SCREENS[name])
     if name in HABIT_SCREENS:
         return _habit_screen(name, project)
     if name in ANALYSIS_SCREENS:
@@ -734,6 +747,72 @@ def _suggestions(project):
     return dlg, dlg
 
 
+def _improve(project, tab: str):
+    """The Improve window (D.2b) on a tab: Suggestions and Critique with the
+    sample reply; Expand on its own, as the word scan with no model."""
+    from src.ai import passage_critique as pc
+    from src.ui.improve_window import ImproveWindow
+    from src.ui.overdescription_panel import ReviewWorker
+    from src.ui.passage_critique_dialog import SuggestionWorker
+    chapter = project.manuscript.chapters[0]
+    anchor = "ran to the pier" if tab != "expand" else "very, very cold"
+    sel = (SAMPLE_TEXT.index(anchor), SAMPLE_TEXT.index(anchor) + len(anchor))
+    s, e = pc.expand_to_sentences(SAMPLE_TEXT, *sel)
+    if tab == "expand":
+        e = SAMPLE_TEXT.index("\n", e)                # the whole cold paragraph
+
+    class _Reply:
+        def generate_text(self, *a, **k):
+            return SAMPLE_REPLY
+
+    class _Now(SuggestionWorker):
+        def __init__(self, *a):
+            super().__init__(*a, llm_factory=lambda: (_Reply(), ""),
+                             search_factory=lambda p: None)
+
+        def start(self):
+            self.run()
+
+    class _Scan(ReviewWorker):
+        def __init__(self, *a):
+            super().__init__(*a, llm_factory=lambda: (None, "AI is off"))
+
+        def start(self):
+            self.run()
+
+    from src.ui import ui_kit                         # drawn at its first-open size
+    ui_kit._settings().remove("improve_window")       # on each screen size
+    win = ImproveWindow(SAMPLE_TEXT, s, e, project, chapter, tab=tab,
+                        selection=None if tab == "expand" else sel,
+                        suggestion_worker=_Now, review_worker=_Scan,
+                        rephrase_dialog=_sample_rephrase())
+    if tab == "rephrase":
+        from src.ai.rephrasing_agent import RephraseOption, RephraseResult
+        win.tab_objects["rephrase"].dlg._on_generation_complete(RephraseResult(
+            original="ran to the pier", model_used="sample", cost_estimate=0.0, options=[
+                RephraseOption(t, st, "neutral", "sample") for t, st in (
+                    ("raced for the pier", "concise"), ("ran down to the pier", "clearer"),
+                    ("ran, lungs burning, to the pier", "elaborate"),
+                    ("proceeded to the pier", "formal"))]))
+    win.show()
+    return win, win
+
+
+def _sample_rephrase():
+    """RephraseDialog with no model: no agent from settings, no scene
+    summary (Rephrase uses the on-device model; the harness never runs one)."""
+    from src.ai.rephrasing_agent import RephrasingAgent
+    from src.ui.rephrase_dialog import RephraseDialog
+
+    class _NoModel(RephraseDialog):
+        def _init_agent(self):
+            self.agent = RephrasingAgent(project=self.project)
+
+        def _moment_llm(self):
+            return None
+    return _NoModel
+
+
 def _page(name: str, project):
     if name == "write":
         from src.ui.manuscript_editor import ManuscriptEditor
@@ -911,6 +990,15 @@ def _counts(names: List[str], project, app) -> Dict[str, Any]:
     from PyQt6.QtWidgets import QMenu
     out: Dict[str, Any] = {"screens": {}, "right_click": {}}
     for name in names:
+        if name in IMPROVE_SCREENS:                     # counted, not yet in the baseline
+            try:
+                top, focus = _build(name, project)
+                _settle(app)
+                out["screens"][name] = count_widget(focus)
+                top.close()
+            except Exception as e:
+                out["screens"][name] = {"error": str(e)[:200]}
+            continue
         if name == "suggestions" or name in HABIT_SCREENS or name in ANALYSIS_SCREENS \
                 or name in CHARACTER_SCREENS or name in VOICE_SCREENS:
             continue                                    # not in the 0.2 baseline

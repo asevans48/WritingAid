@@ -1572,6 +1572,10 @@ class ChapterEditor(QWidget):
         selected = cursor.selectedText()
         if not selected.strip():
             return
+        from src.ui import improve      # the one Improve window (D.2c), or the old one
+        if improve.merged():
+            improve.rephrase(self, cursor, instruction=hint, chapter=self.chapter)
+            return
         doc_text = self.editor.toPlainText()
         from src.ui.rephrase_dialog import RephraseDialog
         from src.ai.passage_critique import qt_to_py_index
@@ -1635,6 +1639,10 @@ class ChapterEditor(QWidget):
                 "Please select some text to rephrase."
             )
             return
+        from src.ui import improve      # the one Improve window (D.2c), or the old one
+        if improve.merged():
+            improve.rephrase(self, cursor, chapter=self.chapter)
+            return
 
         # Extract surrounding text for context (up to ~500 chars before and after)
         doc_text = self.editor.toPlainText()
@@ -1689,6 +1697,9 @@ class ChapterEditor(QWidget):
         doc_text = self.editor.toPlainText()
         if not doc_text[start:end].strip():
             return False
+        from src.ui import improve      # the one Improve window (D.2b), or the old one
+        if improve.merged():
+            return improve.open(self, "suggestions", doc_text, start, end, selection=selection, focus=focus)
         from src.ui.passage_critique_dialog import PassageCritiqueDialog
         dialog = PassageCritiqueDialog(doc_text, start, end, self.project, self.chapter,
                                        self, selection=selection, focus=focus)
@@ -1717,6 +1728,9 @@ class ChapterEditor(QWidget):
         doc_text = self.editor.toPlainText()
         if not doc_text[start:end].strip():
             return False
+        from src.ui import improve      # the one Improve window (D.2b), or the old one
+        if improve.merged():
+            return improve.open(self, "expand", doc_text, start, end)
         from src.ui import overdescription_panel as op
         dialog = op.ExpandStatementDialog(doc_text, start, end, self.project, self.chapter, self)
         if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.replacement:

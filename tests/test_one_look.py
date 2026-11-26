@@ -21,6 +21,9 @@ CLEANED = [
     "src/ui/settings_dialog.py", "src/ui/outline_section.py", "src/ui/plan_section.py",
     "src/ui/outline_chart.py", "src/ui/habit_view.py", "src/ui/habit_tracker.py",
     "src/ui/screen_groups.py", "src/ui/critique_window.py",
+    # D.2b: the one Improve window.
+    "src/ui/improve.py", "src/ui/improve_window.py", "src/ui/improve_tabs.py",
+    "src/ui/improve_rephrase.py",                   # D.2c
     # Session 2 (25 November 2026): Story, Visuals, Video Studio, Publishing, Drafts, Print.
     "src/ui/plot/plot_manager.py", "src/ui/plot/plot_timeline.py",
     "src/ui/plot/freytag_pyramid_visual.py", "src/ui/plot/plot_event_editor.py",

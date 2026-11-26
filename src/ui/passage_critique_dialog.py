@@ -64,18 +64,22 @@ class SuggestionWorker(QThread):
     overdescribed = pyqtSignal(object)
 
     def __init__(self, project, chapter, text: str, start: int, end: int, focus: str,
-                 llm_factory=_build_llm, search_factory=_project_search):
+                 llm_factory=_build_llm, search_factory=_project_search, review: bool = True):
         super().__init__()
         self.args = (project, chapter, text, start, end)
         self.focus = focus
         self.llm_factory, self.search_factory = llm_factory, search_factory
         self.llm = self.ctx = self.voice = None
+        # False when the overly-descriptive review already ran (the Improve
+        # window's Expand tab, D.2b): no second model call for it.
+        self.review = review
 
     def run(self):
         try:
             self._critique()
         finally:
-            self._overdescription()
+            if self.review:
+                self._overdescription()
 
     def _overdescription(self):
         from src.ai import overdescription as od
@@ -314,19 +318,7 @@ class PassageCritiqueDialog(QDialog):
             self.main_splitter.setSizes(sizes)
 
     def _expansion_note(self, selection) -> str:
-        if not selection:
-            return ""
-        s, e = selection
-        added_before = self.text[self.start:s].strip()
-        added_after = self.text[e:self.end].strip()
-        if not (added_before or added_after):
-            return ""
-        bits = []
-        if added_before:
-            bits.append(f"the start of the sentence (“{_short(added_before)}”)")
-        if added_after:
-            bits.append(f"the end of the sentence (“{_short(added_after)}”)")
-        return "Your highlight was widened to whole sentences: added " + " and ".join(bits) + "."
+        return widened_note(self.text, self.start, self.end, selection)
 
     # ── Running ──────────────────────────────────────────────────────
 
@@ -446,9 +438,7 @@ class PassageCritiqueDialog(QDialog):
             self.result = PassageCritique()
         rest = [s for s in self.result.suggestions if s.angle != EXPANDED_ANGLE]
         if self._expansions.changed:
-            self.result.suggestions = [Suggestion(
-                self._expansions.text, "Your passage with the expansions you accepted.",
-                angle=EXPANDED_ANGLE)] + rest
+            self.result.suggestions = [expanded_suggestion(self._expansions.text)] + rest
         else:
             self.result.suggestions = rest
         self._fill_suggestion_list(0)
@@ -469,48 +459,18 @@ class PassageCritiqueDialog(QDialog):
     # ── Conversation ─────────────────────────────────────────────────
 
     def _chat_context(self):
-        from src.ai import passage_critique as pc
-        ctx, r = self._ctx, self.result
-        critique = []
-        for title, items in (("What works", r.works), ("What doesn't work", r.issues),
-                             ("Dialogue", getattr(r, "dialogue", [])), ("Order and flow", r.order)):
-            if items:
-                critique.append(f"{title}:\n" + "\n".join(f"- {i}" for i in items))
-        blocks = [(t, b) for t, b in ctx.sections() if b]
-        blocks.append(("THE SCENE (the passage is marked)", ctx.scene(1500)))
-        from src.ai.event_order import events_prompt
-        timeline = events_prompt(ctx.passage)
-        if timeline:
-            head, _, body = timeline.partition(":\n")
-            blocks.append((head, body))
-        if ctx.speakers:
-            blocks.append(("WHO SPEAKS EACH LINE", ctx.speakers))
-        if critique:
-            blocks.append(("YOUR CRITIQUE OF THE PASSAGE", "\n\n".join(critique)))
-        rules = pc._SCOPE_RULES + "\n" + pc._REWRITE_RULES + "- " + pc._avoid_line()
-        return blocks, rules
+        return chat_context(self._ctx, self.result)
 
     def _send_message(self, message: str) -> None:
         if self._llm is None or self._ctx is None or self.result is None:
             return
-        from src.ai import passage_critique as pc
-        from src.ai.rewrite_chat import ChatTurn, chat_turn
+        from src.ai.rewrite_chat import ChatTurn
         from src.ui.rewrite_chat_panel import run_turn
         self.chat.add_message("You", message)
         self.chat.set_busy(True, "Thinking…")
-        blocks, rules = self._chat_context()
         versions = [(s.angle, s.text) for s in self.result.suggestions]
-        turns = list(self.turns)
-        llm, ctx, voice = self._llm, self._ctx, self._voice
-
-        def check(found):
-            return pc._check_all(ctx, found, voice, message)
-
-        def turn():
-            return chat_turn(llm, system=pc.SYSTEM_PROMPT, context=blocks, passage=ctx.passage,
-                             versions=versions, turns=turns, message=message, check=check,
-                             rules=rules)
-
+        turn = chat_turn_fn(self._llm, self._ctx, self._voice, self.result, versions,
+                            list(self.turns), message)
         self.turns.append(ChatTurn("author", message))
         run_turn(self, turn, self._on_reply)
 
@@ -538,16 +498,7 @@ class PassageCritiqueDialog(QDialog):
 
     @staticmethod
     def _discussion_html(result: PassageCritique) -> str:
-        def section(title, items, color, mark):
-            if not items:
-                return ""
-            rows = "".join(f"<li>{html.escape(i)}</li>" for i in items)
-            return f"<h3 style='color:{color}'>{mark} {title}</h3><ul>{rows}</ul>"
-        body = (section("What works", result.works, "#2e7d32", "✓")
-                + section("What doesn't work", result.issues, "#c62828", "✗")
-                + section("Dialogue", getattr(result, "dialogue", []), "#7c3aed", "💬")
-                + section("Order and flow", result.order, "#1d4ed8", "⇅"))
-        return body or "<p><i>No discussion — see the suggestions below.</i></p>"
+        return discussion_html(result)
 
     def _show_suggestion(self, row: int):
         if not self.result or not (0 <= row < len(self.result.suggestions)):
@@ -569,30 +520,13 @@ class PassageCritiqueDialog(QDialog):
         self.changes_view.setHtml(diff_html(self.passage, text) if text.strip() else "")
 
     def _log(self, output: str, rating: str, accepted: bool) -> bool:
-        from src.ai.rewrite_quality import log_rated_rewrite
-        genre = getattr(getattr(self.project, "prose_profile", None), "genre", "") or ""
-        return log_rated_rewrite(self.passage, output, rating, accepted=accepted,
-                                 project_path=_project_path(self.project),
-                                 before=self.text[max(0, self.start - 500):self.start],
-                                 after=self.text[self.end:self.end + 500], genre=genre)
+        return log_rating(self.project, self.text, self.start, self.end, output, rating,
+                          accepted)
 
     def _avoid_phrase(self, _checked: bool = False, phrase: Optional[str] = None):
-        from src.ai.rewrite_quality import add_avoid_phrase
-        if phrase is None:
-            phrase = self.preview_edit.textCursor().selectedText().strip()
-        if not phrase:
-            from PyQt6.QtWidgets import QInputDialog
-            phrase, ok = QInputDialog.getText(
-                self, "Avoid a phrase", "Phrase Suggestions and Rephrase should never use:")
-            if not ok:
-                return
-        try:
-            added = add_avoid_phrase(phrase)
-        except Exception as e:
-            self.rating_status.setText(f"Couldn't save: {e}")
-            return
-        self.rating_status.setText(f"Won't suggest “{phrase.strip()}” again." if added
-                                   else "Already avoided (or too short).")
+        message = avoid_phrase(self, self.preview_edit, phrase)
+        if message is not None:
+            self.rating_status.setText(message)
 
     def _rate(self, value: str):
         row = self.suggestion_list.currentRow()
@@ -641,3 +575,115 @@ class PassageCritiqueDialog(QDialog):
 def _short(text: str, n: int = 60) -> str:
     text = " ".join(text.split())
     return text if len(text) <= n else text[:n - 1] + "…"
+
+
+# ── Shared with the Improve window (D.2b) ─────────────────────────────
+# Moved out of PassageCritiqueDialog unchanged, so the old window and the
+# Improve window's Suggestions tab do exactly the same thing.
+
+def widened_note(text: str, start: int, end: int, selection) -> str:
+    """"Your highlight was widened to whole sentences: added …", or ""."""
+    if not selection:
+        return ""
+    s, e = selection
+    added_before = text[start:s].strip()
+    added_after = text[e:end].strip()
+    if not (added_before or added_after):
+        return ""
+    bits = []
+    if added_before:
+        bits.append(f"the start of the sentence (“{_short(added_before)}”)")
+    if added_after:
+        bits.append(f"the end of the sentence (“{_short(added_after)}”)")
+    return "Your highlight was widened to whole sentences: added " + " and ".join(bits) + "."
+
+
+def expanded_suggestion(text: str) -> Suggestion:
+    """The passage with every accepted expansion, as a suggestion."""
+    return Suggestion(text, "Your passage with the expansions you accepted.",
+                      angle=EXPANDED_ANGLE)
+
+
+def discussion_html(result: PassageCritique) -> str:
+    def section(title, items, color, mark):
+        if not items:
+            return ""
+        rows = "".join(f"<li>{html.escape(i)}</li>" for i in items)
+        return f"<h3 style='color:{color}'>{mark} {title}</h3><ul>{rows}</ul>"
+    body = (section("What works", result.works, "#2e7d32", "✓")
+            + section("What doesn't work", result.issues, "#c62828", "✗")
+            + section("Dialogue", getattr(result, "dialogue", []), "#7c3aed", "💬")
+            + section("Order and flow", result.order, "#1d4ed8", "⇅"))
+    return body or "<p><i>No discussion — see the suggestions below.</i></p>"
+
+
+def chat_context(ctx, result):
+    """(context blocks, rules) for Talk it through about a critique."""
+    from src.ai import passage_critique as pc
+    r = result
+    critique = []
+    for title, items in (("What works", r.works), ("What doesn't work", r.issues),
+                         ("Dialogue", getattr(r, "dialogue", [])), ("Order and flow", r.order)):
+        if items:
+            critique.append(f"{title}:\n" + "\n".join(f"- {i}" for i in items))
+    blocks = [(t, b) for t, b in ctx.sections() if b]
+    blocks.append(("THE SCENE (the passage is marked)", ctx.scene(1500)))
+    from src.ai.event_order import events_prompt
+    timeline = events_prompt(ctx.passage)
+    if timeline:
+        head, _, body = timeline.partition(":\n")
+        blocks.append((head, body))
+    if ctx.speakers:
+        blocks.append(("WHO SPEAKS EACH LINE", ctx.speakers))
+    if critique:
+        blocks.append(("YOUR CRITIQUE OF THE PASSAGE", "\n\n".join(critique)))
+    rules = pc._SCOPE_RULES + "\n" + pc._REWRITE_RULES + "- " + pc._avoid_line()
+    return blocks, rules
+
+
+def chat_turn_fn(llm, ctx, voice, result, versions, turns, message):
+    """The callable that runs one Talk it through turn (in a worker)."""
+    from src.ai import passage_critique as pc
+    from src.ai.rewrite_chat import chat_turn
+    blocks, rules = chat_context(ctx, result)
+
+    def check(found):
+        return pc._check_all(ctx, found, voice, message)
+
+    def turn():
+        return chat_turn(llm, system=pc.SYSTEM_PROMPT, context=blocks, passage=ctx.passage,
+                         versions=versions, turns=turns, message=message, check=check,
+                         rules=rules)
+    return turn
+
+
+def log_rating(project, text: str, start: int, end: int, output: str, rating: str,
+               accepted: bool, style: str = "suggestion") -> bool:
+    """A rated rewrite of ``text[start:end]``, saved as Suggestions saves it
+    (when data collection is on)."""
+    from src.ai.rewrite_quality import log_rated_rewrite
+    genre = getattr(getattr(project, "prose_profile", None), "genre", "") or ""
+    return log_rated_rewrite(text[start:end], output, rating, accepted=accepted,
+                             project_path=_project_path(project), style=style,
+                             before=text[max(0, start - 500):start],
+                             after=text[end:end + 500], genre=genre)
+
+
+def avoid_phrase(parent, edit, phrase: Optional[str] = None) -> Optional[str]:
+    """🚫 Avoid a phrase: the phrase selected in ``edit``, or asked for.
+    The message to show, or None when the writer cancelled."""
+    from src.ai.rewrite_quality import add_avoid_phrase
+    if phrase is None:
+        phrase = edit.textCursor().selectedText().strip()
+    if not phrase:
+        from PyQt6.QtWidgets import QInputDialog
+        phrase, ok = QInputDialog.getText(
+            parent, "Avoid a phrase", "Phrase Suggestions and Rephrase should never use:")
+        if not ok:
+            return None
+    try:
+        added = add_avoid_phrase(phrase)
+    except Exception as e:
+        return f"Couldn't save: {e}"
+    return (f"Won't suggest “{phrase.strip()}” again." if added
+            else "Already avoided (or too short).")

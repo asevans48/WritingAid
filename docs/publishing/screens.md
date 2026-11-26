@@ -21,7 +21,9 @@ sees **on first open**:
 A menu whose items are one closely related group counts as **one** entry:
 a list of words, one setting's choices, one subject's handful of actions.
 Items that are different actions count one each, even inside a submenu
-(✨ Improve's Rephrase, Suggestions and Overly descriptive? are three). The
+(🔍 Analyze ▾'s analyses, More's entries). Since decision 16 (25 Nov 2026,
+built in D.2b) ✨ Improve this ▸ counts as one: its Rephrase, Suggestions and
+Overly descriptive? open one Improve window. The
 groups are a list of titles in `scripts/screen_harness.py`
 (`GROUPED_MENUS`); a submenu or menu button whose title starts with one
 counts as one:
@@ -37,9 +39,10 @@ counts as one:
 | 🗣 Read Aloud | Write toolbar |
 | Novellas ▾, Drafts ▾ | Write header |
 | 📝 | Write toolbar (add an annotation, view all) |
+| ✨ Improve this | right-click (Rephrase, Suggestions, Overly descriptive?: one Improve window, D.2b and D.2c) |
 
 Not grouped, so each item counts: ✓ Checks ▾ itself, 🔍 Analyze ▾,
-📄 Draft ▾, ✨ Improve this, More. To regroup, change the list, not the code.
+📄 Draft ▾, More. To regroup, change the list, not the code.
 The harness prints the every-item count beside each figure in braces, and
 `--menus` prints the menus as counted.
 

@@ -765,6 +765,10 @@ class DraftEditorPanel(QWidget):
         ctx_after = doc_text[e:e + 500]
 
         try:
+            from src.ui import improve      # the whole Improve window (D.2c), or the old one
+            if improve.merged():
+                improve.rephrase(self, cursor, chapter=self._current_chapter, draft=True)
+                return
             from src.ui.rephrase_dialog import RephraseDialog
             from PyQt6.QtWidgets import QDialog as _QDialog
             dialog = RephraseDialog(

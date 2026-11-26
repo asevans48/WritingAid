@@ -254,7 +254,12 @@ def test_a_grouped_submenu_counts_as_one_entry(app):
     for t in ("chilly", "icy", "frigid"):
         syn.addAction(t)
     syn.addMenu("Antonyms").addAction("warm")
+    more = menu.addMenu("More")                        # different actions: one each
+    for t in ("Add Annotation", "Text to Speech"):
+        more.addAction(t)
     menu.addAction("Paste")
-    assert h._menu_items(menu) == 3 + 1 + 1            # Improve's three, synonyms one, Paste
-    assert h._menu_items(menu, itemised=True) == 3 + 4 + 1
+    # Changed in D.2b: decision 16 made ✨ Improve this ▸ one group (its three
+    # entries open the one Improve window), so it counts as one, not three.
+    assert h._menu_items(menu) == 1 + 1 + 2 + 1        # Improve one, synonyms one, More's two, Paste
+    assert h._menu_items(menu, itemised=True) == 3 + 4 + 2 + 1
     assert h.grouped("Style checks") and h.grouped("Novellas ▾") and not h.grouped("More")

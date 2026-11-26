@@ -228,10 +228,12 @@ def sentence_spans(text: str) -> List[Tuple[int, int]]:
 
 # ── Without a model ──────────────────────────────────────────────────
 
-_TRIM_WORDS = re.compile(
-    r"\b(?:almost|nearly|very|extremely|incredibly|utterly|terribly|awfully|impossibly|"
+_TRIM_WORD = (
+    r"(?:almost|nearly|very|extremely|incredibly|utterly|terribly|awfully|impossibly|"
     r"unbelievably|somewhat|slightly|a\s+bit|kind\s+of|sort\s+of|rather(?!\s+than)|fairly|quite|"
-    r"practically|virtually|just\s+about|more\s+or\s+less|a\s+little|really)\s+", re.I)
+    r"practically|virtually|just\s+about|more\s+or\s+less|a\s+little|really)")
+# A run counts as one ("very, very cold" → "cold", not "very, cold").
+_TRIM_WORDS = re.compile(rf"\b{_TRIM_WORD}(?:\s*,\s*{_TRIM_WORD})*\s+", re.I)
 
 
 def _describing(rest: str) -> bool:
