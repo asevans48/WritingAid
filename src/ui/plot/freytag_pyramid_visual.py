@@ -8,6 +8,7 @@ from PyQt6.QtGui import QPainter, QPen, QColor, QFont, QBrush, QMouseEvent
 
 from src.models.project import PlotEvent
 from src.ui.styles import SYSTEM_FONT
+from src.ui.ui_kit import PALETTE  # one look (D.8)
 
 
 class FreytagPyramidVisual(QWidget):
@@ -23,7 +24,7 @@ class FreytagPyramidVisual(QWidget):
         self.act_names = ["Act I", "Act II", "Act III"]
         self.setMinimumHeight(350)
         self.setMinimumWidth(600)
-        self.setStyleSheet("background-color: white; border: 1px solid #e5e7eb; border-radius: 8px;")
+        self.setStyleSheet(f"background-color: white; border: 1px solid {PALETTE['border']}; border-radius: 8px;")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
         # Track event positions for click detection
@@ -109,7 +110,7 @@ class FreytagPyramidVisual(QWidget):
         resolution_y = margin_top + height
 
         # Draw pyramid structure
-        pen = QPen(QColor("#6b7280"), 3)
+        pen = QPen(QColor(PALETTE['ink_faint']), 3)
         painter.setPen(pen)
 
         # Draw lines
@@ -125,7 +126,7 @@ class FreytagPyramidVisual(QWidget):
         # Draw stage labels
         font = QFont(SYSTEM_FONT, 10, QFont.Weight.Bold)
         painter.setFont(font)
-        painter.setPen(QColor("#374151"))
+        painter.setPen(QColor(PALETTE['ink']))
 
         painter.drawText(int(exposition_x), int(exposition_y + 20), "Exposition")
         painter.drawText(int(rising_mid_x - 30), int(rising_mid_y + 25), "Rising Action")
@@ -230,13 +231,13 @@ class FreytagPyramidVisual(QWidget):
         """
         # Event color based on stage
         colors = {
-            "exposition": "#3b82f6",      # Blue
-            "rising_action": "#10b981",   # Green
-            "climax": "#ef4444",          # Red
-            "falling_action": "#f59e0b",  # Amber
-            "resolution": "#8b5cf6"       # Purple
+            "exposition": PALETTE['info'],      # Blue
+            "rising_action": PALETTE['success'],   # Green
+            "climax": PALETTE['error'],          # Red
+            "falling_action": PALETTE['warning'],  # Amber
+            "resolution": PALETTE['violet']       # Purple
         }
-        color = colors.get(event.stage, "#6b7280")
+        color = colors.get(event.stage, PALETTE['ink_faint'])
 
         # Draw circle
         painter.setBrush(QBrush(QColor(color)))
@@ -252,7 +253,7 @@ class FreytagPyramidVisual(QWidget):
         # Draw event title next to marker
         font = QFont(SYSTEM_FONT, 8)
         painter.setFont(font)
-        painter.setPen(QColor("#1a1a1a"))
+        painter.setPen(QColor(PALETTE['text_dark']))
 
         # Truncate long titles
         title = event.title[:20] if len(event.title) > 20 else event.title
@@ -293,7 +294,7 @@ class FreytagPyramidVisual(QWidget):
             )
 
         # Draw vertical division lines between acts
-        pen = QPen(QColor("#9ca3af"), 2, Qt.PenStyle.DashLine)
+        pen = QPen(QColor(PALETTE['ink_disabled']), 2, Qt.PenStyle.DashLine)
         painter.setPen(pen)
 
         for i in range(1, self.num_acts):
@@ -303,7 +304,7 @@ class FreytagPyramidVisual(QWidget):
         # Draw act labels at top
         font = QFont(SYSTEM_FONT, 11, QFont.Weight.Bold)
         painter.setFont(font)
-        painter.setPen(QColor("#1f2937"))
+        painter.setPen(QColor(PALETTE['ink']))
 
         for i in range(self.num_acts):
             act_x = margin_left + i * act_width

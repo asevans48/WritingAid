@@ -643,7 +643,8 @@ def suggest_fix_options(llm: Any, project: Any, chapter: Any, text: str, fix: Fi
     start, end = span
     path = str(getattr(project, "project_path", "") or "") if project is not None else ""
     ctx = pc.build_context(project, chapter, text, start, end, compact=compact, voice=voice,
-                           examples=examples_prompt(text[start:end], path))
+                           examples=examples_prompt(text[start:end], path,
+                                                    before=text[:start], after=text[end:]))
     if not fix.sentence:
         fix.sentence = ctx.passage
     raw = llm.generate_text(fix_rewrite_prompt(ctx, fix.text, fix.why), pc.SYSTEM_PROMPT,

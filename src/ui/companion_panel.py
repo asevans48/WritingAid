@@ -327,7 +327,7 @@ class CompanionPanel(QWidget):
     # ── Notes ────────────────────────────────────────────────────────
 
     ICONS = {"pov": "👁", "tense": "⏱", "beat": "✓", "appearance": "🎨", "voice": "💬",
-             "ai": "✨", "canon": "📖"}
+             "ai": "✨", "canon": "📖", "heard": "👂"}
 
     def set_notes(self, notes: list, status: str = "") -> None:
         self.notes = list(notes)
@@ -749,6 +749,7 @@ class CompanionController(QObject):
         self.panel.set_project(self.project)
         self.panel.set_notes([], "Notes appear here when you finish a paragraph.")
         self.queue.chapter_loaded()               # the next-fix queue (3.2)
+        from src.ui import heard_notes; heard_notes.chapter_loaded(self)   # marks (6.2)
         self._quick_overdescribed(text)
         if self.project is None or self.chapter is None:
             return
@@ -893,6 +894,7 @@ class CompanionController(QObject):
                 for n in found:
                     n.paragraph = index[h]
                     notes.append(n)
+        from src.ui import heard_notes; notes += heard_notes.notes(self)   # marks (6.2)
         notes.sort(key=lambda n: n.paragraph)
         self.panel.set_notes(notes)
         tab = self.ce.right_panel.indexOf(self.panel)
@@ -901,6 +903,9 @@ class CompanionController(QObject):
 
     def _on_note_dismissed(self, note) -> None:
         from src.data import companion_state as cs
+        from src.ui import heard_notes
+        if heard_notes.note_cleared(self, note):          # a mark: cleared, not hidden (6.2)
+            return
         if self.project is not None:
             cs.dismiss(self.project, note.key)
         for found in self._notes.values():
@@ -1067,7 +1072,8 @@ class CompanionController(QObject):
         if span is None:
             self.panel.notes_status.setText("That text has changed since the note.")
             return
-        if self.ce.suggest_for_span(span[0], span[1], focus=note.text):
+        if self.ce.suggest_for_span(span[0], span[1],
+                                    focus=getattr(note, "focus", "") or note.text):
             self._on_note_dismissed(note)
 
     # ── overly descriptive ───────────────────────────────────────────

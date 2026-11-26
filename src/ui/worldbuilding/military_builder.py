@@ -13,6 +13,7 @@ import uuid
 
 from src.models.worldbuilding_objects import Army, MilitaryBranch, Faction
 from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
+from src.ui import notify  # D.9: messages that need no click
 
 
 class MilitaryBranchEditor(QDialog):
@@ -827,7 +828,7 @@ class MilitaryBuilderWidget(QWidget):
         """Edit selected army via popup dialog."""
         current = self.army_list.currentItem()
         if not current:
-            QMessageBox.information(self, "No Selection", "Please select an army to edit.")
+            notify.empty(self, "No Selection", "Please select an army to edit.")
             return
 
         army_id = current.data(Qt.ItemDataRole.UserRole)
@@ -849,7 +850,7 @@ class MilitaryBuilderWidget(QWidget):
         """Remove selected army."""
         current = self.army_list.currentItem()
         if not current:
-            QMessageBox.information(self, "No Selection", "Please select an army to remove.")
+            notify.empty(self, "No Selection", "Please select an army to remove.")
             return
 
         army_id = current.data(Qt.ItemDataRole.UserRole)

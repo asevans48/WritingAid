@@ -13126,6 +13126,8 @@ class _CorpusBrowserDialog(QDialog):
         close_btn.clicked.connect(self.accept)
         btn_row.addWidget(close_btn)
         outer.addLayout(btn_row)
+        from src.ui import voice_groups_view   # V.5: Source ▸ rated rewrites, by voice
+        voice_groups_view.attach(self)
 
     # ── Drop matching rows ────────────────────────────────
 

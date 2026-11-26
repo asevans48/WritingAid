@@ -10,6 +10,7 @@ from typing import List
 import uuid
 
 from src.models.project import AgentContact
+from src.ui import notify, ui_kit  # D.9: messages that need no click; D.8: one look
 
 
 class AgentContactWidget(QWidget):
@@ -95,7 +96,7 @@ class AgentContactWidget(QWidget):
     def _compose_email(self):
         """Compose email to agent."""
         # TODO: Integrate email functionality
-        QMessageBox.information(
+        notify.empty(
             self,
             "Email",
             f"Email composition to {self.agent.email} will be implemented soon."
@@ -149,7 +150,7 @@ class AgentManagerWidget(QWidget):
         # Buttons
         button_layout = QHBoxLayout()
 
-        add_button = QPushButton("Add")
+        add_button = ui_kit.main_button("Add")
         add_button.clicked.connect(self._add_agent)
         button_layout.addWidget(add_button)
 
@@ -167,7 +168,7 @@ class AgentManagerWidget(QWidget):
 
         self.details_scroll = QScrollArea()
         self.details_scroll.setWidgetResizable(True)
-        self.details_scroll.setWidget(QLabel("Add or select an agent/publisher"))
+        self.details_scroll.setWidget(ui_kit.empty_state("Add or select an agent/publisher"))
 
         content_layout.addWidget(self.details_scroll, stretch=1)
 
@@ -244,7 +245,7 @@ class AgentManagerWidget(QWidget):
             row = self.agent_list.row(current_item)
             self.agent_list.takeItem(row)
 
-            self.details_scroll.setWidget(QLabel("Add or select an agent/publisher"))
+            self.details_scroll.setWidget(ui_kit.empty_state("Add or select an agent/publisher"))
             self.content_changed.emit()
 
     def _on_agent_selected(self, current, previous):
@@ -268,7 +269,7 @@ class AgentManagerWidget(QWidget):
     def _publish_to_platform(self, platform: str):
         """Publish manuscript to platform."""
         # TODO: Implement publishing integration
-        QMessageBox.information(
+        notify.empty(
             self,
             f"Publish to {platform}",
             f"Direct publishing to {platform} will be implemented soon.\n\n"

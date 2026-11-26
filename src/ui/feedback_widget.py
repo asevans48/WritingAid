@@ -14,6 +14,7 @@ import copy
 
 from src.ui.styles import SYSTEM_FONT
 from src.ui.ui_kit import PALETTE, PRIMARY_BUTTON, compact_button, plain_qss, text_style  # shared parts (U.1, D.8)
+from src.ui import notify  # D.9: messages that need no click
 
 
 # Common feedback source presets
@@ -327,14 +328,14 @@ class FeedbackWidget(QWidget):
         self._save_current_entries()
         feedback_items = [e for e in self._feedback_data if e.get('content', '').strip()]
         if not feedback_items:
-            QMessageBox.information(self, "No Feedback", "Add some feedback entries first.")
+            notify.empty(self, "No Feedback", "Add some feedback entries first.")
             return
 
         chapter_content = ""
         if self._chapter_content_provider:
             chapter_content = self._chapter_content_provider()
         if not chapter_content.strip():
-            QMessageBox.information(self, "No Content", "Write some chapter content first.")
+            notify.empty(self, "No Content", "Write some chapter content first.")
             return
 
         # Build feedback summary

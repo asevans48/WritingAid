@@ -326,7 +326,7 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 **Foundations, in order**
 - [x] [0.1](pieces/01-0.1-confirm-the-inventory.md) Confirm the inventory (S, no code)
 - [x] [0.2](pieces/02-0.2-map-the-screens-count-the-clutter-decide-what-me.md) Map the screens, count the clutter, decide what merges (S, no code)
-- [~] [0.3](pieces/03-0.3-safety-net-for-your-two-projects.md) Safety net for your two projects (S) — check built, both projects pass; screen check to follow
+- [x] [0.3](pieces/03-0.3-safety-net-for-your-two-projects.md) Safety net for your two projects (S) — check built, both projects pass; screen check built 25 Nov (your run on both projects to follow)
 - [x] [0.4](pieces/03b-0.4-harden-saving.md) Harden saving (M, before any piece that stores data)
 - [~] [0.5](pieces/03c-0.5-crash-log-and-safe-clicks.md) Crash log and safe clicks (S, added 24 Nov) — built; waiting to hear the scorecard crash is gone
 - [x] [U.1](pieces/04-U.1-shared-interface-parts.md) Shared interface parts (M)
@@ -367,31 +367,31 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 - [x] [P.2b](pieces/32-P.2b-missing-reports-homonyms-sensory-detail-sentence.md) Missing reports: homonyms, sensory detail, sentence structure, diction (M) — built, for review; off in existing projects, Homonyms ticked for new ones
 - [x] [P.3](pieces/33-P.3-every-measure-compared-with-the-genre.md) Every measure compared with the genre (M) — built, for review; figures need `scripts/genre_baseline.py` run once, and a genre needs five downloaded books
 - [x] [P.4](pieces/34-P.4-deeper-proofreading-with-a-model.md) Deeper proofreading with a model (M)
-- [ ] [P.6](pieces/35-P.6-languagetool-in-full-with-its-larger-data-as-a-d.md) LanguageTool in full, with its larger data as a download (S)
-- [ ] [P.8](pieces/36-P.8-character-analysis.md) Character analysis (M)
+- [x] [P.6](pieces/35-P.6-languagetool-in-full-with-its-larger-data-as-a-d.md) LanguageTool in full, with its larger data as a download (S)
+- [x] [P.8](pieces/36-P.8-character-analysis.md) Character analysis (M)
 - [ ] [P.7](pieces/37-P.7-reader-s-eye-for-the-whole-book.md) Reader's eye for the whole book (M, best after 8.1)
 - ~~[P.1](pieces/38-P.1-side-by-side-comparison.md) Side-by-side comparison~~ Dropped 24 Nov 2026 (decision 6: the writer said it can go)
 
 **Ratings grouped by voice (after 0.3; in order)**
-- [ ] [V.1](pieces/39-V.1-a-voice-fingerprint-on-every-rating.md) A voice fingerprint on every rating (S)
-- [ ] [V.2](pieces/40-V.2-voice-groups-without-a-model.md) Voice groups without a model (M)
-- [ ] [V.3](pieces/41-V.3-a-model-names-and-refines-the-groups.md) A model names and refines the groups (S)
-- [ ] [V.4](pieces/42-V.4-suggestions-learn-from-the-same-voice.md) Suggestions learn from the same voice (M)
-- [ ] [V.5](pieces/43-V.5-manage-ratings-by-voice.md) Manage ratings by voice (M)
+- [x] [V.1](pieces/39-V.1-a-voice-fingerprint-on-every-rating.md) A voice fingerprint on every rating (S)
+- [x] [V.2](pieces/40-V.2-voice-groups-without-a-model.md) Voice groups without a model (M)
+- [x] [V.3](pieces/41-V.3-a-model-names-and-refines-the-groups.md) A model names and refines the groups (S)
+- [x] [V.4](pieces/42-V.4-suggestions-learn-from-the-same-voice.md) Suggestions learn from the same voice (M)
+- [x] [V.5](pieces/43-V.5-manage-ratings-by-voice.md) Manage ratings by voice (M)
 
 **The writing habit (added 24 Nov 2026, open decision 2)**
 - [x] [H.1](pieces/67-H.1-the-writing-habit.md) The writing habit: daily and weekly goals, a shared streak, a gentle nudge to move on (M; brief reviewed with the writer, no model needed) — built, for review; nothing changes until you set a goal, apart from one "Set a daily goal…" link
 
 **Declutter**
 - [x] [D.1](pieces/44-D.1-tidy-the-right-click-menu.md) Tidy the right-click menu (S) — built, for review
-- [ ] [D.2a](pieces/45-D.2a-one-improve-window-design.md) One Improve window: design (S, design, no code)
+- [x] [D.2a](pieces/45-D.2a-one-improve-window-design.md) One Improve window: design (S, design, no code) — written and reviewed 25 Nov; the seven questions are answered (open decision 16)
 - [ ] [D.2b](pieces/46-D.2b-one-improve-window-build-with-suggestions-and-ex.md) One Improve window: build, with Suggestions and Expand (M)
 - [ ] [D.2c](pieces/47-D.2c-one-improve-window-rephrase-joins.md) One Improve window: Rephrase joins (M)
 - [x] [D.3](pieces/48-D.3-one-issues-list-in-the-side-panel.md) One issues list in the side panel (M, after 3.2) — built; the Style tab retired in D.6
 - [x] [D.6](pieces/48b-D.6-retire-the-trial-screens.md) Retire the trial screens, and bring the counts back down (S, added 24 Nov; after you have used 3.2, D.3 and 2.5) — built, for review: the Style tab and Today's three fixes are gone (their actions are on the Companion card and in ✓ Checks ▾); menus counted by decision 11; every count at or under the baseline
 - [x] [D.7](pieces/48c-D.7-show-less-at-once.md) Show less at once: toolbar, hover card, Companion sections, Drafts into File (M, added 24 Nov) — built, for review
-- [~] [D.8](pieces/48d-D.8-one-look.md) One look: the same buttons, colours and spacing everywhere (M, repeatable, added 24 Nov) — first session done (24 Nov): Write and its side panel, the Companion, the Critique and Settings take their colours and button styles from `ui_kit`; the rest of `src/ui` is later sessions
-- [~] [D.9](pieces/48e-D.9-fewer-interruptions.md) Fewer interruptions: messages that do not need a click (M, repeatable, added 24 Nov) — first session done (24 Nov): 49 of the 68 boxes in Write, the Companion, the Critique and the main window are quiet; the rest of `src/ui` is later sessions
+- [~] [D.8](pieces/48d-D.8-one-look.md) One look: the same buttons, colours and spacing everywhere (M, repeatable, added 24 Nov) — first session done (24 Nov): Write and its side panel, the Companion, the Critique and Settings take their colours and button styles from `ui_kit`; second session (25 Nov): Plot, Characters, World, Visuals, Video Studio, Publishing, Drafts, Print; left: Training Studio, the assistant, Video Studio's editors
+- [~] [D.9](pieces/48e-D.9-fewer-interruptions.md) Fewer interruptions: messages that do not need a click (M, repeatable, added 24 Nov) — first session done (24 Nov): 49 of the 68 boxes in Write, the Companion, the Critique and the main window are quiet; second session (25 Nov): 67 more on the other screens in the main window; boxes in separate windows stay (a decision for the writer)
 - [x] [D.4](pieces/49-D.4-fewer-top-level-tabs.md) Fewer top-level tabs (M, after 0.2) — built, for review: five groups (Write · Story · Revise · Publish · Studio); right-click any tab to open it in its own window (one mover, the Critique menu and Multi-Window Mode included; "⧉ Own window" retired); the old ten tabs one switch away in Settings during the trial
 - [x] [D.5](pieces/49b-D.5-analyses-run-as-critique-reports.md) Analyses run as Critique reports (M, after 2.1; added in 0.2) — built, for review: the six Analyze ▾ entries run in Revise ▸ Critique (rated, saved, in history); Writing hints is a real report; the old windows one link away ("Show in a window (old)") during the trial
 
@@ -403,8 +403,8 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 - [x] [4.1](pieces/52-4.1-mark-as-intentional.md) Mark as intentional (S)
 - [ ] [4.2](pieces/53-4.2-voice-drift.md) Voice drift (M, experimental)
 - [x] [4.3](pieces/54-4.3-checks-earn-their-place.md) Checks earn their place (S) — built, for review: accepts, skips and dismissals counted per check in the readiness file; a check mostly turned down is toned down (lower, fainter), never switched off without your click
-- [ ] [6.1](pieces/55-6.1-listen-and-mark.md) Listen and mark (M)
-- [ ] [6.2](pieces/56-6.2-marks-become-notes.md) Marks become notes (S)
+- [x] [6.1](pieces/55-6.1-listen-and-mark.md) Listen and mark (M)
+- [x] [6.2](pieces/56-6.2-marks-become-notes.md) Marks become notes (S)
 - [x] [7.1](pieces/57-7.1-reverse-outline-without-a-model.md) Reverse outline without a model (M) — built, for review
 - [ ] [7.2](pieces/58-7.2-reverse-outline-with-a-model.md) Reverse outline with a model (M, experimental)
 - [x] [7.3](pieces/59-7.3-draft-beside-plan-and-the-tension-curve.md) Draft beside plan, and the tension curve (M) — built, for review: no-model tier; tension waits for 7.2
@@ -441,7 +441,7 @@ plus these:
 | [D.7](pieces/48c-D.7-show-less-at-once.md) | Write screen 24 buttons to 19, grouped by row; a shorter hover card; the Companion opens what fits the stage; Drafts into File | Built, for review |
 | [D.8](pieces/48d-D.8-one-look.md) | One main button a screen, one set of colours, one spacing (1,014 inline styles today) | First session done: 10 files clean |
 | [D.9](pieces/48e-D.9-fewer-interruptions.md) | Messages that need no answer stop opening a box (329 today) | First session done: 49 quiet |
-| [D.2a–c](pieces/45-D.2a-one-improve-window-design.md) | Three help windows become one | Not started |
+| [D.2a–c](pieces/45-D.2a-one-improve-window-design.md) | Three help windows become one | Designed and reviewed (D.2a); D.2b next |
 | [D.4](pieces/49-D.4-fewer-top-level-tabs.md) | Ten top-level tabs become five; one way to detach a screen, and the "⧉ Own window" button goes | Built, for review: 5 top-level tabs (baseline 10); the old ten one switch away in Settings |
 | [D.5](pieces/49b-D.5-analyses-run-as-critique-reports.md) | Six analysis windows become Critique reports | Built, for review: no count rises (Analyze ▾ keeps its eight entries; the links are inside the report); old windows retired after the trial |
 | [U.3a](pieces/50-U.3a-fit-and-scroll-sweep-the-screens-used-most.md), [U.3b](pieces/51-U.3b-fit-and-scroll-sweep-the-remaining-screens.md) | Every screen fits and scrolls | Not started |
@@ -650,3 +650,15 @@ New baselines wait for the writer's agreement.
 15. ~~**Where the reverse outline shows.**~~ Settled 24 November 2026: in
     the Critique, so it moves with the Critique into its own window. (7.1,
     7.3)
+16. ~~**The One Improve window's details.**~~ Settled 25 November 2026:
+    - Tabs: Suggestions · Critique · Rephrase · Expand, with Critique
+      second.
+    - The right-click ✨ Improve this ▸ counts as one group.
+    - The tab is named "Expand".
+    - The trial switch starts on.
+    - An Expand version can be rated.
+    - There is no "Discard your edit?" question: selecting the rephrased
+      text replaces the highlighted text.
+    - The draft window's Rephrase opens the whole window.
+
+    (D.2a, D.2b, D.2c)

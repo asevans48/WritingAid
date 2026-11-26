@@ -11,6 +11,7 @@ import uuid
 
 from src.models.worldbuilding_objects import Place, PlaceType, Faction
 from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
+from src.ui.ui_kit import PALETTE, main_button  # one look (D.8)
 
 
 class PlaceEditor(QDialog):
@@ -273,11 +274,11 @@ class PlaceBuilderWidget(QWidget):
         header_layout.setContentsMargins(16, 12, 16, 8)
 
         header = QLabel("🗺️ Places & Landmarks")
-        header.setStyleSheet("font-size: 16px; font-weight: 600; color: #1a1a1a;")
+        header.setStyleSheet(f"font-size: 16px; font-weight: 600; color: {PALETTE['text_dark']};")
         header_layout.addWidget(header)
 
         subtitle = QLabel("Manage cities, landmarks, and points of interest")
-        subtitle.setStyleSheet("font-size: 12px; color: #6b7280;")
+        subtitle.setStyleSheet(f"font-size: 12px; color: {PALETTE['ink_faint']};")
         header_layout.addWidget(subtitle)
 
         layout.addWidget(header_widget)
@@ -294,7 +295,7 @@ class PlaceBuilderWidget(QWidget):
         # Toolbar
         toolbar = QHBoxLayout()
 
-        add_btn = QPushButton("➕ Add Place")
+        add_btn = main_button("➕ Add Place")
         add_btn.clicked.connect(self._add_place)
         toolbar.addWidget(add_btn)
 

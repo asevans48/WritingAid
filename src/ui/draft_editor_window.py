@@ -22,7 +22,8 @@ from PyQt6.QtWidgets import (
 )
 
 from src.models.project import ManuscriptDraft, Chapter, WriterProject
-from src.ui.ui_kit import compact_button  # narrow buttons show their symbol
+from src.ui.ui_kit import PALETTE, compact_button, main_button, make_main, plain  # narrow buttons show their symbol
+from src.ui import notify  # D.9: messages that need no click
 
 
 class DraftEditorPanel(QWidget):
@@ -144,7 +145,7 @@ class DraftEditorPanel(QWidget):
 
         self.save_btn = QPushButton("💾")
         self.save_btn.setToolTip("Save draft edits (Ctrl+S)")
-        self.save_btn.setStyleSheet(btn_css)
+        make_main(self.save_btn, pad="2px 6px", size=11)
         self.save_btn.setMaximumWidth(30)
         compact_button(self.save_btn)  # narrow: show its symbol
         self.save_btn.clicked.connect(self._save_current)
@@ -154,16 +155,7 @@ class DraftEditorPanel(QWidget):
             self.close_btn = QPushButton("🗙")
             self.close_btn.setToolTip("Close this side-by-side panel")
             self.close_btn.setMaximumWidth(30)
-            self.close_btn.setStyleSheet("""
-                QPushButton {
-                    font-size: 11px;
-                    padding: 2px 6px;
-                    background-color: #fee2e2;
-                    border: 1px solid #fca5a5;
-                    border-radius: 4px;
-                }
-                QPushButton:hover { background-color: #fecaca; }
-            """)
+            plain(self.close_btn, pad="3px 7px")
             compact_button(self.close_btn)  # narrow: show its symbol
             self.close_btn.clicked.connect(self._on_close_clicked)
             bar.addWidget(self.close_btn)
@@ -175,11 +167,11 @@ class DraftEditorPanel(QWidget):
         meta_row.setSpacing(6)
         self.chapter_title_label = QLabel("Select a chapter")
         self.chapter_title_label.setStyleSheet(
-            "font-weight: 600; font-size: 12px; color: #374151;")
+            f"font-weight: 600; font-size: 12px; color: {PALETTE['ink']};")
         meta_row.addWidget(self.chapter_title_label)
         meta_row.addStretch()
         self.status_label = QLabel("")
-        self.status_label.setStyleSheet("font-size: 11px; color: #6b7280;")
+        self.status_label.setStyleSheet(f"font-size: 11px; color: {PALETTE['ink_faint']};")
         meta_row.addWidget(self.status_label)
         outer.addLayout(meta_row)
 
@@ -212,11 +204,11 @@ class DraftEditorPanel(QWidget):
         top_bar.addWidget(self.draft_combo)
 
         self.draft_info_label = QLabel("")
-        self.draft_info_label.setStyleSheet("color: #6b7280; font-style: italic;")
+        self.draft_info_label.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-style: italic;")
         top_bar.addWidget(self.draft_info_label)
         top_bar.addStretch()
 
-        self.save_btn = QPushButton("💾 Save")
+        self.save_btn = main_button("💾 Save")
         self.save_btn.setToolTip("Save draft edits (Ctrl+S)")
         self.save_btn.clicked.connect(self._save_current)
         top_bar.addWidget(self.save_btn)
@@ -224,16 +216,7 @@ class DraftEditorPanel(QWidget):
         if self._show_close_button:
             self.close_btn = QPushButton("🗙 Close")
             self.close_btn.setToolTip("Close this side-by-side panel")
-            self.close_btn.setStyleSheet("""
-                QPushButton {
-                    font-size: 11px;
-                    padding: 3px 10px;
-                    background-color: #fee2e2;
-                    border: 1px solid #fca5a5;
-                    border-radius: 4px;
-                }
-                QPushButton:hover { background-color: #fecaca; }
-            """)
+            plain(self.close_btn, pad="4px 11px")
             self.close_btn.clicked.connect(self._on_close_clicked)
             top_bar.addWidget(self.close_btn)
 
@@ -284,7 +267,7 @@ class DraftEditorPanel(QWidget):
 
         status_row = QHBoxLayout()
         self.status_label = QLabel("Ready")
-        self.status_label.setStyleSheet("font-size: 11px; color: #6b7280;")
+        self.status_label.setStyleSheet(f"font-size: 11px; color: {PALETTE['ink_faint']};")
         status_row.addWidget(self.status_label)
         status_row.addStretch()
         ed_layout.addLayout(status_row)
@@ -770,7 +753,7 @@ class DraftEditorPanel(QWidget):
         cursor = ed.textCursor()
         selected = cursor.selectedText()
         if not selected or len(selected.strip()) < 3:
-            QMessageBox.information(
+            notify.empty(
                 self, "No Selection",
                 "Select some text in this panel to rephrase.")
             return
@@ -854,7 +837,7 @@ class DraftEditorPanel(QWidget):
         cursor = ed.textCursor()
         selected = cursor.selectedText()
         if not selected or not selected.strip():
-            QMessageBox.information(
+            notify.empty(
                 self, "No Selection",
                 "Select a word or phrase in this panel first.")
             return

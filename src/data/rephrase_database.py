@@ -96,6 +96,11 @@ POSITIVE_RATINGS = ("excellent", "good")
 NEGATIVE_RATINGS = ("poor", "bad")
 
 
+def _voice_fp():
+    from src.data import voice_fingerprint_store
+    return voice_fingerprint_store
+
+
 class RephraseDatabase:
     """Thread-safe SQLite wrapper around the rephrase history."""
 
@@ -104,6 +109,7 @@ class RephraseDatabase:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
         self._init_schema()
+        self._voice_fp_ready = _voice_fp().prepare_on_open(self)   # V.1 side table
 
     def _conn(self) -> sqlite3.Connection:
         """Return a per-thread SQLite connection. SQLite connections aren't
@@ -274,7 +280,10 @@ class RephraseDatabase:
                  character_name, genre, 1 if accepted else 0, rating,
                  project_path, notes, system_prompt or ""),
             )
-            return cur.lastrowid or 0
+            row_id = cur.lastrowid or 0
+        _voice_fp().record_new_rating(self, row_id, source_type, surrounding_before,
+                                      source_text, surrounding_after)
+        return row_id
 
     # Convenience aliases — keep call sites readable
 

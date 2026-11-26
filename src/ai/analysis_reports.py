@@ -204,8 +204,25 @@ class ProseFitAnalyzer(_Analysis):
 class CharacterCheckAnalyzer(_Analysis):
     report_type = AnalysisKind.CHARACTER_CHECK
     what = "the character check against the profiles"
-    shown = "The Characters tab shows what the scan found."
+    shown = ("Below is how each character here appears and speaks across the book; "
+             "the Characters tab shows what the chapter scan found.")
     missing = "No characters are defined in the project yet. Add them in Story ▸ Characters."
+
+    def run(self, text, chapter_title, chapter_index, genre, manuscript_context,
+            rag_context, critique_context, llm) -> ReportSection:
+        section = super().run(text, chapter_title, chapter_index, genre, manuscript_context,
+                              rag_context, critique_context, llm)
+        # P.8: presence, speech share and speech consistency across the book
+        # (a scan, in both tiers; no extra model call).
+        try:
+            from src.ai.character_analysis import chapter_block
+            block = chapter_block(self.project, self._chapter, text)
+        except Exception as e:                        # pragma: no cover — defensive
+            print(f"[analysis] character scan failed: {e}")
+            block = ""
+        if block:
+            section.narrative = ((section.narrative or "").rstrip() + "\n\n" + block).strip()
+        return section
 
     def _scan(self, text, section, genre, critique_context):
         section.summary = NO_MODEL.format(what=self.what, shown=self.shown)

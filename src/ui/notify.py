@@ -117,11 +117,19 @@ def _plain(text: str) -> str:
 
 def _main_window(parent: Any) -> Optional[QMainWindow]:
     """The window whose status bar shows the message: the parent's own if
-    it already has one, else the app's main window. Never creates one."""
+    it already has one, else the app's main window. Never creates one.
+
+    None (so a box, as before) when the parent is in a separate dialog or
+    tool window with no status bar of its own: the main window's bar may be
+    hidden behind it (second session, 25 November 2026)."""
     seen = []
     try:
         if parent is not None:
-            seen.append(parent.window())
+            own = parent.window()
+            if isinstance(own, QDialog) or (
+                    isinstance(own, QMainWindow) and own.findChild(QStatusBar) is None):
+                return None
+            seen.append(own)
     except Exception:
         pass
     app = QApplication.instance()

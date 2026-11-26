@@ -72,7 +72,10 @@ def test_every_analysis_and_draft_action_is_in_a_menu(editor):
                   "Clean up formatting"):
         assert label in draft
     tts = [a.text() for a in editor.tts_speak_btn.menu().actions()]
-    assert tts == ["⏹ Stop reading", "Read chapters…", "🎙 Export audio file…"]
+    # 6.1 added "👂 Listen and mark" and "Marks in this chapter" (hidden until
+    # there are marks) before "Read chapters…"; the original three are unchanged.
+    assert tts == ["⏹ Stop reading", "👂 Listen and mark", "Marks in this chapter",
+                   "Read chapters…", "🎙 Export audio file…"]
 
 
 def test_side_panel_toggle_and_tabs(editor):

@@ -14,6 +14,8 @@ from pathlib import Path
 from datetime import datetime
 
 from src.models.project import Character, LoveInterest
+from src.ui import notify  # D.9: messages that need no click
+from src.ui.ui_kit import PALETTE, empty_state, main_button, plain  # one look (D.8)
 
 if TYPE_CHECKING:
     from src.models.project import WriterProject
@@ -243,7 +245,7 @@ class CharacterWidget(QWidget):
         self.image_label = QLabel("No image")
         self.image_label.setFixedSize(200, 200)
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_label.setStyleSheet("border: 1px solid #ccc; background: #f0f0f0;")
+        self.image_label.setStyleSheet(f"border: 1px solid {PALETTE['border_strong']}; background: {PALETTE['surface_muted']};")
         image_layout.addWidget(self.image_label)
 
         # Image buttons row
@@ -256,16 +258,7 @@ class CharacterWidget(QWidget):
 
         self.generate_btn = QPushButton("Generate")
         self.generate_btn.setToolTip("Generate character image using AI")
-        self.generate_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #8b5cf6;
-                color: white;
-                padding: 5px 12px;
-                border-radius: 4px;
-            }
-            QPushButton:hover { background-color: #7c3aed; }
-            QPushButton:disabled { background-color: #9ca3af; }
-        """)
+        plain(self.generate_btn, size=13, pad="5px 12px")  # one coloured button: Add
         self.generate_btn.clicked.connect(self._generate_image)
         image_buttons_layout.addWidget(self.generate_btn)
 
@@ -296,7 +289,7 @@ class CharacterWidget(QWidget):
 
         # Status label
         self.image_status_label = QLabel("")
-        self.image_status_label.setStyleSheet("font-size: 11px; color: #6b7280;")
+        self.image_status_label.setStyleSheet(f"font-size: 11px; color: {PALETTE['ink_faint']};")
         self.image_status_label.setWordWrap(True)
         image_layout.addWidget(self.image_status_label)
 
@@ -421,6 +414,11 @@ class CharacterWidget(QWidget):
 
         arc_group.setLayout(arc_layout)
         layout.addWidget(arc_group)
+
+        # P.8: chapters present, speech share and consistency (closed by default)
+        from src.ui import character_book_section
+        self.across_book = character_book_section.build(self)
+        layout.addWidget(self.across_book)
 
         # Backstory
         backstory_group = QGroupBox("Backstory")
@@ -672,7 +670,7 @@ class CharacterWidget(QWidget):
     def _strengthen_this_character(self):
         """Strengthen this individual character from manuscript context."""
         if not self._project:
-            QMessageBox.information(self, "No Project", "Open a project first.")
+            notify.empty(self, "No Project", "Open a project first.")
             return
 
         try:
@@ -816,18 +814,18 @@ class CharacterWidget(QWidget):
             )
 
             self.image_status_label.setText(f"✓ Image saved: {image_path.name}")
-            self.image_status_label.setStyleSheet("font-size: 11px; color: #059669;")
+            self.image_status_label.setStyleSheet(f"font-size: 11px; color: {PALETTE['success_ink']};")
             self.content_changed.emit()
         else:
             self.image_status_label.setText("Image generation completed but file not found")
-            self.image_status_label.setStyleSheet("font-size: 11px; color: #dc2626;")
+            self.image_status_label.setStyleSheet(f"font-size: 11px; color: {PALETTE['error_ink']};")
 
     def _on_image_error(self, error: str):
         """Handle image generation error."""
         self.image_progress.setVisible(False)
         self.generate_btn.setEnabled(True)
         self.image_status_label.setText(f"Error: {error}")
-        self.image_status_label.setStyleSheet("font-size: 11px; color: #dc2626;")
+        self.image_status_label.setStyleSheet(f"font-size: 11px; color: {PALETTE['error_ink']};")
 
         QMessageBox.warning(
             self,
@@ -897,7 +895,7 @@ class CharacterWidget(QWidget):
     def _add_love_interest(self):
         """Open dialog to add a new love interest."""
         if not self._available_characters:
-            QMessageBox.information(
+            notify.empty(
                 self, "No Other Characters",
                 "Add other characters to the project before creating a "
                 "love-interest link.")
@@ -908,7 +906,7 @@ class CharacterWidget(QWidget):
         selectable = [c for c in self._available_characters
                       if c.id not in existing_ids]
         if not selectable:
-            QMessageBox.information(
+            notify.empty(
                 self, "No More Characters",
                 "This character already has love-interest links to every "
                 "other character.")
@@ -1011,7 +1009,7 @@ class CharacterWidget(QWidget):
         # Let user pick a chapter
         chapters = self._get_chapters()
         if not chapters:
-            QMessageBox.information(self, "No Chapters", "No chapters available.")
+            notify.empty(self, "No Chapters", "No chapters available.")
             return
 
         items = [d for d, _ch in chapters]
@@ -1051,7 +1049,7 @@ class CharacterWidget(QWidget):
         """Use AI to assess personality from a chapter's text."""
         chapters = self._get_chapters()
         if not chapters:
-            QMessageBox.information(self, "No Chapters", "No chapters available.")
+            notify.empty(self, "No Chapters", "No chapters available.")
             return
 
         items = [d for d, _ch in chapters]
@@ -1285,7 +1283,7 @@ class CharactersWidget(QWidget):
         # Buttons
         button_layout = QHBoxLayout()
 
-        add_button = QPushButton("Add")
+        add_button = main_button("Add")
         add_button.clicked.connect(self._add_character)
         button_layout.addWidget(add_button)
 
@@ -1310,7 +1308,7 @@ class CharactersWidget(QWidget):
         # Right panel - character details
         self.details_scroll = QScrollArea()
         self.details_scroll.setWidgetResizable(True)
-        self.details_scroll.setWidget(QLabel("Select or add a character"))
+        self.details_scroll.setWidget(empty_state("Select or add a character"))
 
         layout.addWidget(self.details_scroll, stretch=1)
 
@@ -1359,7 +1357,7 @@ class CharactersWidget(QWidget):
             row = self.character_list.row(current_item)
             self.character_list.takeItem(row)
 
-            self.details_scroll.setWidget(QLabel("Select or add a character"))
+            self.details_scroll.setWidget(empty_state("Select or add a character"))
             self.content_changed.emit()
 
     def _on_character_selected(self, current, previous):
@@ -1390,7 +1388,7 @@ class CharactersWidget(QWidget):
     def _strengthen_characters(self):
         """Scan manuscript to enrich existing characters and discover new ones."""
         if not self._project:
-            QMessageBox.information(self, "No Project", "Open a project first.")
+            notify.empty(self, "No Project", "Open a project first.")
             return
 
         has_chapters = (bool(self._project.all_chapters())
@@ -1398,7 +1396,7 @@ class CharactersWidget(QWidget):
                         bool(getattr(getattr(self._project, 'manuscript', None),
                                      'chapters', None)))
         if not has_chapters:
-            QMessageBox.information(self, "No Chapters", "Write some chapters first.")
+            notify.empty(self, "No Chapters", "Write some chapters first.")
             return
 
         # Save current character before analysis

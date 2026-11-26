@@ -74,6 +74,9 @@ SCREENS = {
     "main_tabs_ten": ("tabs", "The same with the old ten tabs (Settings ▸ Main tabs unticked)"),
     "critique_analysis": ("report", "Critique: Analyze ▾ ▸ Prose run as a report, with a sample reply (D.5)"),
     "critique_analysis_nomodel": ("report", "Critique: Analyze ▾ ▸ Writing hints with no model (D.5)"),
+    "critique_character_check": ("report", "Critique: Analyze ▾ ▸ Characters with no model, the scan across the book (P.8)"),
+    "character_book": ("page", "Characters: a character's Across the book section, open, on a 12-chapter sample (P.8)"),
+    "ratings_by_voice": ("dialog", "Training Studio ▸ Browse rows…, Source: rated rewrites, by voice, on sample ratings (V.5)"),
 }
 # The main window's ten screens, with the labels it gives them (D.4 groups
 # them; every screen is also drawn on its own above, as before).
@@ -83,7 +86,14 @@ TAB_SCREENS = ("main_tabs", "main_tabs_ten")
 HABIT_SCREENS = ("companion_goal", "habit")
 # Analyze ▾ entries run as Critique reports (D.5): drawn, not counted (the
 # Critique itself is counted as "critique").
-ANALYSIS_SCREENS = ("critique_analysis", "critique_analysis_nomodel")
+ANALYSIS_SCREENS = ("critique_analysis", "critique_analysis_nomodel", "critique_character_check")
+# A character's page with the Across the book section open, on a book of its
+# own (P.8): drawn, not counted (the Characters tab is counted as "characters").
+CHARACTER_SCREENS = ("character_book",)
+# Rated rewrites grouped by voice, in the Training Studio's Browse rows
+# dialog, on sample ratings in a database of its own (V.5): drawn, not
+# counted (the Training Studio is not in the 0.2 baseline).
+VOICE_SCREENS = ("ratings_by_voice",)
 # The side panel's tabs, by the widget each is (D.6 retired the Style tab,
 # so numbers would shift; the widgets do not).
 PANELS = {"planner": lambda ed: ed.planner_widget,
@@ -449,6 +459,10 @@ def _build(name: str, project):
         return _habit_screen(name, project)
     if name in ANALYSIS_SCREENS:
         return _analysis_screen(name, project)
+    if name in CHARACTER_SCREENS:
+        return _character_screen(name, project)
+    if name in VOICE_SCREENS:
+        return _voice_screen(name, project)
     if name in TAB_SCREENS:
         win = _main_tabs(project, grouped=name == "main_tabs")
         _show_full(win)
@@ -536,12 +550,16 @@ def _analysis_screen(name: str, project):
         def generate_text(self, prompt, system_prompt="", **kw):
             return SAMPLE_PROSE_REPLY
 
-    key = "prose" if name == "critique_analysis" else "hints"
+    key = {"critique_analysis": "prose", "critique_character_check": "characters"}.get(name,
+                                                                                       "hints")
     llm = SampleReply() if key == "prose" else None
+    if key == "characters":
+        project = _character_project()
     g = GraderWidget()
     g.set_project(project)
-    chapter = project.manuscript.chapters[0]
-    chapters = [{"title": chapter.title, "text": chapter.content, "index": 0, "id": chapter.id}]
+    at = 8 if key == "characters" else 0      # Tobin back after five chapters; Mara formal
+    chapter = project.manuscript.chapters[at]
+    chapters = [{"title": chapter.title, "text": chapter.content, "index": at, "id": chapter.id}]
     kinds = ar.ITEMS[key][1]
     report = run_in_parts(CritiqueOrchestrator(primary_llm=llm, project=project), chapters,
                           kinds, "default", "", extra={"run_kind": "analysis:" + key})
@@ -550,6 +568,103 @@ def _analysis_screen(name: str, project):
     _show_full(g)
     analysis_menu._show_result(g, kinds[0])
     return g, g
+
+
+def _character_project():
+    """Twelve chapters: Tobin away for five of them, Mara formal in one (P.8)."""
+    from src.models.project import Chapter, Character, WriterProject
+    p = WriterProject(name="Sample book")
+    p.characters = [Character(id="m", name="Mara Venn", character_type="protagonist",
+                              personality="guarded", speaking_style="clipped, casual"),
+                    Character(id="t", name="Tobin", character_type="supporting")]
+    usual = ('Mara looked at the harbour. "I don\'t know where it\'s gone," Mara said.\n'
+             '"We\'ll look again when it\'s light, won\'t we?" Mara said.\n'
+             '"It isn\'t far. I\'m sure it\'s past the rocks," Mara said.\n'
+             '"Don\'t wait for me," Mara said.\n"I\'ll get the lamp," Mara said.')
+    formal = ('Mara looked at the harbour. "I shall not go," Mara said.\n'
+              '"Indeed, I do not know where it is," Mara said.\n"It is not possible," Mara said.\n'
+              '"We shall see what the morning brings," Mara said.\n"I do not wait," Mara said.')
+    for i in range(12):
+        text = formal if i == 8 else usual
+        if not 3 <= i <= 7:
+            text += '\n\nTobin came in from the rain. "Go," Tobin said. "Now."'
+        p.manuscript.chapters.append(Chapter(id=f"b{i + 1}", number=i + 1,
+                                             title=f"Chapter {i + 1}", content=text))
+    return p
+
+
+def _character_screen(name: str, project):
+    """Story ▸ Characters with Tobin open and Across the book open (P.8)."""
+    from src.ui import character_book_section
+    from src.ui.characters_widget import CharactersWidget
+    project = _character_project()
+    w = CharactersWidget()
+    w.set_project(project)
+    w.load_data(project.characters)
+    w.character_list.setCurrentRow(1)
+    page = w.current_character_widget
+    section = page.across_book
+    section.set_open(True)
+    character_book_section.refresh(section, sync=True)
+    _show_full(w)
+    scroll = page.findChild(__import__("PyQt6.QtWidgets", fromlist=["QScrollArea"]).QScrollArea)
+    if scroll is not None:
+        scroll.ensureWidgetVisible(section, 0, 0)
+        scroll.verticalScrollBar().setValue(section.y() - 8)
+    return w, w
+
+
+def _voice_screen(name: str, project):
+    """Browse rows… showing rated rewrites by voice: three projects in two
+    voices, a narrator, one project kept to itself, one still unsorted, and
+    a suggestion waiting (V.5). Ratings and groups in a folder of their own."""
+    import random
+    from src.data import rephrase_database as rd
+    from src.data import ratings_privacy, voice_groups_store as vgs
+    from src.ai import voice_groups as vg
+    from src.data import voice_ratings as vr
+    from src.ui.training_tool_window import _CorpusBrowserDialog
+    folder = Path(tempfile.mkdtemp(prefix="voice_ratings_"))
+    rd.DEFAULT_DB_PATH = folder / "rephrase_history.db"
+    vgs.groups_path = lambda: folder / "voice_groups.json"
+    db = rd.RephraseDatabase(rd.DEFAULT_DB_PATH)
+    rng = random.Random(3)
+    things = ["door", "rain", "street", "window", "lamp", "dog", "coat", "wall"]
+
+    def first(r):
+        return " ".join(f"I see the {r.choice(things)}{r.choice(['', ' again', ' and stop'])}. "
+                        + ("It is cold. " if r.random() < 0.5 else "") for _ in range(r.randint(14, 20)))
+
+    def third(r):
+        return " ".join(f"He had wandered {r.choice(['slowly', 'idly', 'warily'])} past the "
+                        f"{r.choice(things)} towards the old harbour, where the boats had lain for "
+                        "years" + r.choice(["", ", and thought of the coat his father had left"]) + "."
+                        for _ in range(r.randint(5, 8)))
+    paths = {n: str(folder / f"{n}.writerproj") for n in ("Teller County", "Born in Blood", "Saltmarsh", "Tempest")}
+    plan = [("Teller County", "", first, 40), ("Teller County", "Mara", first, 34),
+            ("Born in Blood", "", third, 38), ("Saltmarsh", "", third, 48), ("Tempest", "", third, 6)]
+    for proj, narrator, make, n in plan:
+        for i in range(n):
+            db.log(f"The passage {i} as written.", f"A rewrite of passage {i} in {proj}'s voice.",
+                   source_type="rephrase", surrounding_before=make(rng), character_name=narrator,
+                   project_path=paths[proj], rating=rng.choice(["good", "excellent", "poor"]))
+    vgs.run_check(db)
+    vr.new_group(db, "Harbour books", [vg.source_key(paths["Born in Blood"])])
+    ratings_privacy.set_private(paths["Born in Blood"], True)
+    dlg = _CorpusBrowserDialog(rd.DEFAULT_DB_PATH)
+    from PyQt6.QtWidgets import QApplication
+    avail = QApplication.primaryScreen().availableGeometry()
+    dlg.resize(min(1100, avail.width() - 40), min(760, avail.height() - 60))
+    dlg.show()
+    dlg.source_combo.setCurrentIndex(dlg.source_combo.findData("__by_voice__"))
+    view = dlg.voice_groups_view
+    src = view._find_item(("source", vg.source_key(paths["Tempest"])))
+    if src is not None:
+        src.parent().setExpanded(True)
+        src.setExpanded(True)
+        if src.childCount():
+            src.child(1).setSelected(True)
+    return dlg, dlg
 
 
 def _main_tabs(project, grouped: bool = True, placeholders: bool = False):
@@ -796,7 +911,8 @@ def _counts(names: List[str], project, app) -> Dict[str, Any]:
     from PyQt6.QtWidgets import QMenu
     out: Dict[str, Any] = {"screens": {}, "right_click": {}}
     for name in names:
-        if name == "suggestions" or name in HABIT_SCREENS or name in ANALYSIS_SCREENS:
+        if name == "suggestions" or name in HABIT_SCREENS or name in ANALYSIS_SCREENS \
+                or name in CHARACTER_SCREENS or name in VOICE_SCREENS:
             continue                                    # not in the 0.2 baseline
         if name in TAB_SCREENS:
             if name == "main_tabs":                     # the baseline's top_level_tabs

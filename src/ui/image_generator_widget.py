@@ -15,6 +15,8 @@ import logging
 
 from src.models.project import GeneratedImage, Character
 from src.ai.image_generation_agent import get_image_generation_agent
+from src.ui import notify  # D.9: messages that need no click
+from src.ui.ui_kit import PALETTE, main_button  # one look (D.8)
 
 logger = logging.getLogger(__name__)
 
@@ -397,8 +399,8 @@ class ImageGeneratorWidget(QWidget):
         self.prompt_preview.setReadOnly(True)
         self.prompt_preview.setMaximumHeight(110)
         self.prompt_preview.setStyleSheet(
-            "background:#f8fafc; border:1px solid #e2e8f0; "
-            "color:#334155; font-family:monospace; font-size:11px;")
+            f"background:{PALETTE['surface_soft']}; border:1px solid {PALETTE['border']}; "
+            f"color:{PALETTE['ink_soft']}; font-family:monospace; font-size:11px;")
         generator_layout.addWidget(self.prompt_preview)
 
         # Live refresh of the preview as the writer edits.
@@ -409,7 +411,7 @@ class ImageGeneratorWidget(QWidget):
             edit.textChanged.connect(self._refresh_prompt_preview)
 
         # Generate button
-        generate_button = QPushButton("Generate Image")
+        generate_button = main_button("Generate Image")
         generate_button.clicked.connect(self._generate_image)
         generator_layout.addWidget(generate_button)
 
@@ -453,7 +455,7 @@ class ImageGeneratorWidget(QWidget):
         self.preview_label = QLabel("No image selected")
         self.preview_label.setFixedSize(400, 400)
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_label.setStyleSheet("border: 1px solid #ccc; background: #f0f0f0;")
+        self.preview_label.setStyleSheet(f"border: 1px solid {PALETTE['border_strong']}; background: {PALETTE['surface_muted']};")
         preview_layout.addWidget(self.preview_label)
 
         self.prompt_display = QTextEdit()
@@ -651,7 +653,7 @@ class ImageGeneratorWidget(QWidget):
         """Rename the selected image."""
         current_item = self.image_list.currentItem()
         if not current_item:
-            QMessageBox.information(self, "No Selection", "Select an image to rename.")
+            notify.empty(self, "No Selection", "Select an image to rename.")
             return
 
         image_id = current_item.data(Qt.ItemDataRole.UserRole)
@@ -674,7 +676,7 @@ class ImageGeneratorWidget(QWidget):
         """Delete the selected image."""
         current_item = self.image_list.currentItem()
         if not current_item:
-            QMessageBox.information(self, "No Selection", "Select an image to delete.")
+            notify.empty(self, "No Selection", "Select an image to delete.")
             return
 
         image_id = current_item.data(Qt.ItemDataRole.UserRole)
@@ -794,7 +796,7 @@ class ImageGeneratorWidget(QWidget):
 
     def _on_lookup_character(self) -> None:
         if not self.characters:
-            QMessageBox.information(
+            notify.empty(
                 self, "No characters",
                 "This project has no characters yet — add them in "
                 "the Characters tab first.")
@@ -816,7 +818,7 @@ class ImageGeneratorWidget(QWidget):
 
     def _on_lookup_place(self) -> None:
         if not self.places:
-            QMessageBox.information(
+            notify.empty(
                 self, "No places",
                 "This project has no worldbuilding places yet — "
                 "add them in the Worldbuilding tab first.")
@@ -835,7 +837,7 @@ class ImageGeneratorWidget(QWidget):
 
     def _on_lookup_plot(self) -> None:
         if not self.plot_events:
-            QMessageBox.information(
+            notify.empty(
                 self, "No plot beats",
                 "This project has no plot events yet — add them in "
                 "the Story Planning tab first.")

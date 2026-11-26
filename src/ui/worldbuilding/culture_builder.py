@@ -13,6 +13,7 @@ from src.models.worldbuilding_objects import (
     Culture, Ritual, Language, MusicStyle, ArtForm, Tradition, Cuisine, Faction
 )
 from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
+from src.ui.ui_kit import PALETTE, main_button  # one look (D.8)
 
 
 class RitualEditor(QDialog):
@@ -1022,7 +1023,7 @@ class CultureEditor(QWidget):
 
         if not self.available_factions:
             label = QLabel("No factions available")
-            label.setStyleSheet("color: #6b7280; font-style: italic;")
+            label.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-style: italic;")
             self.factions_layout.addWidget(label)
 
     def _rebuild_planet_checkboxes(self):
@@ -1047,7 +1048,7 @@ class CultureEditor(QWidget):
 
         if not self.available_planets:
             label = QLabel("No planets available")
-            label.setStyleSheet("color: #6b7280; font-style: italic;")
+            label.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-style: italic;")
             self.planets_layout.addWidget(label)
 
     def load_culture(self, culture: Culture):
@@ -1204,13 +1205,13 @@ class CultureBuilderWidget(QWidget):
         # Header
         header = QHBoxLayout()
         title = QLabel("🎭 Cultures")
-        title.setStyleSheet("font-size: 16px; font-weight: 600; color: #1a1a1a;")
+        title.setStyleSheet(f"font-size: 16px; font-weight: 600; color: {PALETTE['text_dark']};")
         header.addWidget(title)
 
         header.addStretch()
 
         subtitle = QLabel("Build rich cultural systems with rituals, language, music, art, and traditions")
-        subtitle.setStyleSheet("font-size: 12px; color: #6b7280;")
+        subtitle.setStyleSheet(f"font-size: 12px; color: {PALETTE['ink_faint']};")
         header.addWidget(subtitle)
 
         layout.addLayout(header)
@@ -1221,7 +1222,7 @@ class CultureBuilderWidget(QWidget):
             "Each culture can have rituals, languages, music styles, art forms, traditions, and cuisine."
         )
         help_text.setWordWrap(True)
-        help_text.setStyleSheet("color: #6b7280; font-size: 11px; margin-bottom: 8px;")
+        help_text.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px; margin-bottom: 8px;")
         layout.addWidget(help_text)
 
         # Splitter for list and editor
@@ -1237,7 +1238,7 @@ class CultureBuilderWidget(QWidget):
         # Toolbar
         toolbar = QHBoxLayout()
 
-        self.add_btn = QPushButton("➕ Add Culture")
+        self.add_btn = main_button("➕ Add Culture")
         self.add_btn.clicked.connect(self._add_culture)
         toolbar.addWidget(self.add_btn)
 
@@ -1283,7 +1284,7 @@ class CultureBuilderWidget(QWidget):
         placeholder_layout = QVBoxLayout(placeholder)
         placeholder_label = QLabel("Select a culture to edit or create a new one")
         placeholder_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        placeholder_label.setStyleSheet("color: #6b7280; font-size: 14px;")
+        placeholder_label.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 14px;")
         placeholder_layout.addWidget(placeholder_label)
         self.stack.addWidget(placeholder)
 

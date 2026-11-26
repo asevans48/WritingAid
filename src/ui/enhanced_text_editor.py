@@ -72,6 +72,7 @@ from src.utils.spell_checker import SpellChecker, _apos  # noqa: E402,F401
 from src.utils.overuse import OveruseDetector, _sentence_at, _sentences_with  # noqa: E402,F401
 from src.utils.writing_stats import ProWritingAnalyzer, WritingStats  # noqa: E402,F401
 from src.utils.grammar_checker import GrammarChecker  # noqa: E402,F401
+from src.ui import notify  # D.9: messages that need no click
 
 
 # Running grammar workers, held here (not parented to an editor) so a
@@ -2321,7 +2322,7 @@ class EnhancedTextEditor(QTextEdit):
 
         characters = self.get_character_list_callback()
         if not characters:
-            QMessageBox.information(self, "No Characters", "No characters defined in your project yet.")
+            notify.empty(self, "No Characters", "No characters defined in your project yet.")
             return
 
         dialog = QuickReferenceDialog(characters, "Character", self)
@@ -2339,7 +2340,7 @@ class EnhancedTextEditor(QTextEdit):
 
         sections = self.get_worldbuilding_sections_callback()
         if not sections:
-            QMessageBox.information(self, "No Worldbuilding", "No worldbuilding sections defined yet.")
+            notify.empty(self, "No Worldbuilding", "No worldbuilding sections defined yet.")
             return
 
         dialog = QuickReferenceDialog(sections, "Worldbuilding Section", self)
@@ -2630,7 +2631,7 @@ class EnhancedTextEditor(QTextEdit):
             if self._tts_service.is_paused:
                 self._tts_service.stop()
             else:
-                QMessageBox.information(
+                notify.empty(
                     self, "Already Reading",
                     "Audio is currently playing. Pause or stop it "
                     "before starting a new reading.")
@@ -2650,7 +2651,7 @@ class EnhancedTextEditor(QTextEdit):
                 text = self.toPlainText()
 
         if not text.strip():
-            QMessageBox.information(self, "Nothing to Speak", "No text to read aloud.")
+            notify.empty(self, "Nothing to Speak", "No text to read aloud.")
             return
 
         # Strip Markdown formatting before speaking
@@ -2684,15 +2685,15 @@ class EnhancedTextEditor(QTextEdit):
                 clean_text = strip_markdown(text)
                 self._tts_service.speak(clean_text)
             else:
-                QMessageBox.information(self, "Nothing Selected", "Please select some text to read aloud.")
+                notify.empty(self, "Nothing Selected", "Please select some text to read aloud.")
         else:
-            QMessageBox.information(self, "Nothing Selected", "Please select some text to read aloud.")
+            notify.empty(self, "Nothing Selected", "Please select some text to read aloud.")
 
     def speak_document(self):
         """Speak the entire document."""
         if self._tts_service and self._tts_service.is_speaking:
             state = "paused" if self._tts_service.is_paused else "playing"
-            QMessageBox.information(
+            notify.empty(
                 self, "Already Reading",
                 f"Audio is currently {state}. "
                 f"Stop the current playback before starting a new one.")
@@ -2705,13 +2706,13 @@ class EnhancedTextEditor(QTextEdit):
             clean_text = strip_markdown(text)
             self._tts_service.speak(clean_text)
         else:
-            QMessageBox.information(self, "Empty Document", "The document is empty.")
+            notify.empty(self, "Empty Document", "The document is empty.")
 
     def speak_from_cursor(self):
         """Speak from cursor position to end of document."""
         if self._tts_service and self._tts_service.is_speaking:
             state = "paused" if self._tts_service.is_paused else "playing"
-            QMessageBox.information(
+            notify.empty(
                 self, "Already Reading",
                 f"Audio is currently {state}. "
                 f"Stop the current playback before starting a new one.")
@@ -2727,7 +2728,7 @@ class EnhancedTextEditor(QTextEdit):
             clean_text = strip_markdown(text)
             self._tts_service.speak(clean_text)
         else:
-            QMessageBox.information(self, "Nothing to Speak", "No text after cursor position.")
+            notify.empty(self, "Nothing to Speak", "No text after cursor position.")
 
     def stop_speaking(self):
         """Stop TTS playback."""
@@ -2829,7 +2830,7 @@ class EnhancedTextEditor(QTextEdit):
             text = self.toPlainText()
 
         if not text.strip():
-            QMessageBox.information(self, "No Text", "No text to generate TTS document from.")
+            notify.empty(self, "No Text", "No text to generate TTS document from.")
             return
 
         # Strip Markdown formatting before generating TTS document

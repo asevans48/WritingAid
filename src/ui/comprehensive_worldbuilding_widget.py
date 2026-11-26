@@ -26,6 +26,8 @@ from src.ui.worldbuilding.place_builder import PlaceBuilderWidget
 from src.ui.worldbuilding.map_builder_widgets import MapBuilderWidget
 from src.ui.worldbuilding.magic_system_builder import MagicSystemBuilderWidget
 from src.ui.worldbuilding.encyclopedia_widget import EncyclopediaWidget
+from src.ui import notify  # D.9: messages that need no click
+from src.ui.ui_kit import PALETTE  # one look (D.8)
 
 
 class ComprehensiveWorldBuildingWidget(QWidget):
@@ -50,7 +52,7 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         header_layout.setContentsMargins(16, 12, 16, 8)
 
         title = QLabel("🌍 Worldbuilding")
-        title.setStyleSheet("font-size: 16px; font-weight: 600; color: #1a1a1a;")
+        title.setStyleSheet(f"font-size: 16px; font-weight: 600; color: {PALETTE['text_dark']};")
         header_layout.addWidget(title)
 
         header_layout.addStretch()
@@ -70,7 +72,7 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         header_layout.addWidget(self.strengthen_btn)
 
         subtitle = QLabel("Build your universe with interconnected systems")
-        subtitle.setStyleSheet("font-size: 12px; color: #6b7280;")
+        subtitle.setStyleSheet(f"font-size: 12px; color: {PALETTE['ink_faint']};")
         header_layout.addWidget(subtitle)
 
         layout.addWidget(header)
@@ -457,7 +459,7 @@ class ComprehensiveWorldBuildingWidget(QWidget):
         """Run AI analysis to merge duplicates, enrich thin entries, and fill gaps."""
         project = getattr(self, '_project', None)
         if not project:
-            QMessageBox.information(
+            notify.empty(
                 self, "No Project",
                 "Open a project first so the AI can analyze your manuscript and worldbuilding."
             )

@@ -387,6 +387,7 @@ class Queue:
     def done_with(self, fix: Any, message: str = "") -> None:
         """The fix was made elsewhere (Suggestions): drop it from the card."""
         entry = self._entry_for(fix)
+        from src.ui import heard_notes; heard_notes.entry_done(self, entry)     # 6.2
         if entry is not None and entry in self.entries:
             at = self.entries.index(entry)
             self.entries.pop(at)
@@ -412,7 +413,8 @@ class Queue:
             return
         self._busy = True
         text = self.cc.ce.editor.toPlainText()
-        self.extra = self._style_flags()
+        from src.ui import heard_notes
+        self.extra = self._style_flags() + heard_notes.queue_extra(self)   # marks (6.2)
         if not self.entries:
             self.card.show_busy()
         from src.ui.companion_panel import run_background
@@ -586,6 +588,7 @@ class Queue:
         if done is None and 0 <= self.index < len(self.entries):
             done = self.entries[self.index]
         check_outcomes_ui.accepted(self, done)                                  # 4.3
+        from src.ui import heard_notes; heard_notes.entry_done(self, done)      # 6.2
         if done is not None:
             at = self.entries.index(done)
             self.entries.pop(at)
@@ -635,6 +638,9 @@ class Queue:
             return
         from src.ai import fix_queue
         entry = self.entries[self.index]
+        from src.ui import heard_notes
+        if heard_notes.queue_dismiss(self, entry):     # a mark: cleared (6.2)
+            return
         project, _scope, chapter = self._where()
         was_toned = check_outcomes_ui.before_dismiss(self, entry)              # 4.3
         if entry.check.startswith("style:"):        # a live style flag: the Style tab's Ignore

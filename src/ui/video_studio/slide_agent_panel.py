@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
 from src.video_studio.slide_agent import (
     build_agent_system_prompt, run_agent_turn,
 )
+from src.ui.ui_kit import PALETTE  # one look (D.8)
 
 
 class _AgentWorker(QThread):
@@ -89,7 +90,7 @@ class SlideAgentPanel(QFrame):
             "slide 2 'The alley' with an outline, and fade between "
             "groups.” It edits the deck directly.")
         intro.setWordWrap(True)
-        intro.setStyleSheet("color:#64748b; font-size:11px;")
+        intro.setStyleSheet(f"color:{PALETTE['ink_faint']}; font-size:11px;")
         v.addWidget(intro)
         self._log = QTextEdit()
         self._log.setReadOnly(True)
@@ -103,7 +104,7 @@ class SlideAgentPanel(QFrame):
         self._send_btn.clicked.connect(self._on_send)
         v.addWidget(self._send_btn)
         self._status = QLabel("")
-        self._status.setStyleSheet("color:#64748b; font-size:11px;")
+        self._status.setStyleSheet(f"color:{PALETTE['ink_faint']}; font-size:11px;")
         v.addWidget(self._status)
 
     def _update_enabled(self) -> None:
@@ -184,9 +185,9 @@ class SlideAgentPanel(QFrame):
 
     def _append(self, who: str, text: str) -> None:
         colors = {
-            "You": "#4f46e5", "Assistant": "#0f766e",
-            "Applied": "#166534", "System": "#b91c1c"}
-        color = colors.get(who, "#334155")
+            "You": PALETTE['primary_dark'], "Assistant": PALETTE['success_ink'],
+            "Applied": PALETTE['success_ink'], "System": PALETTE['error_ink']}
+        color = colors.get(who, PALETTE['ink_soft'])
         safe = (text or "").replace("&", "&amp;").replace(
             "<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
         self._log.append(

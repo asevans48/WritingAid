@@ -170,3 +170,65 @@ def test_the_two_draft_messages_are_notices():
     for src, title in ((me, '"Draft Saved"'), (me, '"Draft Created"'), (mw, '"Draft Created"')):
         i = src.index(title)
         assert "notify.notice(" in src[i - 80:i], title
+
+
+# ── Second session: the other screens ─────────────────────────────────
+
+def test_a_dialog_without_a_status_bar_still_gets_its_box(window, fresh):
+    """Behind a dialog the main window's bar may be hidden: a box, as before."""
+    from PyQt6.QtWidgets import QDialog
+    win, _ = window
+    dlg = QDialog(win)
+    notify.empty(dlg, "No Selection", "Please select a speaker to edit.")
+    assert [a[1] for a in fresh] == ["No Selection"]
+    assert win.statusBar().currentMessage() == ""
+    assert notify.recent()[0].title == "No Selection"       # still listed
+    dlg.deleteLater()
+
+
+def test_a_tool_window_without_a_status_bar_still_gets_its_box(window, fresh):
+    """Training Studio, Model Hub and the pop-out Draft Editor have no bar."""
+    win, _ = window
+    tool = QMainWindow()
+    inner = QWidget()
+    tool.setCentralWidget(inner)
+    notify.empty(inner, "No Selection", "Select a row first.")
+    assert [a[1] for a in fresh] == ["No Selection"]
+    assert win.statusBar().currentMessage() == ""
+    tool.close()
+
+
+def test_print_with_no_chapters_opens_no_box(window, fresh):
+    from types import SimpleNamespace
+    from src.ui.print_manuscript import print_manuscript
+    win, inner = window
+    assert print_manuscript(inner, SimpleNamespace(chapters=[])) is False
+    assert fresh == []
+    assert "no chapters" in win.statusBar().currentMessage()
+
+
+def test_editor_lookup_with_no_characters_opens_no_box(window, fresh):
+    from src.ui.enhanced_text_editor import EnhancedTextEditor
+    win, _ = window
+    ed = EnhancedTextEditor()
+    win.setCentralWidget(ed)
+    ed.get_character_list_callback = lambda: []
+    ed._lookup_character()
+    assert fresh == []
+    assert "No characters" in win.statusBar().currentMessage()
+    ed.get_character_list_callback = None             # "not configured" stays a box
+    ed._lookup_character()
+    assert [a[1] for a in fresh] == ["Not Available"]
+
+
+def test_second_session_boxes_that_stay_are_not_touched():
+    """Not set up, work not done, data changed, saving: still boxes."""
+    for path, title in (
+            ("src/ui/enhanced_text_editor.py", '"Not Available"'),
+            ("src/ui/video_studio/studio_widget.py", '"No image model configured"'),
+            ("src/ui/video_studio/studio_widget.py", '"Slide deck reset"'),
+            ("src/ui/characters_widget.py", '"Characters Strengthened"'),
+            ("src/ui/image_generator_widget.py", '"Saved"')):
+        src = open(path, encoding="utf-8").read()
+        i = src.index(title)
+        assert "QMessageBox.information(" in src[i - 120:i], (path, title)

@@ -171,6 +171,28 @@ def _record_crashes() -> None:
         print(f"[crash log] not set up: {e}")
 
 
+def _fingerprint_ratings_later() -> None:
+    """Voice fingerprints for ratings saved before V.1: on a background
+    thread, half a minute after start-up, so opening the app is not slowed."""
+    try:
+        from PyQt6.QtCore import QTimer
+        from src.data import voice_fingerprint_store as vfs
+        QTimer.singleShot(30000, vfs.start_background_backfill)
+    except Exception as e:
+        print(f"[voice fingerprint] not started: {e}")
+
+
+def _group_voices_later() -> None:
+    """Voice groups (V.2): checked on a background thread after the
+    fingerprints above, so opening the app is not slowed."""
+    try:
+        from PyQt6.QtCore import QTimer
+        from src.data import voice_groups_store as vgs
+        QTimer.singleShot(35000, vgs.start_background_check)
+    except Exception as e:
+        print(f"[voice groups] not started: {e}")
+
+
 def main():
     """Initialize and run CreativeOS — the launcher shell that hosts the
     Writing Tool today and additional creative/business tools in future.
@@ -204,6 +226,8 @@ def main():
     # collection shortens the GC pauses during typing and chapter switches.
     gc.collect()
     gc.freeze()
+    _fingerprint_ratings_later()
+    _group_voices_later()
 
     # Direct-launch the Writing Tool with --writer (legacy entry point)
     if "--writer" in sys.argv:

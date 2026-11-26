@@ -25,18 +25,18 @@ from PyQt6.QtWidgets import (
 )
 
 from src.models.project import PlotEvent
-from src.ui.ui_kit import compact_button  # narrow buttons show their symbol
+from src.ui.ui_kit import PALETTE, compact_button  # narrow buttons show their symbol
 
 
 # Colors for the stage chip. Match the existing pyramid color scheme
 # so the two views feel like the same project speaking with one
 # voice.
 _STAGE_COLORS = {
-    "exposition":     "#3b82f6",   # blue
-    "rising_action":  "#10b981",   # green
-    "climax":         "#ef4444",   # red
-    "falling_action": "#f59e0b",   # amber
-    "resolution":     "#8b5cf6",   # purple
+    "exposition":     PALETTE['info'],   # blue
+    "rising_action":  PALETTE['success'],   # green
+    "climax":         PALETTE['error'],   # red
+    "falling_action": PALETTE['warning'],   # amber
+    "resolution":     PALETTE['violet'],   # purple
 }
 
 _STAGE_NAMES = {
@@ -78,12 +78,12 @@ class _EventCard(QFrame):
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setStyleSheet(
             "QFrame#plotEventCard {"
-            "  background-color: #ffffff;"
-            "  border: 1px solid #d1d5db;"
+            f"  background-color: {PALETTE['surface']};"
+            f"  border: 1px solid {PALETTE['border_strong']};"
             "  border-radius: 6px;"
             "}"
             "QFrame#plotEventCard:hover {"
-            "  border-color: #6b7280;"
+            f"  border-color: {PALETTE['ink_faint']};"
             "}"
         )
         self._build(event, index_in_act, can_move_up, can_move_down)
@@ -105,7 +105,7 @@ class _EventCard(QFrame):
         badge.setFixedSize(28, 28)
         badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         badge.setStyleSheet(
-            "background-color: #1f2937; color: white; "
+            f"background-color: {PALETTE['ink']}; color: white; "
             "border-radius: 14px; font-weight: 600;")
         outer.addWidget(badge, 0, Qt.AlignmentFlag.AlignTop)
 
@@ -124,7 +124,7 @@ class _EventCard(QFrame):
         title_row.addWidget(title_label, stretch=1)
 
         chip = QLabel(_STAGE_NAMES.get(event.stage, event.stage))
-        chip_color = _STAGE_COLORS.get(event.stage, "#6b7280")
+        chip_color = _STAGE_COLORS.get(event.stage, PALETTE['ink_faint'])
         chip.setStyleSheet(
             f"background-color: {chip_color}; color: white; "
             f"padding: 2px 8px; border-radius: 10px; "
@@ -142,7 +142,7 @@ class _EventCard(QFrame):
             "intensity " + ("▆" * filled) + ("▁" * (10 - filled))
             + f"  ({intensity})")
         bar_label.setStyleSheet(
-            "font-family: monospace; color: #4b5563; font-size: 11px;")
+            f"font-family: monospace; color: {PALETTE['ink_soft']}; font-size: 11px;")
         body.addWidget(bar_label)
 
         # Description excerpt — first ~160 chars. Truncated with an
@@ -154,7 +154,7 @@ class _EventCard(QFrame):
             desc_label = QLabel(desc)
             desc_label.setWordWrap(True)
             desc_label.setStyleSheet(
-                "color: #4b5563; font-size: 11px;")
+                f"color: {PALETTE['ink_soft']}; font-size: 11px;")
             body.addWidget(desc_label)
 
         # Action row
@@ -191,7 +191,7 @@ class _EventCard(QFrame):
         actions.addWidget(down_btn)
 
         delete_btn = QPushButton("Delete")
-        delete_btn.setStyleSheet("color: #b91c1c;")
+        delete_btn.setStyleSheet(f"color: {PALETTE['error_ink']};")
         delete_btn.clicked.connect(
             lambda: self.delete_requested.emit(self.event_id))
         actions.addWidget(delete_btn)
@@ -333,7 +333,7 @@ class PlotTimelineWidget(QWidget):
             "No plot events yet. Use the toolbar above to add one — "
             "or add events to specific acts below.")
         empty.setStyleSheet(
-            "color: #6b7280; font-style: italic; padding: 24px;")
+            f"color: {PALETTE['ink_faint']}; font-style: italic; padding: 24px;")
         empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         empty.setWordWrap(True)
         self._content_layout.addWidget(empty)
@@ -359,13 +359,13 @@ class PlotTimelineWidget(QWidget):
         header_font.setBold(True)
         header_font.setPointSize(13)
         header.setFont(header_font)
-        header.setStyleSheet("color: #1f2937; padding: 4px 0;")
+        header.setStyleSheet(f"color: {PALETTE['ink']}; padding: 4px 0;")
         header_row.addWidget(header)
         count_chip = QLabel(
             f"{len(events_in_act)} event"
             f"{'s' if len(events_in_act) != 1 else ''}")
         count_chip.setStyleSheet(
-            "color: #6b7280; font-size: 11px;")
+            f"color: {PALETTE['ink_faint']}; font-size: 11px;")
         header_row.addWidget(count_chip)
         header_row.addStretch()
         self._content_layout.addLayout(header_row)
@@ -373,7 +373,7 @@ class PlotTimelineWidget(QWidget):
         # Divider line under the header
         divider = QFrame()
         divider.setFrameShape(QFrame.Shape.HLine)
-        divider.setStyleSheet("color: #d1d5db;")
+        divider.setStyleSheet(f"color: {PALETTE['border_strong']};")
         self._content_layout.addWidget(divider)
 
         # Group events within this act by stage so we can render
@@ -400,7 +400,7 @@ class PlotTimelineWidget(QWidget):
                 sub_font.setBold(True)
                 sub_font.setPointSize(11)
                 sub_header.setFont(sub_font)
-                sub_color = _STAGE_COLORS.get(stage, "#6b7280")
+                sub_color = _STAGE_COLORS.get(stage, PALETTE['ink_faint'])
                 sub_header.setStyleSheet(
                     f"color: {sub_color}; padding: 4px 0 2px 0;")
                 self._content_layout.addWidget(sub_header)
@@ -430,10 +430,10 @@ class PlotTimelineWidget(QWidget):
         # Per-act add button
         add_btn = QPushButton(f"+ Add event to {name}")
         add_btn.setStyleSheet(
-            "QPushButton { color: #2563eb; border: 1px dashed #93c5fd;"
+            f"QPushButton {{ color: {PALETTE['info']}; border: 1px dashed {PALETTE['primary_light']};"
             " background-color: transparent; padding: 6px 10px;"
             " border-radius: 4px; }"
-            "QPushButton:hover { background-color: #eff6ff; }")
+            f"QPushButton:hover {{ background-color: {PALETTE['info_tint']}; }}")
         add_btn.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Fixed)

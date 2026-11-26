@@ -15,6 +15,8 @@ import re
 from src.models.worldbuilding_objects import HistoricalEvent
 from src.ui.styles import SYSTEM_FONT
 from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
+from src.ui import notify  # D.9: messages that need no click
+from src.ui.ui_kit import PALETTE  # one look (D.8)
 
 
 class TimelineVisualization(QWidget):
@@ -27,7 +29,7 @@ class TimelineVisualization(QWidget):
         super().__init__()
         self.events: List[HistoricalEvent] = []
         self.setMinimumHeight(200)
-        self.setStyleSheet("background-color: white; border: 1px solid #e5e7eb; border-radius: 8px;")
+        self.setStyleSheet(f"background-color: white; border: 1px solid {PALETTE['border']}; border-radius: 8px;")
 
     def _parse_date(self, date_str: str) -> Optional[int]:
         """Parse date string to numeric value for sorting and spacing."""
@@ -73,7 +75,7 @@ class TimelineVisualization(QWidget):
         if not self.events:
             painter = QPainter(self)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            painter.setPen(QColor("#9ca3af"))
+            painter.setPen(QColor(PALETTE['ink_disabled']))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No events on timeline")
             return
 
@@ -87,7 +89,7 @@ class TimelineVisualization(QWidget):
         timeline_end = self.width() - margin
 
         # Main timeline line
-        pen = QPen(QColor("#6366f1"), 3)
+        pen = QPen(QColor(PALETTE['primary']), 3)
         painter.setPen(pen)
         painter.drawLine(timeline_start, line_y, timeline_end, line_y)
 
@@ -129,14 +131,14 @@ class TimelineVisualization(QWidget):
     def _draw_event(self, painter: QPainter, evt: HistoricalEvent, x: float, line_y: int, index: int):
         """Draw a single event on the timeline."""
         # Event dot
-        painter.setBrush(QColor("#6366f1"))
+        painter.setBrush(QColor(PALETTE['primary']))
         painter.setPen(QPen(QColor("white"), 2))
         painter.drawEllipse(int(x - 8), int(line_y - 8), 16, 16)
 
         # Event name
         font = QFont(SYSTEM_FONT, 9)
         painter.setFont(font)
-        painter.setPen(QColor("#1a1a1a"))
+        painter.setPen(QColor(PALETTE['text_dark']))
 
         # Alternate above/below
         text_y = line_y - 30 if index % 2 == 0 else line_y + 30
@@ -147,7 +149,7 @@ class TimelineVisualization(QWidget):
         # Date
         font_small = QFont(SYSTEM_FONT, 8)
         painter.setFont(font_small)
-        painter.setPen(QColor("#6b7280"))
+        painter.setPen(QColor(PALETTE['ink_faint']))
         date_y = text_y + 25 if index % 2 == 0 else text_y - 15
         date_rect = QRect(int(x - 60), int(date_y), 120, 20)
         painter.drawText(date_rect, Qt.AlignmentFlag.AlignCenter, evt.date)
@@ -457,7 +459,7 @@ class TimelineBuilderWidget(QWidget):
         """Edit selected event via popup dialog."""
         current = self.event_list.currentItem()
         if not current:
-            QMessageBox.information(self, "No Selection", "Please select an event to edit.")
+            notify.empty(self, "No Selection", "Please select an event to edit.")
             return
 
         event_id = current.data(Qt.ItemDataRole.UserRole)
@@ -480,7 +482,7 @@ class TimelineBuilderWidget(QWidget):
         """Remove selected event."""
         current = self.event_list.currentItem()
         if not current:
-            QMessageBox.information(self, "No Selection", "Please select an event to remove.")
+            notify.empty(self, "No Selection", "Please select an event to remove.")
             return
 
         event_id = current.data(Qt.ItemDataRole.UserRole)
@@ -506,7 +508,7 @@ class TimelineBuilderWidget(QWidget):
 
     def _ai_generate(self):
         """AI generate event."""
-        QMessageBox.information(
+        notify.empty(
             self,
             "AI Generation",
             "AI will generate a new historical event based on your existing timeline."

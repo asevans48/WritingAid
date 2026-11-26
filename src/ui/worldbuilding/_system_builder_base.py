@@ -18,7 +18,8 @@ from PyQt6.QtWidgets import (
 )
 
 from src.ui.worldbuilding._record_dialog import FieldSpec, edit_record
-from src.ui.ui_kit import compact_button  # narrow buttons show their symbol
+from src.ui.ui_kit import compact_button, main_button  # narrow buttons show their symbol
+from src.ui import notify  # D.9: messages that need no click
 
 
 def populate_faction_combo(combo: QComboBox, factions: list,
@@ -217,7 +218,7 @@ class SystemBuilderBase(QWidget):
             self._on_system_selected)
         left_layout.addWidget(self.system_list)
         btns = QHBoxLayout()
-        add_btn = QPushButton("➕ Add")
+        add_btn = main_button("➕ Add")
         add_btn.clicked.connect(self._add_system)
         btns.addWidget(add_btn)
         rem_btn = QPushButton("🗑️")
@@ -261,7 +262,7 @@ class SystemBuilderBase(QWidget):
         faction_id = ""
         if self.REQUIRE_FACTION:
             if not self.available_factions:
-                QMessageBox.information(
+                notify.empty(
                     self, "Add a faction first",
                     f"A {self.ITEM_NOUN} must be {self.FACTION_VERB} a "
                     "faction. Create a faction in the Factions section "

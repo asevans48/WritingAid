@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QLineEdit, QComboBox, QLabel
 )
 from PyQt6.QtCore import pyqtSignal
+from src.ui.ui_kit import PALETTE  # one look (D.8)
 
 
 class FilterSortWidget(QWidget):
@@ -42,7 +43,7 @@ class FilterSortWidget(QWidget):
 
         # Sort controls
         sort_label = QLabel("Sort:")
-        sort_label.setStyleSheet("color: #6b7280; font-size: 11px;")
+        sort_label.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px;")
         layout.addWidget(sort_label)
 
         self.sort_combo = QComboBox()
@@ -85,7 +86,7 @@ class FilterSortWidget(QWidget):
         if not hasattr(self, 'type_filter_combo'):
             # Insert type filter before sort label
             type_label = QLabel("Filter:")
-            type_label.setStyleSheet("color: #6b7280; font-size: 11px;")
+            type_label.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px;")
 
             self.type_filter_combo = QComboBox()
             self.type_filter_combo.currentIndexChanged.connect(self._on_filter_changed)

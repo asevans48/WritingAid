@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import pyqtSignal, Qt
 
 from src.models.worldbuilding_objects import ClimatePreset
+from src.ui.ui_kit import PALETTE, main_button  # one look (D.8)
 
 
 class ClimatePresetEditor(QDialog):
@@ -76,7 +77,7 @@ class ClimatePresetEditor(QDialog):
         zones_layout = QVBoxLayout()
 
         zones_help = QLabel("Climate zones for this preset (one per line):")
-        zones_help.setStyleSheet("color: #6b7280; font-size: 11px;")
+        zones_help.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px;")
         zones_layout.addWidget(zones_help)
 
         self.zones_edit = QTextEdit()
@@ -111,7 +112,7 @@ class ClimatePresetEditor(QDialog):
         seasons_layout = QVBoxLayout()
 
         seasons_help = QLabel("Seasons for this climate (one per line):")
-        seasons_help.setStyleSheet("color: #6b7280; font-size: 11px;")
+        seasons_help.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px;")
         seasons_layout.addWidget(seasons_help)
 
         self.seasons_edit = QTextEdit()
@@ -139,7 +140,7 @@ class ClimatePresetEditor(QDialog):
         extreme_layout = QVBoxLayout()
 
         extreme_help = QLabel("Extreme weather events (one per line):")
-        extreme_help.setStyleSheet("color: #6b7280; font-size: 11px;")
+        extreme_help.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px;")
         extreme_layout.addWidget(extreme_help)
 
         self.extreme_edit = QTextEdit()
@@ -257,13 +258,13 @@ class ClimatePresetBuilderWidget(QWidget):
         # Header
         header = QHBoxLayout()
         title = QLabel("🌤️ Climate Presets")
-        title.setStyleSheet("font-size: 16px; font-weight: 600; color: #1a1a1a;")
+        title.setStyleSheet(f"font-size: 16px; font-weight: 600; color: {PALETTE['text_dark']};")
         header.addWidget(title)
 
         header.addStretch()
 
         subtitle = QLabel("Reusable climate templates for planets")
-        subtitle.setStyleSheet("font-size: 12px; color: #6b7280;")
+        subtitle.setStyleSheet(f"font-size: 12px; color: {PALETTE['ink_faint']};")
         header.addWidget(subtitle)
 
         layout.addLayout(header)
@@ -274,13 +275,13 @@ class ClimatePresetBuilderWidget(QWidget):
             "Define temperature ranges, seasons, weather patterns, and more."
         )
         help_text.setWordWrap(True)
-        help_text.setStyleSheet("color: #6b7280; font-size: 11px; margin-bottom: 8px;")
+        help_text.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px; margin-bottom: 8px;")
         layout.addWidget(help_text)
 
         # Toolbar
         toolbar = QHBoxLayout()
 
-        self.add_btn = QPushButton("➕ Add Preset")
+        self.add_btn = main_button("➕ Add Preset")
         self.add_btn.clicked.connect(self._add_preset)
         toolbar.addWidget(self.add_btn)
 

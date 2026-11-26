@@ -15,6 +15,8 @@ import math
 from src.models.worldbuilding_objects import Faction, FactionType
 from src.ui.styles import SYSTEM_FONT
 from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
+from src.ui import notify  # D.9: messages that need no click
+from src.ui.ui_kit import CHART_COLOURS, PALETTE, main_button  # one look (D.8)
 
 
 class FactionRelationshipGraph(QWidget):
@@ -29,7 +31,7 @@ class FactionRelationshipGraph(QWidget):
         self.faction_positions: Dict[str, Tuple[float, float]] = {}
         self.setMinimumHeight(400)
         self.setMinimumWidth(500)
-        self.setStyleSheet("background-color: white; border: 1px solid #e5e7eb; border-radius: 8px;")
+        self.setStyleSheet(f"background-color: white; border: 1px solid {PALETTE['border']}; border-radius: 8px;")
 
     def set_factions(self, factions: List[Faction]):
         """Set factions to display."""
@@ -60,7 +62,7 @@ class FactionRelationshipGraph(QWidget):
         if not self.factions:
             painter = QPainter(self)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            painter.setPen(QColor("#9ca3af"))
+            painter.setPen(QColor(PALETTE['ink_disabled']))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Add factions to see relationship web")
             return
 
@@ -77,7 +79,7 @@ class FactionRelationshipGraph(QWidget):
             for ally_id in faction.allies:
                 to_pos = self.faction_positions.get(ally_id)
                 if to_pos:
-                    pen = QPen(QColor("#10b981"), 2)  # Green
+                    pen = QPen(QColor(PALETTE['success']), 2)  # Green
                     painter.setPen(pen)
                     painter.drawLine(
                         int(from_pos[0]), int(from_pos[1]),
@@ -88,7 +90,7 @@ class FactionRelationshipGraph(QWidget):
             for enemy_id in faction.enemies:
                 to_pos = self.faction_positions.get(enemy_id)
                 if to_pos:
-                    pen = QPen(QColor("#ef4444"), 2)  # Red
+                    pen = QPen(QColor(PALETTE['error']), 2)  # Red
                     pen.setStyle(Qt.PenStyle.DashLine)
                     painter.setPen(pen)
                     painter.drawLine(
@@ -115,7 +117,7 @@ class FactionRelationshipGraph(QWidget):
             # Faction name below
             font = QFont(SYSTEM_FONT, 9, QFont.Weight.Bold)
             painter.setFont(font)
-            painter.setPen(QColor("#1a1a1a"))
+            painter.setPen(QColor(PALETTE['text_dark']))
 
             # Shortened name
             name = faction.name[:15] if len(faction.name) > 15 else faction.name
@@ -125,22 +127,22 @@ class FactionRelationshipGraph(QWidget):
     def _get_faction_color(self, faction_type: FactionType) -> str:
         """Get color based on faction type."""
         colors = {
-            FactionType.NATION: "#6366f1",        # Indigo
-            FactionType.ORGANIZATION: "#8b5cf6",  # Purple
-            FactionType.RELIGION: "#f59e0b",      # Amber
-            FactionType.TRIBE: "#10b981",         # Green
-            FactionType.CORPORATION: "#3b82f6",   # Blue
-            FactionType.ECONOMIC_CLASS: "#14b8a6", # Teal
-            FactionType.MINORITY_GROUP: "#f97316", # Orange
-            FactionType.POLITICAL_PARTY: "#dc2626", # Red
-            FactionType.GUILD: "#ca8a04",         # Yellow/Gold
-            FactionType.MILITARY: "#059669",      # Emerald
-            FactionType.CRIMINAL: "#7c3aed",      # Violet
-            FactionType.RESISTANCE: "#be185d",    # Rose
-            FactionType.INDIVIDUAL: "#ec4899",    # Pink
-            FactionType.OTHER: "#6b7280"          # Gray
+            FactionType.NATION: PALETTE['primary'],        # Indigo
+            FactionType.ORGANIZATION: PALETTE['violet'],  # Purple
+            FactionType.RELIGION: PALETTE['warning'],      # Amber
+            FactionType.TRIBE: PALETTE['success'],         # Green
+            FactionType.CORPORATION: PALETTE['info'],   # Blue
+            FactionType.ECONOMIC_CLASS: CHART_COLOURS['teal'], # Teal
+            FactionType.MINORITY_GROUP: CHART_COLOURS['orange'], # Orange
+            FactionType.POLITICAL_PARTY: PALETTE['error_ink'], # Red
+            FactionType.GUILD: CHART_COLOURS['gold'],         # Yellow/Gold
+            FactionType.MILITARY: PALETTE['success_ink'],      # Emerald
+            FactionType.CRIMINAL: CHART_COLOURS['violet'],      # Violet
+            FactionType.RESISTANCE: PALETTE['accent_ink'],    # Rose
+            FactionType.INDIVIDUAL: PALETTE['accent'],    # Pink
+            FactionType.OTHER: PALETTE['ink_faint']          # Gray
         }
-        return colors.get(faction_type, "#6b7280")
+        return colors.get(faction_type, PALETTE['ink_faint'])
 
     def resizeEvent(self, event):
         """Recalculate positions on resize."""
@@ -167,11 +169,11 @@ class FactionRelationshipGraphDialog(QDialog):
         legend_layout.addWidget(QLabel("Legend:"))
 
         ally_label = QLabel("━ Allies")
-        ally_label.setStyleSheet("color: #10b981; font-weight: bold;")
+        ally_label.setStyleSheet(f"color: {PALETTE['success']}; font-weight: bold;")
         legend_layout.addWidget(ally_label)
 
         enemy_label = QLabel("- - Enemies")
-        enemy_label.setStyleSheet("color: #ef4444; font-weight: bold;")
+        enemy_label.setStyleSheet(f"color: {PALETTE['error']}; font-weight: bold;")
         legend_layout.addWidget(enemy_label)
 
         legend_layout.addStretch()
@@ -309,7 +311,7 @@ class FactionEditor(QDialog):
         territory_layout = QVBoxLayout(territory_group)
 
         territory_help = QLabel("Planets and locations controlled by this faction")
-        territory_help.setStyleSheet("color: #6b7280; font-size: 11px;")
+        territory_help.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px;")
         territory_layout.addWidget(territory_help)
 
         self.territory_list = QListWidget()
@@ -334,7 +336,7 @@ class FactionEditor(QDialog):
         resources_layout = QVBoxLayout(resources_group)
 
         resources_help = QLabel("Resource name and quantity")
-        resources_help.setStyleSheet("color: #6b7280; font-size: 11px;")
+        resources_help.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px;")
         resources_layout.addWidget(resources_help)
 
         self.resources_list = QListWidget()
@@ -371,7 +373,7 @@ class FactionEditor(QDialog):
         allies_layout = QVBoxLayout(allies_group)
 
         allies_help = QLabel("Select allied factions from the dropdown")
-        allies_help.setStyleSheet("color: #6b7280; font-size: 11px;")
+        allies_help.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px;")
         allies_layout.addWidget(allies_help)
 
         self.allies_list = QListWidget()
@@ -396,7 +398,7 @@ class FactionEditor(QDialog):
         enemies_layout = QVBoxLayout(enemies_group)
 
         enemies_help = QLabel("Select enemy factions from the dropdown")
-        enemies_help.setStyleSheet("color: #6b7280; font-size: 11px;")
+        enemies_help.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px;")
         enemies_layout.addWidget(enemies_help)
 
         self.enemies_list = QListWidget()
@@ -452,7 +454,7 @@ class FactionEditor(QDialog):
             "• Planets (Territory)\n"
             "• Mythology (Beliefs & Legends)"
         )
-        connections_info.setStyleSheet("color: #6b7280; font-size: 11px; padding: 8px;")
+        connections_info.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px; padding: 8px;")
         connections_layout.addWidget(connections_info)
 
         layout.addRow(connections_group)
@@ -685,11 +687,11 @@ class FactionBuilderWidget(QWidget):
         header_layout.setContentsMargins(16, 12, 16, 8)
 
         header = QLabel("Factions")
-        header.setStyleSheet("font-size: 16px; font-weight: 600; color: #1a1a1a;")
+        header.setStyleSheet(f"font-size: 16px; font-weight: 600; color: {PALETTE['text_dark']};")
         header_layout.addWidget(header)
 
         subtitle = QLabel("Central hub - factions connect to all other worldbuilding elements")
-        subtitle.setStyleSheet("font-size: 12px; color: #6b7280;")
+        subtitle.setStyleSheet(f"font-size: 12px; color: {PALETTE['ink_faint']};")
         header_layout.addWidget(subtitle)
 
         layout.addWidget(header_widget)
@@ -706,7 +708,7 @@ class FactionBuilderWidget(QWidget):
         # Toolbar
         toolbar = QHBoxLayout()
 
-        add_btn = QPushButton("Add Faction")
+        add_btn = main_button("Add Faction")
         add_btn.clicked.connect(self._add_faction)
         toolbar.addWidget(add_btn)
 
@@ -741,21 +743,21 @@ class FactionBuilderWidget(QWidget):
         self.faction_list = QListWidget()
         self.faction_list.itemSelectionChanged.connect(self._on_selection_changed)
         self.faction_list.itemDoubleClicked.connect(self._edit_faction)
-        self.faction_list.setStyleSheet("""
-            QListWidget {
+        self.faction_list.setStyleSheet(f"""
+            QListWidget {{
                 background-color: white;
-                border: 1px solid #e5e7eb;
+                border: 1px solid {PALETTE['border']};
                 border-radius: 8px;
-            }
-            QListWidget::item {
+            }}
+            QListWidget::item {{
                 padding: 8px;
                 border-radius: 4px;
                 margin: 2px;
-            }
-            QListWidget::item:selected {
-                background-color: #6366f1;
+            }}
+            QListWidget::item:selected {{
+                background-color: {PALETTE['primary']};
                 color: white;
-            }
+            }}
         """)
         layout.addWidget(self.faction_list)
 
@@ -882,7 +884,7 @@ class FactionBuilderWidget(QWidget):
     def _show_relationship_graph(self):
         """Show faction relationship graph in popup."""
         if not self.factions:
-            QMessageBox.information(self, "No Factions", "Add factions to view the relationship graph.")
+            notify.empty(self, "No Factions", "Add factions to view the relationship graph.")
             return
 
         dialog = FactionRelationshipGraphDialog(self.factions, self)

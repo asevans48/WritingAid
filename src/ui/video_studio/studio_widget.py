@@ -49,6 +49,8 @@ from src.ui.video_studio.scene_canvas import SceneCanvasView
 from src.ui.video_studio.scene_editor import (
     AISceneGenerationDialog, SceneEditorDialog,
 )
+from src.ui import notify  # D.9: messages that need no click
+from src.ui.ui_kit import PALETTE, main_button, text_style  # one look (D.8)
 
 
 class VideoStudioWidget(QWidget):
@@ -275,7 +277,7 @@ class VideoStudioWidget(QWidget):
 
         toolbar_row1.addWidget(self._vline())
 
-        self._add_scene_btn = QPushButton("➕ Add")
+        self._add_scene_btn = main_button("➕ Add")
         self._add_scene_btn.setToolTip(
             "Drop a new empty scene on the canvas (at the first "
             "free grid cell).")
@@ -406,8 +408,7 @@ class VideoStudioWidget(QWidget):
         toolbar_row2.setContentsMargins(0, 0, 0, 0)
 
         self._backends_label = QLabel("Backends: …")
-        self._backends_label.setStyleSheet(
-            "color: #475569; font-size: 11px;")
+        self._backends_label.setStyleSheet(text_style("ink_soft", 11))
         self._backends_label.setToolTip(
             "Image and video backends are configured in "
             "Settings → 🎨 Image Generation → Video Studio "
@@ -468,8 +469,7 @@ class VideoStudioWidget(QWidget):
 
         toolbar_row2.addStretch()
         self._status_label = QLabel("")
-        self._status_label.setStyleSheet(
-            "color: #475569; font-size: 11px;")
+        self._status_label.setStyleSheet(text_style("ink_soft", 11))
         self._status_label.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Preferred)
@@ -551,7 +551,7 @@ class VideoStudioWidget(QWidget):
         info_layout.addWidget(self._backend_status)
         self._backend_desc = QLabel("")
         self._backend_desc.setWordWrap(True)
-        self._backend_desc.setStyleSheet("color: #475569;")
+        self._backend_desc.setStyleSheet(f"color: {PALETTE['ink_soft']};")
         info_layout.addWidget(self._backend_desc)
         side_layout.addWidget(info_box)
 
@@ -568,7 +568,7 @@ class VideoStudioWidget(QWidget):
             "• Placeholder clips are 0 bytes; install a real backend "
             "to render actual video.")
         tips.setWordWrap(True)
-        tips.setStyleSheet("color: #334155;")
+        tips.setStyleSheet(f"color: {PALETTE['ink_soft']};")
         tips_layout.addWidget(tips)
         side_layout.addWidget(tips_box)
 
@@ -899,7 +899,7 @@ class VideoStudioWidget(QWidget):
             return
         text = self._compose_scene_prompt(scene)
         if not text.strip():
-            QMessageBox.information(
+            notify.empty(
                 self, "Empty prompt",
                 "This scene has no prompt yet. Fill in the scene's "
                 "prompt (and optionally actions / style) first.")
@@ -957,7 +957,7 @@ class VideoStudioWidget(QWidget):
         # install state.
         if b.name == "placeholder":
             self._backend_status.setText(
-                "<span style='color:#b45309'>"
+                f"<span style='color:{PALETTE['warning_ink']}'>"
                 "<b>No real renderer selected.</b> Generate will "
                 "create stub clips (0 bytes) so the studio flow "
                 "works end-to-end, but they will not play. "
@@ -966,11 +966,11 @@ class VideoStudioWidget(QWidget):
                 "</span>")
         elif installed:
             self._backend_status.setText(
-                "<span style='color:#15803d'>"
+                f"<span style='color:{PALETTE['success_ink']}'>"
                 "Installed and ready.</span>")
         else:
             self._backend_status.setText(
-                "<span style='color:#b91c1c'>"
+                f"<span style='color:{PALETTE['error_ink']}'>"
                 "Not installed — generate will fail. Click "
                 "<b>Install…</b> on the toolbar to set up."
                 "</span>")
@@ -1035,7 +1035,7 @@ class VideoStudioWidget(QWidget):
     def _add_scene_at_first_free_cell(self) -> None:
         studio = self._studio()
         if studio is None:
-            QMessageBox.information(
+            notify.empty(
                 self, "No project",
                 "Open or create a project first.")
             return
@@ -1345,14 +1345,14 @@ class VideoStudioWidget(QWidget):
     # ------------------------------------------------------------------
     def _ai_fill_from_chapter(self) -> None:
         if self._project is None:
-            QMessageBox.information(
+            notify.empty(
                 self, "No project",
                 "Open or create a project first.")
             return
         ms = getattr(self._project, "manuscript", None)
         chapters = list(getattr(ms, "chapters", []) or []) if ms else []
         if not chapters:
-            QMessageBox.information(
+            notify.empty(
                 self, "No chapters",
                 "This project has no chapters to storyboard.")
             return
@@ -1438,7 +1438,7 @@ class VideoStudioWidget(QWidget):
                 f"backend or install this one — see 'Install help'.")
             return
         if not scene.prompt.strip():
-            QMessageBox.information(
+            notify.empty(
                 self, "Empty prompt",
                 "This scene has no prompt yet. Open the editor and "
                 "add one (or ask the AI to write it).")
@@ -1699,7 +1699,7 @@ class VideoStudioWidget(QWidget):
                 f"Help.")
             return
         if not scene.prompt.strip():
-            QMessageBox.information(
+            notify.empty(
                 self, "Empty prompt",
                 "This scene has no prompt yet. Open the editor and "
                 "add one (or ask the AI to write it).")
@@ -1928,7 +1928,7 @@ class VideoStudioWidget(QWidget):
         if scene is None:
             return
         if not scene.actions:
-            QMessageBox.information(
+            notify.empty(
                 self, "No actions",
                 "This scene has no actions yet. Open the editor and "
                 "use 'AI: extract from prose' or add actions "
@@ -2173,7 +2173,7 @@ class VideoStudioWidget(QWidget):
             f"~{total_runtime:.2f}s total; "
             f"{len(missing_actions)} skipped")
         if not clip_paths:
-            QMessageBox.information(
+            notify.empty(
                 self, "Nothing to stitch",
                 "No actions have a favorite image yet. Click the "
                 "📑 Deck button (or use 'Generate slide deck' from "
@@ -2250,7 +2250,7 @@ class VideoStudioWidget(QWidget):
             return
         scene = studio.get_scene(scene_id)
         if scene is None or not scene.clips:
-            QMessageBox.information(
+            notify.empty(
                 self, "No output yet",
                 "This scene hasn't generated anything yet. Use the "
                 "🎬/🖼/📑 buttons on the card to create a clip "
@@ -2533,7 +2533,7 @@ class VideoStudioWidget(QWidget):
             return
         deck = self._deck_for_scene(scene)
         if deck is None:
-            QMessageBox.information(
+            notify.empty(
                 self, "No slide deck",
                 "This scene's chapter has no slide deck yet. Open the "
                 "slide editor for it first, then reset.")
@@ -2583,7 +2583,7 @@ class VideoStudioWidget(QWidget):
             return
         deck = self._deck_for_scene(scene)
         if deck is None:
-            QMessageBox.information(
+            notify.empty(
                 self, "No slide deck",
                 "This scene's chapter has no slide deck yet — nothing "
                 "to sync back.")
@@ -2627,7 +2627,7 @@ class VideoStudioWidget(QWidget):
         path = Path(clip.file_path) if (
             clip and clip.file_path) else None
         if path is None:
-            QMessageBox.information(
+            notify.empty(
                 self, "No video",
                 "This scene has no generated clip, so there's no "
                 "video-editor session to reset.")
@@ -2640,7 +2640,7 @@ class VideoStudioWidget(QWidget):
              and str(Path(s.source_path).resolve()) == key),
             None)
         if match is None:
-            QMessageBox.information(
+            notify.empty(
                 self, "Nothing to reset",
                 "This scene's clip has no saved video-editor session "
                 "(no recorded takes yet).")
@@ -3041,14 +3041,14 @@ class VideoStudioWidget(QWidget):
             build_slide_deck_from_chapter)
         studio = self._studio()
         if studio is None or not studio.scenes:
-            QMessageBox.information(
+            notify.empty(
                 self, "Nothing to edit",
                 "Add scenes first.")
             return
         chapters_with_counts = self._enumerate_chapters_with_scenes(
             studio)
         if not chapters_with_counts:
-            QMessageBox.information(
+            notify.empty(
                 self, "No chapters",
                 "None of your scenes are linked to a chapter yet. "
                 "Open a scene editor and use 'Pull from chapter' "
@@ -3083,7 +3083,7 @@ class VideoStudioWidget(QWidget):
             "Chapter")
         scenes = collect_chapter_scenes(studio, chapter_id)
         if not scenes:
-            QMessageBox.information(
+            notify.empty(
                 self, "No scenes",
                 "That chapter has no scenes linked to it.")
             return
@@ -3163,7 +3163,7 @@ class VideoStudioWidget(QWidget):
                     "\n\nSome actions have multiple images but no "
                     "favorite chosen:\n  • "
                     + "\n  • ".join(needs_fav[:12]))
-            QMessageBox.information(self, "No slides", hint)
+            notify.empty(self, "No slides", hint)
             return
         if needs_fav:
             QMessageBox.information(
@@ -3299,7 +3299,7 @@ class VideoStudioWidget(QWidget):
         from src.video_studio.stitcher import ffmpeg_available
         studio = self._studio()
         if studio is None or not studio.scenes:
-            QMessageBox.information(
+            notify.empty(
                 self, "Nothing to export",
                 "Add scenes and generate at least one clip "
                 "(video, image still, or slide-deck stitch) first.")
@@ -3343,7 +3343,7 @@ class VideoStudioWidget(QWidget):
         export_format = dlg.selected_format()
         scenes = collect_chapter_scenes(studio, chapter_id)
         if not scenes:
-            QMessageBox.information(
+            notify.empty(
                 self, "No scenes",
                 "That chapter has no scenes linked to it yet.")
             return
@@ -3598,7 +3598,7 @@ class VideoStudioWidget(QWidget):
     def _stitch_favorites(self) -> None:
         studio = self._studio()
         if studio is None or not studio.scenes:
-            QMessageBox.information(
+            notify.empty(
                 self, "Nothing to stitch",
                 "Add some scenes and generate clips first.")
             return
@@ -3639,7 +3639,7 @@ class VideoStudioWidget(QWidget):
             # length through is harmless.
             clip_durations.append(float(fav.duration_seconds) or 4.0)
         if not clip_paths:
-            QMessageBox.information(
+            notify.empty(
                 self, "Nothing to stitch",
                 "No favorite clips found that are real video files. "
                 "Generate clips with an installed backend first, "

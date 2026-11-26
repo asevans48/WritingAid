@@ -17,6 +17,8 @@ from src.models.worldbuilding_objects import (
 )
 from src.ui.worldbuilding.map_builder import PlaceEditorDialog
 from src.ui.worldbuilding.enhanced_map_canvas import EnhancedMapCanvas
+from src.ui import notify  # D.9: messages that need no click
+from src.ui.ui_kit import PALETTE, main_button  # one look (D.8)
 
 
 class LandmarkEditorDialog(QDialog):
@@ -62,7 +64,7 @@ class LandmarkEditorDialog(QDialog):
 
         self.color_btn = QPushButton("Choose Color")
         self.color_btn.clicked.connect(self._choose_color)
-        self.current_color = QColor("#10b981")
+        self.current_color = QColor(PALETTE['success'])
         self.color_btn.setStyleSheet(f"background-color: {self.current_color.name()};")
         style_layout.addRow("Color:", self.color_btn)
 
@@ -222,7 +224,7 @@ class EventEditorDialog(QDialog):
 
         self.color_btn = QPushButton("Choose Color")
         self.color_btn.clicked.connect(self._choose_color)
-        self.current_color = QColor("#ef4444")
+        self.current_color = QColor(PALETTE['error'])
         self.color_btn.setStyleSheet(f"background-color: {self.current_color.name()};")
         style_layout.addRow("Color:", self.color_btn)
 
@@ -434,11 +436,11 @@ class MapBuilderWidget(QWidget):
         header_layout.setContentsMargins(16, 12, 16, 8)
 
         header = QLabel("🗺️ Maps")
-        header.setStyleSheet("font-size: 16px; font-weight: 600; color: #1a1a1a;")
+        header.setStyleSheet(f"font-size: 16px; font-weight: 600; color: {PALETTE['text_dark']};")
         header_layout.addWidget(header)
 
         subtitle = QLabel("Create and manage interactive maps with places, landmarks, and events")
-        subtitle.setStyleSheet("font-size: 12px; color: #6b7280;")
+        subtitle.setStyleSheet(f"font-size: 12px; color: {PALETTE['ink_faint']};")
         header_layout.addWidget(subtitle)
 
         layout.addWidget(header_widget)
@@ -453,7 +455,7 @@ class MapBuilderWidget(QWidget):
         # Toolbar for map management
         toolbar = QHBoxLayout()
 
-        new_map_btn = QPushButton("+ New Map")
+        new_map_btn = main_button("+ New Map")
         new_map_btn.clicked.connect(self._create_new_map)
         toolbar.addWidget(new_map_btn)
 
@@ -476,7 +478,7 @@ class MapBuilderWidget(QWidget):
 
         label = QLabel("No maps open\n\nClick '+ New Map' to create your first map")
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setStyleSheet("color: #6b7280; font-size: 14px;")
+        label.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 14px;")
         welcome_layout.addWidget(label)
 
         self.map_tabs.addTab(welcome, "Welcome")
@@ -514,7 +516,7 @@ class MapBuilderWidget(QWidget):
         # Map type indicator
         map_type_text = "🗺️ World Map" if not hasattr(world_map, 'map_type') or world_map.map_type == "world" else "🏘️ Location Map"
         map_type_label = QLabel(f"  {map_type_text}  ")
-        map_type_label.setStyleSheet("font-weight: bold; color: #1a1a1a; padding: 4px;")
+        map_type_label.setStyleSheet(f"font-weight: bold; color: {PALETTE['text_dark']}; padding: 4px;")
         toolbar.addWidget(map_type_label)
 
         toolbar.addSeparator()
@@ -908,7 +910,7 @@ class MapBuilderWidget(QWidget):
     def _draw_border(self):
         """Start faction border drawing mode."""
         if not self.available_factions:
-            QMessageBox.information(self, "No Factions", "Please create factions first.")
+            notify.empty(self, "No Factions", "Please create factions first.")
             return
 
         # Let user select faction

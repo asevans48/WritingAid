@@ -1198,6 +1198,10 @@ class RephraseDialog(QDialog):
             item.setData(Qt.ItemDataRole.UserRole, i)
             self.options_list.addItem(item)
 
+        # Where the rated examples came from (V.4): voice group or all ratings
+        learned = (getattr(self, "_examples_from", None) or {}).get("from", "")
+        self.options_list.setToolTip(f"Learned from rewrites you rated, {learned}." if learned else "")
+
         # Show results and refinement
         self.results_group.setVisible(True)
         self.refine_group.setVisible(True)
@@ -2394,7 +2398,11 @@ class RephraseDialog(QDialog):
         try:
             from src.ai.rewrite_quality import examples_prompt
             path = str(getattr(self.project, "project_path", "") or "") if self.project else ""
-            return examples_prompt(self.original_text, path)
+            self._examples_from = {}
+            return examples_prompt(self.original_text, path, before=self.surrounding_before or "",
+                                   after=self.surrounding_after or "",
+                                   character_name=getattr(self, "_detected_character", "") or "",
+                                   note=self._examples_from)
         except Exception as e:
             print(f"[rephrase] rated examples unavailable: {e}")
             return ""

@@ -11,7 +11,8 @@ from typing import List, Optional
 
 from src.models.worldbuilding_objects import CharacterLifeEvent, EnhancedCharacter
 from src.ui.styles import SYSTEM_FONT
-from src.ui.ui_kit import compact_button  # narrow buttons show their symbol
+from src.ui.ui_kit import PALETTE, compact_button  # narrow buttons show their symbol
+from src.ui import notify  # D.9: messages that need no click
 
 
 class CharacterTimelineVisualization(QWidget):
@@ -24,7 +25,7 @@ class CharacterTimelineVisualization(QWidget):
         super().__init__()
         self.events: List[CharacterLifeEvent] = []
         self.setMinimumHeight(200)
-        self.setStyleSheet("background-color: white; border: 1px solid #e5e7eb; border-radius: 8px;")
+        self.setStyleSheet(f"background-color: white; border: 1px solid {PALETTE['border']}; border-radius: 8px;")
 
     def set_events(self, events: List[CharacterLifeEvent]):
         """Set events to display."""
@@ -39,7 +40,7 @@ class CharacterTimelineVisualization(QWidget):
         if not self.events:
             painter = QPainter(self)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            painter.setPen(QColor("#9ca3af"))
+            painter.setPen(QColor(PALETTE['ink_disabled']))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No life events on timeline")
             return
 
@@ -53,7 +54,7 @@ class CharacterTimelineVisualization(QWidget):
         timeline_end = self.width() - margin
 
         # Main timeline line
-        pen = QPen(QColor("#6366f1"), 3)
+        pen = QPen(QColor(PALETTE['primary']), 3)
         painter.setPen(pen)
         painter.drawLine(timeline_start, line_y, timeline_end, line_y)
 
@@ -73,7 +74,7 @@ class CharacterTimelineVisualization(QWidget):
                 # Event name
                 font = QFont(SYSTEM_FONT, 9)
                 painter.setFont(font)
-                painter.setPen(QColor("#1a1a1a"))
+                painter.setPen(QColor(PALETTE['text_dark']))
 
                 # Alternate above/below
                 text_y = line_y - 30 if i % 2 == 0 else line_y + 30
@@ -85,7 +86,7 @@ class CharacterTimelineVisualization(QWidget):
                 if evt.age is not None:
                     font_small = QFont(SYSTEM_FONT, 8)
                     painter.setFont(font_small)
-                    painter.setPen(QColor("#6b7280"))
+                    painter.setPen(QColor(PALETTE['ink_faint']))
                     age_y = text_y + 25 if i % 2 == 0 else text_y - 15
                     age_rect = QRect(int(x - 60), int(age_y), 120, 20)
                     painter.drawText(age_rect, Qt.AlignmentFlag.AlignCenter, f"Age {evt.age}")
@@ -93,15 +94,15 @@ class CharacterTimelineVisualization(QWidget):
     def _get_event_color(self, event_type: str) -> str:
         """Get color based on event type."""
         colors = {
-            "birth": "#10b981",      # Green
-            "death": "#1f2937",      # Dark gray
-            "achievement": "#f59e0b", # Amber
-            "trauma": "#ef4444",     # Red
-            "relationship": "#ec4899", # Pink
-            "career": "#6366f1",     # Indigo
-            "general": "#6b7280"     # Gray
+            "birth": PALETTE['success'],      # Green
+            "death": PALETTE['ink'],      # Dark gray
+            "achievement": PALETTE['warning'], # Amber
+            "trauma": PALETTE['error'],     # Red
+            "relationship": PALETTE['accent'], # Pink
+            "career": PALETTE['primary'],     # Indigo
+            "general": PALETTE['ink_faint']     # Gray
         }
-        return colors.get(event_type.lower(), "#6366f1")
+        return colors.get(event_type.lower(), PALETTE['primary'])
 
 
 class LifeEventEditor(QWidget):
@@ -361,7 +362,7 @@ class CharacterTimelineWidget(QWidget):
     def _ai_generate(self):
         """AI generate event."""
         from PyQt6.QtWidgets import QMessageBox
-        QMessageBox.information(
+        notify.empty(
             self,
             "AI Generation",
             f"AI will generate a life event for {self.character.name} based on their existing timeline and backstory."

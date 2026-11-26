@@ -420,6 +420,8 @@ class ChapterEditor(QWidget):
         self.tts_read_range_btn = tts_menu.addAction("Read chapters…", self._tts_speak_chapter_range)
         self.tts_generate_btn = tts_menu.addAction("🎙 Export audio file…", self._tts_generate_document)
         self.tts_speak_btn.setMenu(tts_menu)
+        from src.ui import listen_mark                                    # 6.1: Listen and mark
+        listen_mark.install(self, tts_menu)
         toolbar.addWidget(self.tts_speak_btn)
 
         editor_layout.addWidget(toolbar)
@@ -2881,6 +2883,9 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
 
     def _tts_speak_chapter(self):
         """Read aloud with pause/resume: toggles between play, pause, resume."""
+        from src.ui import listen_mark                                    # 6.1: pauses listening
+        if listen_mark.on_read_aloud_click(self):
+            return
         if not self.editor.is_tts_available():
             QMessageBox.warning(
                 self,
@@ -3013,6 +3018,8 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
 
     def _tts_stop(self):
         """Stop TTS playback."""
+        from src.ui import listen_mark                                    # 6.1: stops listening
+        listen_mark.stop(self)
         if self.editor.is_tts_available():
             self.editor.stop_speaking()
         # Update buttons synchronously — don't wait for async tts_stopped signal

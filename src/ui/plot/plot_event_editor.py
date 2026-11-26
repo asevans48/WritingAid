@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 
 from src.models.project import PlotEvent
+from src.ui.ui_kit import PALETTE  # one look (D.8)
 
 
 class PlotEventEditor(QDialog):
@@ -105,7 +106,7 @@ class PlotEventEditor(QDialog):
 
         intensity_help = QLabel("Event intensity determines vertical position on pyramid (0=low, 100=high tension)")
         intensity_help.setWordWrap(True)
-        intensity_help.setStyleSheet("color: #6b7280; font-size: 11px;")
+        intensity_help.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px;")
         intensity_layout.addWidget(intensity_help)
 
         slider_layout = QHBoxLayout()
@@ -154,7 +155,7 @@ class PlotEventEditor(QDialog):
         char_layout = QVBoxLayout()
 
         char_help = QLabel("Characters involved in this event:")
-        char_help.setStyleSheet("color: #6b7280; font-size: 11px;")
+        char_help.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px;")
         char_layout.addWidget(char_help)
 
         self.characters_edit = QTextEdit()
@@ -170,7 +171,7 @@ class PlotEventEditor(QDialog):
         subplot_layout = QVBoxLayout()
 
         subplot_help = QLabel("Connect this event to subplots:")
-        subplot_help.setStyleSheet("color: #6b7280; font-size: 11px;")
+        subplot_help.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px;")
         subplot_layout.addWidget(subplot_help)
 
         self.subplot_checkboxes = {}
@@ -182,7 +183,7 @@ class PlotEventEditor(QDialog):
                 subplot_layout.addWidget(checkbox)
         else:
             no_subplots_label = QLabel("No subplots available. Create subplots first.")
-            no_subplots_label.setStyleSheet("color: #ef4444; font-style: italic;")
+            no_subplots_label.setStyleSheet(f"color: {PALETTE['error']}; font-style: italic;")
             subplot_layout.addWidget(no_subplots_label)
 
         subplot_group.setLayout(subplot_layout)

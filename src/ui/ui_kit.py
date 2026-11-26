@@ -74,11 +74,19 @@ STAGE_COLOURS: Dict[str, str] = {
 }
 
 
+# Hues beyond the palette for charts and kinds that must stay apart (a
+# faction's type, an economy's type, a timeline event's kind). Each screen
+# that colours categories takes them from PALETTE or here, never by hand.
+CHART_COLOURS: Dict[str, str] = {
+    "teal": "#14b8a6", "orange": "#f97316", "gold": "#ca8a04", "violet": "#7c3aed",
+    "zinc": "#71717a", "light_green": "#22c55e",
+}
+
 # The planner's story-arc stages (Freytag), used by its arc drawing and its
 # beat list alike.
 ARC_COLOURS: Dict[str, str] = {
-    "exposition": COLORS["info"], "rising": "#22c55e", "climax": COLORS["error"],
-    "falling": "#f97316", "resolution": COLORS["violet"],
+    "exposition": COLORS["info"], "rising": CHART_COLOURS["light_green"], "climax": COLORS["error"],
+    "falling": CHART_COLOURS["orange"], "resolution": COLORS["violet"],
 }
 
 
@@ -329,6 +337,25 @@ PRIMARY_BUTTON = (
     " border: none; border-radius: 5px; padding: 6px 14px; }"
     f"QPushButton:hover {{ background: {COLORS['primary_dark']}; }}"
     f"QPushButton:disabled {{ background: {COLORS['primary_light']}; }}")
+
+
+def make_main(btn, pad: str = "8px 16px", size: Optional[int] = None, bold: bool = False):
+    """Colour an existing button as the screen's main action. ``pad`` is
+    the padding of the plain button it was (border included), and the text
+    keeps the app-wide weight unless ``bold``, so it keeps its size and its
+    words are never cut off; the default fits a button with the app-wide
+    style. Unlike ``primary_button`` it does not make the button a dialog's
+    default, so Enter does what it did before."""
+    extra = (f" font-size: {size}px;" if size else "") + ("" if bold else " font-weight: 500;")
+    btn.setStyleSheet(PRIMARY_BUTTON + f"QPushButton {{ padding: {pad};{extra} }}")
+    btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    return btn
+
+
+def main_button(text: str, parent: Optional[QWidget] = None, **kw) -> QPushButton:
+    """``QPushButton(text)`` coloured as the screen's main action, the same
+    size as a plain one (``make_main``)."""
+    return make_main(QPushButton(text, parent), **kw)
 
 
 def primary_button(text: str, parent: Optional[QWidget] = None) -> QPushButton:

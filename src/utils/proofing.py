@@ -10,7 +10,9 @@ Grammar comes from two layers, merged:
     server (~260 MB) into ``~/.cache/language_tool_python``. Rules that
     misfire on fiction (smart quotes, dialog spanning paragraphs) and
     its spelling rule (the editor's own speller handles spelling, with
-    the project's names) are disabled.
+    the project's names) are disabled. With LanguageTool's n-gram data
+    installed (Settings ▸ Language, ``lt_ngrams``) it also catches more
+    confused words; without it, nothing changes.
   * **Built-in rules** — fast regex rules that always run, so grammar
     checking works without Java and catches a few things LanguageTool
     lets through ("Their going", double negatives).
@@ -126,6 +128,20 @@ LT_DISABLED_RULES = {
 }
 
 
+_EXIT_HOOKED: set = set()
+
+
+def _close_at_exit(engine: "LanguageToolEngine") -> None:
+    """Stop the Java server when this process ends. Without it, every app
+    run, script and test run that started LanguageTool left a server
+    running with no parent (found 25 November 2026: dozens of them)."""
+    if id(engine) in _EXIT_HOOKED:
+        return
+    _EXIT_HOOKED.add(id(engine))
+    import atexit
+    atexit.register(engine.close)
+
+
 class LanguageToolEngine:
     """Process-wide LanguageTool instance (the Java server is heavy)."""
 
@@ -138,6 +154,8 @@ class LanguageToolEngine:
         self.detail = ""
         self._start_lock = threading.Lock()
         self._check_lock = threading.Lock()
+        self.ngrams = False         # started with LanguageTool's n-gram data (P.6)
+        self._restart = False       # the data was added or removed: start again
 
     @classmethod
     def get(cls) -> "LanguageToolEngine":
@@ -156,8 +174,21 @@ class LanguageToolEngine:
             return False, "Java is not installed (LanguageTool needs it)"
         return True, ""
 
+    def request_restart(self) -> None:
+        """Start again before the next check (the n-gram data changed)."""
+        self._restart = True
+
+    def _restart_if_requested(self) -> None:
+        if not self._restart:
+            return
+        with self._check_lock:
+            self._restart = False
+            if self._tool is not None or self.status == "ready":
+                self.close()
+
     def ensure_started(self) -> bool:
         """Start the server if needed. Blocking — call from a worker thread."""
+        self._restart_if_requested()
         if self.status == "ready":
             return True
         if self.status in ("unavailable", "failed"):
@@ -171,15 +202,16 @@ class LanguageToolEngine:
                 return False
             self.status = "starting"
             try:
-                import language_tool_python
+                from src.utils.lt_ngrams import start_language_tool
                 with _jvm_memory_cap():
-                    tool = language_tool_python.LanguageTool("en-US")
+                    tool, self.ngrams = start_language_tool("en-US")
                 try:
                     tool.disabled_rules.update(LT_DISABLED_RULES)
                 except Exception:
                     pass
                 self._tool = tool
                 self.status, self.detail = "ready", ""
+                _close_at_exit(self)
                 return True
             except Exception as e:
                 self.status, self.detail = "failed", str(e)
@@ -219,13 +251,13 @@ class LanguageToolEngine:
                 self._tool.close()
             except Exception:
                 pass
-        self._tool, self.status = None, "idle"
+        self._tool, self.status, self.ngrams = None, "idle", False
 
     def describe(self) -> str:
         return {
             "idle": "LanguageTool (starts on first check)",
             "starting": "LanguageTool starting…",
-            "ready": "LanguageTool",
+            "ready": "LanguageTool, with n-gram data" if self.ngrams else "LanguageTool",
             "unavailable": f"basic rules only — {self.detail}",
             "failed": f"basic rules only — LanguageTool failed: {self.detail}",
         }.get(self.status, self.status)

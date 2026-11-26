@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QFormLayout, QDialogButtonBox
 )
 from PyQt6.QtCore import pyqtSignal, Qt
+from src.ui.ui_kit import PALETTE, main_button  # one look (D.8)
 
 
 def _load_base_encyclopedia() -> dict:
@@ -129,7 +130,7 @@ class EncyclopediaWidget(QWidget):
         header_layout.addWidget(QLabel("<b>Worldbuilding Encyclopedia</b>"))
         header_layout.addStretch()
 
-        add_btn = QPushButton("+ Add Entry")
+        add_btn = main_button("+ Add Entry")
         add_btn.setToolTip("Add your own encyclopedia entry")
         add_btn.clicked.connect(self._add_entry)
         header_layout.addWidget(add_btn)
@@ -172,7 +173,7 @@ class EncyclopediaWidget(QWidget):
         detail_layout.addWidget(self.detail_title)
 
         self.detail_summary = QLabel("")
-        self.detail_summary.setStyleSheet("font-size: 11px; color: #6b7280; font-style: italic;")
+        self.detail_summary.setStyleSheet(f"font-size: 11px; color: {PALETTE['ink_faint']}; font-style: italic;")
         self.detail_summary.setWordWrap(True)
         detail_layout.addWidget(self.detail_summary)
 

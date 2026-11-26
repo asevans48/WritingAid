@@ -11,6 +11,7 @@ from typing import List, Optional
 import uuid
 
 from src.models.worldbuilding_objects import StarSystem, Star, Planet, PlanetType, ClimateZone
+from src.ui.ui_kit import PALETTE, main_button  # one look (D.8)
 
 
 class PlanetEditorDialog(QDialog):
@@ -117,7 +118,7 @@ class PlanetEditorDialog(QDialog):
 
         help_label = QLabel("Define climate zones for this planet (e.g., Tropical, Temperate, Arctic)")
         help_label.setWordWrap(True)
-        help_label.setStyleSheet("color: #6b7280; font-size: 11px; margin-bottom: 8px;")
+        help_label.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px; margin-bottom: 8px;")
         layout.addWidget(help_label)
 
         # Climate zones list with buttons
@@ -163,7 +164,7 @@ class PlanetEditorDialog(QDialog):
         flora_layout = QVBoxLayout(flora_group)
 
         flora_help = QLabel("Select flora species native to this planet")
-        flora_help.setStyleSheet("color: #6b7280; font-size: 11px;")
+        flora_help.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px;")
         flora_layout.addWidget(flora_help)
 
         self.flora_list = QListWidget()
@@ -183,7 +184,7 @@ class PlanetEditorDialog(QDialog):
         fauna_layout = QVBoxLayout(fauna_group)
 
         fauna_help = QLabel("Select fauna species native to this planet")
-        fauna_help.setStyleSheet("color: #6b7280; font-size: 11px;")
+        fauna_help.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px;")
         fauna_layout.addWidget(fauna_help)
 
         self.fauna_list = QListWidget()
@@ -455,7 +456,7 @@ class EnhancedStarSystemEditor(QDialog):
 
         help_label = QLabel("Manage the stars in this system. For binary/trinary systems, add multiple stars.")
         help_label.setWordWrap(True)
-        help_label.setStyleSheet("color: #6b7280; font-size: 11px; margin-bottom: 8px;")
+        help_label.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px; margin-bottom: 8px;")
         layout.addWidget(help_label)
 
         # Stars list with buttons
@@ -491,7 +492,7 @@ class EnhancedStarSystemEditor(QDialog):
 
         help_label = QLabel("Manage the planets orbiting in this system.")
         help_label.setWordWrap(True)
-        help_label.setStyleSheet("color: #6b7280; font-size: 11px; margin-bottom: 8px;")
+        help_label.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px; margin-bottom: 8px;")
         layout.addWidget(help_label)
 
         # Planets list with buttons
@@ -527,7 +528,7 @@ class EnhancedStarSystemEditor(QDialog):
 
         help_label = QLabel("Key facts about this system (distances between planets, notable features, etc.)")
         help_label.setWordWrap(True)
-        help_label.setStyleSheet("color: #6b7280; font-size: 11px; margin-bottom: 8px;")
+        help_label.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px; margin-bottom: 8px;")
         layout.addWidget(help_label)
 
         self.key_facts_edit = QTextEdit()
@@ -729,11 +730,11 @@ class EnhancedStarSystemBuilderWidget(QWidget):
         header_layout.setContentsMargins(16, 12, 16, 8)
 
         header = QLabel("⭐ Star Systems")
-        header.setStyleSheet("font-size: 16px; font-weight: 600; color: #1a1a1a;")
+        header.setStyleSheet(f"font-size: 16px; font-weight: 600; color: {PALETTE['text_dark']};")
         header_layout.addWidget(header)
 
         subtitle = QLabel("Manage complete star systems with stars, planets, and astronomical data")
-        subtitle.setStyleSheet("font-size: 12px; color: #6b7280;")
+        subtitle.setStyleSheet(f"font-size: 12px; color: {PALETTE['ink_faint']};")
         header_layout.addWidget(subtitle)
 
         layout.addWidget(header_widget)
@@ -741,7 +742,7 @@ class EnhancedStarSystemBuilderWidget(QWidget):
         # Toolbar
         toolbar = QHBoxLayout()
 
-        add_btn = QPushButton("➕ Add System")
+        add_btn = main_button("➕ Add System")
         add_btn.clicked.connect(self._add_system)
         toolbar.addWidget(add_btn)
 

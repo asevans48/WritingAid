@@ -18,6 +18,8 @@ from src.ui.plot.freytag_pyramid_visual import FreytagPyramidVisual
 from src.ui.plot.plot_event_editor import PlotEventEditor
 from src.ui.plot.plot_event_ordering import normalize_sort_orders
 from src.ui.plot.plot_timeline import PlotTimelineWidget
+from src.ui import notify  # D.9: messages that need no click
+from src.ui.ui_kit import PALETTE, main_button, make_main, plain, plain_qss  # one look (D.8)
 
 
 # Plot-AI system prompt. Lives at module scope so the worker thread
@@ -713,16 +715,16 @@ class CollapsibleSection(QWidget):
 
         # Header with toggle button
         header_frame = QFrame()
-        header_frame.setStyleSheet("""
-            QFrame {
-                background-color: #f3f4f6;
-                border: 1px solid #e5e7eb;
+        header_frame.setStyleSheet(f"""
+            QFrame {{
+                background-color: {PALETTE['surface_muted']};
+                border: 1px solid {PALETTE['border']};
                 border-radius: 6px;
                 padding: 4px;
-            }
-            QFrame:hover {
-                background-color: #e5e7eb;
-            }
+            }}
+            QFrame:hover {{
+                background-color: {PALETTE['border']};
+            }}
         """)
         header_layout = QHBoxLayout(header_frame)
         header_layout.setContentsMargins(8, 4, 8, 4)
@@ -1030,7 +1032,7 @@ class PlotManagerWidget(QWidget):
         help_text = QLabel(
             "Timeline view — events ordered within each act. "
             "Use the per-card buttons to edit, reorder, or delete.")
-        help_text.setStyleSheet("font-size: 11px; color: #6b7280;")
+        help_text.setStyleSheet(f"font-size: 11px; color: {PALETTE['ink_faint']};")
         help_text.setWordWrap(True)
         header.addWidget(help_text)
 
@@ -1041,7 +1043,7 @@ class PlotManagerWidget(QWidget):
         # on the card itself; the cross-act add buttons live in each
         # act section of the timeline.
         toolbar = QHBoxLayout()
-        add_btn = QPushButton("➕ Add Event")
+        add_btn = main_button("➕ Add Event")
         add_btn.clicked.connect(self._add_event)
         toolbar.addWidget(add_btn)
         toolbar.addStretch()
@@ -1081,7 +1083,7 @@ class PlotManagerWidget(QWidget):
         header.addStretch()
 
         help_text = QLabel("Secondary storylines tied to the main plot")
-        help_text.setStyleSheet("font-size: 11px; color: #6b7280;")
+        help_text.setStyleSheet(f"font-size: 11px; color: {PALETTE['ink_faint']};")
         header.addWidget(help_text)
 
         layout.addLayout(header)
@@ -1089,7 +1091,7 @@ class PlotManagerWidget(QWidget):
         # Toolbar
         toolbar = QHBoxLayout()
 
-        add_subplot_btn = QPushButton("➕ Add Subplot")
+        add_subplot_btn = main_button("➕ Add Subplot")
         add_subplot_btn.clicked.connect(self._add_subplot)
         toolbar.addWidget(add_subplot_btn)
 
@@ -1143,7 +1145,7 @@ class PlotManagerWidget(QWidget):
         header.addStretch()
 
         help_text = QLabel("Commitments to readers about tone, plot, genre, and characters")
-        help_text.setStyleSheet("font-size: 11px; color: #6b7280;")
+        help_text.setStyleSheet(f"font-size: 11px; color: {PALETTE['ink_faint']};")
         header.addWidget(help_text)
 
         layout.addLayout(header)
@@ -1151,7 +1153,7 @@ class PlotManagerWidget(QWidget):
         # Toolbar
         toolbar = QHBoxLayout()
 
-        add_promise_btn = QPushButton("➕ Add Promise")
+        add_promise_btn = main_button("➕ Add Promise")
         add_promise_btn.clicked.connect(self._add_promise)
         toolbar.addWidget(add_promise_btn)
 
@@ -1183,7 +1185,7 @@ class PlotManagerWidget(QWidget):
             "• <b>Character</b> - Character arcs and consistency (growth, motivations)"
         )
         type_info.setWordWrap(True)
-        type_info.setStyleSheet("background-color: #f3f4f6; padding: 10px; border-radius: 6px; font-size: 11px;")
+        type_info.setStyleSheet(f"background-color: {PALETTE['surface_muted']}; padding: 10px; border-radius: 6px; font-size: 11px;")
         promise_sections_layout.addWidget(type_info)
 
         layout.addWidget(promise_sections_widget)
@@ -1242,12 +1244,7 @@ class PlotManagerWidget(QWidget):
         # otherwise the text inherits the system theme colour, which
         # on dark themes ends up white-on-our-white-background and the
         # label looks invisible until the user hovers.
-        small_btn_style = (
-            "QPushButton { padding: 3px 10px; font-size: 11px; "
-            "  border: 1px solid #d1d5db; border-radius: 4px; "
-            "  background: white; color: #374151; }"
-            "QPushButton:hover { border-color: #6366f1; "
-            "  color: #6366f1; }")
+        small_btn_style = plain_qss(pad="4px 11px")
 
         prompts_menu_btn = QPushButton("Quick prompts ▼")
         prompts_menu_btn.setStyleSheet(small_btn_style)
@@ -1320,7 +1317,7 @@ class PlotManagerWidget(QWidget):
         # chapters · 8k chars excerpts · plot map ✓ · …").
         self._ai_ctx_label = QLabel("Context: not yet checked.")
         self._ai_ctx_label.setStyleSheet(
-            "color:#6b7280;font-size:11px;"
+            f"color:{PALETTE['ink_faint']};font-size:11px;"
             "padding:2px 4px;")
         self._ai_ctx_label.setWordWrap(True)
         layout.addWidget(self._ai_ctx_label)
@@ -1339,8 +1336,8 @@ class PlotManagerWidget(QWidget):
         self._ai_transcript_scroll = QScrollArea()
         self._ai_transcript_scroll.setWidgetResizable(True)
         self._ai_transcript_scroll.setStyleSheet(
-            "QScrollArea { border: 1px solid #e5e7eb; "
-            "background-color: #fafafa; border-radius: 6px; }")
+            f"QScrollArea {{ border: 1px solid {PALETTE['border']}; "
+            f"background-color: {PALETTE['surface_soft']}; border-radius: 6px; }}")
         self._ai_transcript_inner = QWidget()
         self._ai_transcript_layout = QVBoxLayout(
             self._ai_transcript_inner)
@@ -1350,7 +1347,7 @@ class PlotManagerWidget(QWidget):
         self._ai_transcript_placeholder = QLabel(
             "Conversation will appear here.")
         self._ai_transcript_placeholder.setStyleSheet(
-            "color: #9ca3af; font-style: italic; padding: 12px;")
+            f"color: {PALETTE['ink_disabled']}; font-style: italic; padding: 12px;")
         self._ai_transcript_placeholder.setAlignment(
             Qt.AlignmentFlag.AlignCenter)
         self._ai_transcript_layout.insertWidget(
@@ -1380,9 +1377,9 @@ class PlotManagerWidget(QWidget):
         self._ai_chat_toggle_btn = QPushButton("▼  Chat input")
         self._ai_chat_toggle_btn.setStyleSheet(
             "QPushButton { padding: 1px 8px; font-size: 10px; "
-            " color: #6b7280; border: none; "
+            f" color: {PALETTE['ink_faint']}; border: none; "
             " background: transparent; text-align: left; }"
-            "QPushButton:hover { color: #2563eb; }")
+            f"QPushButton:hover {{ color: {PALETTE['info']}; }}")
         self._ai_chat_toggle_btn.setToolTip(
             "Collapse the chat input area to give the transcript "
             "more room. Click again to bring it back.")
@@ -1409,23 +1406,13 @@ class PlotManagerWidget(QWidget):
         btn_row.setSpacing(6)
         btn_row.addStretch()
         clear_btn = QPushButton("🗑 Clear")
-        clear_btn.setStyleSheet(
-            "QPushButton { padding: 4px 14px; font-size: 11px; "
-            " border: 1px solid #d1d5db; border-radius: 4px; "
-            " background: white; color: #374151; }"
-            "QPushButton:hover { border-color: #6b7280; "
-            " color: #1f2937; }")
+        plain(clear_btn, pad="5px 15px")
         clear_btn.setToolTip("Clear the conversation transcript and history.")
         clear_btn.clicked.connect(self._on_ai_clear)
         btn_row.addWidget(clear_btn)
 
         self._ai_ask_btn = QPushButton("💬 Ask  ⏎")
-        self._ai_ask_btn.setStyleSheet(
-            "QPushButton { background-color: #2563eb; color: white; "
-            " padding: 5px 18px; border-radius: 4px; "
-            " font-weight: bold; }"
-            "QPushButton:hover { background-color: #1d4ed8; }"
-            "QPushButton:disabled { background-color: #93c5fd; }")
+        make_main(self._ai_ask_btn, pad="5px 18px", bold=True)
         self._ai_ask_btn.setDefault(True)
         self._ai_ask_btn.clicked.connect(self._on_ai_ask)
         btn_row.addWidget(self._ai_ask_btn)
@@ -1733,14 +1720,14 @@ class PlotManagerWidget(QWidget):
               or plot_summary_n > 0 or chars_n > 0)
         if not bits:
             return (
-                "Context: <span style='color:#b91c1c;'>empty</span> — "
+                f"Context: <span style='color:{PALETTE['error_ink']};'>empty</span> — "
                 "add a plot event, write a chapter, or fill in the "
                 "Freytag pyramid first.",
                 False,
             )
-        prefix = ("Context: <span style='color:#15803d;'>ready</span>"
+        prefix = (f"Context: <span style='color:{PALETTE['success_ink']};'>ready</span>"
                   if ok
-                  else "Context: <span style='color:#b91c1c;'>thin"
+                  else f"Context: <span style='color:{PALETTE['error_ink']};'>thin"
                        "</span>")
         return (f"{prefix} — " + " · ".join(bits), ok)
 
@@ -1780,7 +1767,7 @@ class PlotManagerWidget(QWidget):
         ctx = self._gather_ai_context(question)
         if not ctx:
             from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.information(
+            notify.empty(
                 self, "Plot AI context",
                 "No context available. Open a project first.")
             return
@@ -1970,7 +1957,7 @@ class PlotManagerWidget(QWidget):
             self._ai_append_transient(
                 "Plot AI isn't wired up yet (no project context "
                 "available). Open a project first.",
-                color="#b91c1c")
+                color=PALETTE['error_ink'])
             return
 
         # Re-check context fresh at click time. The pre-flight banner
@@ -1987,7 +1974,7 @@ class PlotManagerWidget(QWidget):
                 "the AI to discuss (no plot map, no chapters, no "
                 "characters, no worldbuilding). Add at least one of "
                 "those, then try again.",
-                color="#b91c1c")
+                color=PALETTE['error_ink'])
             return
 
         self._ai_input.clear()
@@ -2011,7 +1998,7 @@ class PlotManagerWidget(QWidget):
         # harmless and keeps the rendering path simple.
         self._ai_history.append({"role": "user", "content": question})
         self._ai_render_history()
-        self._ai_append_transient("Thinking…", color="#6b7280")
+        self._ai_append_transient("Thinking…", color=PALETTE['ink_faint'])
         self._ai_busy = True
         self._ai_ask_btn.setEnabled(False)
 
@@ -2142,7 +2129,7 @@ class PlotManagerWidget(QWidget):
         self._ai_render_history()
         self._ai_append_transient(
             f"<b>Plot AI failed:</b> {self._ai_text_to_html(error)}",
-            color="#b91c1c")
+            color=PALETTE['error_ink'])
         self._ai_busy = False
         self._ai_ask_btn.setEnabled(True)
 
@@ -2202,14 +2189,14 @@ class PlotManagerWidget(QWidget):
         frame = QFrame()
         if is_user:
             frame.setStyleSheet(
-                "QFrame { background-color: #6366f1; "
+                f"QFrame {{ background-color: {PALETTE['primary']}; "
                 "color: white; border-radius: 8px; "
                 "padding: 6px 10px; }"
                 "QLabel { color: white; }")
         else:
             frame.setStyleSheet(
                 "QFrame { background-color: white; "
-                "border: 1px solid #e5e7eb; border-radius: 8px; "
+                f"border: 1px solid {PALETTE['border']}; border-radius: 8px; "
                 "padding: 6px 10px; }")
         v = QVBoxLayout(frame)
         v.setContentsMargins(6, 4, 6, 4)
@@ -2249,16 +2236,11 @@ class PlotManagerWidget(QWidget):
         h.setContentsMargins(0, 2, 0, 0)
         h.setSpacing(6)
         prompt_label = QLabel(
-            "<span style='color:#9ca3af;font-size:10px;'>"
+            f"<span style='color:{PALETTE['ink_disabled']};font-size:10px;'>"
             "Was this useful?</span>")
         h.addWidget(prompt_label)
 
-        rating_btn_style = (
-            "QPushButton { padding: 2px 10px; font-size: 11px; "
-            " border: 1px solid #d1d5db; border-radius: 4px; "
-            " background: white; color: #374151; }"
-            "QPushButton:hover { border-color: #15803d; "
-            " color: #15803d; }")
+        rating_btn_style = plain_qss(pad="3px 11px")
         excellent_btn = QPushButton("⭐ Excellent")
         excellent_btn.setStyleSheet(rating_btn_style)
         excellent_btn.setToolTip(
@@ -2285,12 +2267,12 @@ class PlotManagerWidget(QWidget):
             except Exception:
                 enabled = False
             if enabled:
-                msg = (f"<span style='color:#15803d;font-size:11px;'>"
+                msg = (f"<span style='color:{PALETTE['success_ink']};font-size:11px;'>"
                        f"✓ Saved as <b>{rating}</b> plot training "
                        f"data.</span>")
             else:
                 msg = (
-                    "<span style='color:#92400e;font-size:11px;'>"
+                    f"<span style='color:{PALETTE['warning_ink']};font-size:11px;'>"
                     "⚠ Rating noted, but plot data collection is "
                     "<b>off</b> — flip it on in Settings → "
                     "CreativeOS to capture future ratings."
@@ -2331,14 +2313,14 @@ class PlotManagerWidget(QWidget):
         """
         card = QFrame()
         card.setStyleSheet(
-            "QFrame { background-color: #f0f9ff; "
-            " border: 1px solid #bfdbfe; border-radius: 6px; }")
+            f"QFrame {{ background-color: {PALETTE['info_tint']}; "
+            f" border: 1px solid {PALETTE['primary_border']}; border-radius: 6px; }}")
         v = QVBoxLayout(card)
         v.setContentsMargins(10, 8, 10, 8)
         v.setSpacing(6)
 
         kind_label = QLabel(
-            f"<span style='background:#dbeafe;color:#1d4ed8;"
+            f"<span style='background:{PALETTE['info_tint']};color:{PALETTE['info_ink']};"
             f"padding:1px 6px;border-radius:3px;font-size:10px;"
             f"font-weight:600;'>"
             f"+ {suggestion.get('label', 'Element').upper()}"
@@ -2360,7 +2342,7 @@ class PlotManagerWidget(QWidget):
                 f"</span>")
             if why:
                 summary_html += (
-                    f"<br/><span style='color:#475569;font-size:11px;'>"
+                    f"<br/><span style='color:{PALETTE['ink_soft']};font-size:11px;'>"
                     f"{self._ai_text_to_html(why)}</span>")
             summary = QLabel(summary_html)
             summary.setWordWrap(True)
@@ -2371,11 +2353,11 @@ class PlotManagerWidget(QWidget):
             err = QLabel(
                 "<i>(couldn't parse the AI's suggestion JSON; "
                 "raw text below)</i>")
-            err.setStyleSheet("color: #b91c1c; font-size: 11px;")
+            err.setStyleSheet(f"color: {PALETTE['error_ink']}; font-size: 11px;")
             err.setWordWrap(True)
             v.addWidget(err)
             raw_box = QLabel(
-                f"<pre style='font-size:10px;color:#374151;"
+                f"<pre style='font-size:10px;color:{PALETTE['ink']};"
                 f"white-space:pre-wrap;'>"
                 f"{self._ai_text_to_html(suggestion.get('raw', ''))}"
                 f"</pre>")
@@ -2393,21 +2375,12 @@ class PlotManagerWidget(QWidget):
         action_row.addStretch()
 
         skip_btn = QPushButton("✕ Skip")
-        skip_btn.setStyleSheet(
-            "QPushButton { padding: 4px 14px; font-size: 11px; "
-            " border: 1px solid #d1d5db; border-radius: 4px; "
-            " background: white; color: #374151; }"
-            "QPushButton:hover { border-color: #6b7280; }")
+        plain(skip_btn, pad="5px 15px")
         skip_btn.setToolTip("Dismiss this suggestion without adding it.")
         action_row.addWidget(skip_btn)
 
         add_btn = QPushButton("➕ Add to project")
-        add_btn.setStyleSheet(
-            "QPushButton { background-color: #2563eb; color: white; "
-            " padding: 4px 14px; border-radius: 4px; font-size: 11px;"
-            " font-weight: 600; }"
-            "QPushButton:hover { background-color: #1d4ed8; }"
-            "QPushButton:disabled { background-color: #93c5fd; }")
+        plain(add_btn, pad="4px 14px", bold=True)
         add_btn.setEnabled(bool(data))
         if not data:
             add_btn.setToolTip(
@@ -2442,7 +2415,7 @@ class PlotManagerWidget(QWidget):
                 _replace_with_banner(
                     f"✓ <b>Added</b>"
                     + (f" — {label}" if label else ""),
-                    "#15803d")
+                    PALETTE['success_ink'])
                 # An accepted suggestion is a strong implicit signal
                 # the AI's response was useful — capture the
                 # (prompt, response) pair as plot training data
@@ -2452,10 +2425,10 @@ class PlotManagerWidget(QWidget):
             else:
                 _replace_with_banner(
                     "✗ Couldn't add — see console for details.",
-                    "#b91c1c")
+                    PALETTE['error_ink'])
 
         def on_skip():
-            _replace_with_banner("— Skipped —", "#6b7280")
+            _replace_with_banner("— Skipped —", PALETTE['ink_faint'])
 
         add_btn.clicked.connect(on_add)
         skip_btn.clicked.connect(on_skip)
@@ -2473,7 +2446,7 @@ class PlotManagerWidget(QWidget):
             print(f"[plot-ai] create callback raised: {e}")
             return False
 
-    def _ai_append_transient(self, html: str, color: str = "#6b7280"):
+    def _ai_append_transient(self, html: str, color: str = PALETTE['ink_faint']):
         """Show a one-shot status row (Thinking…, error) below the
         rendered turns. Cleared on the next render."""
         if not hasattr(self, '_ai_transient_widgets'):
@@ -2589,13 +2562,13 @@ class PlotManagerWidget(QWidget):
         help_text = QLabel(
             "Sustained dramatic forces (internal struggles, "
             "rivalries, threats) the AI weighs when discussing plot")
-        help_text.setStyleSheet("font-size: 11px; color: #6b7280;")
+        help_text.setStyleSheet(f"font-size: 11px; color: {PALETTE['ink_faint']};")
         header.addWidget(help_text)
         layout.addLayout(header)
 
         # Toolbar
         toolbar = QHBoxLayout()
-        add_btn = QPushButton("➕ Add Tension")
+        add_btn = main_button("➕ Add Tension")
         add_btn.clicked.connect(self._add_tension)
         toolbar.addWidget(add_btn)
 
@@ -2624,7 +2597,7 @@ class PlotManagerWidget(QWidget):
             "(war, plague, the encroaching frost)")
         info.setWordWrap(True)
         info.setStyleSheet(
-            "background-color: #f3f4f6; padding: 8px; "
+            f"background-color: {PALETTE['surface_muted']}; padding: 8px; "
             "border-radius: 4px; font-size: 11px;")
         layout.addWidget(info)
 
@@ -2750,12 +2723,12 @@ class PlotManagerWidget(QWidget):
         help_text = QLabel(
             "What the story is about underneath its events — the "
             "argument the book makes")
-        help_text.setStyleSheet("font-size: 11px; color: #6b7280;")
+        help_text.setStyleSheet(f"font-size: 11px; color: {PALETTE['ink_faint']};")
         header.addWidget(help_text)
         layout.addLayout(header)
 
         toolbar = QHBoxLayout()
-        add_btn = QPushButton("➕ Add Theme")
+        add_btn = main_button("➕ Add Theme")
         add_btn.clicked.connect(self._add_theme)
         toolbar.addWidget(add_btn)
 
@@ -2782,7 +2755,7 @@ class PlotManagerWidget(QWidget):
             "• Related characters — whose arc carries it")
         info.setWordWrap(True)
         info.setStyleSheet(
-            "background-color: #f3f4f6; padding: 8px; "
+            f"background-color: {PALETTE['surface_muted']}; padding: 8px; "
             "border-radius: 4px; font-size: 11px;")
         layout.addWidget(info)
 
@@ -3492,7 +3465,7 @@ class EventDescriptionPopup(QDialog):
         if self.event.related_characters:
             chars_label = QLabel(f"Characters: {', '.join(self.event.related_characters)}")
             chars_label.setWordWrap(True)
-            chars_label.setStyleSheet("color: #6b7280; font-size: 11px;")
+            chars_label.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px;")
             layout.addWidget(chars_label)
 
         # Buttons
@@ -3831,7 +3804,7 @@ class TensionEditor(QDialog):
             no_chars = QLabel(
                 "(No characters defined yet — add them in the "
                 "Characters tab and they'll show up here.)")
-            no_chars.setStyleSheet("color: #6b7280; font-size: 11px;")
+            no_chars.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px;")
             char_layout.addWidget(no_chars)
         form_layout.addRow(char_group)
 
@@ -4000,7 +3973,7 @@ class ThemeEditor(QDialog):
                 "(No characters defined yet — add them in the "
                 "Characters tab and they'll show up here.)")
             no_chars.setStyleSheet(
-                "color: #6b7280; font-size: 11px;")
+                f"color: {PALETTE['ink_faint']}; font-size: 11px;")
             char_layout.addWidget(no_chars)
         form_layout.addRow(char_group)
 

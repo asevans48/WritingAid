@@ -2991,6 +2991,10 @@ class SettingsDialog(QDialog):
         nltk_group.setLayout(nltk_layout)
         layout.addWidget(nltk_group)
 
+        from src.ui.ngram_download import NgramDataGroup   # LanguageTool's extra data (P.6)
+        self.ngram_data_group = NgramDataGroup()
+        layout.addWidget(self.ngram_data_group)
+
         # Status Group - Show installed resources
         status_group = QGroupBox("Installed Resources")
         status_layout = QVBoxLayout()

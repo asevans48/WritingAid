@@ -18,68 +18,71 @@ and each brief's *When you finish* say the same):
 The writer ticks sections 1 to 3. A session never ticks those for them.
 
 **Where things stand** (25 November): everything up to and including
-your decision 3 (style checks must meet four in five) is **committed**
-(0733233, after ccc779b and 206300a). **Built and not committed: H.1 (the
-writing habit), D.4 (five top-level tabs, one way to open a screen in
-its own window), D.5 (the six Analyze ▾ analyses run as Critique
-reports), P.2b (four more style checks: homonyms, sensory detail,
-sentence structure, vague words) and 4.3 (checks earn their place: how
-often you take each check's fixes, and a check you mostly turn down
-toned down), and your request of 25 November: the chapter's prose
-profile (the Prose Profile tab measures the chapter open in Write against
-its targets; the AI chat gives that summary at once).** Tests: 1,602
-pass, none fail.
-Every screen count is at or under the baseline you agreed (`screens_baseline.json`); H.1 changed
-none, and D.4 takes the top-level tabs from 10 to 5 (now counted by the
-harness; the new baseline is yours to agree, section 3); D.5 changed none;
-P.2b changed none (its four switches sit in the Style checks submenu,
-which counts as one; every item 53 → 57); 4.3 changed none (links and
-tooltips only); the chapter's prose profile changed none (a panel with a
-line of links; the tab now scrolls on a small screen).
+H.1, D.4, D.5, P.2b, 4.3 and the chapter's prose profile is **committed**
+(d0d347e and 58226e9, after 0733233). **Built since, not committed, in
+three rounds:**
+
+- **Round 1.** P.6 (LanguageTool's n-gram data, installed, Download /
+  Remove in Settings ▸ Language: harder confused words caught 13% → 38%,
+  no new false alarms; and a fix: the LanguageTool server now stops when
+  the app, a script or a test run ends). P.8 (character analysis: "Across
+  the book" on each character, and a scan in the Critique's Character
+  check). V.1 (a voice fingerprint on every rating). V.2 (voice groups,
+  thresholds calibrated on 64 published books: Born in Blood and Teller
+  County form two groups; Tempest has too few ratings yet).
+- **Round 2.** V.3 (the model names each new or merged group in the
+  background; untried with a real model). V.4 (rewrites learn from rated
+  examples in the passage's voice group; "keep this project's ratings to
+  itself"). V.5 (managing the groups: Training Studio ▸ Browse rows ▸
+  "rated rewrites, by voice"). 6.1 (Read Aloud ▾ → Listen and mark: M
+  marks a sentence). 6.2 (marks become 👂 notes and Next-fix cards).
+- **Round 3.** D.9's second session (67 more "nothing to do" boxes now a
+  status-bar line; 116 in all). D.8's second session (one coloured main
+  button and the kit's colours on Plot, Characters, World, Visuals, Video
+  Studio, Publishing, Drafts and Print). 0.3's screen check (the safety
+  check also opens every screen on a copy, saves it from the window and
+  compares). The D.2a design for the One Improve window (for your
+  review).
+
+Tests: 1,834 pass in one run, none fail. No screen count rose above
+`screens_baseline.json` in any of these (D.4's 5 top-level tabs, against
+10 in the baseline, is still yours to agree).
 
 What is waiting for you:
 
-- **Try it (section 1).** Nothing there is ticked yet. The newest items:
-  the chapter's prose profile (the Prose Profile tab's "This chapter";
-  "prose profile" and "review my prose" in the AI chat), checks earn their place (4.3: each check's acceptance rate in the
-  Critique's column tooltips and the Style checks menu; a check you mostly
-  turn down goes lower and fainter, with "Bring it back"; switching it off
-  only when you click), more missing reports (P.2b: Homonyms, Sensory detail, Sentence
-  structure, Vague words; Homonyms ticked for new projects, no "Fix all"
-  for it),
-  analyses as Critique reports (D.5: Analyze ▾ runs in the Critique,
-  rated and kept; Writing hints works; the old windows one link away),
-  fewer top-level tabs (D.4: the five groups, right-click any tab to open
-  it in its own window, the old ten one switch away in Settings), the
-  writing habit (H.1: goals, the streak, the 12-week record, the
-  nudge), D.6 (the Style tab and Today's three fixes retired), contact
-  details on the title page, remembered style switches, the four-in-five
-  defaults for new projects, CONLIT sentence length, and "Draft #N saved"
-  as a tinted status line.
+- **Try it (section 1).** Nothing there is ticked yet. The newest items,
+  from the end: the screen check (0.3; run it on both projects), D.9's
+  other screens, the model naming groups (V.3), managing groups (V.5),
+  rewrites in the same voice (V.4), marks becoming notes (6.2), listen
+  and mark (6.1), LanguageTool in full (P.6), voice groups (V.2), character
+  analysis (P.8) and the voice fingerprint (V.1). Before them: the
+  chapter's prose profile and everything earlier.
+- **Stop the old LanguageTool servers** (about 40, left before the fix),
+  with the app closed: `pkill -f languagetool-server`.
 - **Run the genre script (P.3)** with the app closed:
-  `venv/bin/python scripts/genre_baseline.py`, then `--show`. Your CONLIT
-  file has moved, so the script uses its saved summary. Re-download CONLIT
-  in the Training Studio to confirm the ÷ 1.12 conversion.
-- **Decide (section 3):** three from
-  D.4 (the new top-level tab baseline (5), when to retire the old ten
-  tabs' switch, whether windows left open should reopen at start-up) and
-  two from D.5 (when to retire the old analysis windows, and whether the
-  new reports join the full critique), one from 4.3 (when a check is
-  toned down: 20 answers, under two in five accepted), and whether the
-  Companion's chat gets the prose profile commands too.
-  The rest are answered and marked so; their boxes are yours to tick.
-- **Commit H.1, D.4, D.5, P.2b, 4.3 and the chapter's prose profile** when you are happy with them (end of section 1).
+  `venv/bin/python scripts/genre_baseline.py`, then `--show`.
+- **The D.2a design is reviewed** (25 Nov). Its seven questions are
+  answered (README decision 16), so D.2b can start when you say go.
+- **Decide (section 3).** Open: D.4 (three), D.5 (two), 4.3, the
+  Companion's chat, V.1 (the 1.9 GB copy; which rows shape groups), P.8
+  (three), P.6 (keep the data), V.2 (two calibration choices), 6.1, V.4
+  (three), V.5 (two), 6.2 (two), V.3 (two), D.9 (four
+  kinds of box), D.8 (three), 0.3 (three). The rest are answered and
+  marked so; their boxes are yours to tick.
+- **Commit rounds 1, 2 and 3** when you are happy with them (end of
+  section 1).
 - **Next pieces (section 5): what remains.**
-  - Simplify: D.2a (review the design), then D.2b and D.2c; the later
-    sessions of D.8 and D.9; U.3a, then U.3b, last.
-  - Checks: P.6 (its download approved 25 Nov); P.5 after section 2's
-    measurement, and again after P.6.
-  - After the path: 6.1, then 6.2; P.8; 9.1.
-  - Ratings by voice: V.1 to V.5, in order.
-  - Loose end: 0.3's screen check.
-  - Needs a model (run with the app closed): try 8.2; 7.2; 4.2; 9.3.
+  - D.2b, then D.2c (D.2a is reviewed).
+  - More one-look and fewer-interruptions sessions if you want them:
+    Training Studio, the assistant, Video Studio's editors (D.8); boxes in
+    separate windows (D.9, section 3).
+  - Checks: P.5 after section 2's measurement (now that P.2 and P.6 are
+    in).
+  - Needs a model (run with the app closed): try 8.2; 7.2; 4.2; 9.3; and
+    the real tests of V.3 and V.4.
   - When the server is connected: 8.1a (review the design), 8.1b, P.7,
     8.3.
+  - Last: U.3a, then U.3b; then 9.1.
 
 ## 1. Try what is built
 
@@ -578,12 +581,186 @@ changes. No model needed.)
       chapter's figures.
 - [ ] On a small window, the Prose Profile tab scrolls.
 
+**A voice fingerprint on every rating (V.1)**
+- [ ] Open the app and wait about a minute: a one-time copy of your ratings
+      store appears beside it, `~/.creativeos/rephrase_history.db.before-voice`
+      (about 1.9 GB), and the terminal says "[voice fingerprint] … rating(s)
+      fingerprinted".
+- [ ] Run `venv/bin/python scripts/check_project_safety.py --stores-compare
+      before.json`: "stores intact", with one new table, `voice_fingerprints`.
+- [ ] Rate a rewrite in Rephrase: it saves as before, with no delay.
+- [ ] Quit within a minute of opening and reopen: nothing is lost, and the
+      fingerprinting finishes on a later start.
+
+**Character analysis (P.8)**
+- [ ] Story ▸ Characters → a main character → open **Across the book**
+      (under Personality Arc). The chapters listed are the ones they appear
+      in; coming back to that character, it opens at once.
+- [ ] A character who disappears for a stretch: "⚠ Away for N chapters"
+      names the right chapters; clicking a chapter opens it in Write at the
+      passage.
+- [ ] A character with a lot of dialogue: if a chapter is marked as a
+      change in their speech, is it a real one, or a line the scan gave to
+      the wrong speaker?
+- [ ] Restart: the section is open or closed as you left it.
+- [ ] With a model: "Ask the model how … changes across the book" answers
+      in the section while you keep working. With AI off, it says the arc
+      needs a model.
+- [ ] Write → 🔍 Analyze ▾ → Characters on a chapter where someone returns
+      after an absence: the Character check report shows "Across the book
+      (a scan)", and its ↗ links open the passages.
+
+**LanguageTool in full (P.6)**
+- [ ] Settings ▸ Language: "LanguageTool Extra Data" shows "~9.0 GB
+      download, ~15.4 GB on disk", "✓ Installed" and **Remove**.
+- [ ] In a chapter, type "Don't forget to put on the breaks." and "She was
+      quiet happy.": both are flagged, offering brakes and quite.
+- [ ] Grammar flags work as before, and "Fix all" is never offered for
+      confused words.
+- [ ] Optional: Remove (confirm): the button becomes Download and those two
+      sentences are no longer flagged. Download again (2–3 minutes) and
+      watch the progress bar; it carries on if Settings is closed.
+- [ ] Quit the app, then run `ps aux | grep languagetool-server`: no
+      server is left from that run.
+
+**Voice groups (V.2)** (nothing to see on screen until V.5)
+- [ ] Start the app and wait about a minute (V.1 copies and fingerprints
+      first): `~/.creativeos/voice_groups.json` appears, with two groups,
+      Born in Blood and Teller County.
+- [ ] `venv/bin/python scripts/voice_thresholds.py --writer` prints the
+      calibration table and your two projects' separation (about 1.40,
+      well apart), and says a second rebuild gives the same groups.
+- [ ] The app opens at its usual speed; the grouping runs in the
+      background.
+
+**Listen and mark (6.1)**
+- [ ] Write → 🗣 Read Aloud ▾ → 👂 Listen and mark: the chapter is read
+      sentence by sentence, the one being read highlighted in yellow.
+- [ ] Space pauses and resumes (or click the Read Aloud button); it carries
+      on from the same sentence.
+- [ ] M marks the sentence being read (violet, underlined; the button says
+      "1 marked"); M again on it unmarks it.
+- [ ] Esc or ⏹ Stop reading stops it; the highlight goes, and M and Space
+      type normally again.
+- [ ] With the cursor mid-chapter, listening starts at that sentence.
+- [ ] Read Aloud ▾ → Marks in this chapter: each mark listed; choosing one
+      selects its sentence. Edit a marked sentence: the list says "(the
+      text has changed)" and keeps the mark.
+- [ ] With a neural voice (Kokoro, Chatterbox, VibeVoice): is the pause
+      between sentences acceptable?
+- [ ] After listening, the text and Undo are unchanged.
+
+**Marks become notes (6.2)**
+- [ ] Listen and mark two or three sentences, then stop: each is a 👂 note
+      in Companion › Notes as you write ("Marked while listening: …").
+- [ ] Select one ▸ 💡 Suggest fix: Suggestions opens on that sentence.
+      Accept a rewrite: the note goes, and stays gone after reopening.
+      Suggest fix again and cancel: the mark stays.
+- [ ] Chapter at Line stage ▸ 🎯 Find the next fixes: the marks are near
+      the front. Skip one: it comes back at the end. More options… or ✎
+      edit and Accept: cleared from both places.
+- [ ] Not a problem on a mark: only that mark goes; similar sentences are
+      still flagged elsewhere.
+- [ ] Edit a marked sentence by hand: the note says "(the text has
+      changed)" and stays until Dismiss.
+- [ ] At Copyedit stage, the marks aren't in the queue but are still in
+      the notes.
+
+**Rewrites learn from the same voice (V.4)** (after V.2's groups exist:
+start the app once and wait a minute)
+- [ ] Rephrase a passage in Teller County, then hover the options list: it
+      says the examples came "from your voice group …" (the first-person
+      one). In Born in Blood it names the third-person group.
+- [ ] Rephrase in Tempest: "from all your ratings" (too few ratings yet).
+- [ ] Suggestions: after a result, hover a rating button; its last line
+      says where the examples came from.
+- [ ] With V.5's switch: turn on "Keep this project's ratings to itself"
+      for Teller County, rephrase in Tempest, and check the console's
+      `[examples]` line uses none of Teller County's. Turn it off again.
+- [ ] With a model (app closed for sessions): rewrite the same few
+      passages before and after, and compare the voice fit.
+
+**Manage ratings by voice (V.5)**
+- [ ] Training Studio ▸ 🔎 Browse rows… ▸ Source "rated rewrites, by
+      voice": your groups, each with its projects, "one project" or how
+      alike, and rating counts; Tempest under Unsorted with how many more
+      rated passages it needs.
+- [ ] Type a phrase from a rewrite in Search: only that rating shows.
+- [ ] Right-click a group ▸ Rename…, then Rebuild the groups: the name
+      stays.
+- [ ] Right-click a project ▸ Move to another group (📌 appears); Rebuild;
+      it stays. Ctrl+Z puts it back.
+- [ ] Select two groups ▸ Merge: if the voices differ it asks first; Undo
+      splits them back.
+- [ ] Right-click a project ▸ Keep this project's ratings to itself: 🔒
+      appears; untick it or Undo.
+- [ ] Open a project, right-click a rating ▸ Change rating, then Remove
+      this rating… (asks first; only that one goes).
+- [ ] Switch Source back to "All": the table and its buttons are as before.
+- [ ] Rule 15: run the safety check on both projects and the stores
+      comparison before and after trying these.
+
+**The screen check (0.3)**
+- [ ] `venv/bin/python scripts/check_project_safety.py "<path to Adelphus -
+      Born in Blood.writerproj>"`: ends "RESULT: safe", with a line
+      "screens: opened N on the copy …" and "original untouched".
+- [ ] The same on Teller County: 2 manuscripts (the empty main one and
+      the novella), no PROBLEM lines.
+- [ ] Note each project's screen count and result in the table at the end
+      of piece 0.3's Outcome.
+- [ ] Open the app as usual: chat input size, Plot's collapsed sections and
+      window sizes are as you left them.
+
+**Fewer interruptions, the other screens (D.9, second session)**
+- [ ] Video Studio: Deck or Stitch on a scene with nothing yet: a
+      status-bar line, not a box.
+- [ ] Characters: Strengthen with no project open: a status-bar line; the
+      Strengthen report itself is still a box.
+- [ ] Worldbuilding builders: Edit or Remove with nothing selected: a
+      status-bar line.
+- [ ] Chapter editor: Read aloud on an empty chapter: a status-bar line;
+      Help ▸ Recent messages lists it.
+- [ ] Training Studio and any editor dialog: messages still open a box.
+
+**One look, the other screens (D.8, second session)**
+- [ ] Story ▸ Plot: "➕ Add Event" is the only coloured button; each other
+      tab has its own coloured ➕ Add; Discuss with AI has a coloured Ask.
+- [ ] Story ▸ Characters: "Add" coloured, Generate plain; with nothing
+      selected, the right side shows one quiet line.
+- [ ] Story ▸ World: in Factions, Star Systems, Power Hierarchies and Maps,
+      only the Add button is coloured.
+- [ ] Studio ▸ Visuals: "Generate Image" coloured (scroll down to it).
+- [ ] Studio ▸ Video Studio: "➕ Add" coloured; in a card's conversation,
+      Send coloured, Apply Last plain.
+- [ ] Publish: "Add" coloured; the empty right side reads "Add or select
+      an agent/publisher", centred.
+- [ ] Write ▸ Drafts ▾ (the Drafts panel): 💾 Save coloured, Close plain.
+
+**The model names the groups (V.3)**
+- [ ] With your on-device model loaded (use Rephrase once first), open
+      Training Studio ▸ 🔎 Browse rows… ▸ "rated rewrites, by voice":
+      within a minute or so each group shows "Name — one line"; hovering
+      shows the measured description.
+- [ ] Rename a group, then Rebuild the groups: your name stays.
+- [ ] Merge two groups the model named: the result is named afresh
+      shortly after. Merge one you named: it keeps your name.
+- [ ] Rephrase while the groups view is open: Rephrase isn't slowed;
+      naming waits its turn.
+- [ ] With no model (or AI off): plain descriptions, no errors.
+- [ ] If "The model reads … as one voice. Merge them?" appears: Decline
+      and it stays gone; Accept merges (with the usual warning if the
+      voices differ).
+
 **When you are happy**
 Already committed by you: phase 3, D.3, 2.5 and 0.5 (7e48893); R.7, D.1,
 9.2, 7.1 (206300a); D.7 and D.9 (ccc779b); D.8, P.2a, 4.1, 7.3, P.3, D.6,
 the contact details, the remembered style switches, CONLIT sentence length
-and decisions 3 and 9 (0733233).
-- [ ] Commit H.1, D.4, D.5, P.2b, 4.3 and the chapter's prose profile.
+and decisions 3 and 9 (0733233); H.1, D.4, D.5, P.2b, 4.3 and the
+chapter's prose profile (d0d347e, 58226e9).
+- [ ] Commit round 1: V.1, P.8, P.6 and V.2.
+- [ ] Commit round 2: 6.1, 6.2, V.3, V.4 and V.5.
+- [ ] Commit round 3: D.9's and D.8's second sessions, the D.2a design
+      and 0.3's screen check.
 - [ ] For anything you reject, untick it in the README tracker and write why
       under the piece's *Review notes*.
 
@@ -817,6 +994,152 @@ Write each answer in the README under *Decisions*, or tell the session.
       panel). The Companion's chat doesn't know them yet. Add them there
       (a few call lines, no new controls), or keep one place for them?
 
+- [ ] **V.1: the one-time copy of the ratings store.** Before it adds the
+      fingerprints, V.1 copies the whole store aside once (rule 15):
+      `rephrase_history.db.before-voice`, about 1.9 GB, because the store
+      also holds about 200,000 downloaded corpus rows. Your own ratings are
+      about 6,000 rows. Keep the full copy (safest; needs 1.9 GB once), or
+      copy only your own rows (a few MB; the corpus rows can be downloaded
+      again)? Nothing is copied until the app next opens.
+- [ ] **V.1/V.2: which ratings shape the voice groups.** Only Rephrase
+      ratings get a fingerprint. The 250 rows made from downloaded corpora,
+      and rows with no project, are left out of the grouping (they aren't
+      your voice) and keep working as today. Say if you want any kept in.
+- [ ] **P.8: where it shows.** Built in both places: the full section on
+      each character (Story ▸ Characters), and a scan of the chapter's
+      characters in the Critique's Character check (no controls added).
+      Keep both?
+- [ ] **P.8: how sensitive.** An absence counts from 3 chapters. Speech is
+      compared only in chapters where the character has 5 or more lines,
+      against 8 or more elsewhere; a change is marked when line length
+      doubles (and differs by 5+ words) or contractions, formality or
+      swearing flip. Keep these, or name others after trying it?
+- [ ] **P.8: two limits.** Novellas are analysed one manuscript at a time,
+      not across all of them; the model's arc answer isn't saved (asked
+      again after reopening). Worth more work, or fine as is?
+- [ ] **P.6: keep the n-gram data?** It uses 15.4 GB. Harder confused
+      words caught went from 13% to 38% (all seeded mistakes 71% → 75%),
+      with no new false alarms on clean prose; the Q.2 table didn't move
+      (its three misses, to/too and it is/its, aren't pairs the data
+      covers). Remove in Settings ▸ Language deletes it.
+- [ ] **Old LanguageTool servers still running.** About 40 were left by
+      earlier app, script and test runs (24 and 25 November) before the
+      fix; each holds memory. The session wasn't allowed to stop them.
+      With the app closed: `pkill -f languagetool-server`.
+- [ ] **V.2: two calibration choices (technical; confirm or ask).**
+      "Same voice" was measured as the first half of a book against its
+      second half (ratings come from different chapters), giving "alike"
+      at 0.45 and "different" at 0.67, and 30 distinct passages before a
+      project counts. And one source is split into two voices only at a
+      higher bar (1.25): at the ordinary one, 29 of 55 single books split
+      wrongly; at 1.25, 1 of 55. Naming narrators makes them separate
+      sources anyway.
+- [ ] **V.2: a group with one project** reads "very alike" (nothing to
+      compare). V.5 will show "one project" instead, unless you prefer
+      otherwise.
+- [ ] **6.1: listening choices.** Built: it starts at the cursor's
+      sentence (the top when the cursor is at the top); Space, M and Esc
+      are taken over only while listening; M toggles a mark. With a neural
+      voice each sentence is made separately, so there may be a pause
+      between sentences: acceptable, or use the system voice for Listen?
+      Listening across several chapters with marks is left out ("Read
+      chapters…" is unchanged).
+- [ ] **V.4: order of examples within a group.** Built: your "excellent"
+      ratings first, then this project's, as today, and closest in voice
+      within each. Measured without a model on 87 rated passages: voice
+      fit 0.894, against 0.885 today and 0.871 for closest-in-voice alone
+      (so that wasn't used). The big gain is a new book in a known voice:
+      all its examples come from its own voice, against about half today.
+      The real test, new rewrites with a model, is still to run.
+- [ ] **V.4: a kept-to-itself project and the groups.** Its ratings are
+      never used as examples elsewhere, but still help decide the voice
+      groups. Leave them out of the grouping too?
+- [ ] **V.4: where the switch is kept.** In a small file beside the
+      project, `<project>.ratings.json`. If you rename or move a project,
+      its old ratings keep the old path, so the switch no longer covers
+      them. Fine, or worth handling?
+- [ ] **V.5: where it lives.** In the Training Studio's Browse rows, the
+      one screen that already lists and removes ratings, so you leave the
+      writing app to reach it. A shortcut in the writing app would add a
+      menu entry (rule 13). Add one, or keep it in the Studio?
+- [ ] **V.5: changing a rating to Poor or Bad** leaves its "accepted" flag
+      as it was (as rating changes always have). Should it also mark the
+      rewrite as not accepted?
+- [ ] **6.2: marks and stages.** Marks are line-stage fixes (they show in
+      Next fixes at Line, always in the notes). The brief said "unless you
+      say otherwise", but a control for it would add to a count. Keep as
+      built, have marks follow the chapter's stage, or add a stage choice
+      to Read Aloud ▾ → Marks in this chapter?
+- [ ] **V.3: naming with only the on-device model.** The model is never
+      loaded just to name groups, so names appear after something else
+      (Rephrase) has loaded it. Right, or should opening the groups view
+      load it?
+- [ ] **V.3: the description shown.** The model's one line replaces the
+      measured description in the tree (the measured one moves to the
+      tooltip). Keep, or show both?
+- [ ] **D.2a: review the One Improve window design** (its brief, section
+      *Design*). In short: one window, "Improve", with four tabs:
+      💡 Suggestions · ✨ Rephrase · 🔍 Expand · 📝 Critique (Critique is
+      Suggestions' what-works/what-doesn't, moved to its own tab, same
+      model call). Each tab's options on top (Rephrase's 25 options behind
+      "▸ Change options"); below, shared by all tabs: the versions (each
+      labelled with its tab), your version (editable, ↺ Reset), the
+      changes and why, ratings, Talk it through, and Close / ✓ Accept,
+      which never scroll away. All 12 ways in land there; ratings, models
+      and voice-group examples work exactly as today; old windows stay
+      behind a trial switch. One tab shows 9–11 buttons, against 24 across
+      the three windows now. Mock-ups at 1024×600 and 1440×900 are in the
+      brief. Then answer:
+      1. Critique last (as built) or second?
+      2. Count right-click ✨ Improve this ▸ as one group (9/13 → 7/11;
+         nothing on screen changes)? Recommended: yes.
+      3. Tab name "Expand" (old name in its tooltip) or "Overly
+         descriptive?"? Recommended: Expand.
+      4. Trial switch starts on? Recommended: on, as D.4's five tabs.
+      5. Allow rating a version made in Expand? Recommended: yes.
+      6. Drop Rephrase's "Discard your edit?" question (edits now stay with
+         their version)?
+      7. The draft window's Rephrase opens the whole window (Suggestions and
+         Expand work on drafts too)? Recommended: yes.
+
+      *Answered 25 Nov:*
+      1. Critique is second.
+      2. Yes, one group.
+      3. Expand.
+      4. On.
+      5. Yes, it can be rated.
+      6. Drop the question: selecting the rephrased text replaces the
+         highlighted text.
+      7. Yes, the whole window.
+
+      *Recorded in the D.2a, D.2b and D.2c briefs and README decision 16.*
+- [ ] **0.3: the screen check's lines.** (a) A section that was empty and
+      that the window fills with defaults (the Video Studio always does)
+      is a note, not a problem: right? (b) The screen step runs on every
+      safety check (`--no-screens` leaves it out): keep, or make it
+      opt-in? (c) Each manuscript opens one chapter, the first with text:
+      enough, or every chapter (slower)?
+- [ ] **D.8: main buttons and two small things.** (a) Where a screen had
+      a choice, "Add" was made the main button (the plan first, as on the
+      Planner): Video Studio Add over Stitch, Publishing Add over Publish,
+      Characters Add over Generate. Should any switch to the AI action
+      when AI is set up, like the Planner? (b) The Plot screen and the
+      Planner use slightly different greens and oranges for the arc
+      stages: make them one set? (c) "➕ Add Hierarchy" reads "Add
+      Hierarch" at 1024×600 (as before): shorten the label or widen the
+      list?
+- [ ] **D.9: four kinds of box left on purpose.** Say which to make quiet:
+      (a) "Image saved to …" and the chapter-deck exports (4): a status
+      line with Show file, like other exports? (b) "Open a project before
+      saving / loading a storyboard" (2)? (c) the map tool's instructions
+      (3): a status line lasts only 8 seconds, so keep them as boxes?
+      (d) 165 boxes in separate windows (Training Studio 47, Video Studio's
+      editors 74, Settings 10, others): give those windows a status line
+      so they can go quiet too?
+- [ ] **6.2: order and undo.** Marks come before other line fixes of the
+      same standing. Clearing a mark has no undo (like Dismiss on notes
+      today). Both fine?
+
 ## 4. For every piece from here on
 
 The routine from the README, as a checklist:
@@ -842,10 +1165,10 @@ The routine from the README, as a checklist:
 - [x] [D.6](pieces/48b-D.6-retire-the-trial-screens.md) Retire the trial screens — built, for review
 - [x] [D.1](pieces/44-D.1-tidy-the-right-click-menu.md) Tidy the right-click menu — built, for review
 - [x] [D.7](pieces/48c-D.7-show-less-at-once.md) Show less at once — built, for review
-- [~] [D.9](pieces/48e-D.9-fewer-interruptions.md) Fewer interruptions (first session done: 49 boxes quiet in Write, Companion, Critique and the main window; the other screens are later sessions)
-- [~] [D.8](pieces/48d-D.8-one-look.md) One look (first session done: Write and its side panel, the Companion, the Critique and Settings; the other screens are later sessions)
+- [x] [D.9](pieces/48e-D.9-fewer-interruptions.md) Fewer interruptions — both sessions built, for review (116 boxes quiet across every screen in the main window; boxes in separate windows stay, see section 3)
+- [x] [D.8](pieces/48d-D.8-one-look.md) One look — two sessions built, for review (Write, Companion, Critique, Settings; then Plot, Characters, World, Visuals, Video Studio, Publishing, Drafts, Print). Left for a later session if wanted: Training Studio, the assistant, Video Studio's editors
 - [x] [D.4](pieces/49-D.4-fewer-top-level-tabs.md) Fewer top-level tabs (reads saved window layouts) — built, for review
-- [ ] [D.2a](pieces/45-D.2a-one-improve-window-design.md) One Improve window: design. **Review the design before D.2b.**
+- [x] [D.2a](pieces/45-D.2a-one-improve-window-design.md) One Improve window: design — written and reviewed 25 Nov; the seven questions are answered (README open decision 16). D.2b can start.
 - [ ] [D.2b](pieces/46-D.2b-one-improve-window-build-with-suggestions-and-ex.md), then [D.2c](pieces/47-D.2c-one-improve-window-rephrase-joins.md)
 - [x] [D.5](pieces/49b-D.5-analyses-run-as-critique-reports.md) Analyses run as Critique reports (adds kinds to critique history) — built, for review
 - [ ] [U.3a](pieces/50-U.3a-fit-and-scroll-sweep-the-screens-used-most.md), then [U.3b](pieces/51-U.3b-fit-and-scroll-sweep-the-remaining-screens.md) Fit-and-scroll sweep (last, so it sweeps the final screens)
@@ -855,7 +1178,7 @@ The routine from the README, as a checklist:
 - [x] [P.2a](pieces/31-P.2a-missing-reports-transitions-pronouns-alliteratio.md) Missing reports: transitions, pronouns, alliteration, acronyms — built, for review
 - [x] [P.2b](pieces/32-P.2b-missing-reports-homonyms-sensory-detail-sentence.md) Missing reports: homonyms, sensory detail, sentence structure, diction — built, for review
 - [x] [P.3](pieces/33-P.3-every-measure-compared-with-the-genre.md) Every measure compared with the genre — built, for review
-- [ ] [P.6](pieces/35-P.6-languagetool-in-full-with-its-larger-data-as-a-d.md) LanguageTool in full (download approved 25 Nov)
+- [x] [P.6](pieces/35-P.6-languagetool-in-full-with-its-larger-data-as-a-d.md) LanguageTool in full — built, for review (data installed: 15.4 GB in `~/.cache/language_tool_python/ngrams`)
 - [ ] P.5 again, since the table changes after P.2 and P.6
 
 **C. After the path** (no model needed)
@@ -863,13 +1186,18 @@ The routine from the README, as a checklist:
 - [x] [4.3](pieces/54-4.3-checks-earn-their-place.md) Checks earn their place — built, for review
 - [x] [7.1](pieces/57-7.1-reverse-outline-without-a-model.md) Reverse outline without a model — built, for review
 - [x] [7.3](pieces/59-7.3-draft-beside-plan-and-the-tension-curve.md) Draft beside plan — built, for review (no-model tier)
-- [ ] [6.1](pieces/55-6.1-listen-and-mark.md), then [6.2](pieces/56-6.2-marks-become-notes.md) Listen and mark
+- [x] [6.1](pieces/55-6.1-listen-and-mark.md) Listen and mark — built, for review (untried with a real voice)
+- [x] [6.2](pieces/56-6.2-marks-become-notes.md) Marks become notes — built, for review
 - [ ] [9.1](pieces/60-9.1-final-sweep.md) Final sweep
 - [x] [9.2](pieces/61-9.2-export-and-import-check.md) Export and import check — built, for review
-- [ ] [P.8](pieces/36-P.8-character-analysis.md) Character analysis (its arc part needs a model)
+- [x] [P.8](pieces/36-P.8-character-analysis.md) Character analysis — built, for review (the arc part asks a model only when you click)
 
 **D. Ratings by voice** (in order; V.1 copies the ratings database aside first)
-- [ ] [V.1](pieces/39-V.1-a-voice-fingerprint-on-every-rating.md), [V.2](pieces/40-V.2-voice-groups-without-a-model.md), [V.3](pieces/41-V.3-a-model-names-and-refines-the-groups.md), [V.4](pieces/42-V.4-suggestions-learn-from-the-same-voice.md), [V.5](pieces/43-V.5-manage-ratings-by-voice.md)
+- [x] [V.1](pieces/39-V.1-a-voice-fingerprint-on-every-rating.md) A voice fingerprint on every rating — built, for review
+- [x] [V.2](pieces/40-V.2-voice-groups-without-a-model.md) Voice groups without a model — built, for review (thresholds calibrated on 64 published books)
+- [x] [V.4](pieces/42-V.4-suggestions-learn-from-the-same-voice.md) Suggestions learn from the same voice — built, for review (the real gate needs a model)
+- [x] [V.5](pieces/43-V.5-manage-ratings-by-voice.md) Manage ratings by voice — built, for review (Training Studio ▸ Browse rows ▸ "rated rewrites, by voice")
+- [x] [V.3](pieces/41-V.3-a-model-names-and-refines-the-groups.md) A model names and refines the groups — built, for review (untried with a real model)
 
 **D2. The writing habit** (no model needed)
 - [x] [H.1](pieces/67-H.1-the-writing-habit.md) Daily and weekly goals, a streak shared across projects (cutting and revising count), a nudge to move on that you can turn off — built, for review
@@ -888,7 +1216,7 @@ The routine from the README, as a checklist:
 
 **G. Optional and loose ends**
 - ~~[P.1](pieces/38-P.1-side-by-side-comparison.md) Side-by-side comparison~~ dropped (decision 6, 24 Nov)
-- [ ] [0.3](pieces/03-0.3-safety-net-for-your-two-projects.md) The screen check that was left to follow
+- [x] [0.3](pieces/03-0.3-safety-net-for-your-two-projects.md) The screen check that was left to follow — built, for review (run it on both projects: section 1)
 - [x] The 4 old failures in `tests/test_overuse_context.py`: the test setup hid the WordNet data; fixed in `tests/conftest.py`
 - [x] Your request (25 Nov): the chapter's prose profile — the Prose Profile tab measures the chapter open in Write (`src/ai/prose_snapshot.py`, `src/ui/prose_profile_chapter.py`); the AI chat answers "prose profile" at once and "review my prose" with the full report (`src/ai/prose_chat.py`) — built, for review
 

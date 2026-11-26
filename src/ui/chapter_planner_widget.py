@@ -14,6 +14,7 @@ import uuid
 
 from src.ui.styles import SYSTEM_FONT
 from src.ui.ui_kit import ARC_COLOURS, PALETTE, PRIMARY_BUTTON, compact_button, plain_qss, text_style  # shared parts (U.1, D.8)
+from src.ui import notify  # D.9: messages that need no click
 
 
 # Tags the chapter-planner AI emits when it wants to propose a new
@@ -1880,7 +1881,7 @@ class ChapterPlannerWidget(QWidget):
         Chapter prose is intentionally left alone.
         """
         if not self._event_widgets:
-            QMessageBox.information(
+            notify.empty(
                 self, "Nothing to clear",
                 "This chapter has no plot arc beats yet.")
             return
@@ -2849,7 +2850,7 @@ RULES:
         use_selection = len(selection.split()) >= 50
         text = selection if use_selection else (self._get_chapter_content() or "").strip()
         if len(text.split()) < 30:
-            QMessageBox.information(
+            notify.empty(
                 self, "Not enough text",
                 "Write (or paste) some of the chapter first — the outline is "
                 "built from the chapter text.")

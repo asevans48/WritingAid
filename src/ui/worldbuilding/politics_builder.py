@@ -12,7 +12,8 @@ import uuid
 
 from src.models.worldbuilding_objects import PoliticalSystem, GovernmentBranch, Faction
 from PyQt6.QtWidgets import QMessageBox
-from src.ui.ui_kit import compact_button  # narrow buttons show their symbol
+from src.ui.ui_kit import PALETTE, compact_button, empty_state, main_button  # narrow buttons show their symbol
+from src.ui import notify  # D.9: messages that need no click
 
 
 class GovernmentBranchEditor(QWidget):
@@ -185,19 +186,19 @@ class GovernmentTreeWidget(QWidget):
 
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["Branch", "Type", "Head"])
-        self.tree.setStyleSheet("""
-            QTreeWidget {
+        self.tree.setStyleSheet(f"""
+            QTreeWidget {{
                 background-color: white;
-                border: 1px solid #e5e7eb;
+                border: 1px solid {PALETTE['border']};
                 border-radius: 8px;
-            }
-            QTreeWidget::item {
+            }}
+            QTreeWidget::item {{
                 padding: 8px;
-            }
-            QTreeWidget::item:selected {
-                background-color: #6366f1;
+            }}
+            QTreeWidget::item:selected {{
+                background-color: {PALETTE['primary']};
                 color: white;
-            }
+            }}
         """)
         self.tree.itemClicked.connect(self._on_item_clicked)
         layout.addWidget(self.tree)
@@ -260,7 +261,7 @@ class GovernmentTreeWidget(QWidget):
         current_item = self.tree.currentItem()
         if not current_item:
             from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.information(self, "No Selection", "Please select a parent branch first.")
+            notify.empty(self, "No Selection", "Please select a parent branch first.")
             return
 
         parent_id = current_item.data(0, Qt.ItemDataRole.UserRole)
@@ -577,7 +578,7 @@ class PoliticsBuilderWidget(QWidget):
         left_layout.addWidget(self.system_list)
 
         btn_layout = QHBoxLayout()
-        add_btn = QPushButton("➕ Add System")
+        add_btn = main_button("➕ Add System")
         add_btn.clicked.connect(self._add_system)
         btn_layout.addWidget(add_btn)
 
@@ -601,8 +602,7 @@ class PoliticsBuilderWidget(QWidget):
         self.editor_scroll = QScrollArea()
         self.editor_scroll.setWidgetResizable(True)
 
-        placeholder = QLabel("Add or select a political system")
-        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        placeholder = empty_state("Add or select a political system")
         self.editor_scroll.setWidget(placeholder)
 
         splitter.addWidget(self.editor_scroll)
@@ -671,8 +671,7 @@ class PoliticsBuilderWidget(QWidget):
             self.current_editor = None
 
             # Show placeholder
-            placeholder = QLabel("Add or select a political system")
-            placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            placeholder = empty_state("Add or select a political system")
             self.editor_scroll.setWidget(placeholder)
             self.content_changed.emit()
 

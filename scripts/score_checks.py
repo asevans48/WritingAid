@@ -387,7 +387,8 @@ def to_markdown(res: Dict[str, Any], rows: List[Dict[str, Any]], with_model: Opt
         "including deliberate choices where a flag would be wrong.",
         "",
         "Checks run as the editor shows them, with its quick rules for dialogue and names, "
-        + ("with LanguageTool." if res["languagetool"] else "**without LanguageTool**, "
+        + (("with LanguageTool and its n-gram data." if res.get("ngrams") else "with LanguageTool.")
+           if res["languagetool"] else "**without LanguageTool**, "
            "so grammar is the built-in rules only (run with `--languagetool` to include it)."),
         "",
         f"**Targets** (open decision 3, provisional): at least **4 in 5 flags right** "
@@ -482,6 +483,9 @@ def run(languagetool: bool = False, llm=None) -> Tuple[Dict[str, Any], List[Dict
         "marked": score_marked(checker, llm),
     }
     res["analysers"] = compare_analysers()
+    if languagetool:                      # P.6: did it run with its n-gram data?
+        from src.utils.proofing import LanguageToolEngine
+        res["ngrams"] = LanguageToolEngine.get().ngrams
     return res, build_rows(res)
 
 
@@ -499,7 +503,15 @@ def main(argv: List[str]) -> int:
     ap.add_argument("--model", action="store_true", help="also run with the configured model judging")
     ap.add_argument("--languagetool", action="store_true", help="include LanguageTool (needs Java)")
     ap.add_argument("--no-write", action="store_true", help="print only; do not update docs/")
+    ap.add_argument("--no-ngrams", action="store_true",
+                    help="LanguageTool without its n-gram data, even when installed (P.6)")
     args = ap.parse_args(argv)
+    if args.no_ngrams:
+        sys.path.insert(0, str(ROOT))
+        import tempfile
+        from src.utils import lt_ngrams
+        empty = Path(tempfile.mkdtemp(prefix="no-ngrams-"))
+        lt_ngrams.ngram_root = lambda: empty
     started = time.time()
     res, rows = run(args.languagetool)
     with_model = None
@@ -520,6 +532,8 @@ def main(argv: List[str]) -> int:
     for r in rows:
         print(f"{r['check']:26} right {_pct(r['precision']):>5}  found {_pct(r['recall']):>5}  "
               f"clean {r['clean_per_1000']:>5}/1k  {r['verdict']}")
+    if args.languagetool:
+        print("LanguageTool " + ("with" if res.get("ngrams") else "without") + " its n-gram data")
     print(f"Worst: {', '.join(r['check'] for r in worst(rows))}")
     print(f"Done in {time.time() - started:.0f} s" + ("" if args.no_write else f"; wrote {OUT_MD.relative_to(ROOT)}"))
     sys.stdout.flush()

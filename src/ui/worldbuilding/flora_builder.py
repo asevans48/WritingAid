@@ -10,6 +10,7 @@ from typing import List, Optional
 
 from src.models.worldbuilding_objects import Flora, FloraType
 from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
+from src.ui.ui_kit import PALETTE, main_button  # one look (D.8)
 
 
 class FloraEditor(QDialog):
@@ -107,7 +108,7 @@ class FloraEditor(QDialog):
                 self.planets_layout.addWidget(checkbox)
         else:
             no_planets_label = QLabel("No planets available. Create planets in Star Systems first.")
-            no_planets_label.setStyleSheet("color: #6b7280; font-style: italic; font-size: 11px;")
+            no_planets_label.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-style: italic; font-size: 11px;")
             self.planets_layout.addWidget(no_planets_label)
 
         habitat_layout.addWidget(self.planets_container)
@@ -328,11 +329,11 @@ class FloraBuilderWidget(QWidget):
         header_layout.setContentsMargins(16, 12, 16, 8)
 
         header = QLabel("🌿 Flora")
-        header.setStyleSheet("font-size: 16px; font-weight: 600; color: #1a1a1a;")
+        header.setStyleSheet(f"font-size: 16px; font-weight: 600; color: {PALETTE['text_dark']};")
         header_layout.addWidget(header)
 
         subtitle = QLabel("Manage plant species and vegetation")
-        subtitle.setStyleSheet("font-size: 12px; color: #6b7280;")
+        subtitle.setStyleSheet(f"font-size: 12px; color: {PALETTE['ink_faint']};")
         header_layout.addWidget(subtitle)
 
         layout.addWidget(header_widget)
@@ -349,7 +350,7 @@ class FloraBuilderWidget(QWidget):
         # Toolbar
         toolbar = QHBoxLayout()
 
-        add_btn = QPushButton("➕ Add Flora")
+        add_btn = main_button("➕ Add Flora")
         add_btn.clicked.connect(self._add_flora)
         toolbar.addWidget(add_btn)
 

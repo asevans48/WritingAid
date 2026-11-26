@@ -15,6 +15,8 @@ import math
 from src.models.worldbuilding_objects import Economy, Good, TradeRoute, EconomyType, Faction
 from src.ui.styles import SYSTEM_FONT
 from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
+from src.ui import notify  # D.9: messages that need no click
+from src.ui.ui_kit import CHART_COLOURS, PALETTE, main_button  # one look (D.8)
 
 
 class TradeRouteGraph(QWidget):
@@ -28,7 +30,7 @@ class TradeRouteGraph(QWidget):
         self.economy_positions: Dict[str, Tuple[float, float]] = {}
         self.setMinimumHeight(400)
         self.setMinimumWidth(500)
-        self.setStyleSheet("background-color: white; border: 1px solid #e5e7eb; border-radius: 8px;")
+        self.setStyleSheet(f"background-color: white; border: 1px solid {PALETTE['border']}; border-radius: 8px;")
 
     def set_data(self, economies: List[Economy], factions: List[Faction]):
         """Set economies and factions to display."""
@@ -65,7 +67,7 @@ class TradeRouteGraph(QWidget):
         if not self.economies:
             painter = QPainter(self)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            painter.setPen(QColor("#9ca3af"))
+            painter.setPen(QColor(PALETTE['ink_disabled']))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Add economies to see trade network")
             return
 
@@ -94,11 +96,11 @@ class TradeRouteGraph(QWidget):
                 if to_pos:
                     # Color based on route type
                     if route.route_type == "export":
-                        color = "#3b82f6"  # Blue for exports
+                        color = PALETTE['info']  # Blue for exports
                     elif route.route_type == "import":
-                        color = "#f59e0b"  # Amber for imports
+                        color = PALETTE['warning']  # Amber for imports
                     else:
-                        color = "#10b981"  # Green for bilateral
+                        color = PALETTE['success']  # Green for bilateral
 
                     pen = QPen(QColor(color), 2)
                     painter.setPen(pen)
@@ -114,7 +116,7 @@ class TradeRouteGraph(QWidget):
                     continue
                 to_pos = self.economy_positions.get(to_economy_id)
                 if to_pos:
-                    pen = QPen(QColor("#10b981"), 1)  # Green, thinner
+                    pen = QPen(QColor(PALETTE['success']), 1)  # Green, thinner
                     pen.setStyle(Qt.PenStyle.DotLine)
                     painter.setPen(pen)
                     painter.drawLine(
@@ -129,7 +131,7 @@ class TradeRouteGraph(QWidget):
                     continue
                 to_pos = self.economy_positions.get(to_economy_id)
                 if to_pos:
-                    pen = QPen(QColor("#ef4444"), 2)  # Red
+                    pen = QPen(QColor(PALETTE['error']), 2)  # Red
                     pen.setStyle(Qt.PenStyle.DashLine)
                     painter.setPen(pen)
                     painter.drawLine(
@@ -156,7 +158,7 @@ class TradeRouteGraph(QWidget):
             # Economy name below
             font = QFont(SYSTEM_FONT, 9, QFont.Weight.Bold)
             painter.setFont(font)
-            painter.setPen(QColor("#1a1a1a"))
+            painter.setPen(QColor(PALETTE['text_dark']))
 
             # Shortened name
             name = economy.name[:15] if len(economy.name) > 15 else economy.name
@@ -166,7 +168,7 @@ class TradeRouteGraph(QWidget):
             # Faction name (smaller, below economy name)
             font_small = QFont(SYSTEM_FONT, 8)
             painter.setFont(font_small)
-            painter.setPen(QColor("#6b7280"))
+            painter.setPen(QColor(PALETTE['ink_faint']))
             faction_name = self._get_faction_name(economy.faction_id)
             faction_name = faction_name[:12] if len(faction_name) > 12 else faction_name
             faction_rect = QRectF(x - 60, y + 42, 120, 20)
@@ -175,19 +177,19 @@ class TradeRouteGraph(QWidget):
     def _get_economy_color(self, economy_type: EconomyType) -> str:
         """Get color based on economy type."""
         colors = {
-            EconomyType.FEUDAL: "#8b5cf6",       # Purple
-            EconomyType.CAPITALIST: "#3b82f6",   # Blue
-            EconomyType.SOCIALIST: "#ef4444",    # Red
-            EconomyType.COMMUNIST: "#dc2626",    # Darker red
-            EconomyType.BARTER: "#f59e0b",       # Amber
-            EconomyType.MIXED: "#10b981",        # Green
-            EconomyType.TRIBAL: "#14b8a6",       # Teal
-            EconomyType.MERCANTILE: "#6366f1",   # Indigo
-            EconomyType.INDUSTRIAL: "#71717a",   # Gray
-            EconomyType.POST_SCARCITY: "#ec4899", # Pink
-            EconomyType.OTHER: "#6b7280"         # Gray
+            EconomyType.FEUDAL: PALETTE['violet'],       # Purple
+            EconomyType.CAPITALIST: PALETTE['info'],   # Blue
+            EconomyType.SOCIALIST: PALETTE['error'],    # Red
+            EconomyType.COMMUNIST: PALETTE['error_ink'],    # Darker red
+            EconomyType.BARTER: PALETTE['warning'],       # Amber
+            EconomyType.MIXED: PALETTE['success'],        # Green
+            EconomyType.TRIBAL: CHART_COLOURS['teal'],       # Teal
+            EconomyType.MERCANTILE: PALETTE['primary'],   # Indigo
+            EconomyType.INDUSTRIAL: CHART_COLOURS['zinc'],   # Gray
+            EconomyType.POST_SCARCITY: PALETTE['accent'], # Pink
+            EconomyType.OTHER: PALETTE['ink_faint']         # Gray
         }
-        return colors.get(economy_type, "#6b7280")
+        return colors.get(economy_type, PALETTE['ink_faint'])
 
     def resizeEvent(self, event):
         """Recalculate positions on resize."""
@@ -214,19 +216,19 @@ class TradeRouteGraphDialog(QDialog):
         legend_layout.addWidget(QLabel("Legend:"))
 
         bilateral_label = QLabel("━ Bilateral Trade")
-        bilateral_label.setStyleSheet("color: #10b981; font-weight: bold;")
+        bilateral_label.setStyleSheet(f"color: {PALETTE['success']}; font-weight: bold;")
         legend_layout.addWidget(bilateral_label)
 
         export_label = QLabel("━ Export")
-        export_label.setStyleSheet("color: #3b82f6; font-weight: bold;")
+        export_label.setStyleSheet(f"color: {PALETTE['info']}; font-weight: bold;")
         legend_layout.addWidget(export_label)
 
         import_label = QLabel("━ Import")
-        import_label.setStyleSheet("color: #f59e0b; font-weight: bold;")
+        import_label.setStyleSheet(f"color: {PALETTE['warning']}; font-weight: bold;")
         legend_layout.addWidget(import_label)
 
         embargo_label = QLabel("- - Embargo")
-        embargo_label.setStyleSheet("color: #ef4444; font-weight: bold;")
+        embargo_label.setStyleSheet(f"color: {PALETTE['error']}; font-weight: bold;")
         legend_layout.addWidget(embargo_label)
 
         legend_layout.addStretch()
@@ -533,7 +535,7 @@ class EconomyEditorDialog(QDialog):
         goods_layout = QVBoxLayout()
 
         goods_help = QLabel("Define goods produced or traded by this economy (double-click to edit).")
-        goods_help.setStyleSheet("color: #6b7280; font-size: 11px;")
+        goods_help.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px;")
         goods_layout.addWidget(goods_help)
 
         self.goods_list = QListWidget()
@@ -565,7 +567,7 @@ class EconomyEditorDialog(QDialog):
         routes_layout = QVBoxLayout()
 
         routes_help = QLabel("Define trade routes to other factions (double-click to edit).")
-        routes_help.setStyleSheet("color: #6b7280; font-size: 11px;")
+        routes_help.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px;")
         routes_layout.addWidget(routes_help)
 
         self.routes_list = QListWidget()
@@ -928,11 +930,11 @@ class EconomyBuilderWidget(QWidget):
         header_layout.setContentsMargins(16, 12, 16, 8)
 
         header = QLabel("💰 Economies")
-        header.setStyleSheet("font-size: 16px; font-weight: 600; color: #1a1a1a;")
+        header.setStyleSheet(f"font-size: 16px; font-weight: 600; color: {PALETTE['text_dark']};")
         header_layout.addWidget(header)
 
         subtitle = QLabel("Manage economic systems, goods, and trade routes")
-        subtitle.setStyleSheet("font-size: 12px; color: #6b7280;")
+        subtitle.setStyleSheet(f"font-size: 12px; color: {PALETTE['ink_faint']};")
         header_layout.addWidget(subtitle)
 
         layout.addWidget(header_widget)
@@ -949,7 +951,7 @@ class EconomyBuilderWidget(QWidget):
         # Toolbar
         toolbar = QHBoxLayout()
 
-        add_btn = QPushButton("Add Economy")
+        add_btn = main_button("Add Economy")
         add_btn.clicked.connect(self._add_economy)
         toolbar.addWidget(add_btn)
 
@@ -1083,7 +1085,7 @@ class EconomyBuilderWidget(QWidget):
     def _show_trade_network(self):
         """Show trade network graph in popup."""
         if not self.economies:
-            QMessageBox.information(self, "No Economies", "Add economies to view the trade network.")
+            notify.empty(self, "No Economies", "Add economies to view the trade network.")
             return
 
         dialog = TradeRouteGraphDialog(self.economies, self.available_factions, self)

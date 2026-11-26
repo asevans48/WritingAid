@@ -17,6 +17,7 @@ from pathlib import Path
 from src.models.worldbuilding_objects import (
     WorldMap, MapPlace, MapLandmark, PlaceType, Faction
 )
+from src.ui.ui_kit import PALETTE  # one look (D.8)
 
 
 class MapUndoCommand:
@@ -102,7 +103,7 @@ class MapElementItem(QGraphicsEllipseItem):
             self.setPos(element.points[0][0], element.points[0][1])
 
         # Set appearance
-        color = QColor(element.marker_style.color if hasattr(element, 'marker_style') else "#3b82f6")
+        color = QColor(element.marker_style.color if hasattr(element, 'marker_style') else PALETTE['info'])
         self.setBrush(QBrush(color))
         self.setPen(QPen(Qt.GlobalColor.white, 2))
 
@@ -361,7 +362,7 @@ class PlaceEditorDialog(QDialog):
 
         self.color_btn = QPushButton("Choose Color")
         self.color_btn.clicked.connect(self._choose_color)
-        self.current_color = QColor("#3b82f6")
+        self.current_color = QColor(PALETTE['info'])
         self.color_btn.setStyleSheet(f"background-color: {self.current_color.name()};")
         style_layout.addRow("Color:", self.color_btn)
 

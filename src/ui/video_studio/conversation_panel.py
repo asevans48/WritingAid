@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton,
     QScrollArea, QSizePolicy, QTextEdit, QVBoxLayout, QWidget,
 )
+from src.ui.ui_kit import PALETTE, make_main, plain  # one look (D.8)
 
 
 class _ConversationWorker(QThread):
@@ -119,7 +120,7 @@ class CreativeConversationPanel(QFrame):
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setStyleSheet(
             "CreativeConversationPanel { "
-            "  background: #fafafe; border: 1px solid #e5e7eb; "
+            f"  background: {PALETTE['surface_soft']}; border: 1px solid {PALETTE['border']}; "
             "  border-radius: 6px; }"
         )
 
@@ -131,7 +132,7 @@ class CreativeConversationPanel(QFrame):
         header = QHBoxLayout()
         title = QLabel("AI Chat")
         title.setStyleSheet(
-            "font-weight: bold; font-size: 12px; color: #4f46e5;")
+            f"font-weight: bold; font-size: 12px; color: {PALETTE['primary_dark']};")
         header.addWidget(title)
         header.addStretch()
 
@@ -146,7 +147,7 @@ class CreativeConversationPanel(QFrame):
         self._history_edit = QTextEdit()
         self._history_edit.setReadOnly(True)
         self._history_edit.setStyleSheet(
-            "QTextEdit { background: white; border: 1px solid #e5e7eb; "
+            f"QTextEdit {{ background: white; border: 1px solid {PALETTE['border']}; "
             "border-radius: 4px; padding: 4px; font-size: 11px; }"
         )
         self._history_edit.setMinimumHeight(120)
@@ -160,7 +161,7 @@ class CreativeConversationPanel(QFrame):
         )
         self._input_edit.setMaximumHeight(80)
         self._input_edit.setStyleSheet(
-            "QPlainTextEdit { border: 1px solid #d1d5db; "
+            f"QPlainTextEdit {{ border: 1px solid {PALETTE['border_strong']}; "
             "border-radius: 4px; padding: 4px; font-size: 11px; }"
         )
         layout.addWidget(self._input_edit)
@@ -170,19 +171,13 @@ class CreativeConversationPanel(QFrame):
         send_row.setSpacing(4)
 
         self._status_label = QLabel("")
-        self._status_label.setStyleSheet("color: #6b7280; font-size: 10px;")
+        self._status_label.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 10px;")
         send_row.addWidget(self._status_label)
         send_row.addStretch()
 
         self._send_btn = QPushButton("Send")
         self._send_btn.setFixedWidth(60)
-        self._send_btn.setStyleSheet(
-            "QPushButton { background: #4f46e5; color: white; "
-            "border-radius: 4px; padding: 4px 10px; font-weight: bold; "
-            "font-size: 11px; }"
-            "QPushButton:hover { background: #4338ca; }"
-            "QPushButton:disabled { background: #9ca3af; }"
-        )
+        make_main(self._send_btn, pad="4px 10px", size=11, bold=True)
         self._send_btn.clicked.connect(self._on_send)
         send_row.addWidget(self._send_btn)
 
@@ -190,13 +185,7 @@ class CreativeConversationPanel(QFrame):
         self._apply_btn.setFixedWidth(72)
         self._apply_btn.setToolTip(
             "Apply the AI's last suggestion to the prompt field")
-        self._apply_btn.setStyleSheet(
-            "QPushButton { background: #10b981; color: white; "
-            "border-radius: 4px; padding: 4px 10px; font-weight: bold; "
-            "font-size: 11px; }"
-            "QPushButton:hover { background: #059669; }"
-            "QPushButton:disabled { background: #9ca3af; }"
-        )
+        plain(self._apply_btn, pad="4px 10px", bold=True)
         self._apply_btn.clicked.connect(self._on_apply_last)
         self._apply_btn.setEnabled(False)
         send_row.addWidget(self._apply_btn)
@@ -333,14 +322,14 @@ class CreativeConversationPanel(QFrame):
         self._history_edit.setTextCursor(cursor)
 
         if sender == "You":
-            color = "#4f46e5"
-            bg = "#eef2ff"
+            color = PALETTE['primary_dark']
+            bg = PALETTE['primary_tint']
         elif sender == "AI":
-            color = "#065f46"
-            bg = "#ecfdf5"
+            color = PALETTE['success_ink']
+            bg = PALETTE['success_tint']
         else:
-            color = "#dc2626"
-            bg = "#fef2f2"
+            color = PALETTE['error_ink']
+            bg = PALETTE['error_tint']
 
         html = (
             f'<div style="margin: 4px 0; padding: 6px 8px; '
@@ -370,7 +359,7 @@ def _escape_html(text: str) -> str:
                 else:
                     part = "\n".join(lines)
                 result_parts.append(
-                    f'<pre style="background: #f3f4f6; padding: 4px; '
+                    f'<pre style="background: {PALETTE["surface_muted"]}; padding: 4px; '
                     f'border-radius: 3px; white-space: pre-wrap; '
                     f'font-size: 10px;">{part}</pre>')
             else:

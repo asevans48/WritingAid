@@ -299,7 +299,8 @@ def to_markdown(res: Dict[str, Any]) -> str:
              "read by the readiness check “Spelling and grammar left”"
              + (f"; and {res['story_cases']} short three-chapter books, in most of which the "
                 "last chapter contradicts the first." if model else ".")
-             + (" With LanguageTool." if res["languagetool"] else " Without LanguageTool."), "",
+             + ((" With LanguageTool and its n-gram data." if res.get("ngrams") else " With LanguageTool.")
+                if res["languagetool"] else " Without LanguageTool."), "",
              "## Spelling and grammar: caught and missed", ""]
     head = "| Mistake | Inserted | Rules alone: caught |"
     rule = "|---|---|---|"
@@ -405,12 +406,14 @@ def run(rounds: int = 5, languagetool: bool = False, llm=None,
         from src.utils.proofing import LanguageToolEngine
         LanguageToolEngine.get().ensure_started()
         rd.Scanner._languagetool_ready = staticmethod(lambda: True)
+    ngrams = bool(languagetool) and LanguageToolEngine.get().ngrams
     passages = seeded_passages(rounds)
     if limit:
         step = max(1, len(passages) // limit)        # spread over the books
         passages = passages[::step][:limit]
     res: Dict[str, Any] = {"date": time.strftime("%Y-%m-%d"), "rounds": rounds,
                            "passages": len(passages), "languagetool": languagetool,
+                           "ngrams": ngrams,
                            "story_cases": len(story_cases(cases)),
                            "rules": score_errors(passages)}
     if llm is not None:
@@ -431,7 +434,16 @@ def main(argv: List[str]) -> int:
     ap.add_argument("--editor", action="store_true",
                     help="with --model: also the planted structural flaws and the letter")
     ap.add_argument("--no-write", action="store_true", help="print only")
+    ap.add_argument("--no-ngrams", action="store_true",
+                    help="LanguageTool without its n-gram data, even when installed (P.6)")
     args = ap.parse_args(argv)
+    # LanguageTool's program and n-gram data are not the writer's work: keep
+    # using the installed copies when HOME moves to a throwaway folder.
+    lt_cache = Path.home() / ".cache" / "language_tool_python"
+    if args.languagetool and lt_cache.is_dir():
+        os.environ.setdefault("LTP_PATH", str(lt_cache))
+    if args.no_ngrams:
+        _without_ngrams()
     # Results are kept in a throwaway folder: no real project or store is touched.
     os.environ["HOME"] = tempfile.mkdtemp(prefix="measure-misses-") \
         if not args.model else os.environ.get("HOME", "")
@@ -452,7 +464,25 @@ def main(argv: List[str]) -> int:
     return 0
 
 
+def _without_ngrams() -> None:
+    sys.path.insert(0, str(ROOT))
+    from src.utils import lt_ngrams
+    empty = Path(tempfile.mkdtemp(prefix="no-ngrams-"))
+    lt_ngrams.ngram_root = lambda: empty
+
+
+def _close_languagetool() -> None:
+    """Don't leave its Java server running (os._exit skips atexit)."""
+    mod = sys.modules.get("src.utils.proofing")
+    if mod is not None:
+        try:
+            mod.LanguageToolEngine.get().close()
+        except Exception:
+            pass
+
+
 if __name__ == "__main__":
     code = main(sys.argv[1:])
     sys.stdout.flush()
+    _close_languagetool()
     os._exit(code)

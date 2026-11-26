@@ -30,43 +30,45 @@ from PyQt6.QtCore import QMarginsF
 from PyQt6.QtGui import QPageLayout, QPageSize, QTextDocument
 from PyQt6.QtPrintSupport import QPrintDialog, QPrinter
 from PyQt6.QtWidgets import QMessageBox, QWidget
+from src.ui import notify  # D.9: messages that need no click
+from src.ui.ui_kit import PALETTE  # one look (D.8)
 
 
 # ---------------------------------------------------------------------
 # HTML rendering — pure functions, no Qt dialogs
 # ---------------------------------------------------------------------
-_DOC_CSS = """
+_DOC_CSS = f"""
 <style>
-  body {
+  body {{
     font-family: 'Georgia', 'Times New Roman', serif;
     font-size: 12pt;
     line-height: 1.5;
-  }
-  h1.chapter-title {
+  }}
+  h1.chapter-title {{
     font-size: 18pt;
     font-weight: bold;
     text-align: center;
     margin-top: 2em;
     margin-bottom: 2em;
     page-break-after: avoid;
-  }
-  h1.chapter-title.page-break {
+  }}
+  h1.chapter-title.page-break {{
     page-break-before: always;
-  }
-  p { margin: 0 0 1em 0; text-indent: 1.5em; }
-  p.first { text-indent: 0; }
-  .manuscript-header {
+  }}
+  p {{ margin: 0 0 1em 0; text-indent: 1.5em; }}
+  p.first {{ text-indent: 0; }}
+  .manuscript-header {{
     text-align: center;
     margin-bottom: 3em;
     font-size: 14pt;
-  }
-  .manuscript-header .title { font-weight: bold; font-size: 22pt; }
-  .chapter-blank {
+  }}
+  .manuscript-header .title {{ font-weight: bold; font-size: 22pt; }}
+  .chapter-blank {{
     font-style: italic;
-    color: #666;
+    color: {PALETTE['ink_faint']};
     text-align: center;
     margin: 1em 0;
-  }
+  }}
 </style>
 """
 
@@ -180,7 +182,7 @@ def print_manuscript(
     success (user printed), False if cancelled or empty."""
     chapters = list(getattr(manuscript, "chapters", []) or [])
     if not chapters:
-        QMessageBox.information(
+        notify.empty(
             parent, "Nothing to print",
             "This manuscript has no chapters yet.")
         return False

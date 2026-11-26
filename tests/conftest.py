@@ -193,3 +193,20 @@ def _isolated_writing_habit(tmp_path, monkeypatch):
 
     store = _Settings()
     monkeypatch.setattr(wh, "_config", lambda: store)
+
+
+@pytest.fixture(autouse=True)
+def _no_languagetool_ngram_data(tmp_path, monkeypatch):
+    """LanguageTool's n-gram data (P.6) sits beside the shared LanguageTool
+    program in the real cache. Tests never use it: they start with none, in
+    a temporary folder, so results match the rules alone."""
+    import src.utils.lt_ngrams as ng
+    monkeypatch.setattr(ng, "ngram_root", lambda: tmp_path / "lt_ngrams")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_voice_groups(tmp_path, monkeypatch):
+    """The voice groups (V.2) are a file in ``~/.creativeos``; tests keep
+    theirs in a temporary folder."""
+    import src.data.voice_groups_store as vgs
+    monkeypatch.setattr(vgs, "groups_path", lambda: tmp_path / "voice_groups.json")

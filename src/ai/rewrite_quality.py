@@ -457,30 +457,36 @@ def _overlap(a: str, b: str) -> float:
 
 
 def examples_prompt(passage: str, project_path: str = "", *, chosen: int = 2,
-                    rejected: int = 1, max_chars: int = 500, db: Any = None) -> str:
+                    rejected: int = 1, max_chars: int = 500, db: Any = None,
+                    before: str = "", after: str = "", character_name: str = "",
+                    note: Optional[Dict[str, str]] = None) -> str:
     """The writer's best-rated past rewrites (and rejected ones) closest to
-    ``passage``, as a prompt block. "" when there's nothing rated yet."""
+    ``passage``, as a prompt block. "" when there's nothing rated yet.
+
+    With voice groups (V.4) the examples come from the passage's group,
+    closest to its voice first (``voice_examples.choose``); ``before`` and
+    ``after`` help measure that voice, ``character_name`` names the
+    narrator. ``note`` (a dict), when given, gets ``"from"``: where the
+    examples came from, in plain words for the writer."""
     try:
-        if db is None:
-            from src.data.rephrase_database import get_rephrase_database
-            db = get_rephrase_database()
-        rows = db.rated_examples(project_path=project_path)
+        from src.ai.voice_examples import choose
+        picked = choose(passage, project_path, chosen=chosen, rejected=rejected,
+                        max_chars=max_chars, db=db, before=before, after=after,
+                        character_name=character_name)
     except Exception as e:
         print(f"[examples] rated rewrites unavailable: {e}")
         return ""
-
-    def pick(items, n):
-        usable = [r for r in items if r.get("source_text") and r.get("output_text")
-                  and len(r["source_text"]) <= max_chars and len(r["output_text"]) <= max_chars]
-        usable.sort(key=lambda r: (-(r.get("rating") == "excellent")
-                                   - (r.get("project_path") == project_path) * 0.5
-                                   - _overlap(passage, r["source_text"])))
-        return usable[:n]
-
-    good, bad = pick(rows.get("chosen", []), chosen), pick(rows.get("rejected", []), rejected)
+    good, bad = picked.chosen, picked.rejected
     if not good and not bad:
         return ""
-    lines = ["REWRITES THIS AUTHOR RATED (learn their taste; don't reuse the content):"]
+    if note is not None:
+        note["from"] = picked.label
+    if picked.group_id:
+        print(f"[examples] {len(good) + len(bad)} rated rewrite(s) {picked.label}")
+        lines = ["REWRITES THIS AUTHOR RATED, in the voice of this passage "
+                 "(learn their taste; don't reuse the content):"]
+    else:
+        lines = ["REWRITES THIS AUTHOR RATED (learn their taste; don't reuse the content):"]
     for r in good:
         lines.append(f"• Original: \"{r['source_text']}\"\n  They chose: \"{r['output_text']}\"")
     for r in bad:

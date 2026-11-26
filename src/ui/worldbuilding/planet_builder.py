@@ -11,7 +11,7 @@ from typing import List
 import uuid
 
 from src.models.worldbuilding_objects import Planet, PlanetType
-from src.ui.ui_kit import compact_button  # narrow buttons show their symbol
+from src.ui.ui_kit import PALETTE, compact_button, main_button  # narrow buttons show their symbol
 
 
 class PlanetEditor(QWidget):
@@ -333,7 +333,7 @@ class PlanetEditor(QWidget):
         preset_layout = QVBoxLayout(preset_group)
 
         preset_help = QLabel("Apply a climate preset to quickly configure this planet's climate:")
-        preset_help.setStyleSheet("color: #6b7280; font-size: 11px;")
+        preset_help.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px;")
         preset_layout.addWidget(preset_help)
 
         preset_select_layout = QHBoxLayout()
@@ -385,7 +385,7 @@ class PlanetEditor(QWidget):
         flora_layout = QVBoxLayout(flora_group)
 
         flora_help = QLabel("Select plant species that exist on this planet:")
-        flora_help.setStyleSheet("color: #6b7280; font-size: 11px;")
+        flora_help.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px;")
         flora_layout.addWidget(flora_help)
 
         self.flora_list = QListWidget()
@@ -409,7 +409,7 @@ class PlanetEditor(QWidget):
         fauna_layout = QVBoxLayout(fauna_group)
 
         fauna_help = QLabel("Select animal species that exist on this planet:")
-        fauna_help.setStyleSheet("color: #6b7280; font-size: 11px;")
+        fauna_help.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px;")
         fauna_layout.addWidget(fauna_help)
 
         self.fauna_list = QListWidget()
@@ -433,7 +433,7 @@ class PlanetEditor(QWidget):
             "then come here to assign them to this planet."
         )
         info_label.setWordWrap(True)
-        info_label.setStyleSheet("color: #6b7280; font-size: 10px; padding: 8px; background-color: #f3f4f6; border-radius: 4px;")
+        info_label.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 10px; padding: 8px; background-color: {PALETTE['surface_muted']}; border-radius: 4px;")
         layout.addWidget(info_label)
 
         layout.addStretch()
@@ -452,7 +452,7 @@ class PlanetEditor(QWidget):
         self.planet_image_label = QLabel("No image")
         self.planet_image_label.setFixedSize(300, 300)
         self.planet_image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.planet_image_label.setStyleSheet("border: 1px solid #ccc; background: #f0f0f0;")
+        self.planet_image_label.setStyleSheet(f"border: 1px solid {PALETTE['border_strong']}; background: {PALETTE['surface_muted']};")
         planet_layout.addWidget(self.planet_image_label, alignment=Qt.AlignmentFlag.AlignCenter)
 
         planet_btn_layout = QHBoxLayout()
@@ -473,7 +473,7 @@ class PlanetEditor(QWidget):
         self.map_image_label = QLabel("No map")
         self.map_image_label.setFixedSize(400, 300)
         self.map_image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.map_image_label.setStyleSheet("border: 1px solid #ccc; background: #f0f0f0;")
+        self.map_image_label.setStyleSheet(f"border: 1px solid {PALETTE['border_strong']}; background: {PALETTE['surface_muted']};")
         map_layout.addWidget(self.map_image_label, alignment=Qt.AlignmentFlag.AlignCenter)
 
         map_btn_layout = QHBoxLayout()
@@ -748,7 +748,7 @@ class PlanetBuilderWidget(QWidget):
         left_layout.addWidget(self.planet_list)
 
         btn_layout = QHBoxLayout()
-        add_btn = QPushButton("➕ Add Planet")
+        add_btn = main_button("➕ Add Planet")
         add_btn.clicked.connect(self._add_planet)
         btn_layout.addWidget(add_btn)
 

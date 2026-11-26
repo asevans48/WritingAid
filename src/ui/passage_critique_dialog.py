@@ -28,6 +28,10 @@ from src.ui import background  # noqa: E402
 _RUNNING = background._RUNNING
 
 
+_RATE_TIP = ("Ratings teach Suggestions and Rephrase your taste, and become "
+             "training data (when data collection is on in Settings).")
+
+
 def _project_path(project: Any) -> str:
     return str(getattr(project, "project_path", "") or "") if project is not None else ""
 
@@ -101,7 +105,9 @@ class SuggestionWorker(QThread):
             from src.ai.rewrite_quality import examples_prompt
             from src.ai.writer_voice import project_voice
             voice = project_voice(project, chapter, text, selection=text[start:end])
-            examples = examples_prompt(text[start:end], _project_path(project))
+            self.examples_from = {}
+            examples = examples_prompt(text[start:end], _project_path(project), before=text[:start],
+                                       after=text[end:], note=self.examples_from)
             ctx = build_context(project, chapter, text, start, end,
                                 compact=is_local_llm(llm), related=search,
                                 voice=voice, examples=examples)
@@ -242,8 +248,7 @@ class PassageCritiqueDialog(QDialog):
             btn = QPushButton(label)
             btn.setCheckable(True)
             btn.setEnabled(False)
-            btn.setToolTip("Ratings teach Suggestions and Rephrase your taste, and become "
-                           "training data (when data collection is on in Settings).")
+            btn.setToolTip(_RATE_TIP)
             btn.clicked.connect(lambda _=False, v=value: self._rate(v))
             rate_row.addWidget(btn)
             self.rate_buttons[value] = btn
@@ -354,6 +359,10 @@ class PassageCritiqueDialog(QDialog):
                 self.discussion.setHtml(f"<p style='color:#b00020'>{html.escape(error)}</p>")
                 return
             self._show_result(result)
+            learned = (getattr(worker, "examples_from", None) or {}).get("from", "")
+            for btn in self.rate_buttons.values():      # where they came from (V.4)
+                btn.setToolTip(_RATE_TIP + (f"\nThese suggestions learned from rewrites you "
+                                            f"rated, {learned}." if learned else ""))
         except Exception as e:      # an exception escaping a slot aborts PyQt6
             print(f"[suggestions] could not show the result: {e}")
 

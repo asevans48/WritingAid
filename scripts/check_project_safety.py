@@ -7,6 +7,12 @@ The project is never written to. Its text and data files (not audio, video
 or images) are copied to a temporary folder and everything runs on the copy.
 The original is hashed before and after to prove it was not touched.
 
+It then opens the app's main window on the copy (in a separate process,
+with a scratch home folder, no model and no dialogs), opens every
+manuscript's first chapter with its side panels and every main screen,
+saves from the window, and checks the copy is unchanged
+(scripts/check_project_screens.py). Add --no-screens to leave this out.
+
 Only names, counts and checksums are printed — never the writing itself,
 and nothing is sent to a model.
 
@@ -112,6 +118,28 @@ def _keys(obj: Any, prefix: str = "", depth: int = 0) -> set:
     return found
 
 
+def compare_descriptions(first: Dict[str, Any], second: Dict[str, Any]) -> List[str]:
+    """What differs between two ``describe`` results, as problems."""
+    problems = []
+    for scope, chapters in first["manuscripts"].items():
+        other = second["manuscripts"].get(scope)
+        if other is None:
+            problems.append(f"manuscript '{scope}' is missing after save and reopen")
+            continue
+        for cid, ch in chapters.items():
+            if cid not in other:
+                problems.append(f"chapter {ch['number']} of '{scope}' is missing after reopen")
+            elif other[cid] != ch:
+                what = [k for k in ch if other[cid].get(k) != ch[k]]
+                problems.append(f"chapter {ch['number']} of '{scope}' differs after reopen: {what}")
+    for name, digest in first["sections"].items():
+        if second["sections"].get(name) != digest:
+            problems.append(f"section '{name}' differs after save and reopen")
+    if first["subprojects"] != second["subprojects"]:
+        problems.append("the list of novellas differs after save and reopen")
+    return problems
+
+
 def diff_snapshots(before, after) -> Dict[str, List[str]]:
     return {
         "deleted": sorted(set(before) - set(after)),
@@ -121,7 +149,7 @@ def diff_snapshots(before, after) -> Dict[str, List[str]]:
     }
 
 
-def check(project_file: Path) -> bool:
+def check(project_file: Path, screens: bool = False) -> bool:
     from src.models.project import WriterProject
 
     src_dir = project_file.parent
@@ -184,23 +212,7 @@ def check(project_file: Path) -> bool:
         # 4. Open again and compare.
         with contextlib.redirect_stdout(log):
             again = WriterProject.load_project(str(copy_file))
-        second = describe(again)
-        for scope, chapters in first["manuscripts"].items():
-            other = second["manuscripts"].get(scope)
-            if other is None:
-                problems.append(f"manuscript '{scope}' is missing after save and reopen")
-                continue
-            for cid, ch in chapters.items():
-                if cid not in other:
-                    problems.append(f"chapter {ch['number']} of '{scope}' is missing after reopen")
-                elif other[cid] != ch:
-                    what = [k for k in ch if other[cid].get(k) != ch[k]]
-                    problems.append(f"chapter {ch['number']} of '{scope}' differs after reopen: {what}")
-        for name, digest in first["sections"].items():
-            if second["sections"].get(name) != digest:
-                problems.append(f"section '{name}' differs after save and reopen")
-        if first["subprojects"] != second["subprojects"]:
-            problems.append("the list of novellas differs after save and reopen")
+        problems += compare_descriptions(first, describe(again))
 
         # 5. Every revision file is still there with its text.
         for scope, ms in again.iter_manuscripts():
@@ -222,12 +234,21 @@ def check(project_file: Path) -> bool:
             except Exception as e:
                 problems.append(f"{label} did not load: {e}")
 
+        # 7. The main screens open on the copy, and the window saves it
+        #    unchanged (in its own process, with a scratch home folder).
+        if screens:
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            import check_project_screens
+            screen_problems, screen_notes = check_project_screens.check(copy_file)
+            problems += screen_problems
+            notes += screen_notes
+
         out = log.getvalue().strip()
         if out:
             notes.append("messages while loading and saving: "
                          + " | ".join(line.strip() for line in out.splitlines()[:6]))
 
-    # 7. The original was not touched.
+    # 8. The original was not touched.
     if snapshot(src_dir) != original_before:
         problems.append("THE ORIGINAL PROJECT CHANGED DURING THE CHECK")
     else:
@@ -327,6 +348,8 @@ def main(argv: List[str]) -> int:
             print(f"  PROBLEM: {p}")
         print("RESULT: " + ("stores intact" if not problems else f"{len(problems)} problem(s)"))
         return 1 if problems else 0
+    screens = "--no-screens" not in argv
+    argv = [a for a in argv if a != "--no-screens"]
     ok = True
     for arg in argv:
         path = Path(arg).expanduser()
@@ -334,7 +357,7 @@ def main(argv: List[str]) -> int:
             print(f"Not found: {path}")
             ok = False
             continue
-        ok = check(path) and ok
+        ok = check(path, screens=screens) and ok
         print()
     return 0 if ok else 1
 

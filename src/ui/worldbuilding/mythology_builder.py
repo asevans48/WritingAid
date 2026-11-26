@@ -10,6 +10,7 @@ from PyQt6.QtCore import pyqtSignal, Qt
 
 from src.models.worldbuilding_objects import Myth, Faction
 from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
+from src.ui.ui_kit import PALETTE, main_button  # one look (D.8)
 
 
 class MythEditor(QDialog):
@@ -84,7 +85,7 @@ class MythEditor(QDialog):
         faction_layout = QVBoxLayout()
 
         faction_help = QLabel("Select the factions that believe in this myth:")
-        faction_help.setStyleSheet("color: #6b7280; font-size: 11px;")
+        faction_help.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px;")
         faction_layout.addWidget(faction_help)
 
         # Faction checkboxes
@@ -97,7 +98,7 @@ class MythEditor(QDialog):
                 faction_layout.addWidget(checkbox)
         else:
             no_factions_label = QLabel("No factions available. Create factions first in the Factions tab.")
-            no_factions_label.setStyleSheet("color: #ef4444; font-style: italic;")
+            no_factions_label.setStyleSheet(f"color: {PALETTE['error']}; font-style: italic;")
             faction_layout.addWidget(no_factions_label)
 
         faction_group.setLayout(faction_layout)
@@ -108,7 +109,7 @@ class MythEditor(QDialog):
         figures_layout = QVBoxLayout()
 
         figures_help = QLabel("Deities, heroes, or characters in this myth (one per line):")
-        figures_help.setStyleSheet("color: #6b7280; font-size: 11px;")
+        figures_help.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px;")
         figures_layout.addWidget(figures_help)
 
         self.key_figures_edit = QTextEdit()
@@ -253,13 +254,13 @@ class MythologyBuilderWidget(QWidget):
         # Header
         header = QHBoxLayout()
         title = QLabel("📖 Mythology & Legends")
-        title.setStyleSheet("font-size: 16px; font-weight: 600; color: #1a1a1a;")
+        title.setStyleSheet(f"font-size: 16px; font-weight: 600; color: {PALETTE['text_dark']};")
         header.addWidget(title)
 
         header.addStretch()
 
         subtitle = QLabel("Myths, legends, and belief systems")
-        subtitle.setStyleSheet("font-size: 12px; color: #6b7280;")
+        subtitle.setStyleSheet(f"font-size: 12px; color: {PALETTE['ink_faint']};")
         header.addWidget(subtitle)
 
         layout.addLayout(header)
@@ -270,7 +271,7 @@ class MythologyBuilderWidget(QWidget):
             "to show which cultures believe in which stories."
         )
         help_text.setWordWrap(True)
-        help_text.setStyleSheet("color: #6b7280; font-size: 11px; margin-bottom: 8px;")
+        help_text.setStyleSheet(f"color: {PALETTE['ink_faint']}; font-size: 11px; margin-bottom: 8px;")
         layout.addWidget(help_text)
 
         # Filter/Sort controls
@@ -286,7 +287,7 @@ class MythologyBuilderWidget(QWidget):
         # Toolbar
         toolbar = QHBoxLayout()
 
-        self.add_btn = QPushButton("➕ Add Myth")
+        self.add_btn = main_button("➕ Add Myth")
         self.add_btn.clicked.connect(self._add_myth)
         toolbar.addWidget(self.add_btn)
 

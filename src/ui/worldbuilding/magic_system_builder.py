@@ -11,6 +11,7 @@ from PyQt6.QtCore import pyqtSignal, Qt
 
 from src.models.worldbuilding_objects import MagicSystem, MagicType, Faction
 from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
+from src.ui.ui_kit import PALETTE, main_button  # one look (D.8)
 
 
 class MagicSystemEditor(QDialog):
@@ -291,11 +292,11 @@ class MagicSystemBuilderWidget(QWidget):
 
         # Header
         header = QLabel("✨ Magic Systems")
-        header.setStyleSheet("font-size: 14px; font-weight: 600; color: #1a1a1a;")
+        header.setStyleSheet(f"font-size: 14px; font-weight: 600; color: {PALETTE['text_dark']};")
         layout.addWidget(header)
 
         subtitle = QLabel("Define the magic, power systems, and supernatural rules of your world")
-        subtitle.setStyleSheet("font-size: 11px; color: #6b7280; margin-bottom: 4px;")
+        subtitle.setStyleSheet(f"font-size: 11px; color: {PALETTE['ink_faint']}; margin-bottom: 4px;")
         subtitle.setWordWrap(True)
         layout.addWidget(subtitle)
 
@@ -311,7 +312,7 @@ class MagicSystemBuilderWidget(QWidget):
         toolbar = QHBoxLayout()
         toolbar.setSpacing(4)
 
-        add_btn = QPushButton("➕ Add Magic System")
+        add_btn = main_button("➕ Add Magic System")
         add_btn.clicked.connect(self._add_magic_system)
         toolbar.addWidget(add_btn)
 

@@ -21,7 +21,22 @@ CLEANED = [
     "src/ui/settings_dialog.py", "src/ui/outline_section.py", "src/ui/plan_section.py",
     "src/ui/outline_chart.py", "src/ui/habit_view.py", "src/ui/habit_tracker.py",
     "src/ui/screen_groups.py", "src/ui/critique_window.py",
-]
+    # Session 2 (25 November 2026): Story, Visuals, Video Studio, Publishing, Drafts, Print.
+    "src/ui/plot/plot_manager.py", "src/ui/plot/plot_timeline.py",
+    "src/ui/plot/freytag_pyramid_visual.py", "src/ui/plot/plot_event_editor.py",
+    "src/ui/characters_widget.py", "src/ui/characters/character_timeline.py",
+    "src/ui/comprehensive_worldbuilding_widget.py", "src/ui/image_generator_widget.py",
+    "src/ui/agent_manager_widget.py", "src/ui/draft_editor_window.py", "src/ui/print_manuscript.py",
+    "src/ui/video_studio/studio_widget.py", "src/ui/video_studio/conversation_panel.py",
+    "src/ui/video_studio/slide_agent_panel.py",
+] + [f"src/ui/worldbuilding/{n}.py" for n in (
+    "_record_dialog", "_system_builder_base", "climate_preset_builder", "culture_builder",
+    "economy_builder", "encyclopedia_widget", "enhanced_star_system_builder", "faction_builder",
+    "fauna_builder", "filter_sort_widget", "flora_builder", "government_builder",
+    "hierarchy_builder", "justice_builder", "magic_system_builder", "map_builder",
+    "map_builder_widgets", "military_builder", "mythology_builder", "place_builder",
+    "planet_builder", "politics_builder", "services_builder", "strengthen_element",
+    "technology_builder", "timeline_builder", "worldbuilding_importer")]
 HEX = re.compile(r"#[0-9a-fA-F]{6}\b|['\":\s]#[0-9a-fA-F]{3}\b")
 
 
@@ -95,3 +110,50 @@ def test_the_companion_has_one_coloured_button(app):
                 if b.styleSheet() == PRIMARY_BUTTON]
     assert "🎯 Find the next fixes" in coloured
     assert all(t in ("🎯 Find the next fixes", "✓ Accept") for t in coloured), coloured
+
+
+def _coloured(widget):
+    """Texts of the buttons drawn in the accent colour (the main action)."""
+    from PyQt6.QtWidgets import QPushButton
+    from src.ui.ui_kit import PRIMARY_BUTTON
+    return [b.text() for b in widget.findChildren(QPushButton) if b.styleSheet().startswith(PRIMARY_BUTTON)]
+
+
+def test_make_main_keeps_the_size_of_the_plain_button(app):
+    from PyQt6.QtWidgets import QPushButton
+    from src.ui.styles import MODERN_STYLE
+    from src.ui.ui_kit import PRIMARY_BUTTON, main_button, make_main
+    holder = __import__("PyQt6.QtWidgets", fromlist=["QWidget"]).QWidget()
+    holder.setStyleSheet(MODERN_STYLE)
+    old, new = QPushButton("➕ Add Faction", holder), main_button("➕ Add Faction", holder)
+    assert new.sizeHint() == old.sizeHint()
+    assert new.styleSheet().startswith(PRIMARY_BUTTON) and not new.isDefault()
+    ask = make_main(QPushButton("Ask"), pad="5px 18px", bold=True)
+    assert "font-weight: 500" not in ask.styleSheet()
+
+
+@pytest.mark.parametrize("screen,main", [
+    ("characters", "Add"), ("publishing", "Add"), ("visuals", "Generate Image"),
+    ("world", "Add Faction"), ("plot", "➕ Add Event"),
+])
+def test_each_story_and_studio_screen_has_one_coloured_button(app, screen, main):
+    """Session 2: one main button per screen (or per inner tab), the rest plain."""
+    if screen == "characters":
+        from src.ui.characters_widget import CharactersWidget as W
+    elif screen == "publishing":
+        from src.ui.agent_manager_widget import AgentManagerWidget as W
+    elif screen == "visuals":
+        from src.ui.image_generator_widget import ImageGeneratorWidget as W
+    elif screen == "world":
+        from src.ui.worldbuilding.faction_builder import FactionBuilderWidget as W
+    else:
+        from src.ui.plot.plot_manager import PlotManagerWidget as W
+    w = W()
+    coloured = _coloured(w)
+    assert main in coloured
+    if screen == "plot":        # one per inner tab: events, subplots, promises, tensions, themes, AI
+        assert sorted(coloured) == sorted(["➕ Add Event", "➕ Add Subplot", "➕ Add Promise",
+                                           "➕ Add Tension", "➕ Add Theme", "💬 Ask  ⏎"]), coloured
+    else:
+        assert coloured == [main], coloured
+    w.deleteLater()
