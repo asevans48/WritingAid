@@ -544,9 +544,70 @@ New baselines wait for the writer's agreement.
 4. **How far to refactor.** R.1 to R.5 are limited to what the plan needs. A
    general split of the 15,000-line main window and the 4,000-line settings
    dialog is left out. Say so if you want it added.
-5. **Voice groups.** My reading of "broad, manageable" at the top of phase V,
-   the cap of about eight groups, and whether you also want a way to keep one
-   project's ratings entirely to itself.
+5. ~~**Voice groups.**~~ Settled 25 November 2026:
+   - **Broad** means shared across projects; **manageable** means the writer
+     can manage the groups (see, rename, move, merge, remove). The reading at
+     the top of phase V stands.
+   - **How many groups: never chosen; it is how many strong, distinct
+     voices there is evidence for** (25 Nov; the writer asked for a way
+     that is dynamic, strong and manageable and left the method to the
+     session; "square root of n" was an example only). The unit is the
+     **voice source**: one project with one narrator (`project_path` +
+     `character_name`; no narrator: the project alone), with its ratings
+     averaged into one fingerprint. Every source starts alone; the two most
+     alike merge, again and again, while the merged group stays strong; it
+     stops when the next merge would be loose. What is left is the groups.
+     Two books in a similar voice: one group. Three in three different
+     voices: three. Twelve projects in four real voices: four. The full
+     method is in V.2's *Review notes*.
+   - **A project can keep its ratings to itself:** a per-project switch,
+     off by default. Its ratings teach only that project and are never used
+     for another; the store and its groups still hold them.
+   - **Groups grow and shrink with the data** (25 Nov, agreed): a source
+     counts once it has enough ratings (about 30, set from the writer's
+     data); until then it is **Unsorted** and its ratings are used as
+     today. At a check (start-up, when a source became ready or the ratings
+     grew by about a fifth; or on request) a newly ready source joins the
+     group it is alike or starts its own, groups that have drifted together
+     merge, and a source that has drifted away leaves. "Alike" and
+     "different" are two thresholds with a gap between them, so nothing
+     flips back and forth. Groups the app made change by themselves; a
+     change touching a group the writer made, named or placed a source in
+     is proposed and waits for them.
+   - **The writer can set starting groups** (agreed): name a group and
+     define it by a project, a narrator or example passages. Their groups
+     anchor the sorting, are never merged or removed by the app (a split is
+     only suggested), and ratings placed by hand stay put.
+   - **Names** (25 Nov): when a group is created (split, new, the writer's
+     own without a name) or two are merged, the model gives it a short name
+     and a one-line description (V.3); without a model, the plain-words
+     description from the measures stands until one is set up. A name the
+     writer gave is never changed.
+   - **The writer can combine groups:** select two or more and merge them
+     (V.5); the result keeps the writer's name if one had it, else is named
+     afresh. Undo restores them.
+   - **A manageable number** (25 Nov): the writer manages projects and
+     narrators inside groups, not single ratings. The app makes at most
+     **8** groups (about the most a person can keep apart at a glance);
+     beyond that the smallest wait in Unsorted and V.5 suggests merging the
+     closest pair; nothing merges without the writer. The 8 is one
+     constant, easy to change.
+   - **Groups stay strong** (25 Nov: "we still want the groups to be fairly
+     strong when grouped together"). No two sources in a group may be
+     clearly different voices, measured against how much each source varies
+     within itself, so the bar scales with the data. Strength comes before
+     the count:
+     - the app never makes a loose group to reach a number;
+     - a source that fits no group is its own group, or Unsorted while it
+       has too few ratings;
+     - a source that clearly holds two voices is treated as two;
+     - the writer may still merge any groups; if the result would be loose,
+       the app says so first ("these voices differ; rewrites will learn
+       less precisely from the merged group") and lets them go ahead;
+     - rewrites (V.4) learn first from the closest ratings within the
+       group.
+   Was: my reading of "broad, manageable", a fixed cap of about eight groups,
+   and whether a project's ratings could be kept to itself.
 6. ~~**Side-by-side comparison.**~~ Settled 24 November 2026: P.1 is
    dropped. (It was optional and needed access to ProWritingAid.)
 7. ~~**Readiness engine design (1.2a).**~~ Settled 23 November 2026 with the

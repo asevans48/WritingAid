@@ -60,18 +60,19 @@ What is waiting for you:
   `venv/bin/python scripts/genre_baseline.py`, then `--show`. Your CONLIT
   file has moved, so the script uses its saved summary. Re-download CONLIT
   in the Training Studio to confirm the ÷ 1.12 conversion.
-- **Decide (section 3):** voice groups (old decision 5), three from
+- **Decide (section 3):** three from
   D.4 (the new top-level tab baseline (5), when to retire the old ten
   tabs' switch, whether windows left open should reopen at start-up) and
   two from D.5 (when to retire the old analysis windows, and whether the
-  new reports join the full critique), and one from 4.3 (when a check is
-  toned down: 20 answers, under two in five accepted).
+  new reports join the full critique), one from 4.3 (when a check is
+  toned down: 20 answers, under two in five accepted), and whether the
+  Companion's chat gets the prose profile commands too.
   The rest are answered and marked so; their boxes are yours to tick.
 - **Commit H.1, D.4, D.5, P.2b, 4.3 and the chapter's prose profile** when you are happy with them (end of section 1).
 - **Next pieces (section 5): what remains.**
   - Simplify: D.2a (review the design), then D.2b and D.2c; the later
     sessions of D.8 and D.9; U.3a, then U.3b, last.
-  - Checks: P.6 (ask before its download); P.5 after section 2's
+  - Checks: P.6 (its download approved 25 Nov); P.5 after section 2's
     measurement, and again after P.6.
   - After the path: 6.1, then 6.2; P.8; 9.1.
   - Ratings by voice: V.1 to V.5, in order.
@@ -625,7 +626,20 @@ Write each answer in the README under *Decisions*, or tell the session.
       Noble come after the first working product; the writing habit is in
       and important, it needs a brief; community comes after the first
       working product, on its own web page); 6, P.1 is dropped; 3, style checks must meet 4 in 5, spelling and
-      overused words stay on (built for new projects). 5 still open.*
+      overused words stay on (built for new projects). 5 answered 25 Nov:
+      broad = shared across projects, manageable = you manage the groups;
+      the number of groups is never chosen: it is how many strong, distinct
+      voices there is evidence for (projects and narrators are grouped, the
+      most alike merging while the group stays strong; "square root of n"
+      was an example only, the method left to the session); a per-project switch keeps
+      a project's ratings to itself (off by default). Then: groups grow and
+      shrink with the data (yours are proposed, never changed silently); you
+      can set starting groups and combine groups; the model names each new
+      or merged group (yours keep their names); at most 8 groups made by the
+      app, and a merge suggested above 8 in all. And groups stay strong:
+      a project or narrator with too few ratings waits in Unsorted, the app never makes a
+      loose group to hit a count, and merging loose voices asks you first. In README decision 5
+      and the V.1 to V.5 briefs.*
 - [ ] **The new counts (D.1, D.7).** The harness counts every menu item as
       clutter. What changed:
       *Answered 24 Nov: agreed, with the new counting. `screens_baseline.json` now holds the new figures (the 0.2 ones kept inside it).*
@@ -798,6 +812,11 @@ Write each answer in the README under *Decisions*, or tell the session.
       brought back. Keep these figures, or name others (a later or earlier
       point, or a different share).
 
+- [ ] **The chapter's prose profile: the Companion's chat too?** "Prose
+      profile" and "review my prose" work in the AI Assistant chat (side
+      panel). The Companion's chat doesn't know them yet. Add them there
+      (a few call lines, no new controls), or keep one place for them?
+
 ## 4. For every piece from here on
 
 The routine from the README, as a checklist:
@@ -836,7 +855,7 @@ The routine from the README, as a checklist:
 - [x] [P.2a](pieces/31-P.2a-missing-reports-transitions-pronouns-alliteratio.md) Missing reports: transitions, pronouns, alliteration, acronyms — built, for review
 - [x] [P.2b](pieces/32-P.2b-missing-reports-homonyms-sensory-detail-sentence.md) Missing reports: homonyms, sensory detail, sentence structure, diction — built, for review
 - [x] [P.3](pieces/33-P.3-every-measure-compared-with-the-genre.md) Every measure compared with the genre — built, for review
-- [ ] [P.6](pieces/35-P.6-languagetool-in-full-with-its-larger-data-as-a-d.md) LanguageTool in full
+- [ ] [P.6](pieces/35-P.6-languagetool-in-full-with-its-larger-data-as-a-d.md) LanguageTool in full (download approved 25 Nov)
 - [ ] P.5 again, since the table changes after P.2 and P.6
 
 **C. After the path** (no model needed)
