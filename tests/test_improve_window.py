@@ -659,3 +659,70 @@ def test_a_project_from_before_the_piece_opens_and_saves_unchanged(app, merged, 
     WriterProject.load_project(str(path))
     assert {f: f.read_bytes() for f in files} == before
     shutil.rmtree(d)
+
+
+# ── The word scan shows at once ────────────────────────────────────────
+# It needs no model and takes milliseconds; the AI's review (one or two
+# model calls, minutes on the Mac's own model) takes its place later.
+
+def _second(panel):
+    return panel.review.flags[1].text if len(panel.review.flags) > 1 else ""
+
+
+def _held(factories, key):
+    """The worker for ``key`` waits until the test lets it run."""
+    held = []
+    base = factories[key]
+
+    class Held(base):
+        def start(self):
+            held.append(self)
+    factories[key] = Held
+    return held
+
+
+def test_expand_shows_the_word_scan_while_the_ai_checks(app, project, chapter):
+    from src.ui.improve_window import ImproveWindow
+    factories, _ = workers(None, FakeLLM(REVIEW))
+    held = _held(factories, "review_worker")
+    s, e = span()
+    win = ImproveWindow(TEXT, s, e, project, chapter, tab="expand", **factories)
+    tab = win.tab_objects["expand"]
+    panel = tab.panel
+    assert held and _second(panel).startswith("She almost fell")   # the word scan's hits
+    assert "word scan found 2" in panel.status.text() and "AI is checking" in panel.status.text()
+    assert not panel.more_btn.isEnabled()                 # no model yet
+    held[0].run()                                         # the AI's review comes
+    assert _second(panel).startswith("The attic") and not tab.provisional
+    assert "judged 1 other word-scan hit fine" in panel.status.text()
+
+
+def test_an_expansion_applied_from_the_scan_is_kept_when_the_ai_answers(app, project, chapter):
+    from src.ui.improve_window import ImproveWindow
+    factories, _ = workers(None, FakeLLM(REVIEW))
+    held = _held(factories, "review_worker")
+    s, e = span()
+    win = ImproveWindow(TEXT, s, e, project, chapter, tab="expand", **factories)
+    tab = win.tab_objects["expand"]
+    panel = tab.panel
+    panel.flag_list.setCurrentRow(0)
+    panel.preview.setPlainText("She could not see her own hands.")
+    panel._accept()
+    held[0].run()
+    assert _second(panel).startswith("She almost fell")   # the scan's list stays
+    assert tab.state.text.startswith("She could not see her own hands.")
+    assert tab.llm is not None and panel.more_btn.isEnabled()   # more ideas from the AI
+    assert "expansions are kept" in panel.status.text()
+
+
+def test_suggestions_first_still_shows_the_word_scan_in_expand(app, project, chapter):
+    from src.ui.improve_window import ImproveWindow
+    factories, _ = workers(FakeLLM(CRITIQUE, REVIEW))
+    held = _held(factories, "suggestion_worker")
+    s, e = span()
+    win = ImproveWindow(TEXT, s, e, project, chapter, tab="suggestions", **factories)
+    panel = win.tab_objects["expand"].panel
+    assert held and _second(panel).startswith("She almost fell")
+    assert "once Suggestions is done" in panel.status.text()
+    held[0].run()
+    assert _second(panel).startswith("The attic")

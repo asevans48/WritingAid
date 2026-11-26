@@ -309,6 +309,7 @@ class ExpandTab:
         self.llm = self.ctx = self.voice = None
         self._worker = self._more_worker = None
         self._waiting = None                     # the Suggestions run that will fill it
+        self.provisional = False                 # the word scan, while the AI checks
         self.panel = OverdescriptionPanel()
         self.panel.accept_btn.setText("Apply to passage")
         self.panel.accept_btn.setToolTip("Put this in place of the statement, in “Your text, "
@@ -331,10 +332,10 @@ class ExpandTab:
         self.started = True
         if self.has_review():
             return                                # Suggestions is filling it
-        self.panel.set_busy("Starting…")
+        self._show_scan("The AI is checking them…")
         worker = self.worker_factory(self.win.project, self.win.chapter, self.win.text,
                                      self.win.start, self.win.end)
-        worker.progress.connect(self.panel.set_busy)
+        worker.progress.connect(self._progress)
         worker.done.connect(self._on_review)
         self._worker = worker
         background.start(worker)
@@ -344,6 +345,32 @@ class ExpandTab:
         self._waiting = worker
         self.panel.set_busy("Looking for overly descriptive statements…")
         worker.overdescribed.connect(self._from_suggestions)
+        self._show_scan("The AI checks them once Suggestions is done…")
+
+    # The word scan needs no model and takes milliseconds, so it is shown
+    # at once; the AI's review takes its place when it comes (unless an
+    # expansion has been applied by then, which is kept).
+
+    def _show_scan(self, note: str) -> None:
+        try:
+            from src.ai import overdescription as od
+            self._fill(od.Review(od.scan(self.win.passage), error="checking"), None, None, None)
+            self.provisional = True
+            self.panel.set_busy(f"{self._scan_line()} {note}")
+        except Exception as e:     # an exception escaping a slot aborts PyQt6
+            print(f"[improve] could not show the word scan: {e}")
+
+    def _scan_line(self) -> str:
+        n = len(self.review.flags) if self.review is not None else 0
+        if not n:
+            return "The word scan found nothing."
+        return (f"The word scan found {n} statement{'s' if n != 1 else ''} that may be overly "
+                f"descriptive (highlighted).")
+
+    def _progress(self, message: str) -> None:
+        if self.provisional:
+            message = f"{self._scan_line()} The AI is checking them: {message}"
+        self.panel.set_busy(message)
 
     def _from_suggestions(self, review) -> None:
         w, self._waiting = self._waiting, None
@@ -365,7 +392,17 @@ class ExpandTab:
         try:
             from src.ui.overdescription_panel import ExpansionState
             if self.state is not None and self.state.changed:
-                return                            # keep the expansions already applied
+                # Keep the expansions already applied; the model still
+                # gives "More ideas".
+                if self.provisional and llm is not None and ctx is not None:
+                    self.llm, self.ctx, self.voice = llm, ctx, voice
+                    self.panel.can_ask_ai = True
+                    self.panel._enable(self.panel.current_flag() is not None)
+                    self.panel.status.setText("The AI's review is ready; your applied "
+                                              "expansions are kept. Ask for more ideas below.")
+                self.provisional = False
+                return
+            self.provisional = False
             self.review = review
             self.state = ExpansionState(self.win.passage)
             self.llm, self.ctx, self.voice = llm, ctx, voice

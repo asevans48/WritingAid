@@ -457,17 +457,54 @@ class ExpandStatementDialog(QDialog):
         self._run()
 
     def _run(self):
-        self.panel.set_busy("Starting…")
+        # The word scan needs no model and takes milliseconds: show it at
+        # once; the AI's review takes its place when it comes.
+        try:
+            scanned = od.scan(self.passage)
+            self.panel.set_review(od.Review(scanned, error="checking"))
+            highlight_flags(self.passage_view, self.passage, scanned)
+            self._provisional = True
+            self.panel.set_busy(self._scan_line() + " The AI is checking them…")
+        except Exception as e:
+            print(f"[overdescription] could not show the word scan: {e}")
+            self.panel.set_busy("Starting…")
         worker = self._worker_factory(self.project, self.chapter, self.text, self.start,
                                       self.end)
-        worker.progress.connect(self.panel.set_busy)
+        worker.progress.connect(self._progress)
         worker.done.connect(self._on_review)
         self._worker = worker
         start_worker(worker)
 
+    _provisional = False
+
+    def _scan_line(self) -> str:
+        n = len(self.panel.review.flags) if self.panel.review is not None else 0
+        if not n:
+            return "The word scan found nothing."
+        return (f"The word scan found {n} statement{'s' if n != 1 else ''} that may be overly "
+                f"descriptive (highlighted).")
+
+    def _progress(self, message: str):
+        if self._provisional:
+            message = f"{self._scan_line()} The AI is checking them: {message}"
+        self.panel.set_busy(message)
+
     def _on_review(self, review, note: str):
         try:
             w = self._worker
+            provisional, self._provisional = self._provisional, False
+            if provisional and self.state.changed:
+                # Keep the expansions already accepted; the model still
+                # gives "More ideas".
+                self._llm = getattr(w, "llm", None)
+                self._ctx = getattr(w, "ctx", None)
+                self._voice = getattr(w, "voice", None)
+                if self._llm is not None and self._ctx is not None:
+                    self.panel.can_ask_ai = True
+                    self.panel._enable(self.panel.current_flag() is not None)
+                    self.panel.status.setText("The AI's review is ready; your accepted "
+                                              "changes are kept. Ask for more ideas below.")
+                return
             self._llm = getattr(w, "llm", None)
             self._ctx = getattr(w, "ctx", None)
             self._voice = getattr(w, "voice", None)

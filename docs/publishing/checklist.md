@@ -54,16 +54,34 @@ three rounds:**
   options sit behind ▸ Change options; no "Discard your edit?". Rating
   rows are the same as the old window's (tested column by column). The
   old Rephrase window is behind the same switch. Every D.2 piece is done.
+- **8.1a** (26 November): the job-queue design is written (no code), for your review; eight questions in section 3, "8.1a: review the job-queue design".
+- **4.2** (26 November): **dropped at its gate.** The voice measure tells a
+  different human author apart (74% of chapters) but not a model's
+  rewrites of your own passages (0 of 14 sets caught; they move it about
+  0.25, your own chapters differ by up to 0.6). Nothing built; the proof
+  is `scripts/voice_drift_gate.py` and the numbers are in the brief's
+  *Outcome*. Two questions in section 3, "4.2: voice drift".
+- **9.3** (26 November): the submission package, in Publish ▸ Publishing
+  (the list's first entry, 📦 Submission package): synopsis, query letter,
+  blurb, and readers and comps with where the book sits. Filled in from the
+  story without a model; drafts in your voice with one (untried with a real
+  model). Drafts kept in `<project>.submission.json` beside the project,
+  earlier versions kept. Its four questions are answered (section 3).
+- **A fix** (26 November): Expand (Overly descriptive?) showed nothing until
+  the model had answered, after the whole Suggestions run when that ran
+  first. The word scan (no model, milliseconds) now shows at once, and the
+  AI's review takes its place when it comes.
 
-Tests: 1,894 pass in one run, none fail (after D.2c). No screen count rose above
-`screens_baseline.json` in any of these (D.4's 5 top-level tabs, against
-10 in the baseline, is still yours to agree; the Improve window's own
-figures too, section 3).
+Tests: 1,925 pass in one run, none fail (after 9.3's 22 tests and the
+Expand fix's 4). No screen count rose above
+`screens_baseline.json` in any of these. On 26 November the figures you
+agreed in section 3 were written into it: 5 top-level tabs (was 10), the
+Improve window's four tabs and the open submission package.
 
 What is waiting for you:
 
 - **Try it (section 1).** Nothing there is ticked yet. The newest items,
-  from the end: Rephrase in the Improve window (D.2c), the One Improve
+  from the end: the submission package (9.3), Rephrase in the Improve window (D.2c), the One Improve
   window (D.2b), the screen check (0.3; run it on both projects), D.9's
   other screens, the model naming groups (V.3), managing groups (V.5),
   rewrites in the same voice (V.4), marks becoming notes (6.2), listen
@@ -75,14 +93,12 @@ What is waiting for you:
 - **Run the genre script (P.3)** with the app closed:
   `venv/bin/python scripts/genre_baseline.py`, then `--show`.
 - **D.2b and D.2c are built** on the reviewed D.2a design (decision 16);
-  try them (section 1) and say whether their figures become the window's
-  baseline (section 3).
-- **Decide (section 3).** Open: D.4 (three), D.5 (two), 4.3, the
-  Companion's chat, V.1 (the 1.9 GB copy; which rows shape groups), P.8
-  (three), P.6 (keep the data), V.2 (two calibration choices), 6.1, V.4
-  (three), V.5 (two), 6.2 (two), V.3 (two), D.9 (four
-  kinds of box), D.8 (three), 0.3 (three), D.2b (two), D.2c (three). The
-  rest are answered and marked so; their boxes are yours to tick.
+  try them (section 1). Their figures are now the window's baseline.
+- **Decide (section 3).** Every question is answered: on 26 November
+  you took the recommendations for all the open ones, recorded under each
+  item. The figures you agreed are in `screens_baseline.json` (5 top-level
+  tabs; the Improve window's four tabs; the open submission package).
+  The boxes are yours to tick.
 - **Commit rounds 1, 2 and 3, D.2b and D.2c,** when you are happy with
   them (end of section 1).
 - **Next pieces (section 5): what remains.**
@@ -91,11 +107,13 @@ What is waiting for you:
     separate windows (D.9, section 3).
   - Checks: P.5 after section 2's measurement (now that P.2 and P.6 are
     in).
-  - Needs a model (run with the app closed): try 8.2; 7.2; 4.2; 9.3; and
+  - Needs a model (run with the app closed): try 8.2; 7.2; try 9.3's
+    model tier (built; section 1); (4.2 was dropped at its gate); and
     the real tests of V.3 and V.4.
-  - When the server is connected: 8.1a (review the design), 8.1b, P.7,
-    8.3.
-  - Last: U.3a, then U.3b; then 9.1.
+  - When the server is connected: 8.1b (8.1a is reviewed: decision 17),
+    P.7, 8.3.
+  - Next, no model: the two small fixes (the grammar check's results; the
+    two old Rephrase slips), then U.3a, then U.3b; then 9.1.
 
 ## 1. Try what is built
 
@@ -858,6 +876,61 @@ start the app once and wait a minute)
 - [ ] If you train on your ratings: rate and accept a few rephrases, and
       check they appear in Training Studio ▸ Browse rows as before.
 
+**Voice drift (4.2)** (dropped at its gate: nothing in the app changed)
+- [ ] Read the 4.2 brief's *Outcome*: the table, and "Why it fails". Do you
+      agree the piece should be dropped (section 3, "4.2: voice drift")?
+- [ ] If you want to see the numbers yourself, with the app closed (it only
+      reads; about 10 s):
+      `venv/bin/python scripts/voice_drift_gate.py --writer --earlier-drafts
+      "/Volumes/USB321FD/writing/Adelphus/Adelphus - The Fall/chapters"`.
+      Section 4 a) is the test that failed: the model's versions of your
+      passages score about the same as your own.
+- [ ] Critique ▸ Check readiness: the scorecard has the same columns as
+      before (no Voice drift column), and the Improve window's versions
+      show their voice fit as before.
+
+**The submission package (9.3)**
+- [ ] Publish ▸ Publishing: the list's first entry is 📦 Submission
+      package. Choose it: the synopsis is filled in from your plot,
+      characters and story memory, with [brackets] where something is
+      missing. Is anything in it wrong, or taken from the wrong place?
+- [ ] Look at the Query letter, Blurb and Readers and comps the same way.
+      The blurb and query should keep the ending back; the synopsis gives it.
+- [ ] Readers and comps: tick one or two candidates and type a title of
+      your own; then Fill in from the story (More ▾). Both appear, and the
+      query letter's "It will appeal to readers of …" uses them once you
+      fill it in again.
+- [ ] Edit a draft, choose an agent, come back: your edit is there. Then
+      Fill in from the story: the new text arrives and More ▾ › Earlier
+      versions has your edit; restore it.
+- [ ] The status line says where the drafts are kept: beside the project,
+      `<project>.submission.json`. Check it is there and that nothing changed
+      in the chapters.
+- [ ] More ▾ › Export this document… and Export the whole package… (Word):
+      open them in Pages or Word.
+- [ ] If the book has a novella: the manuscript picker shows, and each has
+      its own package.
+- [ ] At 1024 × 600 (or a small window): the page scrolls, and Draft and
+      More ▾ stay reachable.
+- [ ] **The real model trial, with the app closed or the model not otherwise
+      in use** (nothing else generating; the on-device model crashed the
+      app once when used by two things at a time): with a model set up,
+      choose each document and press ✍ Draft in my voice. Does it read like
+      you? Does the query name only the comps you ticked, and no sales or
+      awards? Is "Where it sits" still the app's figures? Does your earlier
+      text appear under Earlier versions?
+
+**A fix you asked for (26 November): Expand no longer keeps you waiting**
+- [ ] Right-click ▸ 🔍 Overly descriptive?… (or the 🔍 Expand tab): the word
+      scan's statements are listed and highlighted at once, with "The AI is
+      checking them…" (or "…once Suggestions is done", when Suggestions ran
+      first). When the AI answers, its list takes their place. More ideas
+      waits for the AI.
+- [ ] Apply one of the word scan's expansions before the AI answers: it is
+      kept when the AI answers, and More ideas then works.
+- [ ] With the old windows (Settings ▸ Features ▸ Improve window unticked),
+      Overly descriptive? shows the word scan at once too.
+
 **When you are happy**
 Already committed by you: phase 3, D.3, 2.5 and 0.5 (7e48893); R.7, D.1,
 9.2, 7.1 (206300a); D.7 and D.9 (ccc779b); D.8, P.2a, 4.1, 7.3, P.3, D.6,
@@ -887,6 +960,21 @@ chapter's prose profile (d0d347e, 58226e9).
       `manuscript_editor.py` and `draft_editor_window.py`; the harness's
       `improve_rephrase` screen; `tests/test_improve_window.py` and
       `tests/test_one_look.py` as D.2c's *Outcome* says; the docs).
+- [ ] Commit 4.2: voice drift, dropped at its gate (`scripts/voice_drift_gate.py`,
+      `tests/test_voice_drift_gate.py`; the 4.2 brief's Status and *Outcome*,
+      the README tracker, `cut.md`, `inventory.md`, this file).
+- [ ] Commit 9.3: the submission package (`src/ai/submission_package.py`,
+      `src/data/submission_store.py`, `src/ui/submission_package_view.py`,
+      the list entry and scroll in `src/ui/agent_manager_widget.py`, the
+      harness's `publishing_package` screen, `tests/test_submission_package.py`;
+      the 9.3 brief's Status and *Outcome*, the README tracker, this file).
+- [ ] Commit the Expand fix: the word scan shows at once while the AI checks
+      (`src/ui/improve_tabs.py`, `src/ui/overdescription_panel.py`, four tests
+      in `tests/test_improve_window.py` and `tests/test_overdescription.py`).
+- [ ] Commit the section 3 answers (26 Nov): the new figures in
+      `screens_baseline.json` and the harness's comments
+      (`scripts/screen_harness.py`), the answers in this file, the 8.1a
+      brief's *Review notes*, and README decision 17 and the tracker.
 - [ ] For anything you reject, untick it in the README tracker and write why
       under the piece's *Review notes*.
 
@@ -989,6 +1077,7 @@ Write each answer in the README under *Decisions*, or tell the session.
       projects is set up that way). Want a warning when saving a project into
       a folder that already holds another project file? That would be a
       small piece of its own, since it touches saving.
+      *Answered 26 Nov (the recommendations): no warning for now; no piece.*
 - [ ] **D.9: did a quiet message go somewhere you'd rather keep a box?**
       You said you'd likely have notes once you see it. Each moved message
       is one word to move back (``notify.done``/``notify.empty`` →
@@ -996,6 +1085,8 @@ Write each answer in the README under *Decisions*, or tell the session.
       still open: "Draft #N saved" and "Created draft …" stay boxes unless
       you say move them.
       *Answered 24 Nov: "Draft #N saved" and "Created draft …" are visible but no box: a bold, tinted status-bar line for 20 seconds. Done.*
+
+      *Answered 26 Nov (the recommendations): no; keep them quiet.*
 - *(Answered 24 Nov: you said go; left here for reference.)* **D.9's list has arrived.** Read the table in
       [D.9's Outcome](pieces/48e-D.9-fewer-interruptions.md#outcome). It
       sorts 68 message boxes:
@@ -1085,40 +1176,47 @@ Write each answer in the README under *Decisions*, or tell the session.
       top-level tab offers one entry ("Open … in Its Own Window") without
       Multi-Window Mode switched on (before, the menu was empty unless it
       was on); the brief asked for this.
+      *Answered 26 Nov (the recommendations): agreed. Written into `screens_baseline.json` (top_level_tabs 5).*
 - [ ] **D.4: when to retire the old ten tabs.** During the trial, Settings ▸
       ✨ AI Features ▸ Main tabs switches back to the ten (rule 11). When
       you have used the five groups on both projects and agree, a small
       step removes that switch, and the old `SecondaryWindow` (no longer
       used) with it; the stored setting is left in place, unread. Say when,
       or keep the switch for good.
+      *Answered 26 Nov (the recommendations): keep the switch for now; retire it later, when you say.*
 - [ ] **D.4: reopen windows at start-up?** A screen left in its own window
       comes back into its tab when the app restarts (as the Critique's
       window always has: 2.5 recorded it but nothing reopened it). Keep
       that, or reopen whatever was out (a small change to what the app
       shows at start)?
+      *Answered 26 Nov (the recommendations): keep as built: a screen comes back into its tab.*
 
 - [ ] **D.5: when to retire the old analysis windows.** During the trial,
       each analysis's tab has "Show in a window (old)". When you have used
       the reports on both projects and agree, a small step removes the two
       old windows (`ProseAnalysisDialog`, `PromiseCheckDialog`) and that
       link. Say when.
+      *Answered 26 Nov (the recommendations): keep them for now; retire later, when you say.*
 - [ ] **D.5: the new reports in the full critique?** Promises, Prose
       profile fit, Character check, Plot vs plan and Writing hints run only
       from Analyze ▾ (and "Run again"). Adding them as tick boxes in
       Detailed critique would add five controls to the Critique. Keep them
       out, or add them (and to which runs: "Critique this chapter (all
       reports)" too)?
+      *Answered 26 Nov (the recommendations): keep them out (no new controls).*
 
 - [ ] **4.3: when is a check toned down?** Built: after at least 20
       answers to its fixes (Accept, Not a problem, intended; Skip does not
       count) with fewer than two in five accepted, since it was last
       brought back. Keep these figures, or name others (a later or earlier
       point, or a different share).
+      *Answered 26 Nov (the recommendations): keep these figures.*
 
 - [ ] **The chapter's prose profile: the Companion's chat too?** "Prose
       profile" and "review my prose" work in the AI Assistant chat (side
       panel). The Companion's chat doesn't know them yet. Add them there
       (a few call lines, no new controls), or keep one place for them?
+      *Answered 26 Nov (the recommendations): keep one place (the AI Assistant chat).*
 
 - [ ] **V.1: the one-time copy of the ratings store.** Before it adds the
       fingerprints, V.1 copies the whole store aside once (rule 15):
@@ -1127,31 +1225,38 @@ Write each answer in the README under *Decisions*, or tell the session.
       about 6,000 rows. Keep the full copy (safest; needs 1.9 GB once), or
       copy only your own rows (a few MB; the corpus rows can be downloaded
       again)? Nothing is copied until the app next opens.
+      *Answered 26 Nov (the recommendations): keep the full copy (safest, rule 15). Note: your own rated rewrites are 398 rows, not about 6,000 as written above.*
 - [ ] **V.1/V.2: which ratings shape the voice groups.** Only Rephrase
       ratings get a fingerprint. The 250 rows made from downloaded corpora,
       and rows with no project, are left out of the grouping (they aren't
       your voice) and keep working as today. Say if you want any kept in.
+      *Answered 26 Nov (the recommendations): as built: corpus rows and rows with no project stay out of the grouping.*
 - [ ] **P.8: where it shows.** Built in both places: the full section on
       each character (Story ▸ Characters), and a scan of the chapter's
       characters in the Critique's Character check (no controls added).
       Keep both?
+      *Answered 26 Nov (the recommendations): keep both.*
 - [ ] **P.8: how sensitive.** An absence counts from 3 chapters. Speech is
       compared only in chapters where the character has 5 or more lines,
       against 8 or more elsewhere; a change is marked when line length
       doubles (and differs by 5+ words) or contractions, formality or
       swearing flip. Keep these, or name others after trying it?
+      *Answered 26 Nov (the recommendations): keep these figures.*
 - [ ] **P.8: two limits.** Novellas are analysed one manuscript at a time,
       not across all of them; the model's arc answer isn't saved (asked
       again after reopening). Worth more work, or fine as is?
+      *Answered 26 Nov (the recommendations): fine as is.*
 - [ ] **P.6: keep the n-gram data?** It uses 15.4 GB. Harder confused
       words caught went from 13% to 38% (all seeded mistakes 71% → 75%),
       with no new false alarms on clean prose; the Q.2 table didn't move
       (its three misses, to/too and it is/its, aren't pairs the data
       covers). Remove in Settings ▸ Language deletes it.
+      *Answered 26 Nov (the recommendations): keep it.*
 - [ ] **Old LanguageTool servers still running.** About 40 were left by
       earlier app, script and test runs (24 and 25 November) before the
       fix; each holds memory. The session wasn't allowed to stop them.
       With the app closed: `pkill -f languagetool-server`.
+      *Answered 26 Nov (the recommendations): done; none are left from before the fix (only the running app's own).*
 - [ ] **V.2: two calibration choices (technical; confirm or ask).**
       "Same voice" was measured as the first half of a book against its
       second half (ratings come from different chapters), giving "alike"
@@ -1160,9 +1265,11 @@ Write each answer in the README under *Decisions*, or tell the session.
       higher bar (1.25): at the ordinary one, 29 of 55 single books split
       wrongly; at 1.25, 1 of 55. Naming narrators makes them separate
       sources anyway.
+      *Answered 26 Nov (the recommendations): confirmed.*
 - [ ] **V.2: a group with one project** reads "very alike" (nothing to
       compare). V.5 will show "one project" instead, unless you prefer
       otherwise.
+      *Answered 26 Nov (the recommendations): show "one project".*
 - [ ] **6.1: listening choices.** Built: with text highlighted, only the
       highlight is read and marked; otherwise the whole chapter from the top
       (*answered 25 Nov: your fix*); Space, M and Esc
@@ -1171,6 +1278,7 @@ Write each answer in the README under *Decisions*, or tell the session.
       between sentences: acceptable, or use the system voice for Listen?
       Listening across several chapters with marks is left out ("Read
       chapters…" is unchanged).
+      *Answered 26 Nov (the recommendations): the pause between sentences with a neural voice is acceptable; several chapters stay left out.*
 - [ ] **V.4: order of examples within a group.** Built: your "excellent"
       ratings first, then this project's, as today, and closest in voice
       within each. Measured without a model on 87 rated passages: voice
@@ -1178,32 +1286,40 @@ Write each answer in the README under *Decisions*, or tell the session.
       (so that wasn't used). The big gain is a new book in a known voice:
       all its examples come from its own voice, against about half today.
       The real test, new rewrites with a model, is still to run.
+      *Answered 26 Nov (the recommendations): keep as built.*
 - [ ] **V.4: a kept-to-itself project and the groups.** Its ratings are
       never used as examples elsewhere, but still help decide the voice
       groups. Leave them out of the grouping too?
+      *Answered 26 Nov (the recommendations): keep as built (still helps decide the groups).*
 - [ ] **V.4: where the switch is kept.** In a small file beside the
       project, `<project>.ratings.json`. If you rename or move a project,
       its old ratings keep the old path, so the switch no longer covers
       them. Fine, or worth handling?
+      *Answered 26 Nov (the recommendations): fine as is.*
 - [ ] **V.5: where it lives.** In the Training Studio's Browse rows, the
       one screen that already lists and removes ratings, so you leave the
       writing app to reach it. A shortcut in the writing app would add a
       menu entry (rule 13). Add one, or keep it in the Studio?
+      *Answered 26 Nov (the recommendations): keep it in the Studio (no new menu entry).*
 - [ ] **V.5: changing a rating to Poor or Bad** leaves its "accepted" flag
       as it was (as rating changes always have). Should it also mark the
       rewrite as not accepted?
+      *Answered 26 Nov (the recommendations): keep as built (the accepted flag is left as it was).*
 - [ ] **6.2: marks and stages.** Marks are line-stage fixes (they show in
       Next fixes at Line, always in the notes). The brief said "unless you
       say otherwise", but a control for it would add to a count. Keep as
       built, have marks follow the chapter's stage, or add a stage choice
       to Read Aloud ▾ → Marks in this chapter?
+      *Answered 26 Nov (the recommendations): keep as built (line-stage fixes).*
 - [ ] **V.3: naming with only the on-device model.** The model is never
       loaded just to name groups, so names appear after something else
       (Rephrase) has loaded it. Right, or should opening the groups view
       load it?
+      *Answered 26 Nov (the recommendations): right as built (never loaded just to name groups).*
 - [ ] **V.3: the description shown.** The model's one line replaces the
       measured description in the tree (the measured one moves to the
       tooltip). Keep, or show both?
+      *Answered 26 Nov (the recommendations): keep (the measured line in the tooltip).*
 - [ ] **D.2a: review the One Improve window design** (its brief, section
       *Design*). In short: one window, "Improve", with four tabs:
       💡 Suggestions · ✨ Rephrase · 🔍 Expand · 📝 Critique (Critique is
@@ -1246,6 +1362,7 @@ Write each answer in the README under *Decisions*, or tell the session.
       safety check (`--no-screens` leaves it out): keep, or make it
       opt-in? (c) Each manuscript opens one chapter, the first with text:
       enough, or every chapter (slower)?
+      *Answered 26 Nov (the recommendations): (a) yes, a note; (b) keep it on every safety check; (c) one chapter is enough.*
 - [ ] **D.8: main buttons and two small things.** (a) Where a screen had
       a choice, "Add" was made the main button (the plan first, as on the
       Planner): Video Studio Add over Stitch, Publishing Add over Publish,
@@ -1255,6 +1372,7 @@ Write each answer in the README under *Decisions*, or tell the session.
       stages: make them one set? (c) "➕ Add Hierarchy" reads "Add
       Hierarch" at 1024×600 (as before): shorten the label or widen the
       list?
+      *Answered 26 Nov (the recommendations): (a) keep Add as the main button; (b) leave the two sets of colours as they are; (c) left for the U.3 sweep, which fixes labels cut off at 1024 × 600.*
 - [ ] **D.9: four kinds of box left on purpose.** Say which to make quiet:
       (a) "Image saved to …" and the chapter-deck exports (4): a status
       line with Show file, like other exports? (b) "Open a project before
@@ -1263,6 +1381,7 @@ Write each answer in the README under *Decisions*, or tell the session.
       (d) 165 boxes in separate windows (Training Studio 47, Video Studio's
       editors 74, Settings 10, others): give those windows a status line
       so they can go quiet too?
+      *Answered 26 Nov (the recommendations): keep all four kinds as boxes.*
 - [ ] **D.2b: the Improve window's figures and Talk it through.**
       (a) Agree the window's counts as its baseline: Suggestions tab 10
       buttons, Critique 9, Expand 12; 1 section; 3 tabs (4 after D.2c).
@@ -1273,10 +1392,12 @@ Write each answer in the README under *Decisions*, or tell the session.
       Keep that, or open the window wider (about 1,250) where the screen
       allows, so the column shows at once? Recommended: keep; the window
       remembers its size once you widen it.
+      *Answered 26 Nov (the recommendations): (a) agreed, written into `screens_baseline.json`; (b) keep (a closed section below 1,200 px).*
 - [ ] **D.2c: the Rephrase tab's figures.** Agree them as part of the
       window's baseline: 12 buttons, 2 sections (▸ Change options, Talk it
       through), 4 tabs, the 25 options out of view until opened (the old
       window: 9 buttons and the 25 options in view). Recommended: agree.
+      *Answered 26 Nov (the recommendations): agreed, written into `screens_baseline.json` (`improve_rephrase`).*
 - [ ] **D.2c: two old Rephrase slips, found while building (not changed,
       so the rows stay the same as before).** (a) Every Rephrase rating
       row is stamped with the *first* option's style ("concise/neutral"),
@@ -1285,14 +1406,97 @@ Write each answer in the README under *Decisions*, or tell the session.
       stay as they are)? Recommended: yes. (b) "Auto-detect from text" never
       shows in the character-voice list, so speaker detection never runs
       from it. Fix it in the same small piece? Recommended: yes.
+      *Answered 26 Nov (the recommendations): fix both, as a small piece of its own (new rows only).*
 - [ ] **D.2c: when to retire the three old windows.** Once you have used
       the Improve window on both projects, retiring the old Rephrase,
       Suggestions and Overly descriptive? windows (and the switch) is its
       own small step (rule 11). Recommended: after a week of use on both
       projects.
+      *Answered 26 Nov (the recommendations): after a week of use on both projects.*
 - [ ] **6.2: order and undo.** Marks come before other line fixes of the
       same standing. Clearing a mark has no undo (like Dismiss on notes
       today). Both fine?
+      *Answered 26 Nov (the recommendations): both fine.*
+- [ ] **8.1a: review the job-queue design** (its brief, section
+      *Design*). In short: "Check the book with the model…" becomes a
+      job that belongs to the app, not the Critique screen, so it keeps
+      going while you write, with the Critique closed. A small file beside
+      the project (`<project>.jobs.json`) remembers an unfinished check;
+      results stay in the readiness file as today, so resuming simply
+      carries on from the first chapter not yet judged. If the model
+      server stops answering part-way, the job pauses with a plain
+      message, tries again every 5 minutes and carries on by itself. One
+      job at a time, always inside the app, giving way to you between
+      requests, so the on-device model is never run twice at once. The
+      Check readiness button reads Pause / Resume while a job exists; one
+      line at the right of the status bar shows "📖 Book check · 12 of
+      40" on any screen. A job never changes your text, only adds
+      results. No new window, no new button. Then answer:
+      1. Carry on by itself two minutes after the project opens, with no
+         question when you quit? Recommended: yes.
+      2. Server gone: retry every 5 minutes for up to 12 hours, then stay
+         paused? Recommended: yes (refused keys are never retried).
+      3. Keep the Mac awake while a check runs (the screen still sleeps)?
+         Recommended: yes.
+      4. Allow jobs on the on-device model, taking turns with you?
+         Recommended: yes (or: server and cloud only).
+      5. Rename the button "Stop" to "Pause" / "Resume"? Recommended: yes.
+      6. Show the status-bar line on every screen while a job exists?
+         Recommended: yes.
+      7. A later small piece so measurement scripts refuse to start while
+         the app holds the on-device model (what crashed it)?
+         Recommended: yes, after 8.1b; decision 12 stands until then.
+      8. Switching project pauses the job until you reopen that project?
+         Recommended: yes.
+      *Answered 26 Nov (the recommendations): yes to all eight. 8.1b can start (needs the server).*
+- [ ] **4.2: voice drift** (dropped at its gate; the brief's *Outcome*).
+      1. **Drop it, as the brief says?** The measure catches 74% of
+         chapters by another author, but none of the 14 sets of a model's
+         rewrites of your passages, and the rewrite mark caught only 1 in 5
+         model rewrites. Thresholds tried: a chapter has moved at **0.70**
+         (4.4% of untouched published chapters reach it; 2 of your 46
+         untouched chapters, both earlier drafts of Born in Blood); a
+         lower bar of 0.40 would still miss the tone rewrites and would
+         mark one untouched chapter in five. Recommended: **drop it** (done;
+         it is in `cut.md`, and the script stays so it can be rerun).
+      2. **Try again later with a word-based measure?** Rates of common
+         words saw the 74 plain rewrites (0.44 against 0.00 for your own
+         text) but not the tone rewrites (0.28), and 74 rewrites are too
+         few to set a bar on. Recommended: **not now**; rerun the script
+         when there are a few hundred plain rewrites rated, and reopen 4.2
+         only if section 4 a) then separates (most sets over the bar, your
+         own sets under it).
+      *Answered 26 Nov (the recommendations): 1. drop it; 2. not now.*
+- [ ] **9.3: the submission package** (the brief's *Outcome*).
+      1. **Its screen counts.** With nothing chosen, the Publishing tab is
+         as in the baseline (4 buttons, 1 section). With the package open
+         it shows 6 buttons and 4 menu items (Draft and More ▾ added), as
+         an agent's page adds Compose Email. Make those figures the
+         package's own baseline (`publishing_package`)? Recommended: yes.
+      2. **Comparable titles.** The genre list holds only public-domain
+         classics, so the candidates are old books, and the screen says
+         agents want recent ones. Keep candidates from the genre list as
+         built, or show none and leave only your own line?
+         Recommended: keep them, with the note (they are honest and help
+         with "who it's for").
+      3. **Opening an empty document fills it in by itself** (from the
+         story, no model, saved to the drafts file). Keep, or wait for a
+         click? Recommended: keep (an empty page says nothing).
+      4. **The query letter and the agent list.** Address the query to the
+         agent chosen in the list, and make Compose Email open it?
+         Recommended: yes, as a small later step (not built here).
+      *Answered 26 Nov (the recommendations): 1. yes, written into `screens_baseline.json` (`publishing_package`); 2. keep the candidates with the note; 3. keep; 4. yes, as a small later step.*
+- [ ] **A crash seen only in tests: the grammar check's results.** Found
+      while 9.3 was built. Five test files run together without the rest
+      of the suite (publishing goal, writer contact, one look, screen
+      harness, fewer top-level tabs) abort in
+      `enhanced_text_editor._on_grammar_results`. They did the same before
+      9.3. The full suite passes, and your `crash.log` shows no crash.
+      Since the app sets no exception hook, an error raised there in the
+      app would close it. Track it down as a small fix of its own? That
+      file is over 3,000 lines, so the fix goes in a new module with only
+      call lines in the editor. Recommended: yes, before the U.3 sweep.
+      *Answered 26 Nov (the recommendations): yes, a small fix before the U.3 sweep.*
 
 ## 4. For every piece from here on
 
@@ -1326,7 +1530,8 @@ The routine from the README, as a checklist:
 - [x] [D.2b](pieces/46-D.2b-one-improve-window-build-with-suggestions-and-ex.md) — built 25 Nov, for review (section 1, "The One Improve window (D.2b)")
 - [x] then [D.2c](pieces/47-D.2c-one-improve-window-rephrase-joins.md) — built 26 Nov, for review (section 1, "The One Improve window: Rephrase joins (D.2c)"). Every D.2 piece is done.
 - [x] [D.5](pieces/49b-D.5-analyses-run-as-critique-reports.md) Analyses run as Critique reports (adds kinds to critique history) — built, for review
-- [ ] [U.3a](pieces/50-U.3a-fit-and-scroll-sweep-the-screens-used-most.md), then [U.3b](pieces/51-U.3b-fit-and-scroll-sweep-the-remaining-screens.md) Fit-and-scroll sweep (last, so it sweeps the final screens)
+- [ ] Two small fixes before the sweep (answered 26 Nov, section 3): the grammar check's results handler that aborts in tests (a new module, call lines only in `enhanced_text_editor.py`); and the two old Rephrase slips (each rating stamped with the option you rated; "Auto-detect from text" back in the character-voice list; new rows only)
+- [ ] [U.3a](pieces/50-U.3a-fit-and-scroll-sweep-the-screens-used-most.md) (also: "➕ Add Hierarchy" cut off at 1024 × 600, section 3 D.8 (c)), then [U.3b](pieces/51-U.3b-fit-and-scroll-sweep-the-remaining-screens.md) Fit-and-scroll sweep (last, so it sweeps the final screens)
 
 **B. Better checks** (can run alongside A; no model needed)
 - [ ] [P.5](pieces/30-P.5-fix-or-hide-the-worst-checks.md) Fix or hide the worst checks (after step 2's report)
@@ -1360,11 +1565,11 @@ The routine from the README, as a checklist:
 **E. Needs a model** (run with the app closed, or on the server)
 - [ ] Try [8.2](pieces/65-8.2-editorial-letter.md) Editorial letter with a real model; it is built but untried
 - [ ] [7.2](pieces/58-7.2-reverse-outline-with-a-model.md) Reverse outline with a model (its two checks already exist)
-- [ ] [4.2](pieces/53-4.2-voice-drift.md) Voice drift (prove the measure first; drop it if it fails)
-- [ ] [9.3](pieces/62-9.3-submission-package-and-marketability.md) Submission package and marketability
+- [x] [4.2](pieces/53-4.2-voice-drift.md) Voice drift (prove the measure first; drop it if it fails) — dropped 26 Nov at its gate: the measure cannot tell a model's rewrites from your prose; proof in `scripts/voice_drift_gate.py`
+- [x] [9.3](pieces/62-9.3-submission-package-and-marketability.md) Submission package and marketability — built 26 Nov, for review (untried with a real model; section 1, "The submission package (9.3)")
 
 **F. When the server is connected**
-- [ ] [8.1a](pieces/63-8.1a-job-queue-design.md) Job queue: design. **Review the design before 8.1b.**
+- [x] [8.1a](pieces/63-8.1a-job-queue-design.md) Job queue: design — written and reviewed 26 Nov; the eight questions answered as recommended (README decision 17). 8.1b can start once the server is connected.
 - [ ] [8.1b](pieces/64-8.1b-job-queue-build.md) Job queue: build
 - [ ] [P.7](pieces/37-P.7-reader-s-eye-for-the-whole-book.md) Reader's eye for the whole book
 - [ ] [8.3](pieces/66-8.3-server-prompts.md) Server prompts

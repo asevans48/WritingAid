@@ -111,21 +111,42 @@ class AgentContactWidget(QWidget):
         self.agent.notes = self.notes_edit.toPlainText()
 
 
+class _FitLayout(QVBoxLayout):
+    """The page's layout. A scroll area gives a page whose layout has
+    height-for-width (word-wrapped labels) its full preferred height; this
+    one asks only for its minimum, so the page fills the window as it did
+    before and scrolls only when it truly can't fit (the package open on a
+    small screen)."""
+
+    def hasHeightForWidth(self) -> bool:
+        return False
+
+
 class AgentManagerWidget(QWidget):
     """Widget for managing literary agents and publishing contacts."""
 
     content_changed = pyqtSignal()
+
+    PACKAGE = "__submission_package__"      # the list's first entry (9.3), never an agent
 
     def __init__(self):
         """Initialize agent manager widget."""
         super().__init__()
         self.agents: List[AgentContact] = []
         self.current_agent_widget = None
+        self.project = None
+        self.package_view = None             # made when first opened (9.3)
         self._init_ui()
 
     def _init_ui(self):
         """Initialize user interface."""
-        layout = QVBoxLayout(self)
+        # The page scrolls when it outgrows the window (the submission
+        # package needs room, 9.3); with nothing open it looks as before.
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        page = QWidget()
+        layout = _FitLayout(page)
+        outer.addWidget(ui_kit.scrollable(page))
 
         # Header
         header = QLabel("Agent Management & Publishing")
@@ -146,6 +167,7 @@ class AgentManagerWidget(QWidget):
         self.agent_list = QListWidget()
         self.agent_list.currentItemChanged.connect(self._on_agent_selected)
         left_layout.addWidget(self.agent_list)
+        self._add_package_item()
 
         # Buttons
         button_layout = QHBoxLayout()
@@ -228,7 +250,7 @@ class AgentManagerWidget(QWidget):
     def _remove_agent(self):
         """Remove selected agent."""
         current_item = self.agent_list.currentItem()
-        if not current_item:
+        if not current_item or current_item.data(Qt.ItemDataRole.UserRole) == self.PACKAGE:
             return
 
         reply = QMessageBox.question(
@@ -259,6 +281,9 @@ class AgentManagerWidget(QWidget):
 
         # Load selected agent
         agent_id = current.data(Qt.ItemDataRole.UserRole)
+        from src.ui import submission_package_view as spv
+        if spv.show_in(self, agent_id == self.PACKAGE):
+            return
         agent = next((a for a in self.agents if a.id == agent_id), None)
 
         if agent:
@@ -281,11 +306,26 @@ class AgentManagerWidget(QWidget):
         """The project whose manuscripts' publishing routes are shown."""
         self.route_form.set_project(project)
         self.contact_form.set_project(project)
+        self.project = project
+        if self.package_view is not None:
+            self.package_view.set_project(project)
+
+    def _add_package_item(self):
+        """The list's first entry opens the submission package (9.3)."""
+        item = QListWidgetItem("📦 Submission package")
+        item.setData(Qt.ItemDataRole.UserRole, self.PACKAGE)
+        item.setToolTip("Synopsis, query letter, blurb, and readers and comparable titles")
+        self.agent_list.addItem(item)
 
     def load_data(self, agents: List[AgentContact]):
         """Load agent contacts."""
         self.agents = agents
         self.agent_list.clear()
+        self._add_package_item()
+        if self.package_view is not None and self.details_scroll.widget() is self.package_view:
+            self.agent_list.blockSignals(True)          # still showing: keep it chosen
+            self.agent_list.setCurrentRow(0)
+            self.agent_list.blockSignals(False)
 
         for agent in agents:
             item = QListWidgetItem(agent.name)

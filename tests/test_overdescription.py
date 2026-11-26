@@ -341,3 +341,23 @@ def test_hints_show_apostrophes_as_written():
     import html
     shown = "<br>".join(f"• {html.escape(h, quote=False)}" for h in flag.hints)
     assert "&#x27;" not in shown and "can't" in shown
+
+
+def test_expand_dialog_shows_the_word_scan_while_the_ai_checks(app, project, chapter):
+    from src.ui import overdescription_panel as op
+    held = []
+
+    class Held(op.ReviewWorker):
+        def __init__(self, *a):
+            super().__init__(*a, llm_factory=lambda: (FakeLLM(REVIEW), ""))
+
+        def start(self):
+            held.append(self)
+
+    dlg = op.ExpandStatementDialog(PASSAGE, 0, len(PASSAGE), project, chapter,
+                                   worker_factory=Held)
+    flags = dlg.panel.review.flags
+    assert flags[1].text.startswith("She almost fell") and dlg.passage_view.extraSelections()
+    assert "AI is checking" in dlg.panel.status.text()
+    held[0].run()
+    assert dlg.panel.review.flags[1].text.startswith("The attic")

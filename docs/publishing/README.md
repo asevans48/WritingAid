@@ -401,7 +401,7 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 
 **After the path, in any order**
 - [x] [4.1](pieces/52-4.1-mark-as-intentional.md) Mark as intentional (S)
-- [ ] [4.2](pieces/53-4.2-voice-drift.md) Voice drift (M, experimental)
+- ~~[4.2](pieces/53-4.2-voice-drift.md) Voice drift (M, experimental)~~ Dropped 26 Nov 2026 at its gate: the voice measure cannot tell a model's rewrites from the writer's own prose (a model's rewrites move it about 0.25, the writer's own chapters differ by up to 0.6; 0 of 14 model sets caught). Proof in `scripts/voice_drift_gate.py`; nothing built
 - [x] [4.3](pieces/54-4.3-checks-earn-their-place.md) Checks earn their place (S) — built, for review: accepts, skips and dismissals counted per check in the readiness file; a check mostly turned down is toned down (lower, fainter), never switched off without your click
 - [x] [6.1](pieces/55-6.1-listen-and-mark.md) Listen and mark (M)
 - [x] [6.2](pieces/56-6.2-marks-become-notes.md) Marks become notes (S)
@@ -410,10 +410,10 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 - [x] [7.3](pieces/59-7.3-draft-beside-plan-and-the-tension-curve.md) Draft beside plan, and the tension curve (M) — built, for review: no-model tier; tension waits for 7.2
 - [ ] [9.1](pieces/60-9.1-final-sweep.md) Final sweep (M)
 - [x] [9.2](pieces/61-9.2-export-and-import-check.md) Export and import check (M) — built, for review
-- [ ] [9.3](pieces/62-9.3-submission-package-and-marketability.md) Submission package and marketability (M)
+- [x] [9.3](pieces/62-9.3-submission-package-and-marketability.md) Submission package and marketability (M) — built, for review (model tier untried)
 
 **When the server is connected**
-- [ ] [8.1a](pieces/63-8.1a-job-queue-design.md) Job queue: design (S, design, no code)
+- [x] [8.1a](pieces/63-8.1a-job-queue-design.md) Job queue: design (S, design, no code) — written and reviewed 26 Nov; the eight questions answered as recommended (decision 17). 8.1b can start once the server is connected
 - [ ] [8.1b](pieces/64-8.1b-job-queue-build.md) Job queue: build (M)
 - [x] [8.2](pieces/65-8.2-editorial-letter.md) Editorial letter (M) — built; not yet tried with a real model
 - [ ] [8.3](pieces/66-8.3-server-prompts.md) Server prompts (M)
@@ -668,3 +668,15 @@ New baselines wait for the writer's agreement.
     - The draft window's Rephrase opens the whole window.
 
     (D.2a, D.2b, D.2c)
+17. ~~**How the book check runs as a job.**~~ Settled 26 November 2026:
+    - The job carries on by itself two minutes after the project opens.
+    - If the server is gone, it retries every 5 minutes for up to 12 hours.
+    - The Mac is kept awake while a check runs.
+    - Jobs may run on the on-device model, taking turns with the writer.
+    - Stop becomes Pause / Resume.
+    - A status-bar line shows on every screen while a job exists.
+    - Measurement scripts refuse to start while the app holds the model (a
+      later small piece).
+    - Switching project pauses the job.
+
+    (8.1a, 8.1b)

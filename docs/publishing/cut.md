@@ -72,5 +72,22 @@ restored. Do not build them unless the tracker says so.
   entry can be removed.
 - **Review notes:**
 
+## 4.2 Voice drift
+
+- **Status:** dropped at its gate, 26 November 2026. Kept for reference; do
+  not build. The brief is [pieces/53-4.2-voice-drift.md](pieces/53-4.2-voice-drift.md).
+- **Why:** the brief said to prove the measure first and drop the piece if
+  it could not tell an untouched chapter, one the writer revised and one a
+  model rewrote apart. The voice measure (`writer_voice`, as V.1's
+  fingerprint, compared as V.2 does) catches 74% of chapters by another
+  author, but none of 14 chapter-sized sets of a model's rewrites of the
+  writer's passages: the rewrites move it about 0.25, while the writer's
+  own chapters differ by up to 0.6. The app's rewrites are written to
+  match these very measures, so the measure cannot see them.
+- **To reopen:** rerun `scripts/voice_drift_gate.py --writer` when there
+  are a few hundred plain model rewrites rated; reopen only if section 4 a)
+  separates them (see the brief's *Outcome* and checklist section 3).
+- **Review notes:**
+
 ---
 

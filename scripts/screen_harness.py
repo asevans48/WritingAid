@@ -82,9 +82,15 @@ SCREENS = {
     "improve_expand": ("dialog", "Improve window: 🔍 Expand tab, word scan, no model (D.2b)"),
     "improve_rephrase": ("dialog", "Improve window: ✨ Rephrase tab, with sample options, no "
                                    "model (D.2c)"),
+    "publishing_package": ("page", "Publishing tab with 📦 Submission package open: the "
+                                   "synopsis filled in from a sample plan, no model (9.3)"),
 }
-# The Improve window, one picture per tab (D.2b, D.2c): drawn and counted, but
-# not in the baseline until the writer agrees its figures.
+# The Publishing tab with the submission package open (9.3): drawn and
+# counted on its own ("publishing" is the tab with nothing chosen in its
+# list); its figures joined the baseline on 26 Nov 2026.
+PACKAGE_SCREENS = ("publishing_package",)
+# The Improve window, one picture per tab (D.2b, D.2c): drawn and counted;
+# its figures joined the baseline on 26 Nov 2026.
 IMPROVE_SCREENS = {"improve": "suggestions", "improve_critique": "critique",
                    "improve_expand": "expand", "improve_rephrase": "rephrase"}
 # The main window's ten screens, with the labels it gives them (D.4 groups
@@ -476,6 +482,8 @@ def _build(name: str, project):
         return _character_screen(name, project)
     if name in VOICE_SCREENS:
         return _voice_screen(name, project)
+    if name in PACKAGE_SCREENS:
+        return _package_screen(project)
     if name in TAB_SCREENS:
         win = _main_tabs(project, grouped=name == "main_tabs")
         _show_full(win)
@@ -604,6 +612,37 @@ def _character_project():
         p.manuscript.chapters.append(Chapter(id=f"b{i + 1}", number=i + 1,
                                              title=f"Chapter {i + 1}", content=text))
     return p
+
+
+def _package_screen(project):
+    """Publish ▸ Publishing with 📦 Submission package chosen, on a sample
+    plan (9.3). No model: the synopsis is the filled-in template. Its
+    drafts file goes under the scratch HOME (the sample is never saved)."""
+    from src.models.project import Character, PlotEvent
+    from src.ui.agent_manager_widget import AgentManagerWidget
+    project = project.model_copy(deep=True)
+    project.manuscript.title = "The Pier"
+    project.prose_profile.genre = "gothic"
+    if not project.characters:                  # the count project has none
+        project.characters.append(Character(id="m", name="Mara Venn",
+                                            character_type="protagonist"))
+    hero = project.characters[0]
+    hero.want, hero.need = "to keep her brother out of the fire", "Letting go is not betrayal."
+    project.characters.append(Character(id="a", name="Tobin", character_type="antagonist"))
+    project.story_planning.main_plot = ("A harbour pilot learns the pier is rigged to burn, "
+                                        "and that her brother lit the fuse.")
+    project.story_planning.freytag_pyramid.events = [
+        PlotEvent(id=str(i), title=t, description=d, stage=s) for i, (t, d, s) in enumerate([
+            ("Letter", "Mara finds her brother's letter in the tide box.", "exposition"),
+            ("Debt", "Tobin calls in the debt and names the night.", "rising_action"),
+            ("Fire", "The pier burns with Mara on it.", "climax"),
+            ("Dawn", "Mara rows her brother out past the breakwater.", "resolution")])]
+    w = AgentManagerWidget()
+    w.set_project(project)
+    w.load_data(project.agent_contacts)
+    w.agent_list.setCurrentRow(0)
+    _show_full(w)
+    return w, w
 
 
 def _character_screen(name: str, project):
@@ -990,7 +1029,7 @@ def _counts(names: List[str], project, app) -> Dict[str, Any]:
     from PyQt6.QtWidgets import QMenu
     out: Dict[str, Any] = {"screens": {}, "right_click": {}}
     for name in names:
-        if name in IMPROVE_SCREENS:                     # counted, not yet in the baseline
+        if name in IMPROVE_SCREENS or name in PACKAGE_SCREENS:  # windows of their own
             try:
                 top, focus = _build(name, project)
                 _settle(app)

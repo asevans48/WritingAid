@@ -128,7 +128,9 @@ These were looked for and are not in the app:
 - **Promises touched per chapter.** There is no link from a chapter to a
   promise; only the model-based `PromiseChecker` relates them.
 - **Scene purpose** and **point of view:** no check.
-- **Whole-book voice drift:** no check.
+- **Whole-book voice drift:** no check. Tried in 4.2 and dropped at its
+  gate: the voice measures cannot tell a model's rewrites from the
+  writer's prose (`scripts/voice_drift_gate.py`, the 4.2 brief's *Outcome*).
 - **Sentence variety in `style_checks`:** only `ProWritingAnalyzer` measures
   it.
 - **Homonyms, sensory detail:** no scan. Scenes with no sensory grounding
