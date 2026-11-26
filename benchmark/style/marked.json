@@ -802,6 +802,130 @@
     "alliteration",
     "acronym"
    ]
+  },
+  {
+   "id": "homonym-wrong-twins",
+   "text": "Ruiz took a sneak peak at the file before Okafor came back. The photographs had peaked her interest, and she wanted to pour over them before anyone else saw them.",
+   "marks": [
+    {"kind": "homonym", "text": "sneak peak", "flag": true, "why": "peek: a quick look."},
+    {"kind": "homonym", "text": "peaked her interest", "flag": true, "why": "piqued: aroused."},
+    {"kind": "homonym", "text": "pour over them", "flag": true, "why": "pore over: to study closely."}
+   ],
+   "scores": ["homonym", "sensory", "sentence_structure", "vague"]
+  },
+  {
+   "id": "homonym-right-uses",
+   "text": "From the peak of the ridge they could see the whole valley. Rain poured over the lip of the gutter, and the horse shook its reins loose and stood waiting in the downpour.",
+   "marks": [
+    {"kind": "homonym", "text": "peak of the ridge", "flag": false, "why": "The top of the ridge: peak is right."},
+    {"kind": "homonym", "text": "poured over the lip", "flag": false, "why": "Rain pouring: poured is right."},
+    {"kind": "homonym", "text": "reins loose", "flag": false, "why": "The straps: reins is right."}
+   ],
+   "scores": ["homonym", "sensory", "sentence_structure", "vague"]
+  },
+  {
+   "id": "homonym-more-twins",
+   "text": "For a moment she couldn't breath. Then she walked passed the guards as if they weren't there, and nobody tried to reign her in. Tobin threw the ball threw the open window.",
+   "marks": [
+    {"kind": "homonym", "text": "couldn't breath", "flag": true, "why": "breathe: the verb."},
+    {"kind": "homonym", "text": "walked passed", "flag": true, "why": "past: beyond."},
+    {"kind": "homonym", "text": "reign her in", "flag": true, "why": "rein in: to hold back."},
+    {"kind": "homonym", "text": "ball threw the open", "flag": true, "why": "through: the second threw is wrong."}
+   ],
+   "scores": ["homonym", "sensory", "sentence_structure", "vague"]
+  },
+  {
+   "id": "homonym-risky-but-right",
+   "text": "He could not bear it. The trees were bare and the bear had gone. They passed the gate at dusk, and the past felt far away. She had been taught by nuns, and she kept the line taut.",
+   "marks": [
+    {"kind": "homonym", "text": "bear it", "flag": false, "why": "To endure: bear is right."},
+    {"kind": "homonym", "text": "were bare", "flag": false, "why": "Leafless: bare is right."},
+    {"kind": "homonym", "text": "passed the gate", "flag": false, "why": "Went by: passed is right."},
+    {"kind": "homonym", "text": "taught by nuns", "flag": false, "why": "Schooled: taught is right."}
+   ],
+   "scores": ["homonym", "sensory", "sentence_structure", "vague"]
+  },
+  {
+   "id": "sensory-none-in-a-scene",
+   "text": "Mara was angry with her brother, and she had been angry with him for most of the year. He had promised to help with the farm after their father died, and he had not kept the promise. She understood why he had gone. He had a family of his own now and a job in the city that paid well. But understanding it did not make it easier to forgive, and she knew that when he arrived on Sunday they would argue again about the same old grievances, and nothing would change.",
+   "marks": [
+    {"kind": "sensory", "text": "Mara was angry with her brother", "flag": true, "why": "The night before a confrontation, told entirely; the reader is nowhere."}
+   ],
+   "scores": ["homonym", "sensory", "sentence_structure", "vague"]
+  },
+  {
+   "id": "sensory-deliberate-summary",
+   "text": "The Harling family had farmed the river land for four generations. The first Harling had bought it from the railway company in 1871, and each son after him had added a field or two when a neighbour sold up. By the time Charley was born the farm ran to nine hundred acres. Nobody in the county doubted that he would have it one day. His father had made sure of that, and so had the bank, which had lent against the land twice and expected to be paid out of its harvests for another twenty years. Nobody, least of all Charley, had ever asked whether he wanted it.",
+   "marks": [
+    {"kind": "sensory", "text": "The Harling family had farmed", "flag": false, "why": "A family history in summary; telling is the right mode here."}
+   ],
+   "scores": ["homonym", "sensory", "sentence_structure", "vague"]
+  },
+  {
+   "id": "sensory-present",
+   "text": "The kitchen smelled of wet wool and onions. Gran's radio muttered on the sill, and rain ticked against the glass. Ilse pressed her cold hands to the stove and waited for the kettle to sing, watching the grey light go out of the yard.",
+   "marks": [],
+   "scores": ["homonym", "sensory", "sentence_structure", "vague"]
+  },
+  {
+   "id": "structure-same-length",
+   "text": "Tobin carried the crates up from the boat. He stacked them by the shed door. The rain had started again by then. Mara came out to help with the last. They worked without saying very much at all.",
+   "marks": [
+    {"kind": "sentence_structure", "text": "Tobin carried the crates", "flag": true, "why": "Five sentences of seven or eight words: the rhythm goes flat."}
+   ],
+   "scores": ["homonym", "sensory", "sentence_structure", "vague"]
+  },
+  {
+   "id": "structure-deliberate-litany",
+   "text": "She counted the cups on the shelf. She counted the windows in the hall. She counted the seconds before he spoke. She counted anything that would hold still.",
+   "marks": [
+    {"kind": "sentence_structure", "text": "She counted the cups", "flag": false, "why": "A deliberate litany; the sameness is her panic."}
+   ],
+   "scores": ["homonym", "sensory", "sentence_structure", "vague"]
+  },
+  {
+   "id": "structure-same-openers",
+   "text": "Turning from the window, Ilse picked up the letter. Tearing it open, she read the first line twice. Folding it again, she put it in her apron pocket. Then she went back to the sink.",
+   "marks": [
+    {"kind": "sentence_structure", "text": "Turning from the window", "flag": true, "why": "Three -ing openers in a row: a mannerism, and each action happens at once with the next."}
+   ],
+   "scores": ["homonym", "sensory", "sentence_structure", "vague"]
+  },
+  {
+   "id": "structure-varied",
+   "text": "The ferry was late. By the time it came in, slewing against the tide with its lamps still lit from the night crossing, half the queue had given up and gone back to the café. Tobin stayed. He had nowhere better to be, and the cold had stopped bothering him an hour ago.",
+   "marks": [],
+   "scores": ["homonym", "sensory", "sentence_structure", "vague"]
+  },
+  {
+   "id": "vague-narration",
+   "text": "The kitchen was kind of a mess. There was stuff on every surface, all sorts of things nobody had touched in weeks, and the whole place smelled of old coffee or something.",
+   "marks": [
+    {"kind": "vague", "text": "kind of a mess", "flag": true, "why": "A hedge in plain narration."},
+    {"kind": "vague", "text": "stuff on every surface", "flag": true, "why": "Name one thing on the surface."},
+    {"kind": "vague", "text": "all sorts of things", "flag": true, "why": "Which things?"},
+    {"kind": "vague", "text": "or something", "flag": true, "why": "The narrator should know the smell."}
+   ],
+   "scores": ["homonym", "sensory", "sentence_structure", "vague"]
+  },
+  {
+   "id": "vague-narrator-voice",
+   "text": "I guess it was kind of nice, in a way, that summer. \"It's stuff,\" Mom said when I asked what was in the boxes. \"Just old things.\" That's how I remember it, anyway.",
+   "marks": [
+    {"kind": "vague", "text": "kind of nice", "flag": false, "why": "A teenage narrator's voice; the vagueness is the character."},
+    {"kind": "vague", "text": "in a way", "flag": false, "why": "The same voice."},
+    {"kind": "vague", "text": "It's stuff", "flag": false, "why": "Dialogue."}
+   ],
+   "scores": ["homonym", "sensory", "sentence_structure", "vague"]
+  },
+  {
+   "id": "vague-abstract",
+   "text": "The most troubling aspect of the case was the timing. Several factors suggested the killer had known the house well.",
+   "marks": [
+    {"kind": "vague", "text": "aspect", "flag": true, "why": "Abstract; say what about the timing troubled her."},
+    {"kind": "vague", "text": "factors", "flag": true, "why": "Abstract; name the clues."}
+   ],
+   "scores": ["homonym", "sensory", "sentence_structure", "vague"]
   }
  ]
 }

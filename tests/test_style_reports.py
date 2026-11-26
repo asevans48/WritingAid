@@ -306,7 +306,8 @@ def test_the_benchmark_scores_the_new_kinds_without_moving_the_old_ones():
     spec.loader.exec_module(s)
     assert NEW <= set(s.STYLE_KINDS)
     data = json.loads((root / "benchmark" / "style" / "marked.json").read_text())
-    new_passages = [p for p in data["passages"] if p.get("scores")]
+    # P.2b's passages carry their own "scores" (tests/test_more_style_reports.py).
+    new_passages = [p for p in data["passages"] if p.get("scores") and set(p["scores"]) <= NEW]
     assert len(new_passages) >= 10
     assert {m["kind"] for p in new_passages for m in p["marks"]} == NEW
     for p in new_passages:

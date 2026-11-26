@@ -55,6 +55,8 @@ def scope_key(report: Any) -> str:
     keeps its history, and "Chapter 1" of two novellas stay separate."""
     kind = getattr(report, "run_kind", None)
     scope_id = getattr(report, "scope_id", None)
+    if kind and str(kind).startswith("analysis:"):     # D.5: an Analyze ▾ entry, per chapter
+        return f"{kind}:{scope_id or 'main'}:" + "|".join(_titles(report))
     if kind:
         return f"{kind}:{scope_id or 'main'}"
     label = getattr(report, "scope_label", "") or ""
@@ -66,6 +68,8 @@ def scope_key(report: Any) -> str:
 
 def _earlier_keys(project: Any, report: Any, data: Dict[str, Any]) -> List[str]:
     """Where this run's history may be stored under an older key."""
+    if str(getattr(report, "run_kind", "") or "").startswith("analysis:"):
+        return []                      # new in D.5: nothing older to take over
     titles = _titles(report)
     bare = "chapter:" + "|".join(titles)
     kind = getattr(report, "run_kind", None)
@@ -93,15 +97,19 @@ def snapshot(report: Any) -> Dict[str, Any]:
     style = getattr(report, "style_stats", None) or {}
     chapters = {}
     for ch in getattr(report, "chapters", []) or []:
-        reports = {}
+        reports, analyses = {}, {}
         for s in ch.sections:
             metrics = {k: v for k, v in (s.metrics or {}).items()
                        if isinstance(v, (int, float)) and not isinstance(v, bool)}
-            reports[s.report_type.value] = {
+            # D.5's report kinds go under "analyses", which older code skips.
+            target = analyses if getattr(s.report_type, "kept_apart", False) else reports
+            target[s.report_type.value] = {
                 "major": list(s.major_issues or []), "minor": list(s.minor_issues or []),
                 "metrics": metrics}
         chapters[ch.chapter_title] = {"words": ch.word_count, "reports": reports,
                                       "style": style.get(ch.chapter_title)}
+        if analyses:
+            chapters[ch.chapter_title]["analyses"] = analyses
     return {"timestamp": datetime.now().isoformat(timespec="seconds"),
             "scope_label": getattr(report, "scope_label", "") or "",
             "has_llm": bool(getattr(report, "has_llm", False)), "chapters": chapters}
@@ -125,6 +133,11 @@ def _diff(prev: List[str], cur: List[str]):
     return fixed, new
 
 
+def _all_reports(chapter: Dict[str, Any]) -> Dict[str, Any]:
+    """A chapter's reports, with D.5's analyses (stored apart)."""
+    return {**(chapter.get("reports") or {}), **(chapter.get("analyses") or {})}
+
+
 def compare(prev: Dict[str, Any], cur: Dict[str, Any]) -> Dict[str, Any]:
     out = {"since": prev.get("timestamp", ""), "chapters": [], "added": [], "removed": []}
     pch, cch = prev.get("chapters", {}), cur.get("chapters", {})
@@ -134,8 +147,8 @@ def compare(prev: Dict[str, Any], cur: Dict[str, Any]) -> Dict[str, Any]:
         p, c = pch[title], cch[title]
         entry = {"title": title, "majors": [0, 0], "minors": [0, 0], "fixed": [], "new": [],
                  "style": None, "metrics": []}
-        for rt, cr in c["reports"].items():
-            pr = p["reports"].get(rt)
+        for rt, cr in _all_reports(c).items():
+            pr = _all_reports(p).get(rt)
             entry["majors"][1] += len(cr["major"])
             entry["minors"][1] += len(cr["minor"])
             if pr is None:
@@ -199,8 +212,8 @@ def record(project: Any, report: Any) -> Optional[Dict[str, Any]]:
 def trend(runs: List[Dict[str, Any]], last: int = 6) -> List[Dict[str, Any]]:
     rows = []
     for r in runs[-last:]:
-        majors = sum(len(x["major"]) for ch in r["chapters"].values() for x in ch["reports"].values())
-        minors = sum(len(x["minor"]) for ch in r["chapters"].values() for x in ch["reports"].values())
+        majors = sum(len(x["major"]) for ch in r["chapters"].values() for x in _all_reports(ch).values())
+        minors = sum(len(x["minor"]) for ch in r["chapters"].values() for x in _all_reports(ch).values())
         style_total = sum((ch.get("style") or {}).get("total", 0) for ch in r["chapters"].values())
         words = sum(ch.get("words", 0) for ch in r["chapters"].values())
         rows.append({"timestamp": r["timestamp"], "majors": majors, "minors": minors,

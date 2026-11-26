@@ -17,24 +17,68 @@ and each brief's *When you finish* say the same):
 
 The writer ticks sections 1 to 3. A session never ticks those for them.
 
-**Where things stand** (24 November, evening): everything up to D.1's
-right-click change is **committed** (206300a). D.7 is built and **not
-committed**. D.9's first session (49 message boxes made quiet) is built
-and **not committed** either, nor is D.8's first session (one look: Write,
-side panel, Companion, Critique, Settings), nor is P.2a (four new style
-checks, off until ticked), nor the app-wide tidy and main buttons you
-chose for D.8, nor 4.1 (mark as intentional), nor 7.3 (draft beside plan,
-no-model tier), nor P.3 (every measure compared with the genre; nothing
-changes until you build the figures), nor D.6 (the Style tab and Today's
-three fixes retired; their actions are on the Companion card and in
-✓ Checks ▾; menus counted by decision 11), nor your contact details on
-the title page (9.2 addendum), nor the remembered style switches (P.2a
-addendum: per project, Pronouns and Acronyms on for new projects), nor
-CONLIT for sentence length (P.3 addendum; nothing changes until you re-run
-the genre script). Tests: 1,435 pass, none fail:
-with menus counted by decision 11 every count is at or under the baseline,
-so the harness test passes without a new baseline (lowering the baseline
-is still yours to agree, section 3). Nothing in section 1 has been ticked yet.
+**Where things stand** (25 November): everything up to and including
+your decision 3 (style checks must meet four in five) is **committed**
+(0733233, after ccc779b and 206300a). **Built and not committed: H.1 (the
+writing habit), D.4 (five top-level tabs, one way to open a screen in
+its own window), D.5 (the six Analyze ▾ analyses run as Critique
+reports), P.2b (four more style checks: homonyms, sensory detail,
+sentence structure, vague words) and 4.3 (checks earn their place: how
+often you take each check's fixes, and a check you mostly turn down
+toned down), and your request of 25 November: the chapter's prose
+profile (the Prose Profile tab measures the chapter open in Write against
+its targets; the AI chat gives that summary at once).** Tests: 1,602
+pass, none fail.
+Every screen count is at or under the baseline you agreed (`screens_baseline.json`); H.1 changed
+none, and D.4 takes the top-level tabs from 10 to 5 (now counted by the
+harness; the new baseline is yours to agree, section 3); D.5 changed none;
+P.2b changed none (its four switches sit in the Style checks submenu,
+which counts as one; every item 53 → 57); 4.3 changed none (links and
+tooltips only); the chapter's prose profile changed none (a panel with a
+line of links; the tab now scrolls on a small screen).
+
+What is waiting for you:
+
+- **Try it (section 1).** Nothing there is ticked yet. The newest items:
+  the chapter's prose profile (the Prose Profile tab's "This chapter";
+  "prose profile" and "review my prose" in the AI chat), checks earn their place (4.3: each check's acceptance rate in the
+  Critique's column tooltips and the Style checks menu; a check you mostly
+  turn down goes lower and fainter, with "Bring it back"; switching it off
+  only when you click), more missing reports (P.2b: Homonyms, Sensory detail, Sentence
+  structure, Vague words; Homonyms ticked for new projects, no "Fix all"
+  for it),
+  analyses as Critique reports (D.5: Analyze ▾ runs in the Critique,
+  rated and kept; Writing hints works; the old windows one link away),
+  fewer top-level tabs (D.4: the five groups, right-click any tab to open
+  it in its own window, the old ten one switch away in Settings), the
+  writing habit (H.1: goals, the streak, the 12-week record, the
+  nudge), D.6 (the Style tab and Today's three fixes retired), contact
+  details on the title page, remembered style switches, the four-in-five
+  defaults for new projects, CONLIT sentence length, and "Draft #N saved"
+  as a tinted status line.
+- **Run the genre script (P.3)** with the app closed:
+  `venv/bin/python scripts/genre_baseline.py`, then `--show`. Your CONLIT
+  file has moved, so the script uses its saved summary. Re-download CONLIT
+  in the Training Studio to confirm the ÷ 1.12 conversion.
+- **Decide (section 3):** voice groups (old decision 5), three from
+  D.4 (the new top-level tab baseline (5), when to retire the old ten
+  tabs' switch, whether windows left open should reopen at start-up) and
+  two from D.5 (when to retire the old analysis windows, and whether the
+  new reports join the full critique), and one from 4.3 (when a check is
+  toned down: 20 answers, under two in five accepted).
+  The rest are answered and marked so; their boxes are yours to tick.
+- **Commit H.1, D.4, D.5, P.2b, 4.3 and the chapter's prose profile** when you are happy with them (end of section 1).
+- **Next pieces (section 5): what remains.**
+  - Simplify: D.2a (review the design), then D.2b and D.2c; the later
+    sessions of D.8 and D.9; U.3a, then U.3b, last.
+  - Checks: P.6 (ask before its download); P.5 after section 2's
+    measurement, and again after P.6.
+  - After the path: 6.1, then 6.2; P.8; 9.1.
+  - Ratings by voice: V.1 to V.5, in order.
+  - Loose end: 0.3's screen check.
+  - Needs a model (run with the app closed): try 8.2; 7.2; 4.2; 9.3.
+  - When the server is connected: 8.1a (review the design), 8.1b, P.7,
+    8.3.
 
 ## 1. Try what is built
 
@@ -87,6 +131,9 @@ Do this in the app, on a real project. Restart the app first.
 - [ ] A failing check shows "What it looks for: …".
 - [ ] Click "⧉ Own window". The Critique opens beside the main window, which
       shows Write. A link in the Critique selects the passage in Write.
+      *(Since D.4 the button is gone: use Critique ▸ Critique in Its Own
+      Window, or right-click the Critique's tab. See "Fewer top-level tabs
+      (D.4)" below.)*
 - [ ] Close the Critique window: it is back in its tab, as it was.
 
 **One state file per project (R.7)**
@@ -348,11 +395,194 @@ books already downloaded)
 - [ ] The first check that day says once, in the grey line under the
       verdict, that sentence length is now compared with contemporary books.
 
+**The writing habit (H.1)** (no model; nothing changes until you set a goal,
+apart from one link; the record is new, `~/.creativeos/writing_habit.json`,
+so run the safety check from 0.3 first and take a checkpoint)
+- [ ] Open a chapter with no goal set. "Where you left off" in the
+      Companion shows what it did before, plus one link, "Set a daily goal…".
+- [ ] Click it, set words a day and/or words a week, OK. The line now reads
+      "Today: N of GOAL words · this week N of GOAL · N days in a row", and
+      the link becomes "Your writing record…".
+- [ ] Your days from before H.1 are there: open "Your writing record…" and
+      check that the days you wrote in recent weeks are shaded (only words
+      added were kept before H.1, so a cutting-only day from before will not
+      show).
+- [ ] Type a few sentences and save (or switch chapter). The line's
+      numbers go up after the save.
+- [ ] Delete a paragraph and save. The streak still counts today (cutting
+      is writing); in the record window, today shows the words cut.
+- [ ] Paste a long passage (over 300 words) and save. In the record window
+      it is listed as "pasted or imported", not as words added, and does not
+      count toward the goal. On a day with only a paste, the streak does not
+      grow.
+- [ ] Reach a goal: one line in the status bar, "Daily goal met: … words"
+      (or the weekly one). No box.
+- [ ] Write in both projects on the same day. The streak counts the day
+      once, and today's words are the two projects' together; clicking
+      today in the record window lists both projects and their chapters.
+- [ ] In the record window: the 12 weeks run left to right, Monday at the
+      top; clicking a day lists what you worked on; "Goals…" changes the
+      goals; it fits at your smallest screen.
+- [ ] Settings ▸ ✨ AI Features ▸ Writing habit shows the same goals and
+      the nudge switch. Setting a goal to "No goal" there takes the line
+      away again.
+- [ ] The nudge appears only after 7 writing days of revising with almost no
+      new words on an unfinished novel or novella (no chapter given a
+      stage). If you see it: "Keep revising" closes it for at least 7 more
+      writing days; "Stop these nudges" turns it off and the Settings switch
+      turns it back on; "Go to the next chapter" opens the chapter after the
+      one you last worked on.
+
+**Fewer top-level tabs (D.4)** (no model; nothing in your projects
+changes; three new window settings, all in the file that already keeps
+window positions)
+- [ ] The main window has five tabs: Write · Story · Revise · Publish ·
+      Studio. Write and Publish look exactly as before (no second row of
+      tabs). Hovering Story, Revise or Studio lists the screens inside.
+- [ ] Story holds Plot, Characters and World; Revise holds Critique, Prose
+      Profile and Attributions; Studio holds Visuals and Video Studio, each
+      under its old name. Every screen works as it did.
+- [ ] Open Characters, then Write, then Story again: Story opens on
+      Characters. Restart: the app opens on Write, and Story still opens on
+      Characters.
+- [ ] Each way in still lands on the right screen: Critique ▸ Open Critique
+      Tab and Critique Current Chapter (Revise ▸ Critique); a Critique
+      link, Go to line, an assistant passage link, an annotation in
+      Attributions, and "📝 Open in writer" in Video Studio (all to Write).
+- [ ] Right-click a group's tab, e.g. Story ▸ "Open “Story” in Its Own
+      Window" (Multi-Window Mode does not need to be on). The first time it
+      sits beside the main window; the Story tab says "Story is open in its
+      own window. Show it · Bring it back here". Both links work.
+- [ ] In that window, right-click Characters ▸ "Open “Characters” in Its
+      Own Window": Characters gets a window of its own. Right-click another
+      of its tabs ▸ "Bring “Story” Back to the Main Window".
+- [ ] Right-click a screen's tab inside a group (e.g. Revise ▸ Attributions)
+      ▸ Open in Its Own Window. Choosing Attributions again from the main
+      window raises its window. Close it: it is back in its tab.
+- [ ] Move a window somewhere, close it, open it again: it comes back
+      where you left it (also after a restart).
+- [ ] The Critique: Critique ▸ "Critique in Its Own Window" works as
+      before (it opens where you last left it), and the menu entry then
+      reads "Bring the Critique Back to Its Tab". The "⧉ Own window" button
+      on the scorecard is gone.
+- [ ] View ▸ Multi-Window Mode: switching it on says to right-click a tab;
+      switching it off brings every window back.
+- [ ] Settings ▸ ✨ AI Features ▸ Main tabs: untick "Group the tabs into
+      five" and Save. The ten tabs are back at once, in the old order,
+      still showing the screen you were on. Tick it and Save to return.
+- [ ] At your smallest screen, a grouped screen (e.g. Story ▸ Plot) still
+      fits: the second row of tabs takes about 28 px.
+
+**Analyses as Critique reports (D.5)** (run the safety check from 0.3 first:
+critique history and saved critiques gain new keys; nothing in your
+projects changes. With a model, run it with the app's model as usual.)
+- [ ] Write ▸ 🔍 Analyze ▾ still lists the same entries. Choose "Prose —
+      tone, style && voice": the app switches to Revise ▸ Critique (or
+      raises the Critique's own window if it is out), runs, and opens on the
+      "Prose profile fit" tab with the same sections the old window had.
+- [ ] Do the same for Promises, Characters (two tabs: Character check and
+      Characters), Worldbuilding, and Plot && pacing (Plot vs plan, Plot,
+      Pacing). Each result is as good as the old window's, or better; say
+      which is weaker if one is.
+- [ ] "Writing hints" now gives hints (what works, quoted hints, one thing
+      to try) instead of "will be integrated soon".
+- [ ] Rate a report (the rating bar, a chapter's rating, 👍/👎 on a
+      finding); Save Critique, then Load Critique: it comes back.
+- [ ] Click a "↗" after a quote: Write opens with the passage selected.
+- [ ] On the tab: "Copy" copies the report; "Run again" runs it again;
+      "Show in a window (old)" opens the old window (during the trial).
+- [ ] Run the same analysis twice: the second shows "Progress since the
+      last critique"; a full "Critique this chapter" is not mixed with it.
+- [ ] With AI switched off (or no model), each entry says so in one line
+      on its tab and shows the scan; no empty window.
+- [ ] While a critique runs, an Analyze ▾ entry says to wait or press Stop.
+
+**More missing reports (P.2b)** (no model needed; nothing stored changes
+except the ticks you make, as with P.2a)
+- [ ] Write ▸ ✓ Checks ▾ ▸ Style checks: four more switches, unticked in
+      your two projects: Homonyms, Sensory detail, Sentence structure,
+      Vague words. Each shows its count for the chapter even while off.
+- [ ] Homonyms ticked (with Style highlighting on): type "She took a sneak
+      peak" and "He gave the horse free reign". Each is flagged, and the
+      card offers "peek" / "rein" for that one place. There is **no** "Fix
+      all N like this" box on a homonym, even when it appears twice.
+- [ ] Homonyms on a chapter you know: does it flag anything that is right?
+      (It should leave "the peak of the hill", "rain poured over the roof",
+      "couldn't bear it" alone.) Note any wrong flag under P.2b's *Review
+      notes*.
+- [ ] Sensory detail ticked: the Style checks summary at the top of the
+      submenu adds "senses: sight N%, sound N%, …" for the chapter. A long
+      paragraph of pure telling is tinted; a summary you meant as summary
+      may be too (that is why it is off).
+- [ ] Sentence structure ticked: four or more sentences in a row of about
+      the same length, or three in a row opening with an -ing phrase
+      ("Turning, she …"), a "when / as" clause, a preposition or an -ly
+      word, are tinted. Are they ones you would change?
+- [ ] Vague words ticked: "stuff", "kind of", "all sorts of things", "or
+      something", "nice", "aspect" … are marked in narration, never inside
+      quotation marks. A first-person narrator's voice will draw some you
+      meant.
+- [ ] A **new** project starts with Homonyms ticked; the other
+      three are unticked. Your two projects keep their ticks.
+- [ ] Each ticked check's flags reach the Companion's next-fix queue at the
+      line stage and its list of every style issue.
+
+**Checks earn their place (4.3)** (run the safety check from 0.3 first:
+each project's readiness file gains an `"outcomes"` key; nothing else
+changes. No model needed.)
+- [ ] Work through a chapter on the Companion's Next fixes card: Accept,
+      Skip, Not a problem. Then Revise ▸ Critique, hover a check's column
+      heading: it ends "Fixes accepted here: N of M (x%) …" for this book.
+      Your other project shows its own figures, not these.
+- [ ] Not a problem, then Undo at once: the answer is not counted (the
+      figure does not move).
+- [ ] "Fix all N like this" on a misspelling counts as N accepts under
+      Spelling and grammar left.
+- [ ] Right-click a flag ▸ 📌 This is intentional, or That's intended in
+      the Critique: counted once, as "not a problem or intended".
+- [ ] Turn down a check's fixes about 20 times, accepting few (Weak
+      intensifiers is the quickest). At the answer that tips it, the card
+      says it is toned down and offers "Switch it off · Keep it as it was".
+      Nothing is switched off until you click: ✓ Checks ▾ ▸ Style checks
+      still has it ticked.
+- [ ] Toned down: its findings come after the others of the stage on the
+      card ("toned down for this book: bring it back"); its Critique column
+      is fainter, and the tooltip says why; its details below the grid say
+      why, with "Bring it back". ✓ Checks ▾ ▸ Style checks shows
+      "· toned down" after its name, and each switch's tooltip gives its
+      rate.
+- [ ] Bring it back (card or Critique): it is drawn as before and back in
+      its place; the tooltip still has its counts.
+- [ ] Switch it off from the card: the check's tick goes in ✓ Checks ▾ ▸
+      Style checks, stays off after a restart, and can be ticked again.
+      Spelling and overused words are never offered off.
+
+**The chapter's prose profile (your request, 25 November)**
+- [ ] Open a chapter in Write, then the Prose Profile tab (📊 Revise). Below
+      the targets, "This chapter: …" lists sentence length and variety,
+      dialogue, adverbs, passive voice, readability and length, each beside
+      its target for your genre (published books where the app has figures,
+      else its genre guide), with ✓, ▲ or ▼.
+- [ ] Change the Genre field: the measures follow a moment later, before you
+      save. Open another chapter and come back: it shows that one.
+- [ ] "Full review in the Critique" runs the Prose profile fit report on the
+      chapter (tone, style and voice; needs a model). "Send the summary to the
+      chat" puts the same summary in the AI chat.
+- [ ] In the AI chat, type "prose profile" (or "summarise my prose", "how
+      does this chapter compare to the genre?"): the summary comes at once,
+      with no model. "Review my prose" gives the summary and starts the full
+      report in the Critique. "Critique this chapter" still runs the full
+      critique, as before.
+- [ ] Ask the chat about your sentence length or dialogue: it now knows the
+      chapter's figures.
+- [ ] On a small window, the Prose Profile tab scrolls.
+
 **When you are happy**
-Already committed by you: phase 3, D.3, 2.5 and 0.5 (7e48893).
-- [ ] Commit D.7, D.9's first session, D.8's first session, P.2a, 4.1, 7.3, P.3, D.6,
-      the title page contact details (9.2 addendum), the remembered style
-      switches (P.2a addendum) and CONLIT sentence length (P.3 addendum).
+Already committed by you: phase 3, D.3, 2.5 and 0.5 (7e48893); R.7, D.1,
+9.2, 7.1 (206300a); D.7 and D.9 (ccc779b); D.8, P.2a, 4.1, 7.3, P.3, D.6,
+the contact details, the remembered style switches, CONLIT sentence length
+and decisions 3 and 9 (0733233).
+- [ ] Commit H.1, D.4, D.5, P.2b, 4.3 and the chapter's prose profile.
 - [ ] For anything you reject, untick it in the README tracker and write why
       under the piece's *Review notes*.
 
@@ -518,6 +748,55 @@ Write each answer in the README under *Decisions*, or tell the session.
       so narrow that published chapters fail it (shown on the benchmark in
       P.3's *Outcome*). Keep five, or ask for more?
       *Answered 24 Nov: five is fine.*
+- [ ] **H.1: the nudge's numbers.** The nudge asks when a project's last
+      7 writing days grew the manuscript by under 200 words in all (words
+      added minus words cut). Keep 7 and 200, or change them (two constants,
+      `NUDGE_DAYS` and `NUDGE_MIN_NEW` in `src/data/writing_habit.py`)?
+      *Answered 24 Nov: keep the nudges as they are unless you turn them off.*
+- [ ] **H.1: does pasted or imported text keep the streak?** A day whose
+      only change was a paste or an import of more than 300 words counts as
+      a writing day today (the words are listed as "pasted or imported", not
+      written, and never count toward a goal). Keep that, or count only
+      typing, cutting and revising?
+      *Answered 24 Nov: a paste or an import alone does not count. Done:
+      such a day is still recorded and shown, but is not a writing day.*
+- [ ] **D.4: the new top-level tab count.** The harness now counts the
+      main window's top-level tabs: 5, against 10 in
+      `screens_baseline.json` (`main_window.top_level_tabs`). Agree 5 as
+      the new baseline and a session writes it in. Every other count is
+      unchanged. One count the harness does not keep rose: right-clicking a
+      top-level tab offers one entry ("Open … in Its Own Window") without
+      Multi-Window Mode switched on (before, the menu was empty unless it
+      was on); the brief asked for this.
+- [ ] **D.4: when to retire the old ten tabs.** During the trial, Settings ▸
+      ✨ AI Features ▸ Main tabs switches back to the ten (rule 11). When
+      you have used the five groups on both projects and agree, a small
+      step removes that switch, and the old `SecondaryWindow` (no longer
+      used) with it; the stored setting is left in place, unread. Say when,
+      or keep the switch for good.
+- [ ] **D.4: reopen windows at start-up?** A screen left in its own window
+      comes back into its tab when the app restarts (as the Critique's
+      window always has: 2.5 recorded it but nothing reopened it). Keep
+      that, or reopen whatever was out (a small change to what the app
+      shows at start)?
+
+- [ ] **D.5: when to retire the old analysis windows.** During the trial,
+      each analysis's tab has "Show in a window (old)". When you have used
+      the reports on both projects and agree, a small step removes the two
+      old windows (`ProseAnalysisDialog`, `PromiseCheckDialog`) and that
+      link. Say when.
+- [ ] **D.5: the new reports in the full critique?** Promises, Prose
+      profile fit, Character check, Plot vs plan and Writing hints run only
+      from Analyze ▾ (and "Run again"). Adding them as tick boxes in
+      Detailed critique would add five controls to the Critique. Keep them
+      out, or add them (and to which runs: "Critique this chapter (all
+      reports)" too)?
+
+- [ ] **4.3: when is a check toned down?** Built: after at least 20
+      answers to its fixes (Accept, Not a problem, intended; Skip does not
+      count) with fewer than two in five accepted, since it was last
+      brought back. Keep these figures, or name others (a later or earlier
+      point, or a different share).
 
 ## 4. For every piece from here on
 
@@ -546,23 +825,23 @@ The routine from the README, as a checklist:
 - [x] [D.7](pieces/48c-D.7-show-less-at-once.md) Show less at once — built, for review
 - [~] [D.9](pieces/48e-D.9-fewer-interruptions.md) Fewer interruptions (first session done: 49 boxes quiet in Write, Companion, Critique and the main window; the other screens are later sessions)
 - [~] [D.8](pieces/48d-D.8-one-look.md) One look (first session done: Write and its side panel, the Companion, the Critique and Settings; the other screens are later sessions)
-- [ ] [D.4](pieces/49-D.4-fewer-top-level-tabs.md) Fewer top-level tabs (reads saved window layouts)
+- [x] [D.4](pieces/49-D.4-fewer-top-level-tabs.md) Fewer top-level tabs (reads saved window layouts) — built, for review
 - [ ] [D.2a](pieces/45-D.2a-one-improve-window-design.md) One Improve window: design. **Review the design before D.2b.**
 - [ ] [D.2b](pieces/46-D.2b-one-improve-window-build-with-suggestions-and-ex.md), then [D.2c](pieces/47-D.2c-one-improve-window-rephrase-joins.md)
-- [ ] [D.5](pieces/49b-D.5-analyses-run-as-critique-reports.md) Analyses run as Critique reports (adds kinds to critique history)
+- [x] [D.5](pieces/49b-D.5-analyses-run-as-critique-reports.md) Analyses run as Critique reports (adds kinds to critique history) — built, for review
 - [ ] [U.3a](pieces/50-U.3a-fit-and-scroll-sweep-the-screens-used-most.md), then [U.3b](pieces/51-U.3b-fit-and-scroll-sweep-the-remaining-screens.md) Fit-and-scroll sweep (last, so it sweeps the final screens)
 
 **B. Better checks** (can run alongside A; no model needed)
 - [ ] [P.5](pieces/30-P.5-fix-or-hide-the-worst-checks.md) Fix or hide the worst checks (after step 2's report)
 - [x] [P.2a](pieces/31-P.2a-missing-reports-transitions-pronouns-alliteratio.md) Missing reports: transitions, pronouns, alliteration, acronyms — built, for review
-- [ ] [P.2b](pieces/32-P.2b-missing-reports-homonyms-sensory-detail-sentence.md) Missing reports: homonyms, sensory detail, sentence structure, diction
+- [x] [P.2b](pieces/32-P.2b-missing-reports-homonyms-sensory-detail-sentence.md) Missing reports: homonyms, sensory detail, sentence structure, diction — built, for review
 - [x] [P.3](pieces/33-P.3-every-measure-compared-with-the-genre.md) Every measure compared with the genre — built, for review
 - [ ] [P.6](pieces/35-P.6-languagetool-in-full-with-its-larger-data-as-a-d.md) LanguageTool in full
 - [ ] P.5 again, since the table changes after P.2 and P.6
 
 **C. After the path** (no model needed)
 - [x] [4.1](pieces/52-4.1-mark-as-intentional.md) Mark as intentional — built, for review
-- [ ] [4.3](pieces/54-4.3-checks-earn-their-place.md) Checks earn their place
+- [x] [4.3](pieces/54-4.3-checks-earn-their-place.md) Checks earn their place — built, for review
 - [x] [7.1](pieces/57-7.1-reverse-outline-without-a-model.md) Reverse outline without a model — built, for review
 - [x] [7.3](pieces/59-7.3-draft-beside-plan-and-the-tension-curve.md) Draft beside plan — built, for review (no-model tier)
 - [ ] [6.1](pieces/55-6.1-listen-and-mark.md), then [6.2](pieces/56-6.2-marks-become-notes.md) Listen and mark
@@ -574,7 +853,7 @@ The routine from the README, as a checklist:
 - [ ] [V.1](pieces/39-V.1-a-voice-fingerprint-on-every-rating.md), [V.2](pieces/40-V.2-voice-groups-without-a-model.md), [V.3](pieces/41-V.3-a-model-names-and-refines-the-groups.md), [V.4](pieces/42-V.4-suggestions-learn-from-the-same-voice.md), [V.5](pieces/43-V.5-manage-ratings-by-voice.md)
 
 **D2. The writing habit** (no model needed)
-- [ ] [H.1](pieces/67-H.1-the-writing-habit.md) Daily and weekly goals, a streak shared across projects (cutting and revising count), a nudge to move on that you can turn off
+- [x] [H.1](pieces/67-H.1-the-writing-habit.md) Daily and weekly goals, a streak shared across projects (cutting and revising count), a nudge to move on that you can turn off — built, for review
 
 **E. Needs a model** (run with the app closed, or on the server)
 - [ ] Try [8.2](pieces/65-8.2-editorial-letter.md) Editorial letter with a real model; it is built but untried
@@ -592,6 +871,7 @@ The routine from the README, as a checklist:
 - ~~[P.1](pieces/38-P.1-side-by-side-comparison.md) Side-by-side comparison~~ dropped (decision 6, 24 Nov)
 - [ ] [0.3](pieces/03-0.3-safety-net-for-your-two-projects.md) The screen check that was left to follow
 - [x] The 4 old failures in `tests/test_overuse_context.py`: the test setup hid the WordNet data; fixed in `tests/conftest.py`
+- [x] Your request (25 Nov): the chapter's prose profile — the Prose Profile tab measures the chapter open in Write (`src/ai/prose_snapshot.py`, `src/ui/prose_profile_chapter.py`); the AI chat answers "prose profile" at once and "review my prose" with the full report (`src/ai/prose_chat.py`) — built, for review
 
 ## 6. Finished when
 

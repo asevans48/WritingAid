@@ -48,11 +48,12 @@ def test_no_second_copy_of_the_word_lists():
 def test_stored_names_of_the_style_checks_are_unchanged():
     """Style sheets, ignore lists and highlight settings store these names."""
     from src.utils import style_checks as sc
-    # P.2a added four kinds; every earlier name stays as it was.
+    # P.2a and P.2b added four kinds each; every earlier name stays as it was.
     assert set(sc.KINDS) == {"passive", "adverb", "intensifier", "wordy", "cliche",
                              "repeated_start", "echo", "preference", "long_sentence",
                              "hard_sentence", "sticky_sentence",
-                             "transition", "pronoun", "alliteration", "acronym"}
+                             "transition", "pronoun", "alliteration", "acronym",
+                             "homonym", "sensory", "sentence_structure", "vague"}
 
 
 def test_empty_text_still_gives_empty_stats():

@@ -68,7 +68,22 @@ SCREENS = {
     "publishing": ("page", "Publishing tab"),
     "assistant": ("page", "Sidebar: AI Assistant"),
     "outline": ("page", "Sidebar: Chapter Outline"),
+    "companion_goal": ("panel", "Companion with writing goals set and a sample record (H.1)"),
+    "habit": ("dialog", "Your writing record: the 12-week window, with a sample record (H.1)"),
+    "main_tabs": ("tabs", "Main window's top-level tabs: the five groups, Story open (D.4)"),
+    "main_tabs_ten": ("tabs", "The same with the old ten tabs (Settings ▸ Main tabs unticked)"),
+    "critique_analysis": ("report", "Critique: Analyze ▾ ▸ Prose run as a report, with a sample reply (D.5)"),
+    "critique_analysis_nomodel": ("report", "Critique: Analyze ▾ ▸ Writing hints with no model (D.5)"),
 }
+# The main window's ten screens, with the labels it gives them (D.4 groups
+# them; every screen is also drawn on its own above, as before).
+TAB_SCREENS = ("main_tabs", "main_tabs_ten")
+# Drawn with a sample writing record and goals, which are put back after;
+# not counted (not in the 0.2 baseline; the Companion is counted as "companion").
+HABIT_SCREENS = ("companion_goal", "habit")
+# Analyze ▾ entries run as Critique reports (D.5): drawn, not counted (the
+# Critique itself is counted as "critique").
+ANALYSIS_SCREENS = ("critique_analysis", "critique_analysis_nomodel")
 # The side panel's tabs, by the widget each is (D.6 retired the Style tab,
 # so numbers would shift; the widgets do not).
 PANELS = {"planner": lambda ed: ed.planner_widget,
@@ -181,6 +196,10 @@ def compare_counts(counts: Dict[str, Any], baseline: Dict[str, Any]) -> List[str
         base = baseline.get("right_click", {}).get(key)
         if base is not None and value > base:
             rises.append(f"right-click {key}: {base} → {value}")
+    for key, value in counts.get("main_window", {}).items():
+        base = baseline.get("main_window", {}).get(key)
+        if base is not None and value > base:
+            rises.append(f"main window {key}: {base} → {value}")
     return rises
 
 
@@ -271,6 +290,8 @@ def main(argv: List[str]) -> int:
                    and "menu_items_itemised" in c else "") for k in
                 ("buttons", "menu_items", "sections", "inner_tabs"))
                 + ("  — retired" if SCREENS.get(name, ("",))[0] == "retired" else ""))
+        for key, value in counts.get("main_window", {}).items():
+            print(f"  main window {key}: {value} ({baseline.get('main_window', {}).get(key, '?')})")
         every = counts.get("right_click_itemised", {})
         for key, value in counts.get("right_click", {}).items():
             print(f"  right-click {key}: {value} ({baseline.get('right_click', {}).get(key, '?')})"
@@ -351,6 +372,8 @@ def _isolate(home: Path) -> None:
     cs.state_path = lambda project: home / "companion_state.json"
     import src.data.critique_history as ch
     ch.history_path = lambda project: home / "critique_history.json"
+    import src.data.writing_habit as wh
+    wh.habit_path = lambda: home / "writing_habit.json"
     try:
         from PyQt6.QtCore import QSettings
         import src.ui.ui_kit as kit
@@ -422,6 +445,14 @@ def _build(name: str, project):
     kind = SCREENS[name][0]
     if name == "suggestions":
         return _suggestions(project)
+    if name in HABIT_SCREENS:
+        return _habit_screen(name, project)
+    if name in ANALYSIS_SCREENS:
+        return _analysis_screen(name, project)
+    if name in TAB_SCREENS:
+        win = _main_tabs(project, grouped=name == "main_tabs")
+        _show_full(win)
+        return win, win.tab_widget
     if kind == "panel":
         ed = _chapter_editor(project)
         panel = PANELS[name](ed)
@@ -430,6 +461,129 @@ def _build(name: str, project):
     widget = _page(name, project)
     _show_full(widget)
     return widget, widget
+
+
+def _habit_screen(name: str, project):
+    """The Companion with goals set, or the 12-week window, drawn on a
+    sample record in a file of its own; the goals and the file are put
+    back afterwards so the other screens draw as before."""
+    import json as _json
+    from datetime import date, timedelta
+    import src.data.writing_habit as wh
+    today = date.today()
+    days = {}
+    for back in range(0, 80):
+        d = today - timedelta(days=back)
+        if back in (5, 6, 12, 19, 20, 33, 47, 48, 61) or d.weekday() == 6 and back > 7:
+            continue
+        added = 640 if back == 0 else (back * 137) % 1900
+        cut = (back * 53) % 400
+        days[d.isoformat()] = {"sample": {
+            "name": "Sample", "path": "", "added": added, "cut": cut, "moved": 0,
+            "minutes": 20 + back % 50,
+            "chapters": {"c1": {"title": "Chapter 1", "added": added, "cut": cut, "moved": 0}}}}
+    home = Path(os.environ["HOME"])
+    sample = home / "writing_habit_sample.json"
+    sample.write_text(_json.dumps({"format_version": 1, "days": days, "folded": {}, "last": {}}))
+    old_path, old_goals = wh.habit_path, wh.goals
+    wh.habit_path, wh.goals = (lambda: sample), (lambda: (1000, 5000))
+    try:
+        if name == "habit":
+            from src.ui.habit_view import HabitWindow
+            win = HabitWindow(None, today=today)
+            win.show()
+            return win, win
+        ed = _chapter_editor(project)
+        ed._show_right_panel(ed.companion.panel)
+        return ed, ed.companion.panel
+    finally:
+        wh.habit_path, wh.goals = old_path, old_goals
+
+
+SAMPLE_PROSE_REPLY = """## Tone
+Tense and foreboding. “The storm broke at dusk” opens on threat, and “Nobody slept” closes the scene on dread.
+
+## Style
+Short, plain sentences with little ornament; the rhythm loosens in “She was almost too tired to think about the letter”.
+
+## Voice
+Close third person, restrained and watchful.
+
+## Alignment with Project Targets
+- **Tone:** Strong Match. The dread the profile asks for is on every line.
+- **Voice:** Partial Match. “It was very, very cold” drifts toward telling.
+
+## Strengths
+- The closing image, “The Ash Wardens' lanterns burned on the hill”, carries the mood.
+
+## Areas to Watch
+- Repeated intensifiers (“very, very”) could flatten the voice at book length."""
+
+
+def _analysis_screen(name: str, project):
+    """The Critique showing an Analyze ▾ entry's report (D.5): the prose
+    analysis with a fixed sample reply (no model is run), or Writing hints
+    with no model."""
+    from src.ai import analysis_reports as ar
+    from src.ai.chapter_analysis_agent import CritiqueOrchestrator
+    from src.ai.critique_parts import run_in_parts
+    from src.ui import analysis_menu
+    from src.ui.grader_widget import GraderWidget
+
+    class SampleReply:                     # a fixed answer: no model is reached
+        model = "sample"
+
+        def generate_text(self, prompt, system_prompt="", **kw):
+            return SAMPLE_PROSE_REPLY
+
+    key = "prose" if name == "critique_analysis" else "hints"
+    llm = SampleReply() if key == "prose" else None
+    g = GraderWidget()
+    g.set_project(project)
+    chapter = project.manuscript.chapters[0]
+    chapters = [{"title": chapter.title, "text": chapter.content, "index": 0, "id": chapter.id}]
+    kinds = ar.ITEMS[key][1]
+    report = run_in_parts(CritiqueOrchestrator(primary_llm=llm, project=project), chapters,
+                          kinds, "default", "", extra={"run_kind": "analysis:" + key})
+    report.run_kind = "analysis:" + key
+    g._on_critique_finished(report)
+    _show_full(g)
+    analysis_menu._show_result(g, kinds[0])
+    return g, g
+
+
+def _main_tabs(project, grouped: bool = True, placeholders: bool = False):
+    """The main window's tab area as the main window builds it: the ten
+    screens added in their old order with their labels, then grouped by
+    ``screen_groups`` (or left as ten). ``placeholders`` uses empty pages
+    (for counting tabs, which do not depend on what a page holds)."""
+    from PyQt6.QtWidgets import QMainWindow, QTabWidget, QWidget
+    from src.ui import screen_groups as sg
+    from src.ui.styles import get_icon
+    labels = {"write": f"{get_icon('manuscript')} Write", "plot": f"{get_icon('story')} Plot",
+              "characters": f"{get_icon('characters')} Characters",
+              "world": f"{get_icon('worldbuilding')} World", "attributions": "📚 Attributions",
+              "visuals": f"{get_icon('images')} Visuals", "prose_profile": "🎯 Prose Profile",
+              "critique": f"{get_icon('grader')} Critique", "video_studio": "🎬 Video Studio",
+              "publishing": f"{get_icon('agents')} Publishing"}
+    win = QMainWindow()
+    win.tab_widget = QTabWidget()
+    win.tab_widget.setDocumentMode(True)
+    win.tab_widget.setMovable(True)
+    win.setCentralWidget(win.tab_widget)
+    for key, attr in sg.OLD_TABS:
+        page = QWidget() if placeholders else _page(key, project)
+        setattr(win, attr, page)
+        win.tab_widget.addTab(page, labels[key])
+    previous = sg._get(sg.ARRANGEMENT_KEY, "groups")
+    sg._set(sg.ARRANGEMENT_KEY, "groups" if grouped else "ten")
+    try:
+        sg.install(win)
+    finally:
+        sg._set(sg.ARRANGEMENT_KEY, previous)
+    if grouped:
+        sg.show(win, win.characters_widget)          # a group's inner tabs, drawn
+    return win
 
 
 def _suggestions(project):
@@ -642,8 +796,14 @@ def _counts(names: List[str], project, app) -> Dict[str, Any]:
     from PyQt6.QtWidgets import QMenu
     out: Dict[str, Any] = {"screens": {}, "right_click": {}}
     for name in names:
-        if name == "suggestions":
+        if name == "suggestions" or name in HABIT_SCREENS or name in ANALYSIS_SCREENS:
             continue                                    # not in the 0.2 baseline
+        if name in TAB_SCREENS:
+            if name == "main_tabs":                     # the baseline's top_level_tabs
+                win = _main_tabs(project, grouped=True, placeholders=True)
+                out["main_window"] = {"top_level_tabs": win.tab_widget.count()}
+                win.close()
+            continue
         try:
             if SCREENS[name][0] == "retired":
                 out["screens"][name] = {"buttons": 0, "menu_items": 0, "sections": 0,

@@ -18,6 +18,8 @@ Checks (``KINDS``):
   echo             — the same word again within a few words
   transition, pronoun, alliteration, acronym — P.2a, in ``style_reports``;
                      off until the writer ticks them (not in DEFAULT_KINDS)
+  homonym, sensory, sentence_structure, vague — P.2b, in ``style_reports_more``
+                     (and ``homonyms``); off until ticked, likewise
 """
 
 from __future__ import annotations
@@ -58,12 +60,19 @@ KINDS: Dict[str, Tuple[str, str, bool]] = {
     "pronoun": ("Pronouns", _PALETTE["violet"], False),
     "alliteration": ("Alliteration", _PALETTE["accent"], False),
     "acronym": ("Acronyms", _PALETTE["primary_dark"], False),
+    # P.2b (homonyms.py, style_reports_more.py), colours from the palette.
+    "homonym": ("Homonyms", _PALETTE["error_ink"], False),
+    "sensory": ("Sensory detail", _PALETTE["warning_tint"], True),
+    "sentence_structure": ("Sentence structure", _PALETTE["violet_tint"], True),
+    "vague": ("Vague words", _PALETTE["info_ink"], False),
 }
-# On in a fresh editor. The P.2a kinds stay off until the writer ticks them,
-# so every existing project shows what it showed before (rule 11).
+# On in a fresh editor. The P.2a and P.2b kinds stay off until the writer ticks
+# them, so every existing project shows what it showed before (rule 11).
 from src.utils.style_reports import NEW_KINDS  # noqa: E402
-DEFAULT_KINDS = set(KINDS) - set(NEW_KINDS)
+from src.utils.style_reports_more import MORE_KINDS  # noqa: E402
+DEFAULT_KINDS = set(KINDS) - set(NEW_KINDS) - set(MORE_KINDS)
 NEW_KIND_SET = frozenset(NEW_KINDS)
+MORE_KIND_SET = frozenset(MORE_KINDS)
 
 GLUE = set("""the a an and or but in on at to for of with by from as is was are were been be
 have has had do does did will would could should may might must shall can need it its this
@@ -309,6 +318,9 @@ def _analyze(text: str, kinds, document: Optional[str] = None) -> List[StyleIssu
     if kinds & NEW_KIND_SET:
         from src.utils import style_reports
         style_reports.analyze(text, sentences, kinds, add, document)
+    if kinds & MORE_KIND_SET:
+        from src.utils import style_reports_more
+        style_reports_more.analyze(text, sentences, kinds, add, document)
     return sorted(issues, key=lambda x: (x.start, -(x.end - x.start)))
 
 

@@ -82,6 +82,8 @@ def _norm(w: str) -> str:
 def is_confusable(error: Any) -> bool:
     """A confused-word flag: their/there, its/it's, then/than, a/an …
     (the editor's own rules, or LanguageTool's confusion rules)."""
+    if getattr(error, "style_kind", "") == "homonym":
+        return True                 # P.2b: a sound-alike, right or wrong by sentence
     rule = (getattr(error, "rule_id", "") or "").upper()
     if rule in CONFUSION_RULES or "CONFUS" in rule:
         return True
@@ -282,6 +284,7 @@ def offer(editor: Any, error: Any, suggestion: Optional[str] = None) -> int:
         return 0
     done = apply(editor, dlg.chosen())
     editor.setFocus()
+    from src.ui import check_outcomes_ui; check_outcomes_ui.fixed_everywhere(editor, error, done)  # 4.3
     return done
 
 
@@ -334,6 +337,7 @@ def everywhere(editor: Any, suggestion: str, error: Any) -> bool:
     if chosen is None:            # the card matched the writer's case: map it back
         chosen = next((f for f in fixes if f.lower() == (suggestion or "").lower()), suggestion)
     done = apply(editor, places(editor, error, chosen))
+    from src.ui import check_outcomes_ui; check_outcomes_ui.fixed_everywhere(editor, error, done)  # 4.3
     _tell(editor, f"Fixed {done} place{'s' if done != 1 else ''}. One undo puts them all back.")
     return done > 0
 

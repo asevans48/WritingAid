@@ -476,7 +476,8 @@ class CritiqueWorker(QThread):
         out: Dict[str, Dict[str, Any]] = {}
         for i, ch in enumerate(self.chapters):
             text = ch.get("text", "") or ""
-            use = llm if i < self.MAX_OVERDESCRIPTION_AI_CHAPTERS and not self.stop_requested else None
+            use = llm if i < self.MAX_OVERDESCRIPTION_AI_CHAPTERS and not self.stop_requested \
+                and not self.run_kind.startswith("analysis:") else None   # D.5: the scan only
             if use is not None:
                 progress_cb(f"  {ch.get('title')}: overly descriptive statements…")
             try:
@@ -560,6 +561,7 @@ class GraderWidget(QWidget):
         self._current_chapter_scope: Optional[str] = None
         self._content_provider: Optional[callable] = None  # Callback to get fresh content
         self._init_ui()
+        from src.ui import analysis_menu; analysis_menu.install(self)   # D.5: analysis reports
         # Auto-sync genre dropdown from the Style/Genre free-text
         # field — typing "hard-boiled noir" auto-selects Thriller, etc.
         self.style_edit.editingFinished.connect(self._sync_genre_from_style)
@@ -2080,6 +2082,7 @@ class GraderWidget(QWidget):
             f"<h2>{title} — {report.genre.name}</h2>"
             f"<p style='color:{PALETTE['ink_faint']}; font-size:11px;'>"
             f"{len(sections)} chapter section(s).</p>")
+        from src.ui.analysis_menu import tab_links; lines.append(tab_links(rt))   # D.5
         for s in sections:
             lines.append(self._format_section_html(s))
         return "\n".join(lines)
@@ -2374,7 +2377,7 @@ class GraderWidget(QWidget):
 
     def _serialize_report(self, report: CritiqueReport) -> Dict[str, Any]:
         """Convert a CritiqueReport to a JSON-safe dict."""
-        from src.ai.critique_parts import section_to_dict
+        from src.ai.critique_parts import stored_sections
         return {
             "schema_version": 2,
             "scope_label": getattr(report, "scope_label", "") or "",
@@ -2390,10 +2393,7 @@ class GraderWidget(QWidget):
                     "chapter_title": c.chapter_title,
                     "chapter_index": c.chapter_index,
                     "word_count": c.word_count,
-                    "sections": [
-                        section_to_dict(s)
-                        for s in c.sections
-                    ],
+                    **stored_sections(c.sections),     # D.5: new kinds kept apart
                 }
                 for c in report.chapters
             ],
@@ -2401,14 +2401,14 @@ class GraderWidget(QWidget):
 
     def _deserialize_report(self, data: Dict[str, Any]) -> CritiqueReport:
         """Rehydrate a CritiqueReport from saved JSON."""
-        from src.ai.critique_parts import section_from_dict
+        from src.ai.critique_parts import section_from_dict, saved_sections
         genre_key = data.get("genre_key", "default")
         genre = (GENRE_PROFILES.get(genre_key)
                  or GENRE_PROFILES["default"])
         chapters: List[ChapterReport] = []
         for c in data.get("chapters", []):
             sections = []
-            for s in c.get("sections", []):
+            for s in saved_sections(c):
                 sections.append(section_from_dict(s, c.get("chapter_title", ""),
                                                   c.get("chapter_index", 0)))
             chapters.append(ChapterReport(
@@ -2823,6 +2823,9 @@ class GraderWidget(QWidget):
 
         elif url_str.startswith(("rate-item:", "rate-part:", "rate-section:")):
             self._handle_rating_link(url_str)
+
+        elif url_str.startswith(("analysis:", "wa-goto:")):   # D.5: an analysis's links
+            __import__("src.ui.analysis_menu", fromlist=["x"]).on_link(self, url_str)
 
         elif url_str.startswith("addcanon:"):          # add a found element or character
             __import__("src.ui.canon_add_dialog", fromlist=["x"]).open_from_link(self, url_str)

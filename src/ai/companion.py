@@ -65,7 +65,9 @@ def _last_critique_issues(project: Any, chapter_title: str, limit: int = 2) -> L
 
 
 def left_off(project: Any, chapter: Any, text: str, before: Dict[str, Any],
-             words_today: int = 0, goal: int = 0) -> LeftOff:
+             words_today: int = 0, goal: int = 0, habit: Optional[Tuple[str, str]] = None) -> LeftOff:
+    """``habit`` is the writing habit's (line, short form) once the writer
+    has set a goal (H.1); it takes the place of the per-project "Today" line."""
     plan = getattr(chapter, "planning", None)
     lines, head = [], []
     if before.get("last_session"):
@@ -94,7 +96,10 @@ def left_off(project: Any, chapter: Any, text: str, before: Dict[str, Any],
     issues = _last_critique_issues(project, getattr(chapter, "title", ""))
     if issues:
         lines.append("From your last critique: " + " · ".join(issues))
-    if goal:
+    if habit:
+        lines.append(habit[0] + ".")
+        head.append(habit[1])
+    elif goal:
         lines.append(f"Today: {words_today:,} of {goal:,} words.")
         head.append(f"{words_today:,}/{goal:,} words today")
     elif words_today:

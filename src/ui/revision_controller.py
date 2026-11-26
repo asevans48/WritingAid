@@ -48,7 +48,7 @@ class RevisionController:
         me = self.manuscript_editor
         if me is None:
             return None
-        self.mw.tab_widget.setCurrentWidget(me)
+        from src.ui import screen_groups; screen_groups.show(self.mw, me)   # D.4
         ce = me.current_chapter_editor
         if chapter_id and (ce is None or getattr(ce.chapter, "id", None) != chapter_id):
             me.open_chapter(chapter_id)            # the normal switch: the old chapter is saved

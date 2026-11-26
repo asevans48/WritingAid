@@ -19,7 +19,8 @@ CLEANED = [
     "src/ui/retired_screens.py", "src/ui/chapter_planner_widget.py", "src/ui/feedback_widget.py",
     "src/ui/grader_widget.py", "src/ui/scorecard_widget.py", "src/ui/readiness_issues.py",
     "src/ui/settings_dialog.py", "src/ui/outline_section.py", "src/ui/plan_section.py",
-    "src/ui/outline_chart.py",
+    "src/ui/outline_chart.py", "src/ui/habit_view.py", "src/ui/habit_tracker.py",
+    "src/ui/screen_groups.py", "src/ui/critique_window.py",
 ]
 HEX = re.compile(r"#[0-9a-fA-F]{6}\b|['\":\s]#[0-9a-fA-F]{3}\b")
 

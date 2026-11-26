@@ -2,7 +2,8 @@
 
 One switch per style check, each with how many it finds in the chapter
 now, and at the top the chapter's summary (issues, per 1,000 words, and the
-share of sentences with a transition while Few transitions is on). A
+share of sentences with a transition while Few transitions is on, and the
+mix of senses while Sensory detail is on). A
 switch turns that check's highlighting (and listing) on or off. Since D.6
 retired the side panel's Style tab, this is where its switches, counts and
 summary live; its list is the Companion's next-fix card.
@@ -41,7 +42,8 @@ def counts(editor: Any) -> Dict[str, int]:
 
 def summary(editor: Any, found: Dict[str, int]) -> str:
     """The retired Style tab's summary line: issues of the checks that are
-    on, per 1,000 words, and the transitions share (P.2a)."""
+    on, per 1,000 words, the transitions share (P.2a) and the mix of
+    senses (P.2b)."""
     on = editor.writing_highlighter._style_kinds
     total = sum(n for kind, n in found.items() if kind in on)
     text = editor.toPlainText()
@@ -54,6 +56,10 @@ def summary(editor: Any, found: Dict[str, int]) -> str:
         used, sentences = transition_share(text)
         if sentences:
             line += f" · transitions in {round(100 * used / sentences)}% of sentences"
+    if "sensory" in on:                       # P.2b: the mix of senses
+        from src.utils.style_reports_more import sense_balance
+        mix = sense_balance(text)
+        line += f" · senses: {mix}" if mix else " · no sensory words"
     return line
 
 
@@ -78,14 +84,19 @@ def install(chapter_editor: Any) -> QMenu:
     chapter_editor._style_check_actions = actions
 
     def refresh() -> None:
+        from src.ui import check_outcomes_ui                    # 4.3: how often it's taken
         found = counts(chapter_editor.editor)
         on = chapter_editor.editor.writing_highlighter._style_kinds
+        project = getattr(chapter_editor, "project", None)
         head.setText(summary(chapter_editor.editor, found))
         for kind, act in actions.items():
             n = found.get(kind, 0)
             act.blockSignals(True)
             act.setChecked(kind in on)
-            act.setText(f"{KINDS[kind][0]}  ({n})")
+            act.setText(f"{KINDS[kind][0]}  ({n})" + (check_outcomes_ui.TONED_MARK
+                        if check_outcomes_ui.menu_toned(project, kind) else ""))
+            act.setToolTip("Untick to stop highlighting (and listing) this check.\n"
+                           + check_outcomes_ui.menu_tip(project, kind))
             act.blockSignals(False)
     sub.aboutToShow.connect(refresh)
     before = next((a for a in menu.actions() if a.text() == "Style issues panel…"), None)

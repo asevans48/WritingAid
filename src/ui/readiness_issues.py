@@ -57,6 +57,8 @@ class ChapterIssues(QTextBrowser):
     brief_requested = pyqtSignal()
     # "menu" (change the chapter's stage) or a stage to move it to (3.1).
     stage_requested = pyqtSignal(str)
+    # a toned-down check's name: bring it back (4.3)
+    restore_requested = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -74,6 +76,8 @@ class ChapterIssues(QTextBrowser):
         self.letter: Optional[Dict[str, Any]] = None
         # Where the manuscript stands before an editor (editor_pass.plan), or None.
         self.editor_plan = None
+        # {check: why it is toned down} (4.3, ``check_outcomes``); the scorecard sets it.
+        self.toned: Dict[str, str] = {}
 
     # ── Showing ──────────────────────────────────────────────────
 
@@ -249,6 +253,9 @@ class ChapterIssues(QTextBrowser):
                 f"{_e(rd.STAGE_LABELS.get(stage, stage))} › {_e(label)}</span> "
                 f"<span style='color:{PALETTE['ink_soft']}'>— {_e(summary)}</span></div>")
         out = [head]
+        if name in self.toned:                          # 4.3: why it is fainter, and the way back
+            out.append(f"<div style='color:{PALETTE['ink_faint']}'>{_e(self.toned[name])} "
+                       f"<a href='{self._link('restore', name)}'>Bring it back</a></div>")
         if result.status in ("needs_work", "problem") and spec is not None and spec.description:
             out.append(f"<div style='color:{PALETTE['ink_faint']}'>What it looks for: "
                        f"{_e(spec.description[:240])}</div>")
@@ -438,6 +445,8 @@ class ChapterIssues(QTextBrowser):
             self.intended_requested.emit(item[0], item[1], kind == "intend")
         elif kind == "brief":
             self.brief_requested.emit()
+        elif kind == "restore":
+            self.restore_requested.emit(item)
         elif kind == "stage":
             self.stage_requested.emit(item)
         elif kind.startswith("letter-"):

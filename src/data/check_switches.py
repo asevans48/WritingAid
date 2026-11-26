@@ -79,8 +79,11 @@ def is_new_project(project: Any) -> bool:
 # sheet, which is not a guess. Spelling, Grammar and Overused words stay on
 # (``DEFAULT_ON``). Rerun scripts/score_checks.py and update this set when a
 # check improves (P.5). Existing projects keep today's ticks (rule 11).
+# P.2b (25 Nov 2026): Homonyms met it on its marked passages (5 of 5 right,
+# none on clean prose); sensory detail, sentence structure and vague words
+# did not (1 of 2, 2 of 3, 6 of 9), so they stay one tick away.
 MEETS_TARGET = frozenset({"intensifier", "wordy", "hard_sentence", "pronoun", "acronym",
-                          "preference"})
+                          "preference", "homonym"})
 
 
 def default_kinds(project: Any) -> Set[str]:

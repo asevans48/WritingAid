@@ -138,14 +138,21 @@ def _add_rule(project: Any, category: str, word: str, label: str, text: str):
     return ss.add(project, rule_line(label, text or word), source=SOURCE, kind="note")
 
 
-def store(project: Any, key: str, entry: Dict[str, Any]) -> bool:
-    """Write one dismissal (every other key in the file is kept)."""
+def store(project: Any, key: str, entry: Dict[str, Any], check: str = "",
+          count: bool = True) -> bool:
+    """Write one dismissal (every other key in the file is kept). A
+    pattern not dismissed before is counted against its check (4.3,
+    ``check_outcomes``; ``check`` when the caller knows it)."""
+    from src.data import check_outcomes as co
     from src.data import readiness_state as rs
 
     def change(data):
         d = data.get("dismissed")
         if not isinstance(d, dict):
             d = data["dismissed"] = {}
+        if count and key not in d:
+            co.count_into(data, check or co.check_for_key(key, entry.get("label", "")),
+                          co.INTENDED if entry.get("as") == INTENDED else co.NOT_A_PROBLEM)
         d[key] = entry
     ok = bool(rs.update(project, change))
     _forget()
@@ -154,7 +161,7 @@ def store(project: Any, key: str, entry: Dict[str, Any]) -> bool:
 
 def mark(project: Any, key: str, text: str, reason: str = "", label: str = "",
          chapter: str = "", *, category: str = "", word: str = "",
-         rule: bool = True) -> Tuple[bool, Any]:
+         rule: bool = True, check: str = "", count: bool = True) -> Tuple[bool, Any]:
     """This is intentional: dismiss the pattern ``key`` in this project and
     (``rule``) add a style sheet line. ``category``: spelling | overuse
     (the word is allowed) or anything else (a note quoting ``text``).
@@ -166,7 +173,7 @@ def mark(project: Any, key: str, text: str, reason: str = "", label: str = "",
              "chapter": chapter, "at": time.strftime("%Y-%m-%d"), "as": INTENDED}
     if added is not None:
         entry["rule"] = added.id
-    saved = store(project, key, entry)
+    saved = store(project, key, entry, check, count)
     if not saved and added is not None:              # keep the two stores together
         from src.ai import style_sheet as ss
         ss.remove(project, added.id)
@@ -175,7 +182,7 @@ def mark(project: Any, key: str, text: str, reason: str = "", label: str = "",
 
 
 def mark_item(project: Any, item: Any, label: str, chapter: str = "",
-              rule: bool = True) -> Tuple[bool, Any]:
+              rule: bool = True, check: str = "", count: bool = True) -> Tuple[bool, Any]:
     """``mark`` for a readiness ``Item`` (the Critique, the queue)."""
     kind = getattr(item, "kind", "") or ""
     category = ("spelling" if kind == "spelling" else
@@ -183,7 +190,7 @@ def mark_item(project: Any, item: Any, label: str, chapter: str = "",
                     "repetition:") else "")
     return mark(project, getattr(item, "key", "") or "", getattr(item, "text", "") or "",
                 getattr(item, "reason", "") or "", label, chapter, category=category,
-                word=getattr(item, "text", "") or "", rule=rule)
+                word=getattr(item, "text", "") or "", rule=rule, check=check, count=count)
 
 
 def unmark(project: Any, key: str) -> Tuple[bool, Optional[str]]:

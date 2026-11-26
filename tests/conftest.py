@@ -171,3 +171,25 @@ def _isolated_genre_baseline(tmp_path, monkeypatch):
     monkeypatch.setattr(cl, "_CONLIT_PATH_HINT_FILE", tmp_path / "conlit_path.txt")
     monkeypatch.setattr(cl, "_DEFAULT_LOCAL_CONLIT_DIR", tmp_path / "conlit")
     monkeypatch.setattr(cl, "_CONLIT_CACHE_FILE", tmp_path / "conlit_stats.json")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_writing_habit(tmp_path, monkeypatch):
+    """The writing habit (H.1): the day record goes to a temporary file, and
+    the goals and nudge switch to a throwaway settings store, never the
+    writer's ``~/.creativeos``. Every test starts with no goal."""
+    import src.data.writing_habit as wh
+    monkeypatch.setattr(wh, "habit_path", lambda: tmp_path / "writing_habit.json")
+
+    class _Settings(dict):
+        def get(self, key, default=None):
+            return dict.get(self, key, default)
+
+        def set(self, key, value):
+            self[key] = value
+
+        def update(self, *a, **kw):
+            dict.update(self, *a, **kw)
+
+    store = _Settings()
+    monkeypatch.setattr(wh, "_config", lambda: store)

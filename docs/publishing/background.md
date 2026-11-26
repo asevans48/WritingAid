@@ -17,7 +17,7 @@ confirmed in piece 0.1.
 
 | Area | ProWritingAid | This app today | Verdict |
 |---|---|---|---|
-| Writing reports | 27 named reports | About 19 of them in some form | Close. Six are missing (P.2). |
+| Writing reports | 27 named reports | Every one but plagiarism, since P.2a and P.2b (Combo only partly) | Close. Of the eight P.2 checks, Pronouns, Acronyms and Homonyms meet four in five and are on for new projects; the other five are one tick away. |
 | Grammar | Its own engine | LanguageTool's open rules plus built-in rules | Behind. Narrowed by P.4 and P.6. |
 | False alarms | Tuned over years | Unknown. No check has a measured accuracy. | The real risk. Fixed by phase Q. |
 | Chapter critique | Yes | Yes, with story memory, characters, plot and voice | Ahead where the story matters. |
@@ -43,12 +43,12 @@ confirmed in piece 0.1.
 | Consistency, House Style | Yes (consistency checks, style sheet) |
 | Dialogue, Pacing | Yes |
 | Combo | **Partly.** The editor's highlights show all four families together (spelling, grammar, overuse, style), but no single report lists them together. The Style panel lists the eleven style checks only. |
-| Sentence Structure | Partly: repeated sentence starts (`style_checks`), and sentence-length variety in the Critique (`ProWritingAnalyzer`) |
-| Diction | Partly: wordy phrases only |
+| Sentence Structure | Yes, since P.2b: style check "Sentence structure" (four or more sentences in a row of about the same length; three in a row opening the same way: an -ing phrase, a "when / as" clause, a preposition, an -ly word), beside repeated sentence starts and the Critique's sentence-length variety. Off until ticked. |
+| Diction | Yes, since P.2b: style check "Vague words" (stuff, kind of, all sorts of things, or something, nice, aspect …, in narration only) beside wordy phrases. Off until ticked. |
 | Transition | Yes, since P.2a: style check "Few transitions" (long paragraphs with no linking word) and the share of sentences with one in the Style tab's summary. Off until ticked. |
 | Pronoun, Alliteration, Acronym | Yes, since P.2a: style checks "Pronouns", "Alliteration" and "Acronyms". Off until ticked. |
-| Sensory | **Missing as a scan.** The Critique's model prompts ask about scenes with no sensory grounding, but nothing counts them (P.2b). |
-| Homonym | **Missing** (P.2b) |
+| Sensory | Yes, since P.2b: style check "Sensory detail" (a long stretch of narration with no sense at all) and the chapter's mix of senses (sight, sound, touch, smell, taste) in the Style checks summary. Off until ticked. |
+| Homonym | Yes, since P.2b: style check "Homonyms", a sound-alike where the words around it want its twin (sneak peak, free reign, wreck havoc …), with the twin as a one-place fix and no "Fix all". On for new projects (meets four in five). |
 | Plagiarism | Out of scope |
 
 ### What is wrong with the first version of this plan

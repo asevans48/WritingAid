@@ -364,7 +364,7 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 **Parity with ProWritingAid (after the foundations; alongside the path)**
 - [ ] [P.5](pieces/30-P.5-fix-or-hide-the-worst-checks.md) Fix or hide the worst checks (M, repeatable)
 - [x] [P.2a](pieces/31-P.2a-missing-reports-transitions-pronouns-alliteratio.md) Missing reports: transitions, pronouns, alliteration, acronyms (M) — built, for review; all four off until ticked
-- [ ] [P.2b](pieces/32-P.2b-missing-reports-homonyms-sensory-detail-sentence.md) Missing reports: homonyms, sensory detail, sentence structure, diction (M)
+- [x] [P.2b](pieces/32-P.2b-missing-reports-homonyms-sensory-detail-sentence.md) Missing reports: homonyms, sensory detail, sentence structure, diction (M) — built, for review; off in existing projects, Homonyms ticked for new ones
 - [x] [P.3](pieces/33-P.3-every-measure-compared-with-the-genre.md) Every measure compared with the genre (M) — built, for review; figures need `scripts/genre_baseline.py` run once, and a genre needs five downloaded books
 - [x] [P.4](pieces/34-P.4-deeper-proofreading-with-a-model.md) Deeper proofreading with a model (M)
 - [ ] [P.6](pieces/35-P.6-languagetool-in-full-with-its-larger-data-as-a-d.md) LanguageTool in full, with its larger data as a download (S)
@@ -380,7 +380,7 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 - [ ] [V.5](pieces/43-V.5-manage-ratings-by-voice.md) Manage ratings by voice (M)
 
 **The writing habit (added 24 Nov 2026, open decision 2)**
-- [ ] [H.1](pieces/67-H.1-the-writing-habit.md) The writing habit: daily and weekly goals, a shared streak, a gentle nudge to move on (M; brief reviewed with the writer, no model needed)
+- [x] [H.1](pieces/67-H.1-the-writing-habit.md) The writing habit: daily and weekly goals, a shared streak, a gentle nudge to move on (M; brief reviewed with the writer, no model needed) — built, for review; nothing changes until you set a goal, apart from one "Set a daily goal…" link
 
 **Declutter**
 - [x] [D.1](pieces/44-D.1-tidy-the-right-click-menu.md) Tidy the right-click menu (S) — built, for review
@@ -392,8 +392,8 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 - [x] [D.7](pieces/48c-D.7-show-less-at-once.md) Show less at once: toolbar, hover card, Companion sections, Drafts into File (M, added 24 Nov) — built, for review
 - [~] [D.8](pieces/48d-D.8-one-look.md) One look: the same buttons, colours and spacing everywhere (M, repeatable, added 24 Nov) — first session done (24 Nov): Write and its side panel, the Companion, the Critique and Settings take their colours and button styles from `ui_kit`; the rest of `src/ui` is later sessions
 - [~] [D.9](pieces/48e-D.9-fewer-interruptions.md) Fewer interruptions: messages that do not need a click (M, repeatable, added 24 Nov) — first session done (24 Nov): 49 of the 68 boxes in Write, the Companion, the Critique and the main window are quiet; the rest of `src/ui` is later sessions
-- [ ] [D.4](pieces/49-D.4-fewer-top-level-tabs.md) Fewer top-level tabs (M, after 0.2)
-- [ ] [D.5](pieces/49b-D.5-analyses-run-as-critique-reports.md) Analyses run as Critique reports (M, after 2.1; added in 0.2)
+- [x] [D.4](pieces/49-D.4-fewer-top-level-tabs.md) Fewer top-level tabs (M, after 0.2) — built, for review: five groups (Write · Story · Revise · Publish · Studio); right-click any tab to open it in its own window (one mover, the Critique menu and Multi-Window Mode included; "⧉ Own window" retired); the old ten tabs one switch away in Settings during the trial
+- [x] [D.5](pieces/49b-D.5-analyses-run-as-critique-reports.md) Analyses run as Critique reports (M, after 2.1; added in 0.2) — built, for review: the six Analyze ▾ entries run in Revise ▸ Critique (rated, saved, in history); Writing hints is a real report; the old windows one link away ("Show in a window (old)") during the trial
 
 **Interface sweep (after U.2)**
 - [ ] [U.3a](pieces/50-U.3a-fit-and-scroll-sweep-the-screens-used-most.md) Fit-and-scroll sweep: the screens used most (M)
@@ -402,7 +402,7 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 **After the path, in any order**
 - [x] [4.1](pieces/52-4.1-mark-as-intentional.md) Mark as intentional (S)
 - [ ] [4.2](pieces/53-4.2-voice-drift.md) Voice drift (M, experimental)
-- [ ] [4.3](pieces/54-4.3-checks-earn-their-place.md) Checks earn their place (S)
+- [x] [4.3](pieces/54-4.3-checks-earn-their-place.md) Checks earn their place (S) — built, for review: accepts, skips and dismissals counted per check in the readiness file; a check mostly turned down is toned down (lower, fainter), never switched off without your click
 - [ ] [6.1](pieces/55-6.1-listen-and-mark.md) Listen and mark (M)
 - [ ] [6.2](pieces/56-6.2-marks-become-notes.md) Marks become notes (S)
 - [x] [7.1](pieces/57-7.1-reverse-outline-without-a-model.md) Reverse outline without a model (M) — built, for review
@@ -442,8 +442,8 @@ plus these:
 | [D.8](pieces/48d-D.8-one-look.md) | One main button a screen, one set of colours, one spacing (1,014 inline styles today) | First session done: 10 files clean |
 | [D.9](pieces/48e-D.9-fewer-interruptions.md) | Messages that need no answer stop opening a box (329 today) | First session done: 49 quiet |
 | [D.2a–c](pieces/45-D.2a-one-improve-window-design.md) | Three help windows become one | Not started |
-| [D.4](pieces/49-D.4-fewer-top-level-tabs.md) | Ten top-level tabs become five; one way to detach a screen, and the "⧉ Own window" button goes | Not started |
-| [D.5](pieces/49b-D.5-analyses-run-as-critique-reports.md) | Six analysis windows become Critique reports | Not started |
+| [D.4](pieces/49-D.4-fewer-top-level-tabs.md) | Ten top-level tabs become five; one way to detach a screen, and the "⧉ Own window" button goes | Built, for review: 5 top-level tabs (baseline 10); the old ten one switch away in Settings |
+| [D.5](pieces/49b-D.5-analyses-run-as-critique-reports.md) | Six analysis windows become Critique reports | Built, for review: no count rises (Analyze ▾ keeps its eight entries; the links are inside the report); old windows retired after the trial |
 | [U.3a](pieces/50-U.3a-fit-and-scroll-sweep-the-screens-used-most.md), [U.3b](pieces/51-U.3b-fit-and-scroll-sweep-the-remaining-screens.md) | Every screen fits and scrolls | Not started |
 
 **Suggested order:** D.6, D.1, D.7, D.9, D.8, D.4, D.2, D.5, then U.3. The
@@ -461,6 +461,7 @@ baseline. Companion 15 buttons (baseline 18) and 7 sections (7); the Style
 tab's 15 buttons are gone (side panel 3 tabs, was 4); Write 19 buttons (24)
 and 29 menu items (29; 53 counting every item); right-click 9 entries
 without a selection (12) and 13 with one (22); Critique 6 buttons (11).
+After D.4: 5 top-level tabs (baseline 10), now counted by the harness.
 New baselines wait for the writer's agreement.
 
 ## Decisions
@@ -530,7 +531,8 @@ New baselines wait for the writer's agreement.
    overused words stay on.** Built: a new project ticks only the style
    checks that meet it (`check_switches.MEETS_TARGET`: weak intensifiers,
    wordy phrases, hard-to-read sentences, pronouns, acronyms, and the
-   writer's own style sheet). Existing projects keep their ticks. Was: A
+   writer's own style sheet); P.2b added homonyms (5 of 5 right on its
+   marked passages). Existing projects keep their ticks. Was: A
    check is on by default only if four in five of its
    flags are right. Confirm or change after the first numbers from Q.2.
    **The first numbers are in** ([check_scores.md](check_scores.md)); see
@@ -564,7 +566,9 @@ New baselines wait for the writer's agreement.
    wrong in the next (their/there). Confirm, or name the kinds to leave out.
 10. ~~**Two ways to detach the Critique.**~~ Settled 24 November 2026:
     merge them in D.4: "⧉ Own window" (2.5) and Multi-Window Mode become
-    one mechanism, and both entries keep working.
+    one mechanism, and both entries keep working. Built in D.4
+    (`screen_groups`): right-click any tab, the Critique menu and
+    Multi-Window Mode use one mover; the ⧉ button went.
 11. ~~**What to retire, and the counts.**~~ Settled 24 November 2026: the
     old three-fixes list and the Style tab may go (D.6). A submenu counts
     as one entry when its items are one closely related group (a list of

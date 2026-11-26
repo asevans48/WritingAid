@@ -31,6 +31,7 @@ from src.ui.attributions_tab import AttributionsTab
 from src.ui.prose_profile_widget import ProseProfileWidget
 from src.ui.window_manager import WindowManager
 from src.ui import notify  # quiet messages (D.9)
+from src.ui import screen_groups  # five top-level tabs, one mover (D.4)
 from src.ui.secondary_window import SecondaryWindow
 from src.ui.import_guide_dialog import ImportGuideDialog
 from src.ui.json_import_dialog import JSONImportDialog
@@ -1620,6 +1621,8 @@ Cap at TWO ``<create_*>`` blocks per reply. Talk through your reasoning in prose
                     "These are reference bands — deviations can be "
                     "intentional. Use them when the user asks how "
                     "their pacing/style compares to the genre.")
+        if self.context.get('chapter_measures'):                  # the open chapter, measured
+            header_parts += ["", self.context['chapter_measures']]
 
         # ── Story-wide supporting context (deduped) ───────────────
         # Built into its own list so we can render it AFTER the
@@ -3282,6 +3285,7 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(self.grader_widget, f"{get_icon('grader')} Critique")
         self.tab_widget.addTab(self.video_studio_widget, "🎬 Video Studio")
         self.tab_widget.addTab(self.agent_manager, f"{get_icon('agents')} Publishing")
+        screen_groups.install(self)   # ten tabs → five groups; one way to detach (D.4)
         from src.ui import critique_window; critique_window.install(self)   # Critique beside Write
 
         # Sidebar — chat assistant + chapter outline as stacked
@@ -3757,6 +3761,7 @@ class MainWindow(QMainWindow):
         self.story_planning_widget.content_changed.connect(self._on_content_changed)
         self.manuscript_editor.content_changed.connect(self._on_content_changed)
         self.prose_profile_widget.content_changed.connect(self._on_content_changed)
+        from src.ui import prose_profile_chapter; prose_profile_chapter.install(self)   # this chapter's measures
         self.agent_manager.content_changed.connect(self._on_content_changed)   # pen name (9.2)
 
         # Plot tab's Discuss-with-AI: hand it a context provider that
@@ -7897,7 +7902,7 @@ class MainWindow(QMainWindow):
     def _on_tab_changed(self, index: int):
         """Handle tab change - update grader widget with current chapter when Critique tab selected."""
         # Check if this is the Critique tab (index 6 based on tab order)
-        current_widget = self.tab_widget.widget(index)
+        current_widget = screen_groups.current_screen(self)   # inside its group (D.4)
         if current_widget == self.grader_widget:
             # Update grader widget with current chapter content
             content, title = self.manuscript_editor.get_current_chapter_info()
@@ -7905,7 +7910,7 @@ class MainWindow(QMainWindow):
             self.grader_widget.refresh_manuscripts()
 
         # Update editor selection tracking when manuscript tab is active
-        if index == 0:  # Manuscript tab
+        if current_widget is self.manuscript_editor:  # Write
             self._setup_editor_selection_tracking()
 
     def _toggle_chat(self):
@@ -9406,6 +9411,7 @@ class MainWindow(QMainWindow):
                 }
             except Exception as e:
                 print(f"[chat-context] genre profile resolve failed: {e}")
+        from src.ui import prose_profile_chapter; context['chapter_measures'] = prose_profile_chapter.context_for(self)
 
         # Include existing element names so the AI can reference them
         # and avoid creating duplicates
@@ -12050,7 +12056,7 @@ class MainWindow(QMainWindow):
         if project is None:
             menu.addSeparator()
             menu.addAction("Open Critique Tab").triggered.connect(
-                lambda: self.tab_widget.setCurrentWidget(self.grader_widget))
+                lambda: screen_groups.show(self, self.grader_widget))
             from src.ui import critique_window; critique_window.add_to_menu(self, menu)
             return
         from src.ai.continuity_analysis import has_cross_manuscript_content
@@ -12075,7 +12081,7 @@ class MainWindow(QMainWindow):
         menu.addAction("Check Consistency (names, spellings, style)…").triggered.connect(
             self._open_consistency_dialog)
         menu.addAction("Open Critique Tab").triggered.connect(
-            lambda: self.tab_widget.setCurrentWidget(self.grader_widget))
+            lambda: screen_groups.show(self, self.grader_widget))
         from src.ui import critique_window; critique_window.add_to_menu(self, menu)
 
     # ── Consistency check ───────────────────────────────────────
@@ -12132,7 +12138,7 @@ class MainWindow(QMainWindow):
 
     def _navigate_to_range(self, chapter_id: str, start: int, end: int) -> None:
         """Open a chapter and select [start, end) in it."""
-        self.tab_widget.setCurrentWidget(self.manuscript_editor)
+        screen_groups.show(self, self.manuscript_editor)
         if not self.manuscript_editor.open_chapter(chapter_id):
             return
         ce = self.manuscript_editor.current_chapter_editor
@@ -12201,7 +12207,7 @@ class MainWindow(QMainWindow):
             self.grader_widget.set_current_chapter(ce.editor.toPlainText(), ce.chapter.title)
         except Exception as e:
             print(f"[review] could not sync chapter: {e}")
-        self.tab_widget.setCurrentWidget(self.grader_widget)
+        screen_groups.show(self, self.grader_widget)
         self.grader_widget.scope_single_radio.setChecked(True)
         self.grader_widget._run_reports()
 
@@ -12223,7 +12229,7 @@ class MainWindow(QMainWindow):
                 ce.save_to_model()       # include unsaved edits
             except Exception:
                 pass
-        self.tab_widget.setCurrentWidget(self.grader_widget)
+        screen_groups.show(self, self.grader_widget)
         error = self.grader_widget.run_manuscript_critique(
             scope, include_continuity=continuity or continuity_only,
             report_types=[] if continuity_only else None)
@@ -12263,7 +12269,7 @@ class MainWindow(QMainWindow):
     def _navigate_to_passage(self, chapter_id: str, passage: str) -> None:
         """Open the chapter and select (and briefly highlight) the passage."""
         from src.ai.text_links import locate
-        self.tab_widget.setCurrentWidget(self.manuscript_editor)
+        screen_groups.show(self, self.manuscript_editor)
         if not self.manuscript_editor.open_chapter(chapter_id):
             self.statusBar().showMessage("That chapter no longer exists.", 5000)
             return
@@ -12307,6 +12313,8 @@ class MainWindow(QMainWindow):
             return self._start_chat_critique(intent.get("scope", "chapter"), message)
         if kind == "chapter_outline":
             return self._chat_regenerate_chapter_outline(intent.get("source", "text"), message)
+        if kind == "prose_profile":                                # the chapter's prose profile
+            from src.ui.prose_profile_chapter import run_chat; return run_chat(self, intent, message)
         if kind == "stage":                                        # chapter stages (3.1)
             from src.ui.chapter_stage_ui import run_chat; return run_chat(self, message)
         if kind == "story_outline" and self.current_project:
@@ -12449,6 +12457,8 @@ class MainWindow(QMainWindow):
                 if tag == "run_critique":
                     deferred.append({"kind": "critique",
                                      "scope": data.get("scope", "chapter")})
+                elif tag == "prose_profile":
+                    deferred.append({"kind": "prose_profile", "depth": data.get("depth", "summary")})
                 elif tag == "regenerate_chapter_outline":
                     deferred.append({"kind": "chapter_outline",
                                      "source": data.get("source", "text")})
@@ -13895,7 +13905,7 @@ class MainWindow(QMainWindow):
     def _show_find_dialog(self):
         """Show Find dialog."""
         # Only work when on manuscript tab
-        if self.tab_widget.currentIndex() != 0:
+        if screen_groups.current_screen(self) is not self.manuscript_editor:
             self.statusBar().showMessage("Find is only available in the Manuscript tab", 3000)
             return
 
@@ -13915,7 +13925,7 @@ class MainWindow(QMainWindow):
     def _show_replace_dialog(self):
         """Show Find and Replace dialog."""
         # Only work when on manuscript tab
-        if self.tab_widget.currentIndex() != 0:
+        if screen_groups.current_screen(self) is not self.manuscript_editor:
             self.statusBar().showMessage("Find/Replace is only available in the Manuscript tab", 3000)
             return
 
@@ -14962,7 +14972,7 @@ class MainWindow(QMainWindow):
         chapter. Empty ``chapter_id`` just switches tabs.
         """
         try:
-            self.tab_widget.setCurrentWidget(self.manuscript_editor)
+            screen_groups.show(self, self.manuscript_editor)
         except Exception:
             return
         if not chapter_id:
@@ -14982,7 +14992,7 @@ class MainWindow(QMainWindow):
     def _jump_to_annotation(self, chapter_id: str, annotation_id: str):
         """Jump to specific annotation in manuscript editor."""
         # Switch to Write tab
-        self.tab_widget.setCurrentWidget(self.manuscript_editor)
+        screen_groups.show(self, self.manuscript_editor)
 
         # Find and select the chapter in manuscript editor
         for i in range(self.manuscript_editor.chapter_list.count()):
@@ -15054,64 +15064,21 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Multi-window mode disabled", 3000)
         else:
             self.statusBar().showMessage(
-                "Multi-window mode enabled - Right-click tabs to create new windows",
-                5000
-            )
+                "Right-click any tab to open it in its own window", 5000)
 
     def _merge_all_secondary_windows(self):
         """Merge all secondary windows back to main window."""
+        screen_groups.bring_all_back(self)   # the one mover (D.4)
         for window in self.window_manager.get_secondary_windows():
             window.close()  # closeEvent will merge tabs back
 
     def _show_tab_context_menu(self, pos: QPoint):
-        """Show context menu for tab operations."""
-        tab_bar = self.tab_widget.tabBar()
-        tab_index = tab_bar.tabAt(pos)
-        if tab_index == -1:
-            return
-
-        menu = QMenu(self)
-
-        # Only show Create New Window if multi-window mode is enabled
-        if self.window_manager.is_multi_window_mode():
-            # Don't allow detaching the last tab
-            if self.tab_widget.count() > 1:
-                detach_action = menu.addAction("Create New Window")
-                detach_action.triggered.connect(lambda: self._detach_tab_to_new_window(tab_index))
-
-        if not menu.isEmpty():
-            menu.exec(tab_bar.mapToGlobal(pos))
+        """Right-click a tab: open it in its own window, or bring it back (D.4)."""
+        screen_groups.tab_menu(self, pos)
 
     def _detach_tab_to_new_window(self, tab_index: int):
-        """Detach a tab to a new secondary window."""
-        if tab_index < 0 or tab_index >= self.tab_widget.count():
-            return
-
-        # Don't allow detaching the last tab
-        if self.tab_widget.count() <= 1:
-            QMessageBox.warning(
-                self,
-                "Cannot Detach",
-                "Cannot detach the last tab from the main window."
-            )
-            return
-
-        # Get widget and label
-        widget = self.tab_widget.widget(tab_index)
-        label = self.tab_widget.tabText(tab_index)
-
-        # Remove from main window
-        widget.setParent(None)
-        self.tab_widget.removeTab(tab_index)
-
-        # Create new secondary window
-        project_name = self.current_project.name if self.current_project else "Writer Platform"
-        new_window = SecondaryWindow(project_name, self)
-        new_window.add_tab(widget, label)
-        new_window.tab_merge_requested.connect(self._handle_tab_merge)
-        new_window.show()
-
-        self.statusBar().showMessage(f"Created new window with '{label}' tab", 3000)
+        """Open a top-level tab in its own window (the one mover, D.4)."""
+        screen_groups.detach_tab(self, tab_index)
 
     def _handle_tab_merge(self, widget: QWidget, label: str):
         """Handle merging a tab back from a secondary window."""

@@ -47,7 +47,8 @@ TARGET_CLEAN_RATE = 3.0
 
 STYLE_KINDS = ["passive", "adverb", "intensifier", "wordy", "cliche", "repeated_start", "echo",
                "long_sentence", "hard_sentence", "sticky_sentence",
-               "transition", "pronoun", "alliteration", "acronym"]      # the last four: P.2a
+               "transition", "pronoun", "alliteration", "acronym",      # P.2a
+               "homonym", "sensory", "sentence_structure", "vague"]      # P.2b
 SHARED = ["passive", "adverb", "cliche", "sticky_sentence", "echo"]   # measured by both analysers
 
 Span = Tuple[int, int]
@@ -81,7 +82,7 @@ class Checker:
         hl = ed.writing_highlighter
         for setter in (hl.set_spell_mode, hl.set_grammar_mode, hl.set_overuse_mode, hl.set_style_mode):
             setter(self.CheckMode.REALTIME)
-        hl.set_style_kinds(set(STYLE_KINDS))      # every style check, the P.2a ones too
+        hl.set_style_kinds(set(STYLE_KINDS))      # every style check, the P.2a and P.2b ones too
         ed.setPlainText(text)
         # In the app the checkers know the project's characters and places
         # (EnhancedTextEditor.set_project_vocabulary). The benchmark has no
@@ -246,7 +247,7 @@ def score_marked(checker, llm=None) -> Dict[str, Any]:
     for p in data["passages"]:
         flags = [f for f in checker.flags(p["text"], llm) if f["family"] == "style"]
         flags += overdescribed(p["text"], llm)
-        # A passage with "scores" (P.2a) is marked only for those kinds.
+        # A passage with "scores" (P.2a, P.2b) is marked only for those kinds.
         scored = [k for k in kinds if k in p["scores"]] if p.get("scores") else kinds
         _add(total, _judge_against_marks(p["text"], p["marks"], flags, scored))
     return {k: total[k] for k in kinds}
@@ -283,7 +284,7 @@ def compare_analysers() -> Dict[str, Any]:
 
     for p in data["passages"]:
         if p.get("scores"):
-            continue                       # marked for the P.2a kinds only
+            continue                       # marked for the P.2a or P.2b kinds only
         t = p["text"]
         sc_flags = [{"kind": i.kind, "start": i.start, "end": i.end, "text": i.text}
                     for i in sc.analyze_document(t) if i.kind in SHARED]
@@ -344,7 +345,8 @@ def build_rows(res: Dict[str, Any]) -> List[Dict[str, Any]]:
               "echo": "Echoes", "long_sentence": "Long sentences", "hard_sentence": "Hard-to-read sentences",
               "sticky_sentence": "Sticky sentences", "overdescribed": "Overly descriptive",
               "transition": "Few transitions", "pronoun": "Pronouns", "alliteration": "Alliteration",
-              "acronym": "Acronyms"}
+              "acronym": "Acronyms", "homonym": "Homonyms", "sensory": "Sensory detail",
+              "sentence_structure": "Sentence structure", "vague": "Vague words"}
     for kind, label in labels.items():
         m = marked.get(kind, {})
         right, wrong = m.get("right", 0), m.get("wrong", 0)

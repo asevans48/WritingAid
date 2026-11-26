@@ -5,9 +5,10 @@ the chapter's **current stage** (``chapter_stages``). A chapter at
 copyedit is not offered a structure fix; a chapter with no stage set is
 offered everything, structure first.
 
-**Order.** Stage (when none is set), then tier (major issues, other
-factors, polish), then a check at "problem" before one at "needs work",
-then the check's ``weight``, then where it is in the chapter.
+**Order.** Stage (when none is set), then a check the writer mostly turns
+down after the rest (4.3), then tier (major issues, other factors,
+polish), then a check at "problem" before one at "needs work", then the
+check's ``weight``, then where it is in the chapter.
 
 **Left out:** findings the model cleared, findings with no place in the
 text, and findings about other chapters. What the writer dismissed or said
@@ -47,9 +48,11 @@ class Entry:
 
 # The Style tab's kinds that no readiness check reports (D.3): the queue's
 # line stage takes them from the editor's live style flags. The P.2a kinds
-# (transitions, pronouns, alliteration, acronyms) join only when ticked.
+# (transitions, pronouns, alliteration, acronyms) and the P.2b kinds (homonyms,
+# sensory detail, sentence structure, vague words) join only when ticked.
 STYLE_ONLY_KINDS = ("repeated_start", "long_sentence", "hard_sentence",
-                    "transition", "pronoun", "alliteration", "acronym")
+                    "transition", "pronoun", "alliteration", "acronym",
+                    "homonym", "sensory", "sentence_structure", "vague")
 STYLE_WEIGHT = 10
 
 
@@ -72,18 +75,22 @@ def style_entries(issues: Iterable[Any],
 
 
 def entries(chapter_report: Any, stage: str = "", intended: Iterable[str] = (),
-            skipped: Sequence[str] = (), extra: Sequence[Entry] = ()) -> List[Entry]:
+            skipped: Sequence[str] = (), extra: Sequence[Entry] = (),
+            toned: Iterable[str] = ()) -> List[Entry]:
     """The queue for one chapter: its findings for ``stage`` ("" — every
     stage), most important first; skipped ones at the back, in the order
     they were skipped. ``extra``: entries from outside the report (the
-    editor's style flags, ``style_entries``)."""
+    editor's style flags, ``style_entries``). ``toned``: checks the writer
+    mostly turns down (4.3, ``check_outcomes.toned_down``), after the
+    others of their stage."""
     rd._load_checks()
     intended = set(intended)
+    toned = set(toned)
     out: List[tuple] = []
     for e in extra:
         if not stage or e.stage == stage:
-            out.append(((rd.STAGES.index(e.stage), rd.TIERS.index(e.tier), 1, -STYLE_WEIGHT,
-                         e.item.start), e))
+            out.append(((rd.STAGES.index(e.stage), e.check in toned, rd.TIERS.index(e.tier), 1,
+                         -STYLE_WEIGHT, e.item.start), e))
     for name, result in (getattr(chapter_report, "results", None) or {}).items():
         spec = rd.REGISTRY.get(name)
         if spec is None or (stage and spec.stage != stage):
@@ -99,6 +106,7 @@ def entries(chapter_report: Any, stage: str = "", intended: Iterable[str] = (),
             if f"{name}:{item.key}" in intended or item.key in intended:
                 continue
             order = (rd.STAGES.index(spec.stage) if spec.stage in rd.STAGES else 9,
+                     name in toned,
                      rd.TIERS.index(spec.tier) if spec.tier in rd.TIERS else 9,
                      0 if result.status == rd.Status.PROBLEM else 1,
                      -spec.weight, item.start)
@@ -133,7 +141,8 @@ def dismiss(project: Any, entry: Entry, chapter_title: str = "") -> bool:
         return False
     return intentional.store(project, item.key, {
         "text": item.text[:200], "reason": item.reason[:300], "label": entry.label,
-        "chapter": chapter_title, "at": time.strftime("%Y-%m-%d"), "as": NOT_A_PROBLEM})
+        "chapter": chapter_title, "at": time.strftime("%Y-%m-%d"), "as": NOT_A_PROBLEM},
+        check=entry.check)
 
 
 def undismiss(project: Any, key: str) -> bool:

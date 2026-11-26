@@ -93,6 +93,10 @@ def detect_intent(message: str) -> Optional[Dict[str, str]]:
     if any(rx.search(text) for rx in _CHAPTER_OUTLINE_RX) and not _STORY_OUTLINE_RX.search(text):
         return {"kind": "chapter_outline",
                 "source": "plan" if _FROM_PLAN_RX.search(text) else "text"}
+    from src.ai import prose_chat                   # "prose profile", "review my prose"
+    prose = prose_chat.detect(text)
+    if prose is not None:
+        return prose
     if _CONTINUITY_RX.search(text):
         return {"kind": "critique", "scope": "continuity"}
     if any(rx.search(text) for rx in _CRITIQUE_RX):
@@ -116,6 +120,10 @@ instead of silently rewriting it.
 Overall critique (when the author asks for an overall / full critique):
   <run_critique>{"scope": "chapter"}</run_critique>      ("manuscript" for the whole book;
   "continuity" to check continuity across the project's novellas)
+
+Prose profile of the current chapter (when the author asks how their prose measures up):
+  <prose_profile>{"depth": "summary"}</prose_profile>   (its measures beside the Prose
+  Profile's targets, at once; "review" also runs the full tone / style / voice report)
 
 Redo the current chapter's beat outline (replaces the old outline):
   <regenerate_chapter_outline>{"source": "text"}</regenerate_chapter_outline>
@@ -146,6 +154,7 @@ Edit worldbuilding (or a character) — overwrites the named fields:
 ACTION_TAGS = (
     "run_critique", "regenerate_chapter_outline", "update_story_outline",
     "update_plot_event", "delete_plot_event", "update_subplot", "update_element",
+    "prose_profile",
 )
 _TAG_RX = re.compile(
     r"<(?P<tag>" + "|".join(ACTION_TAGS) + r")>\s*(?P<body>.*?)\s*</(?P=tag)>",

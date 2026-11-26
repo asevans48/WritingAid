@@ -37,6 +37,7 @@ from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
                              QWidget)
 
+from src.ui import check_outcomes_ui
 from src.ui.ui_kit import PALETTE, primary_button
 
 KEYS = {"accept": "Ctrl+Shift+Return", "skip": "Ctrl+Shift+]", "back": "Ctrl+Shift+[",
@@ -86,6 +87,7 @@ class NextFixCard(QWidget):
     find_requested = pyqtSignal()
     only_requested = pyqtSignal()                   # only this check's findings (D.6)
     three_requested = pyqtSignal()                  # the model's three that matter most (D.6)
+    outcome_requested = pyqtSignal(str)             # "bring-back:<check>" | "switch-off:…" (4.3)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -99,7 +101,8 @@ class NextFixCard(QWidget):
         links = {"undo": self.undo_requested, "intended": self.intended_requested,
                  "only": self.only_requested, "three": self.three_requested}
         self.status.linkActivated.connect(
-            lambda h: links.get(h, self.find_requested).emit())
+            lambda h: self.outcome_requested.emit(h) if h.startswith(("bring-back:", "switch-off:"))
+            else links.get(h, self.find_requested).emit())
         v.addWidget(self.status)
         self.find_btn = primary_button("🎯 Find the next fixes")
         self.find_btn.setToolTip("Check this chapter and line up what to fix, most important "
@@ -309,6 +312,7 @@ class Queue:
         self.card.more_requested.connect(self.more)
         self.card.only_requested.connect(self.only_this_check)
         self.card.three_requested.connect(lambda: self.cc.find_three_fixes())
+        self.card.outcome_requested.connect(lambda h: check_outcomes_ui.on_link(self, h))
         self.extra: List[Any] = []          # the editor's style flags no check reports (D.3)
         self.given = ""                     # a list sent to the card: its name (D.6)
 
@@ -438,7 +442,8 @@ class Queue:
         if self.given:                  # a list sent to the card stays until Check again
             return
         current = self.entries[self.index].key if 0 <= self.index < len(self.entries) else None
-        self.entries = fix_queue.entries(report, stage, skipped=self.skipped, extra=self.extra)
+        self.entries = fix_queue.entries(report, stage, skipped=self.skipped, extra=self.extra,
+                                         toned=check_outcomes_ui.toned(self))     # 4.3
         keys = [e.key for e in self.entries]
         self.index = keys.index(current) if current in keys else 0
         self.show()
@@ -528,7 +533,8 @@ class Queue:
         check's findings, when others are listed too; the model's three."""
         mixed = any(e.check != entry.check for e in self.entries)
         only = (f" · <a href='only'>Only {html.escape(entry.label)}</a>" if mixed else "")
-        return only + ("" if self.given else self._three_link())
+        return (only + ("" if self.given else self._three_link())
+                + check_outcomes_ui.card_link(self, entry))                     # 4.3
 
     def _count(self) -> None:
         section = self.cc.panel.sections.get("fixes")
@@ -579,6 +585,7 @@ class Queue:
         done = self._entry_for(fix)
         if done is None and 0 <= self.index < len(self.entries):
             done = self.entries[self.index]
+        check_outcomes_ui.accepted(self, done)                                  # 4.3
         if done is not None:
             at = self.entries.index(done)
             self.entries.pop(at)
@@ -592,6 +599,7 @@ class Queue:
         if not self.entries:
             return
         entry = self.entries[self.index]
+        check_outcomes_ui.skipped(self, entry)                                  # 4.3
         if entry.key in self.skipped:
             self.skipped.remove(entry.key)
         self.skipped.append(entry.key)
@@ -628,6 +636,7 @@ class Queue:
         from src.ai import fix_queue
         entry = self.entries[self.index]
         project, _scope, chapter = self._where()
+        was_toned = check_outcomes_ui.before_dismiss(self, entry)              # 4.3
         if entry.check.startswith("style:"):        # a live style flag: the Style tab's Ignore
             self.cc.ce.editor.writing_highlighter.ignore_style_issue(entry.item.kind,
                                                                      entry.item.text)
@@ -648,8 +657,10 @@ class Queue:
         note = (f"“{html.escape(what)}” won't be raised again in this project. "
                 "<a href='undo'>Undo</a> · <a href='intended'>It's intentional: add it to "
                 "my style sheet</a>")
+        toned = check_outcomes_ui.dismissed(self, entry, was_toned,                 # 4.3
+                                            not entry.check.startswith("style:"))
         self.card.status.setText(note + (" · " + self.card.status.text()
-                                         if self.card.fix is not None else ""))
+                                         if self.card.fix is not None else "") + toned)
 
     def undo_dismiss(self) -> None:
         project, _scope, _chapter = self._where()
@@ -668,6 +679,7 @@ class Queue:
                 from src.ui.intentional_menu import announce
                 announce(self.cc.ce.editor, "Taken back.")
         entry = self._last_entry
+        check_outcomes_ui.undone(self, entry)                                   # 4.3
         self._last_dismissed = self._last_style = None
         self._last_entry = None
         if self.given and entry is not None:        # back into the list sent to the card
@@ -685,7 +697,8 @@ class Queue:
         if entry is None or project is None or not entry.item.key:
             return
         chapter = getattr(self.cc.chapter, "title", "") or ""
-        saved, rule = intentional.mark_item(project, entry.item, entry.label, chapter)
+        saved, rule = intentional.mark_item(project, entry.item, entry.label, chapter,
+                                            check=entry.check, count=False)   # counted already
         if not saved:
             return
         if self._last_style is not None:            # the stored mark replaces the session's Ignore

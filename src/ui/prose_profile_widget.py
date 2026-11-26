@@ -19,7 +19,18 @@ class ProseProfileWidget(QWidget):
         self._init_ui()
 
     def _init_ui(self):
-        layout = QVBoxLayout(self)
+        # The tab scrolls, so the targets and "This chapter" (prose_profile_chapter)
+        # fit a small screen.
+        from PyQt6.QtWidgets import QFrame, QScrollArea
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget()
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
+        layout = self.content_layout = QVBoxLayout(content)
         layout.setSpacing(12)
 
         # Header
@@ -29,7 +40,8 @@ class ProseProfileWidget(QWidget):
 
         desc = QLabel(
             "Define the target tone, style, voice, and genre for your project. "
-            "The Prose Analyzer will compare each chapter against these targets."
+            "Below, the chapter open in Write is measured against them; its full review "
+            "(Analyze ▸ Prose) reads it against all of them."
         )
         desc.setWordWrap(True)
         desc.setStyleSheet("padding: 0 10px 10px 10px; color: #666;")

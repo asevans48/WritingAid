@@ -2830,6 +2830,10 @@ class SettingsDialog(QDialog):
         layout.addWidget(writing_group)
         from src.ui.notify import BoxesOption   # "Show a box for every message" (D.9)
         self.notify_option = BoxesOption(layout, self.settings)
+        from src.ui.habit_view import HabitOption   # Writing habit: goals, nudge (H.1)
+        self.habit_option = HabitOption(layout)
+        from src.ui.screen_groups import TabsOption   # five groups or the ten tabs (D.4)
+        self.tabs_option = TabsOption(layout)
 
         # Rephrasing Settings
         rephrase_group = QGroupBox("Rephrasing Settings")
@@ -3474,6 +3478,8 @@ class SettingsDialog(QDialog):
         # ``settings`` dict, which holds ai_config keys.
         self._save_per_task_models()
         self._contact_page.form.save()      # title page details (9.2)
+        self.habit_option.save()            # writing goals and the nudge (H.1)
+        self.tabs_option.save()             # the main tabs: five groups or ten (D.4)
         # Call parent accept to close dialog
         super().accept()
 

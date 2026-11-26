@@ -16,7 +16,7 @@ def app():
 @pytest.fixture
 def mw(app, tmp_path, monkeypatch):
     from PyQt6.QtWidgets import QMainWindow, QTabWidget, QWidget
-    from src.ui import critique_window
+    from src.ui import critique_window, screen_groups
     store = {}
 
     class Settings:
@@ -25,12 +25,16 @@ def mw(app, tmp_path, monkeypatch):
 
         def setValue(self, k, v):
             store[k] = v
-    monkeypatch.setattr(critique_window, "_settings", lambda: Settings())
+
+        def sync(self):
+            pass
+    # D.4: the Critique goes out through the one mover, screen_groups.
+    monkeypatch.setattr(screen_groups, "_settings", lambda: Settings())
     from src.ui.grader_widget import GraderWidget
     win = QMainWindow()
     win.tab_widget = QTabWidget()
     win.setCentralWidget(win.tab_widget)
-    win.write = QWidget()
+    win.write = win.manuscript_editor = QWidget()
     win.tab_widget.addTab(win.write, "Write")
     win.grader_widget = GraderWidget()
     win.tab_widget.addTab(win.grader_widget, "Critique")
@@ -47,21 +51,20 @@ def mw(app, tmp_path, monkeypatch):
 def test_pop_out_moves_the_whole_critique_and_back(app, mw):
     pop = mw.critique_popout
     scorecard = mw.grader_widget.scorecard
-    assert pop.button.text() == "⧉ Own window"
+    assert not hasattr(pop, "button")                           # "⧉ Own window" retired (D.4)
     assert scorecard.isVisibleTo(mw.grader_widget)
     mw.tab_widget.setCurrentWidget(mw.grader_widget)
-    pop.button.click()
+    pop.pop_out()
     app.processEvents()
     assert pop.window is not None and pop.window.isVisible()
     assert scorecard.window() is pop.window                     # the same scorecard, moved
     assert mw.tab_widget.currentWidget() is mw.write            # Write, beside it
-    assert pop.note.isVisibleTo(mw.grader_widget)               # the tab says where it went
-    assert pop.button.text() == "⧉ Back to the tab"
+    assert pop.note.isVisibleTo(pop.unit.slot)                  # the tab says where it went
     assert mw.store.get("critique_window/out") == "true"
     pop.window.close()                                          # closing brings it back
     app.processEvents()
     assert pop.window is None and scorecard.window() is mw
-    assert not pop.note.isVisibleTo(mw.grader_widget)
+    assert not pop.note.isVisibleTo(pop.unit.slot)
     assert mw.tab_widget.currentWidget() is mw.grader_widget
     assert "critique_window/geometry" in mw.store               # opens there next time
 
@@ -70,7 +73,7 @@ def test_choosing_the_tab_while_out_raises_the_window_and_links_bring_write_forw
     pop = mw.critique_popout
     pop.pop_out()
     raised = []
-    pop.raise_window = lambda: raised.append(True)
+    pop.unit.raise_window = lambda: raised.append(True)         # the one mover raises it (D.4)
     mw.tab_widget.setCurrentWidget(mw.grader_widget)
     assert raised
     forward = []

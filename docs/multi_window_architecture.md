@@ -1,5 +1,38 @@
 # Multi-Window Mode Architecture
 
+## Since D.4 (25 November 2026): five tabs, one mover
+
+The diagrams below describe the design as first planned. Read this section
+first; where it differs from them, it is what the code does.
+
+- **Five top-level tabs.** `src/ui/screen_groups.py` groups the ten screens:
+  Write · Story (Plot, Characters, World) · Revise (Critique, Prose Profile,
+  Attributions) · Publish (Publishing) · Studio (Visuals, Video Studio). A
+  group with one screen has no inner tab bar. Settings ▸ ✨ AI Features ▸
+  Main tabs switches back to the ten tabs (during the trial).
+- **One way to put a screen in its own window,** for every screen and every
+  group: right-click its tab → "Open … in Its Own Window" (no need to switch
+  on Multi-Window Mode first). The Critique menu's "Critique in Its Own
+  Window" uses the same mover (`critique_window.PopOut` is a thin handle on
+  it). The tab it left says "Show it · Bring it back here"; choosing that
+  tab raises the window; closing the window brings the screen back. The
+  first time, the window is tiled beside the main window; afterwards it
+  opens where it was left (`screen_windows/<screen>/geometry`;
+  `critique_window/geometry` for the Critique, as before).
+- **View ▸ Multi-Window Mode** stays as a shortcut: switching it off brings
+  every screen back.
+- **What the code never had.** `DetachableTabWidget`, drag-out detaching and
+  the `WindowLayout` saved in the project (sections below) were never built:
+  the main window used a plain `QTabWidget`, and no window layout was ever
+  saved. Nothing stored needed mapping. `SecondaryWindow` (its own,
+  unconnected chat panel) is no longer created; the file stays until the
+  trial ends.
+- **Showing a screen from code:** `screen_groups.show(main_window, widget)`.
+  `tab_widget.setCurrentWidget(widget)` and `tab_widget.currentWidget()` are
+  routed through it, so older code still lands on the right screen;
+  `screen_groups.old_tab(main_window, n)` maps an old tab index (0–9) to its
+  screen.
+
 ## Component Overview
 
 ```

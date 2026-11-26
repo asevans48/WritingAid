@@ -52,7 +52,8 @@ def section_from_dict(s: Dict[str, Any], chapter_title: str = "",
     try:
         rt = ReportType(s.get("report_type", "style"))
     except ValueError:
-        rt = ReportType.STYLE
+        from src.ai.analysis_reports import kind_for     # D.5's report kinds
+        rt = kind_for(s.get("report_type", "")) or ReportType.STYLE
     return ReportSection(
         report_type=rt,
         chapter_title=chapter_title,
@@ -71,6 +72,23 @@ def section_from_dict(s: Dict[str, Any], chapter_title: str = "",
         calls=s.get("calls", []) or [],
         item_sources=s.get("item_sources", {}) or {},
     )
+
+
+def stored_sections(sections: List[ReportSection]) -> Dict[str, Any]:
+    """A chapter's sections as saved: ``sections`` as before, and D.5's report
+    kinds under ``analysis_sections`` (only when there are any), which an
+    older app does not read, so it never files them under a kind it knows."""
+    out: Dict[str, Any] = {"sections": [section_to_dict(s) for s in sections
+                                        if not getattr(s.report_type, "kept_apart", False)]}
+    apart = [section_to_dict(s) for s in sections if getattr(s.report_type, "kept_apart", False)]
+    if apart:
+        out["analysis_sections"] = apart
+    return out
+
+
+def saved_sections(chapter: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Every saved section of a chapter (both keys above)."""
+    return list(chapter.get("sections", []) or []) + list(chapter.get("analysis_sections", []) or [])
 
 
 # ── Running ─────────────────────────────────────────────────────────────
@@ -182,7 +200,10 @@ def run_in_parts(orchestrator, chapters: List[Dict[str, Any]], report_types: Lis
         if report.stopped:
             break
     report.partial = False
-    if report.stopped or orchestrator.primary_llm is None or not runnable:
+    if str((extra or {}).get("run_kind") or "").startswith("analysis:"):
+        from src.ai.analysis_reports import overall_summary     # D.5: no roll-up call
+        report.overall_summary = overall_summary(report)
+    elif report.stopped or orchestrator.primary_llm is None or not runnable:
         summary = orchestrator._dashboard_summary(report)
         if report.stopped:
             summary = (f"Stopped after {report.parts_done} of {report.parts_total} reports. "

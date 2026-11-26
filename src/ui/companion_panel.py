@@ -53,6 +53,7 @@ class CompanionPanel(QWidget):
     ask_requested = pyqtSignal(object)          # companion.Note
     style_sheet_changed = pyqtSignal()
     memory_changed = pyqtSignal()
+    habit_changed = pyqtSignal()                # a writing goal was set or changed (H.1)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -103,6 +104,9 @@ class CompanionPanel(QWidget):
         self.left_off_label.setWordWrap(True)
         self.left_off_label.setTextFormat(Qt.TextFormat.RichText)
         v.addWidget(self.left_off_label)
+        from src.ui import habit_view                              # the writing habit (H.1)
+        self.habit_link = habit_view.HabitLink(self.habit_changed.emit)
+        v.addWidget(self.habit_link)
         self.recap_label = QLabel("")
         self.recap_label.setWordWrap(True)
         self.recap_label.setStyleSheet(text_style("primary_dark"))
@@ -706,6 +710,8 @@ class CompanionController(QObject):
         chapter_editor.editor.style_sheet_changed.connect(self._style_sheet_learned)
         self.panel.memory_changed.connect(chapter_editor.content_changed.emit)
         from src.ui.next_fixes import Queue; self.queue = Queue(self)   # 3.2
+        from src.ui.habit_tracker import HabitTracker; self.habit = HabitTracker(self)   # H.1
+        self.panel.habit_changed.connect(self.refresh_left_off)
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.setInterval(self.NOTES_DELAY_MS)
@@ -747,11 +753,29 @@ class CompanionController(QObject):
         if self.project is None or self.chapter is None:
             return
         before = cs.mark_opened(self.project, self.chapter.id)
-        brief = companion.left_off(self.project, self.chapter, text, before,
-                                   cs.words_today(self.project), _daily_goal())
-        self.panel.set_left_off(brief)
-        self.banner.show_text(brief.headline, "\n".join(brief.lines))
+        self._left_off_args = (text, before)
+        self.refresh_left_off(keep_recap=False)
+        self.habit.chapter_loaded(text)               # the writing habit (H.1)
         self._start_recap(text, before.get("stopped_at", ""))
+
+    def refresh_left_off(self, keep_recap: bool = True) -> None:
+        """Where you left off, with the writing habit's line once a goal is set."""
+        from src.ai import companion
+        from src.data import companion_state as cs
+        from src.ui import habit_view
+        args = getattr(self, "_left_off_args", None)
+        if args is None or self.project is None or self.chapter is None:
+            return
+        habit = habit_view.progress()
+        brief = companion.left_off(self.project, self.chapter, args[0], args[1],
+                                   cs.words_today(self.project), _daily_goal(), habit=habit)
+        recap = self.panel.recap_label.text()
+        self.panel.set_left_off(brief)
+        if keep_recap:
+            self.panel.recap_label.setText(recap)         # a refresh keeps the scene so far
+        self.panel.habit_link.refresh()
+        if not keep_recap or not self.banner.isHidden():  # a line the writer closed stays closed
+            self.banner.show_text(brief.headline, "\n".join(brief.lines))
 
     def chapter_saved(self) -> None:
         from src.data import companion_state as cs
@@ -763,6 +787,10 @@ class CompanionController(QObject):
         sentences = [s for s in re.split(r"(?<=[.!?])\s+", block) if s.strip()]
         cs.record_session(self.project, self.chapter.id, self._words_at_open,
                           self._word_count(), sentences[-1] if sentences else block)
+        try:
+            self.habit.chapter_saved(self.ce.editor.toPlainText())     # H.1
+        except Exception as e:                                         # noqa: BLE001
+            print(f"[habit] {e}")
 
     def open_panel(self) -> None:
         """Details: show the Companion tab, or hide the panel if it's showing."""

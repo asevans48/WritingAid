@@ -220,6 +220,7 @@ class ScorecardWidget(QWidget):
         self.issues.chapter_requested.connect(self._show_chapter_row)
         from src.ui import chapter_stage_ui; chapter_stage_ui.install_on_scorecard(self)   # 3.1
         from src.ui import outline_section; outline_section.install(self)   # 7.1
+        self.issues.restore_requested.connect(self._bring_back)                  # 4.3
         self.issues.show_all_requested.connect(
             lambda: self._select_chapter(self._selected, None))
         outer.addWidget(self.issues)
@@ -673,6 +674,9 @@ class ScorecardWidget(QWidget):
                 columns.extend(("check", spec) for spec in specs)
         self._column_checks = [[col[1].name] if col[0] == "check" else [s.name for s in col[2]]
                                for col in columns]
+        from src.ui import check_outcomes_ui
+        self.issues.toned = check_outcomes_ui.toned_lines(self.project)       # 4.3
+        toned = set(self.issues.toned)
         self.table.clear()
         self.table.setColumnCount(len(columns))
         self.table.setRowCount(len(g.rows))
@@ -687,6 +691,7 @@ class ScorecardWidget(QWidget):
                     tip.append(spec.threshold.describe())
                 if spec.name in report.left_out:
                     tip.append(f"Not in the figure: {report.left_out[spec.name]}.")
+                tip.append(check_outcomes_ui.header_tip(self.project, spec.name))   # 4.3
                 item.setToolTip("\n\n".join(t for t in tip if t))
                 stage = spec.stage
             else:
@@ -694,7 +699,9 @@ class ScorecardWidget(QWidget):
                 item = QTableWidgetItem(f"{rd.STAGE_LABELS.get(stage, stage)} ▸\n"
                                         f"{len(specs)} check{'s' if len(specs) != 1 else ''}")
                 item.setToolTip("Click the stage in the ribbon above to see each check.")
-            item.setForeground(QColor(STAGE_COLOURS.get(stage, PALETTE["ink"])))
+            item.setForeground(QColor(PALETTE["ink_faint"] if col[0] == "check"
+                                      and col[1].name in toned
+                                      else STAGE_COLOURS.get(stage, PALETTE["ink"])))
             self.table.setHorizontalHeaderItem(c, item)
         self._rows = [ch for ch, _cells in g.rows]
         for r, (ch, cells) in enumerate(g.rows):
@@ -715,6 +722,8 @@ class ScorecardWidget(QWidget):
             for c, col in enumerate(columns):
                 if col[0] == "check":
                     item = self._cell(col[1], by_name.get(col[1].name))
+                    if col[1].name in toned:
+                        check_outcomes_ui.fade(item)                          # 4.3
                 else:
                     item = self._stage_cell(col[1], [(s, by_name.get(s.name)) for s in col[2]])
                 self.table.setItem(r, c, item)
@@ -936,6 +945,17 @@ class ScorecardWidget(QWidget):
             else "Taken back. Check readiness to update the grid.")
         self._style_sheet_touched("Marked intended in the Critique" if on else
                                   "Taken back in the Critique")
+
+    def _bring_back(self, check: str) -> None:
+        """4.3: a toned-down check is shown as before (its counts kept)."""
+        from src.data import check_outcomes
+        if self.project is None or not check_outcomes.bring_back(self.project, check):
+            return
+        if self.report is not None:
+            self._fill_grid(self.report)
+            self._restore_selection()
+        self.status_label.setText(f"{check_outcomes.label_of(check)} is back as it was; "
+                                  "its counts are kept.")
 
     def _style_sheet_touched(self, message: str) -> None:
         """4.1: a style sheet line was added or removed; the open editor
