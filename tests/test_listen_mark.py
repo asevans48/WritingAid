@@ -217,18 +217,88 @@ def test_esc_and_stop_reading_stop_listening(app, tmp_path):
     assert ed.editor.toPlainText() != TEXT
 
 
-def test_listening_starts_at_the_cursor_sentence(app, tmp_path):
-    from PyQt6.QtGui import QTextCursor
+def test_without_a_highlight_the_whole_chapter_is_read(app, tmp_path):
+    """No highlight: the whole chapter from the top, wherever the cursor is."""
     from src.ui import listen_mark
     ed = _editor(tmp_path)
     c = ed.editor.textCursor()
     c.setPosition(TEXT.index("Voss"))
     ed.editor.setTextCursor(c)
     sp = FakeSpeaker()
-    listen_mark.start(ed, speaker=sp)
-    assert sp.spoken == [SENTENCES[2]]
+    s = listen_mark.start(ed, speaker=sp)
+    assert sp.spoken == [SENTENCES[0]] and s.total == 4
+    for _ in range(3):
+        _advance(s, sp)
+    assert sp.spoken == SENTENCES
     assert ed.editor.textCursor().position() == TEXT.index("Voss")   # not moved
     listen_mark.stop(ed)
+
+
+def _highlight(ed, start, end):
+    from PyQt6.QtGui import QTextCursor
+    c = ed.editor.textCursor()
+    c.setPosition(start)
+    c.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+    ed.editor.setTextCursor(c)
+
+
+def test_with_a_highlight_only_the_highlighted_text_is_read(app, tmp_path):
+    from src.ui import listen_mark
+    ed = _editor(tmp_path)
+    a = TEXT.index("Mara")
+    b = TEXT.index("Voss waited there.") + len("Voss waited there.")
+    _highlight(ed, a, b)
+    sp = FakeSpeaker()
+    s = listen_mark.start(ed, speaker=sp)
+    assert s.total == 2 and sp.spoken == [SENTENCES[1]]
+    _advance(s, sp)
+    assert sp.spoken == SENTENCES[1:3]
+    _advance(s, sp)                       # nothing past the highlight
+    assert sp.spoken == SENTENCES[1:3] and not s.running
+    # The writer's highlight is back as it was.
+    c = ed.editor.textCursor()
+    assert (c.selectionStart(), c.selectionEnd()) == (a, b)
+
+
+def test_a_highlight_mid_sentence_is_read_as_highlighted(app, tmp_path):
+    from src.ui import listen_mark
+    ed = _editor(tmp_path)
+    a = TEXT.index("broke")
+    b = TEXT.index("Mara ran") + len("Mara ran")
+    _highlight(ed, a, b)
+    sp = FakeSpeaker()
+    s = listen_mark.start(ed, speaker=sp)
+    _advance(s, sp)
+    assert sp.spoken == ["broke at dusk.", "Mara ran"]
+    listen_mark.stop(ed)
+
+
+def test_marks_inside_a_highlight(app, tmp_path):
+    from src.ui import listen_mark
+    ed = _editor(tmp_path)
+    a = TEXT.index("Dr. Voss")
+    _highlight(ed, a, len(TEXT))
+    sp = FakeSpeaker()
+    s = listen_mark.start(ed, speaker=sp)
+    assert s.mark() is True
+    listen_mark.stop(ed)
+    ms = listen_marks.marks(ed.project, "c1")
+    assert [m["text"] for m in ms] == [SENTENCES[2]]
+    assert ms[0]["start"] == a
+    assert ed.editor.toPlainText() == TEXT
+
+
+def test_the_highlight_is_not_drawn_over_the_sentence_being_read(app, tmp_path):
+    from src.ui import listen_mark
+    ed = _editor(tmp_path)
+    a = TEXT.index("Mara")
+    _highlight(ed, a, len(TEXT))
+    sp = FakeSpeaker()
+    listen_mark.start(ed, speaker=sp)
+    assert not ed.editor.textCursor().hasSelection()
+    assert _highlighted(ed) == [SENTENCES[1]]
+    listen_mark.stop(ed)
+    assert ed.editor.textCursor().selectionStart() == a
 
 
 def test_no_voice_offers_nothing_else(app, tmp_path, monkeypatch):

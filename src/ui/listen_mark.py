@@ -142,10 +142,23 @@ class SystemSpeaker(Speaker):
 
 # ── Sentences ──────────────────────────────────────────────────────────
 
-def sentence_spans(text: str) -> List[tuple]:
-    """(start, end) of each sentence worth reading (some letter or digit)."""
+def sentence_spans(text: str, start: int = 0, end: Optional[int] = None) -> List[tuple]:
+    """(start, end) of each sentence worth reading (some letter or digit).
+    With ``start``/``end`` (the writer's highlight), only the sentences
+    inside that range, cut to it where the highlight begins or ends
+    mid-sentence."""
     from src.ai.overdescription import sentence_spans as spans
-    return [(s, e) for s, e in spans(text) if any(c.isalnum() for c in text[s:e])]
+    lo, hi = max(0, start), len(text) if end is None else min(end, len(text))
+    out = []
+    for s, e in spans(text):
+        s, e = max(s, lo), min(e, hi)
+        while s < e and text[s].isspace():
+            s += 1
+        while e > s and text[e - 1].isspace():
+            e -= 1
+        if s < e and any(c.isalnum() for c in text[s:e]):
+            out.append((s, e))
+    return out
 
 
 def _cursor(doc, start: int, end: int) -> QTextCursor:
@@ -162,8 +175,9 @@ def _text(c: QTextCursor) -> str:
 # ── A session ──────────────────────────────────────────────────────────
 
 class ListenSession(QObject):
-    """Reads ``editor``'s text from ``from_pos`` to the end, a sentence at
-    a time, and keeps the marks made on the way."""
+    """Reads ``editor``'s text, a sentence at a time, and keeps the marks
+    made on the way: from ``from_pos`` to the end, or only from ``from_pos``
+    to ``to_pos`` when a range (the writer's highlight) is given."""
 
     def __init__(self, editor: QTextEdit, speaker: Speaker, project: Any = None,
                  chapter_id: str = "", on_change: Optional[Callable[[], None]] = None,
@@ -181,6 +195,7 @@ class ListenSession(QObject):
         self._timer = QTimer(self)
         self._timer.setInterval(TICK_MS)
         self._timer.timeout.connect(self._tick)
+        self.selection_only = False
 
     # The state, for the button and for tests.
     @property
@@ -200,10 +215,12 @@ class ListenSession(QObject):
         return sorted(self._marked)
 
     # ── Start and stop ──
-    def start(self, from_pos: int = 0) -> bool:
+    def start(self, from_pos: int = 0, to_pos: Optional[int] = None) -> bool:
         doc = self.editor.document()
         text = self.editor.toPlainText()
-        spans = sentence_spans(text)
+        self.selection_only = to_pos is not None
+        spans = sentence_spans(text, from_pos, to_pos) if self.selection_only \
+            else sentence_spans(text)
         if not spans:
             return False
         self.cursors = [_cursor(doc, s, e) for s, e in spans]
@@ -213,7 +230,8 @@ class ListenSession(QObject):
             s, _e, status = listen_marks.resolve(m, text)
             if status != listen_marks.CHANGED and s in by_start:
                 self._marked.setdefault(by_start[s], m["id"])
-        first = next((i for i, (_s, e) in enumerate(spans) if e > from_pos), 0)
+        first = 0 if self.selection_only else \
+            next((i for i, (_s, e) in enumerate(spans) if e > from_pos), 0)
         if self.speaker.is_speaking:
             self.speaker.stop()
         self.speaker.begin()
@@ -406,8 +424,8 @@ def install(owner, menu) -> None:
     from PyQt6.QtWidgets import QMenu
     before = getattr(owner, "tts_read_range_btn", None)
     act = QAction("👂 Listen and mark", menu)
-    act.setToolTip("Read the chapter aloud from the cursor, a sentence at a time. "
-                   + KEYS_HINT)
+    act.setToolTip("Read the chapter aloud, a sentence at a time; with text "
+                   "highlighted, only the highlighted text. " + KEYS_HINT)
     act.triggered.connect(lambda: _safe(start, owner))
     sub = QMenu("Marks in this chapter", menu)
     if before is not None:
@@ -466,8 +484,8 @@ def _select(owner, start: int, end: int) -> None:
 
 
 def start(owner, speaker: Optional[Speaker] = None) -> Optional[ListenSession]:
-    """Start listening from the cursor's sentence (the whole chapter when
-    the cursor is at the top)."""
+    """Listen to the highlighted text when there is a highlight, otherwise
+    to the whole chapter from the top."""
     from src.ui import notify
     if _session(owner) is not None:
         return _session(owner)
@@ -487,10 +505,24 @@ def start(owner, speaker: Optional[Speaker] = None) -> Optional[ListenSession]:
     owner._listen_session = session
     # The chapter editor is deleted when another chapter opens: stop then.
     owner.destroyed.connect(lambda *_: _quiet_stop(speaker))
-    if not session.start(owner.editor.textCursor().position()):
+    cur = owner.editor.textCursor()
+    if cur.hasSelection():
+        a, b = cur.selectionStart(), cur.selectionEnd()
+        ok = session.start(a, b)
+    else:
+        ok = session.start(0)
+    if not ok:
         owner._listen_session = None
-        notify.empty(owner, "No Text", "No sentences to listen to in this chapter.")
+        notify.empty(owner, "No Text", "No sentences to listen to in the highlighted text."
+                     if cur.hasSelection() else "No sentences to listen to in this chapter.")
         return None
+    if cur.hasSelection():
+        # The writer's highlight would hide the sentence being read; it is
+        # put back when listening ends (only the selection, never the text).
+        owner._listen_restore = (cur.anchor(), cur.position())
+        c = QTextCursor(cur)
+        c.setPosition(a)
+        owner.editor.setTextCursor(c)
     owner.editor.setFocus()
     if notify._main_window(owner) is not None:
         notify.notice(owner, "Listening", "Listening. " + KEYS_HINT)
@@ -555,11 +587,24 @@ def _finished(owner, why: str) -> None:
     if getattr(owner, "listen_action", None) is not None:
         owner.listen_action.setEnabled(True)
     made = s.marks_made if s is not None else 0
+    restore = getattr(owner, "_listen_restore", None)
+    owner._listen_restore = None
+    if restore is not None:
+        try:
+            n = len(owner.editor.toPlainText())
+            c = owner.editor.textCursor()
+            c.setPosition(min(restore[0], n))
+            c.setPosition(min(restore[1], n), QTextCursor.MoveMode.KeepAnchor)
+            owner.editor.setTextCursor(c)
+        except RuntimeError:
+            pass
     from src.ui import heard_notes; heard_notes.refresh(owner)     # the marks as notes (6.2)
     if why not in ("finished", "stopped"):
         notify.empty(owner, "Listening stopped", f"Listening stopped: {why}")
     elif notify._main_window(owner) is not None:
         tail = f" {made} sentence{'s' if made != 1 else ''} marked." if made else ""
         notify.done(owner, "Listening",
-                    ("Finished the chapter." if why == "finished" else "Stopped listening.")
+                    (("Finished the highlighted text." if s is not None and s.selection_only
+                      else "Finished the chapter.")
+                     if why == "finished" else "Stopped listening.")
                     + tail)

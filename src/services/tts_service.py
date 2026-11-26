@@ -229,6 +229,8 @@ class TTSService:
         self._stop_requested = False
         self._speech_thread: Optional[threading.Thread] = None
         self._macos_say_proc = None  # subprocess.Popen for macOS 'say' command
+        self._is_paused = False
+        self._file_playback = False  # this reading plays sound files (pausable)
         # Serializes speak()/stop() so a new reading can't race with,
         # or start on top of, an existing one. Re-entrant because
         # speak() calls stop() internally to abandon a prior reading.
@@ -784,16 +786,14 @@ class TTSService:
             except Exception as e:
                 print(f"[TTS] pause via AVSpeech failed: {e}")
 
-        # afplay subprocess path (macOS fallback)
-        proc = getattr(self, '_macos_say_proc', None) or getattr(self, '_audio_proc', None)
-        if proc is not None and proc.poll() is None:
-            try:
-                import signal
-                proc.send_signal(signal.SIGSTOP)
-                self._is_paused = True
-                return True
-            except Exception as e:
-                print(f"[TTS] pause via SIGSTOP failed: {e}")
+        # Played from a sound file (Kokoro, Chatterbox, VibeVoice, Edge, the
+        # basic `say` voices). The player used to be frozen with SIGSTOP,
+        # which left the Mac's audio looping its last scrap of sound (the
+        # stutter while paused). Now the playback loop stops the player and
+        # keeps the place; resume plays on from there (_play_pausable).
+        if self._is_speaking and self._file_playback:
+            self._is_paused = True
+            return True
 
         return False
 
@@ -808,15 +808,9 @@ class TTSService:
             except Exception as e:
                 print(f"[TTS] resume via AVSpeech failed: {e}")
 
-        proc = getattr(self, '_macos_say_proc', None) or getattr(self, '_audio_proc', None)
-        if proc is not None and proc.poll() is None:
-            try:
-                import signal
-                proc.send_signal(signal.SIGCONT)
-                self._is_paused = False
-                return True
-            except Exception as e:
-                print(f"[TTS] resume via SIGCONT failed: {e}")
+        if self._is_paused:
+            self._is_paused = False
+            return True
 
         return False
 
@@ -864,6 +858,12 @@ class TTSService:
             TTSEngine.KOKORO:     self._speak_kokoro,
         }
         engine_fn = engine_map.get(self._current_engine, self._speak_edge)
+        import platform as _platform
+        # Every engine but the non-Mac system voice plays a sound file, so
+        # it can pause cleanly (the Mac's system voice pauses through
+        # AVSpeech, or through its `say` file).
+        self._file_playback = (self._current_engine != TTSEngine.SYSTEM
+                               or _platform.system() == "Darwin")
         self._speech_thread = threading.Thread(
             target=self._speak_paragraphs_threaded,
             args=(engine_fn, text),
@@ -913,6 +913,7 @@ class TTSService:
                     self._is_speaking = True
                     import time as _time
                     _time.sleep(pause_ms / 1000.0)
+                    self._wait_while_paused()
         finally:
             self._on_end = saved_on_end
             self._is_speaking = False
@@ -1335,29 +1336,10 @@ class TTSService:
             if self._stop_requested:
                 return
 
-            # Play with afplay
+            # Play with afplay (pausable without freezing the player)
             play_start = _t.time()
-            play_proc = subprocess.Popen(
-                ['afplay', audio_file],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-            )
-            self._macos_say_proc = play_proc
-
-            while True:
-                try:
-                    play_proc.wait(timeout=0.1)
-                    break
-                except subprocess.TimeoutExpired:
-                    if self._stop_requested:
-                        play_proc.terminate()
-                        try:
-                            play_proc.wait(timeout=1.0)
-                        except subprocess.TimeoutExpired:
-                            play_proc.kill()
-                        break
-
+            self._play_pausable(audio_file, '_macos_say_proc',
+                                lambda f: ['afplay', f])
             play_duration = _t.time() - play_start
             expected_play = max(1.0, len(text) / 20)
             if play_duration < expected_play and not self._stop_requested:
@@ -1703,32 +1685,13 @@ class TTSService:
 
             system = platform.system()
             if system == "Windows":
-                proc = subprocess.Popen(
-                    ['powershell', '-c', f'(New-Object Media.SoundPlayer "{file_path}").PlaySync()'],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                )
+                cmd = lambda f: ['powershell', '-c',
+                                 f'(New-Object Media.SoundPlayer "{f}").PlaySync()']
             elif system == "Darwin":
-                proc = subprocess.Popen(
-                    ['afplay', file_path],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                )
+                cmd = lambda f: ['afplay', f]
             else:
-                proc = subprocess.Popen(
-                    ['aplay', file_path],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                )
-
-            # Store the process so stop() can kill it
-            self._audio_proc = proc
-
-            # Poll instead of blocking — check stop flag every 100ms
-            while proc.poll() is None:
-                if self._stop_requested:
-                    proc.terminate()
-                    proc.wait(timeout=2)
-                    return
-                import time
-                time.sleep(0.1)
+                cmd = lambda f: ['aplay', f]
+            self._play_pausable(file_path, '_audio_proc', cmd)
 
         except Exception as e:
             print(f"Error playing audio: {e}")
@@ -1736,6 +1699,95 @@ class TTSService:
                 self._on_error(f"Audio playback error: {e}")
         finally:
             self._audio_proc = None
+
+    # ── Pausing a sound file without freezing the player ──
+    RESUME_BACK_S = 0.25        # resume a little earlier, so no word is clipped
+
+    def _wait_while_paused(self):
+        import time as _time
+        while self._is_paused and not self._stop_requested:
+            _time.sleep(0.05)
+
+    def _play_pausable(self, file_path: str, attr: str, cmd):
+        """Play ``file_path`` with the player ``cmd(path)`` gives, keeping
+        the process in ``self.<attr>`` so stop() can end it. A pause stops
+        the player and keeps the place; resume plays on from there, from a
+        copy of the rest of the sound (or from the start of this file if
+        it cannot be cut). Returns when the sound ends or stop() is asked."""
+        import subprocess
+        import time as _time
+        offset, current, temps = 0.0, file_path, []
+        try:
+            while not self._stop_requested:
+                self._wait_while_paused()
+                if self._stop_requested:
+                    return
+                proc = subprocess.Popen(cmd(current), stdin=subprocess.DEVNULL,
+                                        stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL)
+                setattr(self, attr, proc)
+                started, paused_at = _time.monotonic(), None
+                while proc.poll() is None:
+                    if self._stop_requested:
+                        self._end_proc(proc)
+                        return
+                    if self._is_paused:
+                        paused_at = _time.monotonic() - started
+                        self._end_proc(proc)
+                        break
+                    _time.sleep(0.05)
+                setattr(self, attr, None)
+                if paused_at is None:
+                    return                              # played to the end
+                offset = max(0.0, offset + paused_at - self.RESUME_BACK_S)
+                self._wait_while_paused()
+                if self._stop_requested:
+                    return
+                rest = self._sound_from(file_path, offset)
+                if rest == "":
+                    return                              # paused at the very end
+                if rest is None:
+                    offset, current = 0.0, file_path   # cannot cut: this file again
+                else:
+                    current = rest
+                    temps.append(rest)
+        finally:
+            setattr(self, attr, None)
+            for f in temps:
+                try:
+                    os.unlink(f)
+                except OSError:
+                    pass
+
+    @staticmethod
+    def _end_proc(proc):
+        proc.terminate()
+        try:
+            proc.wait(timeout=1.0)
+        except Exception:
+            proc.kill()
+
+    @staticmethod
+    def _sound_from(file_path: str, seconds: float):
+        """A temporary WAV of ``file_path`` from ``seconds`` on; "" when
+        nothing is left; None when the file cannot be read."""
+        try:
+            import soundfile as sf
+            import tempfile
+            info = sf.info(file_path)
+            start = int(seconds * info.samplerate)
+            if start >= info.frames:
+                return ""
+            data, rate = sf.read(file_path, start=start, always_2d=True)
+            if not len(data):
+                return ""
+            fd, out = tempfile.mkstemp(suffix=".wav", prefix="tts_resume_")
+            os.close(fd)
+            sf.write(out, data, rate)
+            return out
+        except Exception as e:
+            print(f"[TTS] resume from the place failed ({e}); this part plays again")
+            return None
 
     def stop(self):
         """Stop speaking immediately."""

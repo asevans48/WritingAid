@@ -44,7 +44,7 @@ three rounds:**
   compares). The D.2a design for the One Improve window (for your
   review).
 
-Tests: 1,834 pass in one run, none fail. No screen count rose above
+Tests: 1,846 pass in one run, none fail. No screen count rose above
 `screens_baseline.json` in any of these (D.4's 5 top-level tabs, against
 10 in the baseline, is still yours to agree).
 
@@ -642,7 +642,11 @@ changes. No model needed.)
       "1 marked"); M again on it unmarks it.
 - [ ] Esc or ⏹ Stop reading stops it; the highlight goes, and M and Space
       type normally again.
-- [ ] With the cursor mid-chapter, listening starts at that sentence.
+- [ ] Highlight a few sentences, then Listen and mark: only those are read
+      and only those can be marked; it stops at the end of the highlight,
+      and your highlight comes back. With nothing highlighted, the whole
+      chapter is read from the top. *(Fixed 25 Nov: a highlight used to be
+      ignored.)*
 - [ ] Read Aloud ▾ → Marks in this chapter: each mark listed; choosing one
       selects its sentence. Edit a marked sentence: the list says "(the
       text has changed)" and keeps the mark.
@@ -751,6 +755,19 @@ start the app once and wait a minute)
       and it stays gone; Accept merges (with the usual warning if the
       voices differ).
 
+**Two fixes you asked for (25 November)**
+- [ ] **Listen and mark with a highlight:** highlight a few sentences, then
+      Read Aloud ▾ → 👂 Listen and mark. Only those sentences are read and
+      can be marked, it stops at the end of the highlight, and your
+      highlight comes back. With nothing highlighted, the whole chapter is
+      read from the top.
+- [ ] **Pause no longer stutters** (Kokoro, and every voice that plays a
+      sound file: Chatterbox, VibeVoice, Edge, the basic Mac voices). Read
+      Aloud, then ⏸ Pause: silence, with no looping scrap of sound.
+      ▶ Resume carries on from where it stopped, a quarter-second earlier
+      so no word is clipped. Also try Space while listening and marking,
+      and pausing in the short gap between paragraphs.
+
 **When you are happy**
 Already committed by you: phase 3, D.3, 2.5 and 0.5 (7e48893); R.7, D.1,
 9.2, 7.1 (206300a); D.7 and D.9 (ccc779b); D.8, P.2a, 4.1, 7.3, P.3, D.6,
@@ -761,6 +778,10 @@ chapter's prose profile (d0d347e, 58226e9).
 - [ ] Commit round 2: 6.1, 6.2, V.3, V.4 and V.5.
 - [ ] Commit round 3: D.9's and D.8's second sessions, the D.2a design
       and 0.3's screen check.
+- [ ] Commit the two fixes: Listen and mark reads only the highlight
+      (`src/ui/listen_mark.py`), and pause without the stutter
+      (`src/services/tts_service.py`, `tests/test_tts_pause.py`). The D.2a
+      answers (decision 16) are in the docs.
 - [ ] For anything you reject, untick it in the README tracker and write why
       under the piece's *Review notes*.
 
@@ -1037,8 +1058,9 @@ Write each answer in the README under *Decisions*, or tell the session.
 - [ ] **V.2: a group with one project** reads "very alike" (nothing to
       compare). V.5 will show "one project" instead, unless you prefer
       otherwise.
-- [ ] **6.1: listening choices.** Built: it starts at the cursor's
-      sentence (the top when the cursor is at the top); Space, M and Esc
+- [ ] **6.1: listening choices.** Built: with text highlighted, only the
+      highlight is read and marked; otherwise the whole chapter from the top
+      (*answered 25 Nov: your fix*); Space, M and Esc
       are taken over only while listening; M toggles a mark. With a neural
       voice each sentence is made separately, so there may be a pause
       between sentences: acceptable, or use the system voice for Listen?
