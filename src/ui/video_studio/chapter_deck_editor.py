@@ -18,6 +18,12 @@ one segment). They can then:
 
 The deck lives on ``VideoStudio.chapter_decks`` so the writer
 can come back to a half-edited deck across sessions.
+
+**Kept with no way in (D.12, D.14).** Nothing opens this editor yet: the
+Studio's "Export chapter deck" uses ``ChapterDeckExportDialog``, which has
+none of the reordering, per-segment transitions or voice-over. It is kept,
+on the writer's word (27 Nov 2026), because F.10 is to reuse it; deleting
+it would cut planned abilities that have no other home.
 """
 
 from __future__ import annotations

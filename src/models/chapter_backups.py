@@ -8,16 +8,93 @@ Kept:
   text, however old, so blanking a chapter can always be undone.
 
 Everything else is pruned. File names and folders are unchanged.
+
+**Names (D.12).** A copy is named for the second it was made,
+``backup_YYYYMMDD_HHMMSS.md``, as every copy before D.12 was. A second
+copy in the same second used to take the same name and write over the
+first (rule 15); now it is ``backup_YYYYMMDD_HHMMSS_2.md`` (``_3`` …,
+always one more than the highest already there for that second), so no
+copy is ever written over (``new_path``). ``parse_name`` reads both forms:
+the Nth copy of a second is dated N − 1 microseconds after it, so copies
+sort in the order they were made and each has its own time to restore.
+An older version of the app lists only the first form; it leaves the
+others alone (it never deletes a name it cannot read).
 """
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence, Tuple
 
 KEEP_RECENT = 3
 KEEP_DAYS = 14
+
+PREFIX = "backup_"
+STAMP = "%Y%m%d_%H%M%S"
+_NAME = re.compile(r"backup_(\d{8}_\d{6})(?:_(\d+))?")
+
+
+def parse_name(stem: str) -> Optional[datetime]:
+    """The time of a copy from its file name (without ``.md``):
+    ``backup_YYYYMMDD_HHMMSS`` or ``backup_YYYYMMDD_HHMMSS_N`` (N ≥ 2).
+    None for any other name."""
+    m = _NAME.fullmatch(stem)
+    if not m:
+        return None
+    try:
+        dt = datetime.strptime(m.group(1), STAMP)
+    except ValueError:
+        return None
+    n = int(m.group(2)) if m.group(2) else 1
+    if m.group(2) and n < 2:
+        return None
+    return dt + timedelta(microseconds=n - 1) if n < 1_000_000 else None
+
+
+def new_path(folder: Path, when: datetime) -> Path:
+    """A name for a new copy made at ``when`` that no copy has: the
+    second's own name, or ``_N`` one higher than any copy of that second
+    already in ``folder``. Never an existing file."""
+    stamp = when.strftime(STAMP)
+    highest = 0
+    for f in folder.glob(f"{PREFIX}{stamp}*.md"):
+        m = _NAME.fullmatch(f.stem)
+        if m and m.group(1) == stamp:
+            highest = max(highest, int(m.group(2)) if m.group(2) else 1)
+    n = highest + 1
+    while True:
+        path = folder / (f"{PREFIX}{stamp}.md" if n == 1 else f"{PREFIX}{stamp}_{n}.md")
+        if not path.exists():
+            return path
+        n += 1
+
+
+def copy_new(source: Path, folder: Path, when: datetime) -> Path:
+    """Copy ``source`` into ``folder`` as a new copy made at ``when``
+    (``new_path``), created exclusively: if a file appears at that name
+    first, the next free name is used. Returns the copy's path."""
+    import shutil
+    while True:
+        path = new_path(folder, when)
+        try:
+            with open(source, "rb") as src, open(path, "xb") as out:
+                shutil.copyfileobj(src, out)
+        except FileExistsError:
+            continue
+        try:
+            shutil.copystat(source, path)
+        except OSError:
+            pass
+        return path
+
+
+def label(dt: datetime) -> str:
+    """How a copy's time is shown (Revert to Saved Copy ▸): to the second,
+    and "(2)", "(3)" … for later copies of the same second."""
+    text = dt.strftime("%b %d, %Y  %I:%M:%S %p")
+    return text + (f" ({dt.microsecond + 1})" if dt.microsecond else "")
 
 Backup = Tuple[datetime, Path]
 

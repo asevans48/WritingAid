@@ -14,6 +14,7 @@ from src.models.worldbuilding_objects import (
 )
 from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
 from src.ui.ui_kit import PALETTE, main_button  # one look (D.8)
+from src.ui.ui_kit import confirm_delete
 
 
 class RitualEditor(QDialog):
@@ -744,6 +745,8 @@ class CultureElementList(QWidget):
     def _remove_element(self):
         items = self.list_widget.selectedItems()
         if not items:
+            return
+        if not confirm_delete(self, "entry", items[0].text()):   # D.14
             return
         idx = self.list_widget.row(items[0])
         self.elements.pop(idx)

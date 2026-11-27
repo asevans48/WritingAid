@@ -3318,6 +3318,7 @@ class MainWindow(QMainWindow):
             "QTabBar::tab:selected { background: white; "
             "  color: #4f46e5; } "
             "QTabBar::tab:hover:!selected { color: #4f46e5; }")
+        from src.ui import tab_names; tab_names.whole(self.sidebar_tabs, 11)   # D.13c: whole tab names
         self.sidebar_tabs.addTab(self.chat_widget, "💬 AI Assistant")
         self.sidebar_tabs.addTab(self.outline_panel, "📋 Chapter Outline")
 
@@ -4055,6 +4056,8 @@ class MainWindow(QMainWindow):
         try:
             self._collect_project_data()
             self.current_project.save_project(file_path)
+            from src.ui import manuscript_tree  # D.14: the writer's save ends the last move's Undo
+            manuscript_tree.forget_last(getattr(self, "manuscript_editor", None))
             self.statusBar().showMessage(f"Saved: {file_path}")
             # Remember this project for next startup
             self.ai_config.set_last_project_path(file_path)
@@ -14429,7 +14432,8 @@ class MainWindow(QMainWindow):
         from src.data import scene_marks  # 7.4: "Mark scene breaks", only with markers
         dlg = ExportDocumentDialog(
             has_current_chapter=current_chapter is not None,
-            parent=self, scene_marks=scene_marks.any_marks(self.current_project))
+            parent=self, scene_marks=scene_marks.any_marks(self.current_project),
+            project=self.current_project)  # D.13b: the tick remembered per project
         if not dlg.exec():
             return
         scope = dlg.scope()
@@ -14527,7 +14531,8 @@ class MainWindow(QMainWindow):
                 success = exporter.export_for_barnes_noble(file_path)
             elif format_type == "publisher":
                 from src.ui.export_route import kind_label                # 9.2
-                success = exporter.export_publisher_ready(file_path, kind=kind_label(self.current_project))
+                success = exporter.export_publisher_ready(  # D.13b: marked scenes get "#"
+                    file_path, kind=kind_label(self.current_project), project=self.current_project)
             elif format_type == "docx":
                 success = exporter.export_to_docx(file_path)
 

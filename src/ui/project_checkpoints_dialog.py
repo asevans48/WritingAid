@@ -312,13 +312,20 @@ class ProjectCheckpointsDialog(QDialog):
                 progress=progress),
             can_cancel=False)
         if error is not None:
+            # D.14: the restore unpacks beside the project and then swaps,
+            # so a failure leaves it unchanged, except when putting it back
+            # failed too: then the error says exactly where each part is.
             e = error
-            QMessageBox.warning(
-                self, "Restore failed",
-                f"Could not restore the checkpoint:\n\n{e}\n\n"
-                f"Your project is unchanged. The auto-checkpoint "
-                f"of pre-restore state was either not needed or "
-                f"failed cleanly.")
+            if getattr(e, "unchanged", True):
+                QMessageBox.warning(
+                    self, "Restore failed",
+                    f"Could not restore the checkpoint:\n\n{e}\n\n"
+                    f"Your project is unchanged.")
+            else:
+                QMessageBox.critical(
+                    self, "Restore incomplete",
+                    f"{e}\n\nThe \"Before restore\" checkpoint holds the project "
+                    f"as it was before you chose Restore.")
             return
         if self._on_after_restore is not None:
             try:

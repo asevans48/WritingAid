@@ -16,7 +16,7 @@ modified flag. Each sentence is held by a ``QTextCursor``, which follows
 any typing the writer does while listening.
 
 **Where it is:** "👂 Listen and mark" in the Write toolbar's
-"🗣 Read Aloud ▾" menu, and "Marks in this chapter" beside it (only when
+"🔊 Read Aloud ▾" menu, and "Marks in this chapter" beside it (only when
 there are marks) to go to a marked sentence. While listening, the
 Read Aloud button pauses and resumes and its ⏹ Stop reading stops.
 No new button.
@@ -565,7 +565,7 @@ def _show(owner) -> None:
     place = f"{min(s.index + 1, s.total)}/{s.total}"
     marked = f" · {len(s._marked)} marked" if s._marked else ""
     btn.setText(("▶ Resume " if s.paused else "⏸ ") + place + marked)
-    btn.setToolTip("Listening. " + KEYS_HINT)
+    btn.setToolTip("Read Aloud: listening. " + KEYS_HINT)      # D.13b: its name first
     for name, on in (("tts_stop_btn", True), ("tts_read_range_btn", False)):
         w = getattr(owner, name, None)
         if w is not None:
@@ -580,7 +580,8 @@ def _finished(owner, why: str) -> None:
     owner._listen_session = None
     btn = getattr(owner, "tts_speak_btn", None)
     if btn is not None:
-        btn.setToolTip("Read the chapter aloud (or the selection)")
+        from src.ui import write_ribbon                       # D.13b: its name first
+        btn.setToolTip(write_ribbon.tip_text(*write_ribbon.TIPS["read"]))
     reset = getattr(owner, "_reset_tts_buttons", None)
     if reset is not None:
         reset()

@@ -42,6 +42,35 @@ on the tree's right-click. The switch's stored ``write/manuscript_tree``
 **Move main chapters into this novella** (a novella row's menu) moves
 every main chapter with ``chapter_move.move_chapters``, the main
 manuscript's drafts with them, and offers Undo (``move_main_into``, D.11).
+**Turn main manuscript into a novella…** (the main row's menu, the first
+novella's "Move into …", and the offer after dropping the last novella)
+makes the novella and then does the same move (``turn_main_into_novella``,
+D.12). Each question says what Undo covers and what it does not
+(``undo_note``).
+
+**Undo lasts until the next save** (D.14). The status bar's Undo still goes
+after 30 seconds or when another message replaces it; the last move also
+stays on the tree's right-click ("Undo the last move (…)", on a manuscript
+row and under a chapter's Move to ▸) until the writer next saves the
+project (File ▸ Save Project, Ctrl+S, the toolbar's Save, Save As:
+``forget_last``), the next move, another project being opened, or the app
+closing. The autosaves do not end it: they run after every move and
+chapter switch, so they would end it at once. Undo after a move that made
+a novella ("Turn main manuscript into a novella…", the first novella's
+"Move into …", Move to ▸ ＋ A new novella…) also removes that novella if
+it holds nothing of its own, and otherwise keeps it and says why ("kept:
+it has Critique reports"). What counts is ``src/data/novella_content.py``
+(D.14b): chapters, drafts, files in its folder, anything saved for it
+beside the project, or a name or description changed since.
+
+**Renaming a chapter** (D.13, in place of the Chapter Title row): double-click
+it, press F2, or right-click ▸ Rename…, and its title is edited in the
+tree. Enter keeps it, Esc cancels, an empty title is refused. The title is
+saved as the title box saved it (``set_chapter_title``): the chapter, the
+tree, the open editor, the window's "unsaved" mark and so autosave, and
+everything that reads the title (exports, the Critique). The status bar
+says "Renamed …" with Undo; Ctrl+Z in the tree does the same. Each
+chapter's full title is in its tooltip.
 """
 
 from __future__ import annotations
@@ -50,10 +79,10 @@ from contextlib import contextmanager
 from typing import Any, Dict, List, Optional, Tuple
 
 from PyQt6.QtCore import QPoint, Qt, QTimer
-from PyQt6.QtGui import QCursor
+from PyQt6.QtGui import QAction, QCursor, QKeySequence
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QHeaderView, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton,
-    QStatusBar, QTreeWidget, QTreeWidgetItem,
+    QAbstractItemView, QHeaderView, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox,
+    QPushButton, QStatusBar, QStyledItemDelegate, QTreeWidget, QTreeWidgetItem,
 )
 
 SETTING_KEY = "write/manuscript_tree"   # the retired switch (D.10); left in place, unread (D.11)
@@ -67,6 +96,8 @@ NEW_NOVELLA = "＋ New novella…"
 MOVE_TO = "Move to"
 MOVE_TO_NEW = "＋ A new novella…"
 NOTICE_MS = 30000
+RENAME = "Rename…"
+CHAPTER_WORD = "chapter"                 # decision 18: the word in one place
 
 
 # ── Install (the call line in ``ManuscriptEditor._init_ui``) ────────────
@@ -82,7 +113,7 @@ def install(manuscript_editor: Any) -> None:
         notice.setWordWrap(True)
         notice.setVisible(False)
         notice.setTextFormat(Qt.TextFormat.RichText)
-        notice.linkActivated.connect(lambda _l: tree.undo_last())
+        notice.linkActivated.connect(lambda _l: tree.run_undo())
         lay.insertWidget(at + 2, notice)
         tree.notice = notice
         me.manuscript_tree = tree
@@ -109,8 +140,82 @@ def add_move_menu(manuscript_editor: Any, menu: QMenu) -> None:
     try:
         if tree is not None:
             tree.fill_move_menu(menu)
+            tree.rename_in_place(menu)
     except Exception as e:                       # the menu still opens
         print(f"[manuscript tree] no Move to: {e}")
+
+
+def set_chapter_title(manuscript_editor: Any, chapter: Any, title: str) -> None:
+    """Give ``chapter`` its new title everywhere the Chapter Title box did:
+    the chapter, its row in the (hidden) chapter list and so the tree, the
+    open editor's title (which is what it saves), and the "unsaved" mark
+    and autosave through ``content_changed``."""
+    me = manuscript_editor
+    chapter.title = title
+    in_list = False
+    lst = me.chapter_list
+    for r in range(lst.count()):
+        item = lst.item(r)
+        if item.data(Qt.ItemDataRole.UserRole) == chapter.id and me.manuscript is not None \
+                and any(c is chapter for c in me.manuscript.chapters):
+            item.setText(f"{chapter.number}. {title}")
+            in_list = True
+    ce = me.current_chapter_editor
+    if in_list and ce is not None and getattr(ce, "chapter", None) is chapter:
+        ce.title_edit.setPlainText(title)        # emits content_changed, as typing in it did
+    else:
+        me.content_changed.emit()
+
+
+UNDO_MENU = "Undo the last move"
+UNTIL_SAVED = ("until you next save the project yourself (Save Project, Ctrl+S; the app's "
+               "own autosaves don't count), make another move or close the app")
+
+
+def undo_note(n_drafts: int, novella: str = "", new: bool = False) -> str:
+    """What Undo covers, for the questions before moving the whole main
+    manuscript (D.12, D.14). Undo is the status bar's button (``announce``):
+    it shows for ``NOTICE_MS`` and goes when another message replaces it.
+    The last move also stays on the tree's right-click (``UNDO_MENU``) until
+    the writer next saves the project (``forget_last``, from File ▸ Save
+    Project / Save As; the autosaves, which run after every move and
+    chapter switch, do not end it), the next move, or the app closing.
+    A novella the move made is removed by Undo if it holds nothing of its
+    own (``novella_content.holds``, D.14b). Chapters can always be moved back by hand (Move to ▸); a
+    draft's manuscript cannot be changed by hand, so after Undo has gone
+    the drafts stay with the novella."""
+    where = f"“{novella}”" if novella else "the new novella"
+    what = "the chapters and drafts" if n_drafts else "the chapters"
+    seconds = NOTICE_MS // 1000
+    text = (f"Undo, on the status bar for {seconds} seconds (until another message replaces "
+            f"it), puts {what} back"
+            + (f" and removes {where} (unless something has been added to it or saved "
+               f"for it since)." if new else "."))
+    text += (f" It is also on the manuscript tree's right-click (“{UNDO_MENU}”) {UNTIL_SAVED}.")
+    text += (" After that you can still move the chapters back (right-click ▸ Move to)"
+             + (f", but the drafts stay with {where}." if n_drafts else "."))
+    return text
+
+
+def forget_last(manuscript_editor: Any) -> None:
+    """The writer saved the project (the call line in ``MainWindow._save_to_path``):
+    the last move is no longer offered for Undo (D.14)."""
+    tree = getattr(manuscript_editor, "manuscript_tree", None)
+    try:
+        if tree is not None:
+            tree.forget_last()
+    except Exception as e:                       # saving never fails because of this
+        print(f"[manuscript tree] could not forget the last move: {e}")
+
+
+def _move_question(project: Any, novella: str, new: bool, after: str = "") -> str:
+    main = project.get_main_manuscript()
+    n_drafts = len(project.drafts_for_scope(None))
+    into = f"a new novella '{novella}'" if new else f"'{novella}'"
+    return (f"Move the main manuscript's {len(main.chapters)} chapter(s) and "
+            f"{n_drafts} draft(s) into {into}?{after}\n\n"
+            "The folders are moved, not copied, and the main manuscript will be empty "
+            "afterwards. " + undo_note(n_drafts, novella, new))
 
 
 def move_main_into(manuscript_editor: Any, sp_id: str) -> bool:
@@ -132,11 +237,7 @@ def move_main_into(manuscript_editor: Any, sp_id: str) -> bool:
     after = (f" They'll follow its {len(sp.manuscript.chapters)} existing "
              f"chapter(s)." if sp.manuscript.chapters else "")
     reply = QMessageBox.question(
-        me, "Move chapters",
-        f"Move the main manuscript's {len(main.chapters)} chapter(s) and "
-        f"{len(project.drafts_for_scope(None))} draft(s) into '{sp.name}'?{after}\n\n"
-        "The folders are moved, not copied, and the main manuscript will be empty "
-        "afterwards. Undo is offered on the status bar.",
+        me, "Move chapters", _move_question(project, sp.name, False, after),
         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         QMessageBox.StandardButton.No)
     if reply != QMessageBox.StandardButton.Yes:
@@ -146,6 +247,62 @@ def move_main_into(manuscript_editor: Any, sp_id: str) -> bool:
     except Exception as e:                       # never escape a slot
         print(f"[manuscript tree] move main chapters failed: {e}")
         return False
+
+
+def turn_main_question(project: Any, novella: str) -> str:
+    """The question "Turn main manuscript into a novella…" asks (the call
+    line in ``ManuscriptEditor._turn_main_into_novella``)."""
+    return _move_question(project, novella, True)
+
+
+def turn_main_into_novella(manuscript_editor: Any, name: str, description: str = "") -> bool:
+    """Make novella ``name`` and move every main chapter (and the main
+    manuscript's drafts) into it with the tree's move, with Undo (the call
+    line in ``ManuscriptEditor._create_novella_from_main``; D.12, it used to
+    copy, check and delete through ``move_main_content_to_subproject``).
+    The question has been asked. Ends on the novella, on its first chapter.
+    If the move cannot be made, the new novella is taken away again and
+    nothing else has changed."""
+    me = manuscript_editor
+    project = me.project
+    if project is None or not project.get_main_manuscript().chapters:
+        return False
+    tree = getattr(me, "manuscript_tree", None)
+    if tree is None:                             # never moved without the tree's Undo
+        QMessageBox.information(me, "Move Chapters", "The manuscript tree is not available, "
+                                "so nothing was moved.")
+        return False
+    if tree.draft_open():                        # says why not, makes nothing (as D.10)
+        return False
+    me._flush_current_chapter()
+    sp = project.create_subproject(name, description)
+    me.subprojects_changed.emit()
+    try:
+        moved = tree.move_main_into(sp.id)
+    except Exception as e:                       # never escape a slot
+        print(f"[manuscript tree] turn main into a novella failed: {e}")
+        moved = False
+    if moved:
+        tree.remember_made(sp)                   # Undo removes it while still empty (D.14, D.14b)
+        # The box the writer chose to keep for this move (D.9); Undo stays
+        # on the status bar, its time started again once the box is closed.
+        QMessageBox.information(
+            me, "Chapters Moved",
+            f"Moved {len(sp.manuscript.chapters)} chapter(s) into '{sp.name}'. The main "
+            f"manuscript is now empty.\n\nUndo is on the status bar for "
+            f"{NOTICE_MS // 1000} seconds, and on the manuscript tree's right-click "
+            f"{UNTIL_SAVED}.")
+        tree.announce_again()
+        return True
+    if not moved:
+        me._discard_new_subproject(sp)
+        try:                                     # the file as it was, novella gone too
+            if project.project_path and project.get_subproject(sp.id) is None:
+                project.save_project(project.project_path)
+        except Exception as e:
+            print(f"[manuscript tree] could not save after taking the novella away: {e}")
+        return False
+    return True
 
 
 @contextmanager
@@ -171,6 +328,11 @@ class ManuscriptTree(QTreeWidget):
         self.notice: Optional[QLabel] = None
         self._last = None                        # the last move, for Undo
         self._last_drafts = None                 # (drafts, novella id) moved with it
+        self._last_made = None                   # a novella the move made (D.14)
+        self._made_as = None                     # what it was given then (D.14b)
+        self._last_project = None                # the project it was made in
+        self._last_label = ""                    # "“The Storm” to The Fall", for the menu
+        self._announced = ""                     # the last line shown with Undo
         self._menu_chapters: Optional[List[Tuple[Optional[str], str]]] = None
         self._expanded = set()                   # manuscripts opened by hand
         self._active_seen = object()
@@ -204,6 +366,13 @@ class ManuscriptTree(QTreeWidget):
         self.itemCollapsed.connect(lambda i: self._expanded_changed(i, False))
         self.setToolTip("Click to open · drag a chapter to reorder it or move it to "
                         "another manuscript · right-click for more")
+        # D.13: a chapter's title is edited in place (double-click, F2, Rename…).
+        self.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked
+                             | QAbstractItemView.EditTrigger.EditKeyPressed)
+        self.setItemDelegateForColumn(0, _TitleDelegate(self))
+        self._undo_fn = self.undo_last           # what the status bar's Undo does
+        self._last_rename = None                 # (chapter, old title, new title)
+        self._rebuild_after_edit = False
         from src.ui.ui_kit import PALETTE
         self.setStyleSheet(
             "QTreeWidget#manuscriptTree { background: white; border: 1px solid "
@@ -224,6 +393,16 @@ class ManuscriptTree(QTreeWidget):
         self.rebuild()
 
     def keyPressEvent(self, event) -> None:
+        if event.matches(QKeySequence.StandardKey.Undo) and self._last_rename is not None:
+            self.undo_rename()                   # Ctrl+Z after a rename
+            event.accept()
+            return
+        if event.key() == Qt.Key.Key_F2 and self.currentItem() is not None \
+                and self.currentItem().data(0, KIND) == CH \
+                and self.state() != QAbstractItemView.State.EditingState:
+            self.editItem(self.currentItem(), 0)  # F2 on every platform (on a Mac, Qt's
+            event.accept()                       # edit key is Enter, which opens here)
+            return
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self.currentItem() is not None:
             self.activate(self.currentItem())    # arrows move; Enter opens
             event.accept()
@@ -255,6 +434,9 @@ class ManuscriptTree(QTreeWidget):
 
     def rebuild(self) -> None:
         self._timer.stop()
+        if self.state() == QAbstractItemView.State.EditingState:
+            self._rebuild_after_edit = True      # never close a title being typed
+            return
         me, project = self.me, self._project()
         active = self._active()
         if active != self._active_seen:          # a new manuscript open: only it expanded
@@ -305,7 +487,9 @@ class ManuscriptTree(QTreeWidget):
                     child.setData(0, SCOPE, scope or "")
                     child.setData(0, CHAPTER, cid)
                     child.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
-                                   | Qt.ItemFlag.ItemIsDragEnabled)
+                                   | Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsEditable)
+                    child.setToolTip(0, f"{text}\n\nClick to open · double-click or F2 to "
+                                        "rename · drag to move · right-click for more")
                     top.addChild(child)
                     if is_active and cid == open_id:
                         current = child
@@ -498,6 +682,10 @@ class ManuscriptTree(QTreeWidget):
             menu.addSeparator()
             a = menu.addAction("Drop novella and its content…")
             actions[a] = lambda: me._delete_subproject(scope)
+        if self.undo_available():                # D.14: until the next save
+            menu.addSeparator()
+            a = menu.addAction(self.undo_menu_text())
+            actions[a] = self.undo_last
         menu.addSeparator()
         a = menu.addAction(NEW_NOVELLA)
         actions[a] = me._create_subproject
@@ -508,6 +696,7 @@ class ManuscriptTree(QTreeWidget):
         me = self.me
         chosen = self.selected_chapters()
         self._menu_chapters = chosen if (scope, cid) in chosen else [(scope, cid)]
+        self._menu_target = (scope, cid)
         try:
             if (scope or None) != self._active() and self._project() is not None:
                 self.open_chapter(scope, cid)
@@ -520,6 +709,7 @@ class ManuscriptTree(QTreeWidget):
                 me._show_chapter_context_menu(QPoint(0, 0))
         finally:
             self._menu_chapters = None
+            self._menu_target = None
 
     def fill_move_menu(self, menu: QMenu) -> QMenu:
         me, project = self.me, self._project()
@@ -560,7 +750,93 @@ class ManuscriptTree(QTreeWidget):
         else:
             menu.addSeparator()
             menu.addMenu(sub)
+        if self.undo_available():                # D.14: until the next save
+            undo = QAction(self.undo_menu_text(), menu)
+            undo.triggered.connect(lambda _=False: self.run_undo_last())
+            if before is not None:
+                menu.insertAction(before, undo)
+            else:
+                menu.addAction(undo)
         return sub
+
+    # ── renaming a chapter (D.13) ──
+
+    def chapter_object(self, scope: Optional[str], cid: str):
+        """The Chapter a row stands for (the open manuscript's, or a draft's
+        while one is open, as the list shows it)."""
+        me, project = self.me, self._project()
+        if project is None or (scope or None) == self._active():
+            ms = me.manuscript
+        else:
+            ms = project.get_manuscript_for(scope)
+        return next((c for c in getattr(ms, "chapters", None) or [] if c.id == cid), None)
+
+    def rename_chapter(self, scope: Optional[str], cid: str, title: str) -> bool:
+        """The edited title, kept: refused when empty, nothing when the same."""
+        chapter = self.chapter_object(scope, cid)
+        if chapter is None:
+            return False
+        title = " ".join((title or "").split())
+        if not title:
+            self.announce(f"A {CHAPTER_WORD} needs a title, so “{chapter.title}” was kept.",
+                          undo=False)
+            return False
+        if title == chapter.title:
+            return False
+        old = chapter.title
+        set_chapter_title(self.me, chapter, title)
+        self._last_rename = (chapter, old, title)
+        self.schedule()
+        self.announce(f"Renamed “{old}” to “{title}”", undo_fn=self.undo_rename)
+        return True
+
+    def undo_rename(self) -> bool:
+        """The last rename's Undo (the status bar's, or Ctrl+Z in the tree)."""
+        last, self._last_rename = self._last_rename, None
+        if last is None:
+            return False
+        chapter, old, new = last
+        self._hide_notice()
+        if chapter.title != new:                 # renamed again since: leave it
+            return False
+        set_chapter_title(self.me, chapter, old)
+        self.schedule()
+        self.announce(f"Put back “{old}”", undo=False)
+        return True
+
+    def edit_title(self, scope: Optional[str], cid: str) -> bool:
+        """Start editing a chapter's title in place."""
+        item = self.chapter_item(scope, cid)
+        if item is None:
+            return False
+        self.setCurrentItem(item)
+        self.scrollToItem(item)
+        self.setFocus()
+        self.editItem(item, 0)
+        return True
+
+    def rename_in_place(self, menu: QMenu) -> None:
+        """The chapter menu's Rename becomes "Rename…", editing the title in
+        the tree (the box it asked in before is still ``_rename_chapter``)."""
+        act = next((a for a in menu.actions() if a.text() == "Rename"), None)
+        target = getattr(self, "_menu_target", None)
+        if act is None or target is None:
+            return
+        act.setText(RENAME)
+        act.setToolTip("Edit the title here in the tree (or double-click it, or press F2)")
+        try:
+            act.triggered.disconnect()
+        except TypeError:
+            pass
+        scope, cid = target
+        act.triggered.connect(
+            lambda _=False: QTimer.singleShot(0, lambda: self.edit_title(scope, cid)))
+
+    def closeEditor(self, editor, hint) -> None:   # noqa: N802 — Qt's name
+        super().closeEditor(editor, hint)
+        if self._rebuild_after_edit:
+            self._rebuild_after_edit = False
+            self.schedule()
 
     # ── drag and drop ──
 
@@ -688,10 +964,7 @@ class ManuscriptTree(QTreeWidget):
         me, project = self.me, self._project()
         if project is None:
             return False
-        if me._active_draft is not None:
-            QMessageBox.information(
-                me, "Move Chapters", "You are editing a draft. Switch “Editing:” back to "
-                "the manuscript to move its chapters.")
+        if self.draft_open():
             return False
         chapters = [(s or None, c) for s, c in chapters if (s or None) != (target or None)]
         if not chapters:
@@ -724,7 +997,20 @@ class ManuscriptTree(QTreeWidget):
         what = f"“{titles[0]}”" if len(titles) == 1 else f"{len(titles)} chapters"
         self._last = result
         self._last_drafts = None
+        self._last_made = None
+        self._last_project = project
+        self._last_label = f"{what} to {where}"
         self.announce(f"Moved {what} to {where}")
+        return True
+
+    def draft_open(self) -> bool:
+        """While "Editing:" shows a draft no chapter moves: says so."""
+        me = self.me
+        if me._active_draft is None:
+            return False
+        QMessageBox.information(
+            me, "Move Chapters", "You are editing a draft. Switch “Editing:” back to "
+            "the manuscript to move its chapters.")
         return True
 
     def move_to_new_novella(self, chapters: List[Tuple[Optional[str], str]]) -> bool:
@@ -742,6 +1028,7 @@ class ManuscriptTree(QTreeWidget):
         if not self.move_to(chapters, sp.id):
             me._discard_new_subproject(sp)
             return False
+        self.remember_made(sp)                   # Undo removes it while still empty (D.14, D.14b)
         return True
 
     def move_main_into(self, sp_id: str) -> bool:
@@ -778,12 +1065,42 @@ class ManuscriptTree(QTreeWidget):
                 pass
         return True
 
+    def undo_available(self) -> bool:
+        """The last move can still be undone: there is one, made in the
+        project that is open, not ended by a save (D.14)."""
+        return (self._last is not None and self._project() is not None
+                and self._last_project is self._project())
+
+    def undo_menu_text(self) -> str:
+        return f"{UNDO_MENU} ({self._last_label})" if self._last_label else UNDO_MENU
+
+    def forget_last(self) -> None:
+        """The writer saved: the last move is no longer offered (D.14)."""
+        self._last = self._last_drafts = self._last_made = self._last_project = None
+        self._made_as = None
+        self._last_label = ""
+        if self._undo_fn == self.undo_last:
+            self._hide_notice()
+
+    def run_undo_last(self) -> None:
+        try:
+            self.undo_last()
+        except Exception as e:                   # never escape a slot
+            print(f"[manuscript tree] undo failed: {e}")
+
     def undo_last(self) -> bool:
-        """Undo on the status bar: the same move back to the same place."""
+        """Undo (the status bar's, or the tree's right-click until the next
+        save): the same move back to the same place; a novella the move
+        made is removed too, if it holds nothing of its own (D.14b)."""
         me, project, result = self.me, self._project(), self._last
-        if project is None or result is None:
+        if project is None or result is None or not self.undo_available():
+            return False
+        if self.draft_open():                    # says why not; Undo stays
             return False
         self._last = None
+        self._last_project = None
+        self._last_label = ""
+        made, self._last_made = self._last_made, None
         drafts, self._last_drafts = self._last_drafts, None
         self._hide_notice()
         reopen = me._current_chapter_id
@@ -806,8 +1123,54 @@ class ManuscriptTree(QTreeWidget):
                                  f"where they are now.\n\n{e}")
             return False
         self._after(back[0] if back else reopen)
-        self.announce("Put back where it was.", undo=False)
+        said = "Put back where it was." if back else (
+            "Nothing was put back: the moved chapters are no longer there.")
+        if made:
+            said += " " + self._drop_made(made)
+        self.announce(said.strip(), undo=False)
         return True
+
+    def remember_made(self, sp: Any) -> None:
+        """The novella this move made, and what it was given (D.14b)."""
+        from src.data import novella_content
+        self._last_made = sp.id
+        self._made_as = novella_content.snapshot(sp)
+
+    def _drop_made(self, sp_id: str) -> str:
+        """After Undo: take away the novella the move made if it holds
+        nothing of its own (``novella_content.holds``: no chapters, drafts,
+        files but its ``subproject.json``, nothing saved for it beside the
+        project, nothing changed since it was made), else keep it and say
+        why (D.14, D.14b). Nothing that held anything is deleted from disk."""
+        me, project = self.me, self._project()
+        sp = project.get_subproject(sp_id) if project is not None else None
+        if sp is None:
+            return ""
+        name = f"“{sp.name}”"
+        made, self._made_as = getattr(self, "_made_as", None), None
+        from src.data import novella_content
+        try:
+            try:
+                project_dir = me._get_project_dir()
+            except Exception:
+                project_dir = None
+            what = novella_content.holds(project, sp_id, project_dir, made)
+        except Exception as e:                   # unsure: kept
+            print(f"[manuscript tree] could not tell what the novella holds: {e}")
+            what = ["something that could not be checked"]
+        if what:
+            return f"{name} was kept: {novella_content.because(what)}."
+        try:
+            if project.active_subproject_id == sp_id:
+                me.switch_subproject(None)
+            me._discard_new_subproject(sp)
+            if project.project_path and project.get_subproject(sp_id) is None:
+                project.save_project(project.project_path)
+        except Exception as e:
+            print(f"[manuscript tree] could not remove the empty novella: {e}")
+            return ""
+        self.rebuild()
+        return f"{name} was removed."
 
     # ── the status-bar line ──
 
@@ -817,7 +1180,23 @@ class ManuscriptTree(QTreeWidget):
             return win.statusBar()
         return None
 
-    def announce(self, text: str, undo: bool = True) -> None:
+    def announce_again(self) -> None:
+        """Show the last move's line and Undo once more, for its full time
+        (after a box that was open while the first one ran)."""
+        if self._last is not None and self._announced:
+            self.announce(self._announced)
+
+    def run_undo(self) -> None:
+        try:
+            self._undo_fn()
+        except Exception as e:                   # never escape a slot
+            print(f"[manuscript tree] undo failed: {e}")
+
+    def announce(self, text: str, undo: bool = True, undo_fn=None) -> None:
+        """The status-bar line, with Undo: a move's (``undo_last``) unless
+        ``undo_fn`` is given (a rename's)."""
+        self._undo_fn = undo_fn or self.undo_last
+        self._announced = text if undo and undo_fn is None else ""
         bar = self._status_bar()
         if bar is None:                           # no status bar: a line under the tree
             if self.notice is not None:
@@ -838,7 +1217,7 @@ class ManuscriptTree(QTreeWidget):
             btn.clicked.disconnect()
         except TypeError:
             pass
-        btn.clicked.connect(lambda _=False: self.undo_last())
+        btn.clicked.connect(lambda _=False: self.run_undo())
         win._tree_undo_text = text if undo else None
         bar.showMessage(text, NOTICE_MS)
         btn.setVisible(undo)
@@ -851,6 +1230,47 @@ class ManuscriptTree(QTreeWidget):
         if btn is not None:
             btn.setVisible(False)
             win._tree_undo_text = None
+
+
+class _TitleDelegate(QStyledItemDelegate):
+    """Edits a chapter row's title alone (the row reads "3. The Storm").
+    Enter keeps it, Esc cancels; the tree is rebuilt from the chapter."""
+
+    def __init__(self, tree: ManuscriptTree):
+        super().__init__(tree)
+        self.tree = tree
+
+    def createEditor(self, parent, option, index):   # noqa: N802 — Qt's name
+        if index.data(KIND) != CH:
+            return None
+        edit = QLineEdit(parent)
+        edit.setPlaceholderText(f"The {CHAPTER_WORD}'s title")
+        return edit
+
+    def setEditorData(self, editor, index) -> None:   # noqa: N802
+        chapter = self.tree.chapter_object(index.data(SCOPE) or None, index.data(CHAPTER))
+        editor.setText(chapter.title if chapter is not None else "")
+        editor.selectAll()
+
+    def setModelData(self, editor, model, index) -> None:   # noqa: N802
+        try:
+            self.tree.rename_chapter(index.data(SCOPE) or None, index.data(CHAPTER),
+                                     editor.text())
+        except Exception as e:                   # never escape a slot
+            print(f"[manuscript tree] rename failed: {e}")
+
+
+def _has_files(manuscript_editor: Any, sp_id: str) -> bool:
+    """Any file in the novella's folder but its own ``subproject.json``."""
+    try:
+        project_dir = manuscript_editor._get_project_dir()
+    except Exception:
+        project_dir = None
+    if not project_dir:
+        return False
+    folder = project_dir / "subprojects" / sp_id
+    return folder.is_dir() and any(p.is_file() and p.name != "subproject.json"
+                                   for p in folder.rglob("*"))
 
 
 def _modifiers():

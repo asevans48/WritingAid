@@ -1,13 +1,14 @@
-"""Overly descriptive statements: the sub-module the Suggestions dialog,
-the editor and the Critique tab share.
+"""Overly descriptive statements: the sub-module the Improve window's
+🔍 Expand tab, the editor and the Critique tab share.
 
 ``OverdescriptionPanel`` lists the flagged statements, shows why each
 reads as over-described and the ways to expand it, and lets the writer
 accept (and edit) an expansion. It doesn't touch the manuscript itself:
 it emits ``accepted(index, text)`` and the host applies it.
 
-``ExpandStatementDialog`` hosts the panel on its own for a highlighted
-passage (from the editor's context menu or a Critique-tab link).
+The old Overly descriptive? window (``ExpandStatementDialog``) that hosted
+the panel on its own was deleted in D.12: nothing opened it after D.11;
+the Improve window's 🔍 Expand tab does everything it did.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from typing import Any, Dict, List, Optional, Set
 from PyQt6.QtCore import QThread, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QTextCharFormat, QTextCursor
 from PyQt6.QtWidgets import (
-    QDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QPushButton,
+    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QPushButton,
     QFrame, QScrollArea, QSplitter, QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
 )
 
@@ -405,148 +406,6 @@ class MoreWorker(QThread):
             self.done.emit(self.index, found, "")
         except Exception as e:
             self.done.emit(self.index, [], f"Couldn't get more ideas: {e}")
-
-
-def start_worker(worker: QThread) -> None:
-    background.start(worker)
-
-
-# ── Standalone dialog ────────────────────────────────────────────────
-
-class ExpandStatementDialog(QDialog):
-    """Overly descriptive statements in a passage, with ways to expand
-    them. ``replacement`` holds the passage with the accepted expansions
-    after Accept."""
-
-    def __init__(self, text: str, start: int, end: int, project=None, chapter=None,
-                 parent=None, worker_factory=ReviewWorker, more_factory=MoreWorker):
-        super().__init__(parent)
-        self.text, self.start, self.end = text, start, end
-        self.project, self.chapter = project, chapter
-        self.passage = text[start:end]
-        self.state = ExpansionState(self.passage)
-        self.replacement: Optional[str] = None
-        self._worker_factory, self._more_factory = worker_factory, more_factory
-        self._worker = self._more_worker = None
-        self._llm = self._ctx = self._voice = None
-        self.setWindowTitle("Overly descriptive?")
-        self.resize(860, 620)
-        layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("<b>Passage</b> — overly descriptive statements are "
-                                "highlighted"))
-        self.passage_view = QTextEdit()
-        self.passage_view.setReadOnly(True)
-        self.passage_view.setPlainText(self.passage)
-        self.passage_view.setMaximumHeight(120)
-        layout.addWidget(self.passage_view)
-        self.panel = OverdescriptionPanel(self)
-        self.panel.accepted.connect(self._on_accepted)
-        self.panel.more_requested.connect(self._on_more)
-        layout.addWidget(self.panel, 1)
-        buttons = QHBoxLayout()
-        buttons.addStretch()
-        close = QPushButton("Close")
-        close.clicked.connect(self.reject)
-        buttons.addWidget(close)
-        self.use_btn = QPushButton("Use These Changes")
-        self.use_btn.setDefault(True)
-        self.use_btn.setEnabled(False)
-        self.use_btn.clicked.connect(self._use)
-        buttons.addWidget(self.use_btn)
-        layout.addLayout(buttons)
-        self._run()
-
-    def _run(self):
-        # The word scan needs no model and takes milliseconds: show it at
-        # once; the AI's review takes its place when it comes.
-        try:
-            scanned = od.scan(self.passage)
-            self.panel.set_review(od.Review(scanned, error="checking"))
-            highlight_flags(self.passage_view, self.passage, scanned)
-            self._provisional = True
-            self.panel.set_busy(self._scan_line() + " The AI is checking them…")
-        except Exception as e:
-            print(f"[overdescription] could not show the word scan: {e}")
-            self.panel.set_busy("Starting…")
-        worker = self._worker_factory(self.project, self.chapter, self.text, self.start,
-                                      self.end)
-        worker.progress.connect(self._progress)
-        worker.done.connect(self._on_review)
-        self._worker = worker
-        start_worker(worker)
-
-    _provisional = False
-
-    def _scan_line(self) -> str:
-        n = len(self.panel.review.flags) if self.panel.review is not None else 0
-        if not n:
-            return "The word scan found nothing."
-        return (f"The word scan found {n} statement{'s' if n != 1 else ''} that may be overly "
-                f"descriptive (highlighted).")
-
-    def _progress(self, message: str):
-        if self._provisional:
-            message = f"{self._scan_line()} The AI is checking them: {message}"
-        self.panel.set_busy(message)
-
-    def _on_review(self, review, note: str):
-        try:
-            w = self._worker
-            provisional, self._provisional = self._provisional, False
-            if provisional and self.state.changed:
-                # Keep the expansions already accepted; the model still
-                # gives "More ideas".
-                self._llm = getattr(w, "llm", None)
-                self._ctx = getattr(w, "ctx", None)
-                self._voice = getattr(w, "voice", None)
-                if self._llm is not None and self._ctx is not None:
-                    self.panel.can_ask_ai = True
-                    self.panel._enable(self.panel.current_flag() is not None)
-                    self.panel.status.setText("The AI's review is ready; your accepted "
-                                              "changes are kept. Ask for more ideas below.")
-                return
-            self._llm = getattr(w, "llm", None)
-            self._ctx = getattr(w, "ctx", None)
-            self._voice = getattr(w, "voice", None)
-            self.panel.set_review(review, can_ask_ai=self._llm is not None
-                                  and self._ctx is not None)
-            highlight_flags(self.passage_view, self.passage, review.flags)
-        except Exception as e:         # an exception escaping a slot aborts PyQt6
-            print(f"[overdescription] could not show the review: {e}")
-
-    def _on_accepted(self, index: int, text: str):
-        flag = self.panel.review.flags[index]
-        if not self.state.apply(index, flag, text):
-            self.panel.status.setText("That statement isn't in the passage any more.")
-            return
-        if text != flag.text:
-            log_accepted(self.project, flag.text, text)
-        self.panel.mark_applied(index, None if text == flag.text else text)
-        self.passage_view.setExtraSelections([])
-        self.passage_view.setPlainText(self.state.text)
-        self.use_btn.setEnabled(self.state.changed)
-
-    def _on_more(self, index: int, note: str):
-        flag = self.panel.review.flags[index]
-        worker = self._more_factory(self._llm, self._ctx, flag, index, self._voice, note)
-        worker.done.connect(self.panel.add_expansions)
-        self._more_worker = worker
-        start_worker(worker)
-
-    def _use(self):
-        if self.state.changed:
-            self.replacement = self.state.text
-            self.accept()
-
-    def done(self, code: int) -> None:
-        for w, slot in ((self._worker, self._on_review),
-                        (self._more_worker, self.panel.add_expansions)):
-            if w is not None:
-                try:
-                    w.done.disconnect(slot)
-                except TypeError:
-                    pass
-        super().done(code)
 
 
 def _short(text: str, n: int = 60) -> str:

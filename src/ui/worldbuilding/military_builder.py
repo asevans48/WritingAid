@@ -15,6 +15,7 @@ from src.models.worldbuilding_objects import Army, MilitaryBranch, Faction
 from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
 from src.ui import notify  # D.9: messages that need no click
 from src.ui.ui_kit import scroll_dialog  # U.3b
+from src.ui.ui_kit import confirm_delete
 
 
 class MilitaryBranchEditor(QDialog):
@@ -515,7 +516,8 @@ class ArmyEditorDialog(QDialog):
     def _remove_branch(self):
         """Remove branch."""
         current = self.branches_list.currentRow()
-        if self.army and current >= 0 and current < len(self.army.branches):
+        if self.army and current >= 0 and current < len(self.army.branches) and confirm_delete(
+                self, "branch", self.branches_list.item(current).text()):   # D.14
             self.army.branches.pop(current)
             self._refresh_branch_list()
 

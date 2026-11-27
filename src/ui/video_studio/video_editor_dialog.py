@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
 )
 
 from src.video_studio.models import VoiceoverSegment
+from src.ui.ui_kit import confirm_delete  # D.14
 from src.video_studio.stitcher import (
     ffmpeg_available, mix_voiceover_segments, mux_audio,
 )
@@ -735,7 +736,9 @@ class VideoEditorDialog(QDialog):
 
     def _on_remove(self) -> None:
         seg = self._selected_take()
-        if seg is None:
+        if seg is None or not confirm_delete(   # D.14
+                self, "take", getattr(seg, "label", "") or "", verb="Remove",
+                detail="Its audio file is kept on disk."):
             return
         self._voiceovers = [
             s for s in self._voiceovers if s.id != seg.id]

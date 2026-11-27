@@ -9,7 +9,7 @@ format's own italics, bold and headings, or plain text, never asterisks
 import html
 import uuid
 import zipfile
-from typing import List, Optional
+from typing import Any, List, Optional
 from xml.sax.saxutils import escape as _xml_escape
 
 from docx import Document
@@ -448,7 +448,8 @@ class ManuscriptExporter:
         # B&N Press uses standard EPUB format
         return self.export_for_kindle(output_path)
 
-    def export_publisher_ready(self, output_path: str, kind: str = "Novel") -> bool:
+    def export_publisher_ready(self, output_path: str, kind: str = "Novel",
+                               project: Any = None) -> bool:
         """
         Export manuscript in standard manuscript format (DOCX) for agent
         submissions: see ``standard_manuscript`` (9.2). Title page with an
@@ -456,13 +457,42 @@ class ManuscriptExporter:
         12pt Times New Roman, double-spaced, 1-inch margins, half-inch
         indents, each chapter on a new page, "#" scene breaks, real
         italics.
+
+        With ``project`` (D.13b, 7.4's answer), the scenes the writer
+        marked always get the centred "#" too, in the exported copy only;
+        a chapter without markers is written exactly as before.
         """
         try:
             from src.export import standard_manuscript
-            return standard_manuscript.write(self.manuscript, output_path, kind=kind)
+            return standard_manuscript.write(self._with_scene_marks(project), output_path,
+                                             kind=kind)
         except Exception as e:
             print(f"Error exporting publisher-ready manuscript: {e}")
             return False
+
+    def _with_scene_marks(self, project: Any) -> Any:
+        """The manuscript, or a copy whose chapters carry a "#" at each
+        marked scene (7.4's markers). Nothing is changed in the project."""
+        if project is None:
+            return self.manuscript
+        try:
+            from src.data import scene_marks
+            if not scene_marks.any_marks(project):
+                return self.manuscript
+            chapters = list(self.manuscript.chapters)
+            marked = scene_marks.with_breaks(project, chapters)
+            if all(a is b for a, b in zip(marked, chapters)):
+                return self.manuscript
+            try:
+                return self.manuscript.model_copy(update={"chapters": marked})
+            except Exception:
+                import copy
+                dup = copy.copy(self.manuscript)
+                dup.chapters = marked
+                return dup
+        except Exception as e:                       # the export goes ahead unmarked
+            print(f"[export] scene breaks not marked: {e}")
+            return self.manuscript
 
     def export_outline_to_docx(self, output_path: str, include_notes: bool = True,
                                include_todos: bool = True) -> bool:

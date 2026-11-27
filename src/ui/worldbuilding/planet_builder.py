@@ -12,6 +12,7 @@ import uuid
 
 from src.models.worldbuilding_objects import Planet, PlanetType
 from src.ui.ui_kit import PALETTE, compact_button, main_button  # narrow buttons show their symbol
+from src.ui.ui_kit import confirm_delete
 
 
 class PlanetEditor(QWidget):
@@ -555,7 +556,7 @@ class PlanetEditor(QWidget):
     def _remove_moon(self):
         """Remove selected moon."""
         current = self.moons_list.currentRow()
-        if current >= 0:
+        if current >= 0 and confirm_delete(self, "moon", self.moons_list.item(current).text()):   # D.14
             self.moons_list.takeItem(current)
 
     def _add_continent(self):
@@ -568,7 +569,7 @@ class PlanetEditor(QWidget):
     def _remove_continent(self):
         """Remove selected continent."""
         current = self.continents_list.currentRow()
-        if current >= 0:
+        if current >= 0 and confirm_delete(self, "continent", self.continents_list.item(current).text()):   # D.14
             self.continents_list.takeItem(current)
 
     def _add_city(self):
@@ -581,7 +582,7 @@ class PlanetEditor(QWidget):
     def _remove_city(self):
         """Remove selected city."""
         current = self.cities_list.currentRow()
-        if current >= 0:
+        if current >= 0 and confirm_delete(self, "city", self.cities_list.item(current).text()):   # D.14
             self.cities_list.takeItem(current)
 
     def _add_climate(self):
@@ -594,7 +595,7 @@ class PlanetEditor(QWidget):
     def _remove_climate(self):
         """Remove selected climate zone."""
         current = self.climate_list.currentRow()
-        if current >= 0:
+        if current >= 0 and confirm_delete(self, "climate zone", self.climate_list.item(current).text()):   # D.14
             self.climate_list.takeItem(current)
 
     def _apply_climate_preset(self):
@@ -802,7 +803,7 @@ class PlanetBuilderWidget(QWidget):
     def _remove_planet(self):
         """Remove selected planet."""
         current = self.planet_list.currentItem()
-        if current:
+        if current and confirm_delete(self, "planet", current.text()):   # D.14
             planet_id = current.data(Qt.ItemDataRole.UserRole)
             self.planets = [p for p in self.planets if p.id != planet_id]
             self.planet_list.takeItem(self.planet_list.row(current))

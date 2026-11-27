@@ -20,6 +20,9 @@ and new ones are cheaper to build:
   ``PRIMARY_BUTTON`` for an existing main button, ``text_style`` for a
   label's colour and size, and the spacing ``GAP``, ``PANEL_MARGIN`` and
   ``DIALOG_MARGIN``.
+* **Before a delete (D.14):** ``confirm_delete`` asks one plain question
+  naming the item and saying it can't be undone, with Cancel the default
+  (``delete_question`` gives its words), so every warning reads the same.
 * **Colours:** ``PALETTE`` (from ``styles.COLORS``), ``PROBLEM_COLOURS``
   (one colour per kind of problem, from ``style_checks.KINDS`` and the
   editor's flag colours) and ``STAGE_COLOURS``.
@@ -1071,3 +1074,43 @@ def fold_into_menu(text: str, buttons, tip: str = "", parent: Optional[QWidget] 
         btn.setFixedHeight(h)
         btn.setMinimumWidth(h)
     return btn
+
+
+# ── Before a delete that can't be undone (D.14) ─────────────────────────
+
+CANT_UNDO = "This can't be undone."
+
+
+def _named(name: str, limit: int = 60) -> str:
+    name = " ".join(str(name or "").split())
+    return name if len(name) <= limit else name[:limit - 1] + "…"
+
+
+def delete_question(kind: str, name: str = "", verb: str = "Delete",
+                    detail: str = "") -> str:
+    """The words of the question: "Delete the place “Old Harbor”? ¶ This
+    can't be undone." (a long name is shortened with …; with no name,
+    "Delete this place?"; a counted kind, "Delete 3 map items?"). ``detail`` adds a sentence before the last line."""
+    shown = _named(name)
+    if shown:
+        head = f"{verb} the {kind} “{shown}”?"
+    else:                                        # "Delete 3 map items?" / "Delete this map item?"
+        head = f"{verb} {kind}?" if kind[:1].isdigit() else f"{verb} this {kind}?"
+    return head + (f"\n\n{detail}" if detail else "") + f"\n\n{CANT_UNDO}"
+
+
+def confirm_delete(parent: Optional[QWidget], kind: str, name: str = "", *,
+                   verb: str = "Delete", detail: str = "", empty: bool = False) -> bool:
+    """Ask before a delete that can't be undone; True to go ahead. The box
+    is titled "Delete place?" (the verb and kind), answers Yes or Cancel,
+    and Cancel is the default, so Enter or Esc keeps the item. ``empty``
+    (nothing typed in it yet, nothing to lose) goes ahead without asking.
+    A question about deleting stays a box (D.9)."""
+    if empty:
+        return True
+    from PyQt6.QtWidgets import QMessageBox
+    reply = QMessageBox.question(
+        parent, f"{verb} {kind}?", delete_question(kind, name, verb, detail),
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+        QMessageBox.StandardButton.Cancel)
+    return reply == QMessageBox.StandardButton.Yes

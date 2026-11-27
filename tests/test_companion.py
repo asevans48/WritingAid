@@ -259,7 +259,9 @@ def chapter_editor(app, project, content):
 def test_banner_and_card_on_open(app, project):
     cs.record_session(project, "c1", 10, 60, "The fog closed in.")
     ed = chapter_editor(app, project, "Mara rowed. The fog closed in.")
-    assert ed.companion_banner.isVisible()
+    # D.13c follow-up: no blue line on a chapter with the ribbon; the words
+    # are still kept, and shown in the Companion.
+    assert not ed.companion_banner.isVisible()
     assert "next: Slip past the patrol boat" in ed.companion_banner.label.text()
     assert "Next beat" in ed.companion.panel.left_off_label.text()
 
@@ -564,19 +566,24 @@ def test_more_options_and_note_fix_open_suggestions_with_a_focus(app, project, m
     assert _card_fixes(ed) == [] and ed.companion.panel.notes == []
 
 
-def test_suggestions_dialog_takes_a_focus(app, project):
-    from src.ui.passage_critique_dialog import PassageCritiqueDialog, SuggestionWorker
+def test_suggestions_take_a_focus(app, project):
+    # Was the old Suggestions window's test; D.12 moved it to the Improve window.
+    from src.ui.improve_window import ImproveWindow
+    from src.ui.passage_critique_dialog import SuggestionWorker
+    seen = []
 
     class NoModel(SuggestionWorker):
         def __init__(self, *a):
             super().__init__(*a, llm_factory=lambda: (None, "off"))
+            seen.append(self.focus)
 
         def start(self):
             self.run()
 
-    dlg = PassageCritiqueDialog(FIX_TEXT, 0, 32, project, chapter(project),
-                                worker_factory=NoModel, focus="make the dark felt")
-    assert dlg.focus_edit.text() == "make the dark felt"
+    win = ImproveWindow(FIX_TEXT, 0, 32, project, chapter(project),
+                        suggestion_worker=NoModel, focus="make the dark felt")
+    assert win.tab_objects["suggestions"].focus_edit.text() == "make the dark felt"
+    assert seen == ["make the dark felt"]                   # the run asked with it
 
 
 def test_locate_sentence():

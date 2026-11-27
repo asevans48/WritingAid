@@ -41,12 +41,15 @@ def ai_available() -> bool:
     return on()
 
 
-def model_draft(kind: str, project: Any, scope: Optional[str], comps: List[str]):
+def model_draft(kind: str, project: Any, scope: Optional[str], comps: List[str],
+                agent: Optional[dict] = None):
     """Worker-thread work: the writing model's draft (never on the GUI thread)."""
     from src.ai import word_suggest
     llm = word_suggest.get_llm()
     if llm is None:
         raise RuntimeError("no model is set up")
+    if agent:
+        return sp.draft(llm, kind, project, scope, comps, agent=agent)
     return sp.draft(llm, kind, project, scope, comps)
 
 
@@ -63,6 +66,7 @@ class PackageView(QWidget):
         self._loading = True                 # until built: no signal reaches the store
         self._busy = False
         self._task = None
+        self.agents_source = lambda: []      # the agent list's agents (set by show_in)
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.setInterval(self.SAVE_AFTER_MS)
@@ -87,6 +91,17 @@ class PackageView(QWidget):
         self.scope_pick.setToolTip("Which manuscript: each has its own package")
         self.scope_pick.currentIndexChanged.connect(self._scope_changed)
         top.addWidget(self.scope_pick)
+        # The query letter's agent, from the agent list (9.3 addendum).
+        # Long names elide; shown only for the query letter.
+        self.to_pick = QComboBox()
+        self.to_pick.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.to_pick.setMinimumContentsLength(10)
+        self.to_pick.setToolTip("Who the query letter is addressed to, from your agent list. "
+                                "Compose Email on an agent's page does the same.")
+        self.to_pick.currentIndexChanged.connect(self._to_changed)
+        self.to_pick.setVisible(False)
+        top.addWidget(self.to_pick)
         top.addStretch(1)
         outer.addLayout(top)
 
@@ -185,6 +200,7 @@ class PackageView(QWidget):
         self.comps_box.setVisible(kind == "audience")
         if kind == "audience":
             self._load_comps()
+        self.refresh_agents()
         self._load_text()
         self._label_buttons()
         self._fill_if_empty()
@@ -258,6 +274,82 @@ class PackageView(QWidget):
             print(f"[submission] {e}")
         super().hideEvent(event)
 
+    # ── The query's agent (9.3 addendum) ─────────────────────────────
+
+    NO_AGENT = "To: no agent chosen"
+
+    def addressee(self) -> dict:
+        """The agent the query letter is addressed to ({} for none)."""
+        if self.project is None:
+            return {}
+        to = store.document(self.project, self.scope, "query").get("to")
+        return dict(to) if isinstance(to, dict) else {}
+
+    def refresh_agents(self) -> None:
+        """The To list: no agent, then the agent list's agents."""
+        from src.ai import query_address as qa
+        shown = self.kind == "query" and self.project is not None
+        self.to_pick.setVisible(shown)
+        if not shown:
+            return
+        was = self._loading
+        self._loading = True
+        self.to_pick.clear()
+        self.to_pick.addItem(self.NO_AGENT, None)
+        to = self.addressee()
+        pick = 0
+        for agent in self.agents_source() or []:
+            info = qa.agent_info(agent)
+            if not info.get("name"):
+                continue
+            label = info["name"] + (f" · {info['agency']}" if info.get("agency") else "")
+            self.to_pick.addItem(f"To: {label}", info)
+            self.to_pick.setItemData(self.to_pick.count() - 1, label,
+                                     Qt.ItemDataRole.ToolTipRole)   # the full name when elided
+            if to and (info.get("id") == to.get("id") or
+                       (not to.get("id") and info["name"] == to.get("name"))):
+                pick = self.to_pick.count() - 1
+        if to.get("name") and not pick:                 # no longer in the list: still shown
+            self.to_pick.addItem(f"To: {to['name']}", to)
+            pick = self.to_pick.count() - 1
+        self.to_pick.setCurrentIndex(pick)
+        self._loading = was
+
+    def _to_changed(self, _i: int) -> None:
+        if not self._loading:
+            self.address_to(self.to_pick.currentData())
+
+    def address_to(self, info: Optional[dict], ask=None) -> dict:
+        """Address the query letter to ``info`` (None: no agent). An edited
+        letter has only its greeting changed, after the writer says yes."""
+        from src.ai import query_address as qa
+        if self.project is None:
+            return {}
+        self.flush()
+        res = qa.address(self.project, self.scope, qa.agent_info(info), ask or self._ask,
+                         chosen_comps=self.comps())
+        self.refresh_query()
+        if res.get("note") or res.get("kept"):
+            extra = res.get("note") or ""
+            if res.get("kept"):
+                extra = (extra + " Your earlier text is kept: More ▾ › Earlier versions.").strip()
+            self._show_status(store.document(self.project, self.scope, self.kind), extra)
+        return res
+
+    def _ask(self, question: str) -> bool:
+        from PyQt6.QtWidgets import QMessageBox
+        return QMessageBox.question(
+            self, "Query letter", question,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        ) == QMessageBox.StandardButton.Yes
+
+    def refresh_query(self) -> None:
+        """The stored letter changed elsewhere (Compose Email): show it."""
+        if self.kind == "query" and self.project is not None:
+            self._timer.stop()
+            self._load_text()
+            self.refresh_agents()
+
     # ── Comparable titles ────────────────────────────────────────────
 
     def _load_comps(self) -> None:
@@ -318,12 +410,13 @@ class PackageView(QWidget):
         if use_model is None:
             use_model = ai_available()
         project, scope, kind, comps = self.project, self.scope, self.kind, self.comps()
+        agent = self.addressee() if kind == "query" else {}
         self._set_busy(True, "Drafting with the model…" if use_model else "Filling in…")
 
         def work():
             if use_model:
-                return model_draft(kind, project, scope, comps)
-            return {"text": sp.template(kind, project, scope, chosen_comps=comps),
+                return model_draft(kind, project, scope, comps, agent)
+            return {"text": sp.template(kind, project, scope, chosen_comps=comps, agent=agent),
                     "model": "", "fit": None}
 
         def done(result, error):
@@ -433,10 +526,12 @@ def show_in(manager: Any, wanted: bool) -> bool:
         if view is None:
             view = manager.package_view = PackageView()
             view.set_project(manager.project)
+        view.agents_source = lambda: manager.agents     # the query's To list (9.3 addendum)
         manager.current_agent_widget = None     # replaced (and deleted) below
         if area.widget() is not view:
             area.setWidget(view)
         view.show()
+        view.refresh_agents()                   # names may have changed on an agent's page
         # Room for the drafts: the page scrolls on a small screen instead.
         area.setMinimumHeight(view.fontMetrics().lineSpacing() * 24)
         return True

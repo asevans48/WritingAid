@@ -760,26 +760,24 @@ class Chapter(BaseModel):
         Keeps the most recent _MAX_BACKUPS copies, the first copy of each
         of the last fourteen days, and the last copy with text when the
         chapter is being blanked (``chapter_backups.to_remove``). Files are
-        named ``backup_YYYYMMDD_HHMMSS.md`` inside the chapter folder.
+        named ``backup_YYYYMMDD_HHMMSS.md`` inside the chapter folder, with
+        ``_2``, ``_3`` … for later copies in the same second
+        (``chapter_backups.new_path``, D.12), so no copy is written over.
         Also migrates the old single ``working_backup.md`` if present.
         """
         if not current_file.exists():
             return
         try:
-            import shutil
+            from src.models.chapter_backups import copy_new, new_path
             backup_dir = project_dir / self.folder_path
 
-            # Migrate legacy single-file backup → timestamped
+            # Migrate legacy single-file backup → timestamped (never onto
+            # an existing copy: D.12)
             legacy = backup_dir / "working_backup.md"
             if legacy.exists():
                 legacy_stat = legacy.stat()
                 legacy_dt = datetime.fromtimestamp(legacy_stat.st_mtime)
-                ts = legacy_dt.strftime("%Y%m%d_%H%M%S")
-                legacy.rename(backup_dir / f"backup_{ts}.md")
-
-            # Create new timestamped backup
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_path = backup_dir / f"backup_{ts}.md"
+                legacy.rename(new_path(backup_dir, legacy_dt))
 
             # Only create if content actually differs from the most recent backup
             existing_backups = self._list_backups(project_dir)
@@ -791,7 +789,9 @@ class Chapter(BaseModel):
                     if latest_text == current_text:
                         return  # No change since last backup
 
-            shutil.copy2(str(current_file), str(backup_path))
+            # A name no copy has, so two saves in one second keep two
+            # copies (D.12; the second used to write over the first).
+            copy_new(current_file, backup_dir, datetime.now())
 
             # Prune: keep the newest few, the first of each recent day, and
             # the last copy with text when the chapter is being blanked.
@@ -816,15 +816,13 @@ class Chapter(BaseModel):
             return []
         backup_dir = project_dir / self.folder_path
         backups = []
+        from src.models.chapter_backups import parse_name
         for f in backup_dir.glob("backup_*.md"):
-            # Parse timestamp from filename: backup_YYYYMMDD_HHMMSS.md
-            stem = f.stem  # e.g. "backup_20260328_143022"
-            try:
-                ts_str = stem[len("backup_"):]
-                dt = datetime.strptime(ts_str, "%Y%m%d_%H%M%S")
+            # backup_YYYYMMDD_HHMMSS.md, or …_N.md for a later copy in the
+            # same second (D.12); any other name is not a copy.
+            dt = parse_name(f.stem)
+            if dt is not None:
                 backups.append((dt, f))
-            except (ValueError, IndexError):
-                continue
         backups.sort(key=lambda x: x[0], reverse=True)
         return backups
 

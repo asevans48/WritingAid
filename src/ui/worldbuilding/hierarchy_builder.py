@@ -14,6 +14,7 @@ from src.models.worldbuilding_objects import PowerHierarchy, HierarchyNode
 from src.ui.ui_kit import PALETTE, compact_button, empty_state, main_button  # narrow buttons show their symbol
 from src.ui.ui_kit import FlowLayout, short_label  # U.3a, U.3b
 from src.ui import notify  # D.9: messages that need no click
+from src.ui.ui_kit import confirm_delete
 
 
 class HierarchyNodeEditor(QWidget):
@@ -107,7 +108,7 @@ class HierarchyNodeEditor(QWidget):
     def _remove_responsibility(self):
         """Remove responsibility."""
         current = self.responsibilities_list.currentRow()
-        if current >= 0:
+        if current >= 0 and confirm_delete(self, "responsibility", self.responsibilities_list.item(current).text()):   # D.14
             self.responsibilities_list.takeItem(current)
 
     def save_to_model(self):
@@ -252,6 +253,9 @@ class HierarchyTreeWidget(QWidget):
             QMessageBox.warning(self, "Cannot Remove", "Cannot remove the root node.")
             return
 
+        if not confirm_delete(self, "node", current_item.text(0),   # D.14
+                              detail="Every node under it goes too."):
+            return
         # Find and remove node
         node = next((n for n in self.hierarchy.nodes if n.id == node_id), None)
         if node:
@@ -426,7 +430,7 @@ class HierarchyEditor(QWidget):
     def _remove_ally(self):
         """Remove ally."""
         current = self.allies_list.currentRow()
-        if current >= 0:
+        if current >= 0 and confirm_delete(self, "ally", self.allies_list.item(current).text()):   # D.14
             self.allies_list.takeItem(current)
 
     def _add_enemy(self):
@@ -438,7 +442,7 @@ class HierarchyEditor(QWidget):
     def _remove_enemy(self):
         """Remove enemy."""
         current = self.enemies_list.currentRow()
-        if current >= 0:
+        if current >= 0 and confirm_delete(self, "enemy", self.enemies_list.item(current).text()):   # D.14
             self.enemies_list.takeItem(current)
 
     def save_to_model(self):
@@ -555,7 +559,7 @@ class HierarchyBuilderWidget(QWidget):
     def _remove_hierarchy(self):
         """Remove selected hierarchy."""
         current = self.hierarchy_list.currentItem()
-        if current:
+        if current and confirm_delete(self, "hierarchy", current.text()):   # D.14
             hierarchy_id = current.data(Qt.ItemDataRole.UserRole)
             self.hierarchies = [h for h in self.hierarchies if h.id != hierarchy_id]
             self.hierarchy_list.takeItem(self.hierarchy_list.row(current))

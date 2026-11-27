@@ -17,6 +17,7 @@ from src.ui.styles import SYSTEM_FONT
 from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
 from src.ui import notify  # D.9: messages that need no click
 from src.ui.ui_kit import CHART_COLOURS, PALETTE, main_button  # one look (D.8)
+from src.ui.ui_kit import confirm_delete
 
 
 class TradeRouteGraph(QWidget):
@@ -760,7 +761,8 @@ class EconomyEditorDialog(QDialog):
 
     def _remove_good(self):
         current = self.goods_list.currentRow()
-        if current >= 0 and current < len(self.economy.goods):
+        if current >= 0 and current < len(self.economy.goods) and confirm_delete(
+                self, "good", self.goods_list.item(current).text()):   # D.14
             self.economy.goods.pop(current)
             self._update_goods_list()
 
@@ -784,7 +786,8 @@ class EconomyEditorDialog(QDialog):
 
     def _remove_route(self):
         current = self.routes_list.currentRow()
-        if current >= 0 and current < len(self.economy.trade_routes):
+        if current >= 0 and current < len(self.economy.trade_routes) and confirm_delete(
+                self, "trade route", self.routes_list.item(current).text()):   # D.14
             self.economy.trade_routes.pop(current)
             self._update_routes_list()
 
@@ -1068,6 +1071,8 @@ class EconomyBuilderWidget(QWidget):
         """Remove selected economy."""
         items = self.list_widget.selectedItems()
         if not items:
+            return
+        if not confirm_delete(self, "economy", items[0].text()):   # D.14
             return
 
         current_row = self.list_widget.row(items[0])

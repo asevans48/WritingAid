@@ -20,6 +20,7 @@ from src.ui.plot.plot_event_ordering import normalize_sort_orders
 from src.ui.plot.plot_timeline import PlotTimelineWidget
 from src.ui import notify  # D.9: messages that need no click
 from src.ui.ui_kit import PALETTE, main_button, make_main, plain, plain_qss  # one look (D.8)
+from src.ui.ui_kit import confirm_delete
 
 
 # Plot-AI system prompt. Lives at module scope so the worker thread
@@ -2511,6 +2512,8 @@ class PlotManagerWidget(QWidget):
         items = self.promise_list.selectedItems()
         if not items:
             return
+        if not confirm_delete(self, "promise", items[0].text()):   # D.14
+            return
 
         promise_id = items[0].data(Qt.ItemDataRole.UserRole)
         self.promises = [p for p in self.promises if p.id != promise_id]
@@ -2646,15 +2649,7 @@ class PlotManagerWidget(QWidget):
         if not items:
             return
         tension_id = items[0].data(Qt.ItemDataRole.UserRole)
-        from PyQt6.QtWidgets import QMessageBox
-        confirm = QMessageBox.question(
-            self, "Remove tension?",
-            "Remove this tension from the plot? You can re-add it "
-            "later if you change your mind.",
-            QMessageBox.StandardButton.Yes
-            | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Cancel)
-        if confirm != QMessageBox.StandardButton.Yes:
+        if not confirm_delete(self, "tension", items[0].text(), verb="Remove"):   # D.14: true words
             return
         self.tensions = [t for t in self.tensions
                          if t.id != tension_id]
@@ -2822,14 +2817,7 @@ class PlotManagerWidget(QWidget):
             return
         item = items[0]
         legacy_index = item.data(Qt.ItemDataRole.UserRole + 1)
-        from PyQt6.QtWidgets import QMessageBox
-        confirm = QMessageBox.question(
-            self, "Remove theme?",
-            "Remove this theme? You can re-add it later.",
-            QMessageBox.StandardButton.Yes
-            | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Cancel)
-        if confirm != QMessageBox.StandardButton.Yes:
+        if not confirm_delete(self, "theme", item.text(), verb="Remove"):   # D.14: true words
             return
         if legacy_index is not None:
             self.legacy_themes.pop(legacy_index)
@@ -2952,6 +2940,9 @@ class PlotManagerWidget(QWidget):
     def _remove_event_by_id(self, event_id: str):
         """Delete the event matching this id. Called by the timeline's
         per-card Delete button."""
+        if not confirm_delete(self, "event", next((e.title for e in self.freytag_pyramid.events
+                                                   if e.id == event_id), "")):   # D.14
+            return
         before = len(self.freytag_pyramid.events)
         self.freytag_pyramid.events = [
             e for e in self.freytag_pyramid.events if e.id != event_id]
@@ -3056,6 +3047,8 @@ class PlotManagerWidget(QWidget):
         """Remove selected subplot."""
         items = self.subplot_list.selectedItems()
         if not items:
+            return
+        if not confirm_delete(self, "subplot", items[0].text()):   # D.14
             return
 
         subplot_id = items[0].data(Qt.ItemDataRole.UserRole)

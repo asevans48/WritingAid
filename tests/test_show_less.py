@@ -45,15 +45,21 @@ def _visible_buttons(top):
             if b.isVisibleTo(top) and (b.text().strip() or not b.icon().isNull())]
 
 
-def test_the_write_screen_shows_18_buttons_not_24(me):
+def test_the_write_screen_shows_11_buttons_not_24(me):
     # D.7 made 24 into 19; D.10 folded Novellas ▾ into the manuscript tree,
     # and D.11 retired it with the old row (its entries are the tree's).
+    # D.13 made 18 into 11: the ribbon shows one tab's row (Home first);
+    # Drafts ▾ and ⇅ Split View are on its Draft tab (D.13b renamed
+    # Drafts ▾ to 📚 Manuscript ▾: the same menu).
     texts = [b.text() for b in _visible_buttons(me)]
-    assert len(texts) == 18, texts
+    assert len(texts) == 12, texts   # 12: Details after Draft (27 Nov)
     for gone in ("＋ Novella", "⇢ Move main chapters…", "🗑 Drop novella", "↗", "📋",
-                 "Novellas ▾"):
+                 "Novellas ▾", "⇅ Split View"):
         assert gone not in texts
-    assert "Drafts ▾" in texts and "⇅ Split View" in texts
+    from src.ui import write_ribbon
+    write_ribbon.show_tab(me, write_ribbon.DRAFT, remember=False)
+    texts = [b.text() for b in _visible_buttons(me)]
+    assert "📚 Manuscript ▾" in texts and "⇅ Split View" in texts
 
 
 @pytest.mark.parametrize("menu_attr,label,button_attr", [

@@ -22,7 +22,7 @@ from src.ai.chapter_analysis_agent import (
 )
 from src.ui.rating_bar import RatingBar
 from src.ui import notify  # quiet messages (D.9)
-from src.ui.ui_kit import PALETTE, PRIMARY_BUTTON, plain_qss, text_style  # shared parts (D.8)
+from src.ui.ui_kit import PALETTE, PRIMARY_BUTTON, confirm_delete, plain_qss, text_style  # shared parts (D.8, D.14)
 from src.config.ai_config import get_ai_config
 from src.ai.craft_explanations import CRAFT_EXPLANATIONS
 
@@ -2785,6 +2785,13 @@ class GraderWidget(QWidget):
         Args:
             silent: If True, don't update status label
         """
+        fields = (self.style_edit, self.tone_edit, self.voice_edit, self.plot_edit,
+                  self.characters_edit, self.worldbuilding_edit, self.additional_edit)
+        if not silent and not confirm_delete(   # D.14: Clear asks (the button; not a reload)
+                self, f"{len(fields)} context fields", verb="Clear",
+                empty=not any((f.toPlainText() if hasattr(f, "toPlainText") else f.text()).strip()
+                              for f in fields)):
+            return
         self.style_edit.clear()
         self.tone_edit.clear()
         self.voice_edit.clear()

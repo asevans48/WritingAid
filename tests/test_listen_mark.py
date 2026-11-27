@@ -122,7 +122,7 @@ def test_the_highlight_follows_playback(app, tmp_path):
     _advance(s, sp)                             # the end of the chapter
     assert not s.running and sp.ended == 1
     assert _highlighted(ed) == []
-    assert ed.tts_speak_btn.text() == "🗣 Read Aloud"
+    assert ed.tts_speak_btn.text() == "🔊 Read Aloud"
 
 
 def test_the_key_marks_the_current_sentence(app, tmp_path):

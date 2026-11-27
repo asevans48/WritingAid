@@ -252,6 +252,9 @@ def test_deleting_the_line_in_the_companion_flags_it_again(app, tmp_path, monkey
     row = next(i for i in range(panel.sheet_list.count())
                if "very" in panel.sheet_list.item(i).text())
     panel.sheet_list.setCurrentRow(row)
+    from PyQt6.QtWidgets import QMessageBox      # D.14: Delete asks first; answered Yes
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(
+        lambda *a, **k: QMessageBox.StandardButton.Yes))
     panel._delete_rule()
     app.processEvents()
     assert not p.style_sheet

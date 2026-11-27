@@ -13,6 +13,7 @@ from src.models.worldbuilding_objects import CharacterLifeEvent, EnhancedCharact
 from src.ui.styles import SYSTEM_FONT
 from src.ui.ui_kit import PALETTE, compact_button  # narrow buttons show their symbol
 from src.ui import notify  # D.9: messages that need no click
+from src.ui.ui_kit import confirm_delete
 
 
 class CharacterTimelineVisualization(QWidget):
@@ -207,7 +208,7 @@ class LifeEventEditor(QWidget):
     def _remove_witness(self):
         """Remove witness."""
         current = self.witnesses_list.currentRow()
-        if current >= 0:
+        if current >= 0 and confirm_delete(self, "witness", self.witnesses_list.item(current).text()):   # D.14
             self.witnesses_list.takeItem(current)
 
     def save_to_model(self):
@@ -328,7 +329,7 @@ class CharacterTimelineWidget(QWidget):
     def _remove_event(self):
         """Remove selected event."""
         current = self.event_list.currentItem()
-        if current:
+        if current and confirm_delete(self, "life event", current.text()):   # D.14
             event_id = current.data(Qt.ItemDataRole.UserRole)
             self.character.life_events = [
                 e for e in self.character.life_events if id(e) != event_id

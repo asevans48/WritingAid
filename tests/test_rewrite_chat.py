@@ -105,8 +105,10 @@ def wait(dlg, app):
 
 
 def suggestions_dialog(app, llm):
-    from src.ai import passage_critique as pc
-    from src.ui.passage_critique_dialog import PassageCritiqueDialog, SuggestionWorker
+    """The Improve window's 💡 Suggestions (the old Suggestions window it
+    replaced went in D.12)."""
+    from src.ui.improve_window import ImproveWindow
+    from src.ui.passage_critique_dialog import SuggestionWorker
 
     class Now(SuggestionWorker):
         def __init__(self, *a):
@@ -115,7 +117,7 @@ def suggestions_dialog(app, llm):
         def start(self):
             self.run()
 
-    return PassageCritiqueDialog(PASSAGE, 0, len(PASSAGE), None, None, worker_factory=Now)
+    return ImproveWindow(PASSAGE, 0, len(PASSAGE), None, None, suggestion_worker=Now)
 
 
 FIRST = ("WHAT WORKS:\n- Clear sequence.\n\nWHAT DOESN'T WORK:\n- Flat verbs.\n\n"
@@ -133,33 +135,35 @@ def test_suggestions_conversation(app):
                   "Here's 1 and 3 together.\n\nVERSION 1 (combined):\nCold water on her face "
                   "in the bathroom; then the long hall back to her room, and the lock.\nWHY: "
                   "best of both")
-    dlg = suggestions_dialog(app, llm)
-    assert dlg.suggestion_list.count() == 3 and dlg.chat.send_btn.isEnabled()
+    win = suggestions_dialog(app, llm)
+    tab = win.tab_objects["suggestions"]
+    assert win.version_list.count() == 3 and tab.talk.send_btn.isEnabled()
 
-    dlg._send_message("why is 2 better?")
-    wait(dlg, app)
-    assert "splits the beats" in dlg.chat.plain_text()
-    assert dlg.suggestion_list.count() == 3                     # a question: no new versions
+    tab._send("why is 2 better?")
+    wait(tab, app)
+    assert "splits the beats" in tab.talk.plain_text()
+    assert win.version_list.count() == 3                        # a question: no new versions
     assert "YOUR CRITIQUE OF THE PASSAGE" in llm.prompts[-1] and "Flat verbs" in llm.prompts[-1]
 
-    dlg._send_message("combine 1 and 3")
-    wait(dlg, app)
-    assert dlg.suggestion_list.count() == 4
-    assert dlg.suggestion_list.item(0).text().startswith("Suggestion 1 · revised")
-    assert dlg.preview_edit.toPlainText().startswith("Cold water on her face in the bathroom")
+    tab._send("combine 1 and 3")
+    wait(tab, app)
+    assert win.version_list.count() == 4
+    assert win.version_list.item(0).text().startswith("Suggestion 1 · revised")
+    assert win.preview_edit.toPlainText().startswith("Cold water on her face in the bathroom")
     assert "AUTHOR: why is 2 better?" in llm.prompts[-1]           # remembers the conversation
-    assert "1 new version at the top" in dlg.chat.status.text()
+    assert "1 new version at the top" in tab.talk.status.text()
 
 
 def test_new_critique_starts_a_new_conversation(app):
     llm = FakeLLM(FIRST, "", "Because it's tighter.", FIRST)   # "": overly-descriptive review
-    dlg = suggestions_dialog(app, llm)
-    dlg._send_message("why?")
-    wait(dlg, app)
-    assert dlg.turns
-    dlg._worker = None
-    dlg._generate()
-    assert dlg.turns == [] and dlg.chat.plain_text() == ""
+    win = suggestions_dialog(app, llm)
+    tab = win.tab_objects["suggestions"]
+    tab._send("why?")
+    wait(tab, app)
+    assert tab.turns
+    tab._worker = None
+    tab.generate()
+    assert tab.turns == [] and tab.talk.plain_text() == ""
 
 
 # ── Rephrase dialog ───────────────────────────────────────────────

@@ -12,6 +12,7 @@ from PyQt6.QtCore import pyqtSignal, Qt
 from src.models.worldbuilding_objects import MagicSystem, MagicType, Faction
 from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
 from src.ui.ui_kit import PALETTE, fit_to_screen, main_button  # one look (D.8); U.3b
+from src.ui.ui_kit import confirm_delete
 
 
 class MagicSystemEditor(QDialog):
@@ -373,6 +374,8 @@ class MagicSystemBuilderWidget(QWidget):
     def _remove_magic_system(self):
         items = self.list_widget.selectedItems()
         if not items:
+            return
+        if not confirm_delete(self, "magic system", items[0].text()):   # D.14
             return
         ms_id = items[0].data(Qt.ItemDataRole.UserRole)
         self.magic_systems = [m for m in self.magic_systems if m.id != ms_id]

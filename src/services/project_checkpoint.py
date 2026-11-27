@@ -44,6 +44,7 @@ load/save path depends on the directory existing.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import time
@@ -388,6 +389,93 @@ def _read_checkpoint_meta_from_zip(
         raw=meta)
 
 
+class RestoreIncomplete(RuntimeError):
+    """A restore failed and putting the project back failed too. The
+    message says what is where; ``unchanged`` is False. (Every other
+    failure of ``restore_checkpoint`` leaves the project unchanged.)"""
+    unchanged = False
+
+
+_STAGE_PREFIX = ".restore-"
+_ASIDE_PREFIX = ".before-restore-"
+
+
+def _swap_in(project_dir: Path, zip_path: Path, keep_video_studio: bool,
+             progress=None) -> None:
+    """Unpack ``zip_path`` beside ``project_dir``, then swap it in (D.14)."""
+    cp_dir = _checkpoints_dir(project_dir, create=True)
+    tag = uuid.uuid4().hex[:8]
+    stage = cp_dir / f"{_STAGE_PREFIX}{tag}"
+    aside = cp_dir / f"{_ASIDE_PREFIX}{tag}"
+    stage.mkdir()
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            members = zf.infolist()
+            total = sum(m.file_size for m in members) or 1
+            done = 0
+            _report(progress, 0, total, "Restoring")
+            for member in members:
+                zf.extract(member, stage)
+                done += member.file_size
+                _report(progress, done, total, f"Restoring: {member.filename}")
+    except BaseException:
+        shutil.rmtree(stage, ignore_errors=True)  # only what was unpacked
+        raise
+
+    def keeps(entry: Path) -> bool:
+        return entry.name == CHECKPOINTS_DIRNAME or (
+            keep_video_studio and entry.is_dir()
+            and entry.name.endswith(VIDEO_STUDIO_SUFFIX))
+
+    current = [e for e in project_dir.iterdir() if not keeps(e)]
+    incoming = [e for e in stage.iterdir() if e.name != CHECKPOINTS_DIRNAME]
+    moved_aside: List[Path] = []
+    moved_in: List[str] = []
+    try:
+        aside.mkdir()
+        for e in current:
+            _rename(e, aside / e.name)
+            moved_aside.append(e)
+        for e in incoming:
+            if (project_dir / e.name).exists():       # a kept Video Studio folder: never written over
+                continue
+            _rename(e, project_dir / e.name)
+            moved_in.append(e.name)
+    except BaseException as first:
+        problems = []
+        for name in reversed(moved_in):               # take the unpacked entries out again
+            try:
+                _rename(project_dir / name, stage / name)
+            except OSError as e:
+                problems.append(f"{project_dir / name} (from the checkpoint): {e}")
+        for e in reversed(moved_aside):               # and put the project's own back
+            try:
+                _rename(aside / e.name, e)
+            except OSError as err:
+                problems.append(f"{e.name} is still in {aside}: {err}")
+        if problems:
+            raise RestoreIncomplete(
+                f"The restore failed ({first}) and part of the project could not be put "
+                f"back. The project's own files that were not put back are in {aside}; "
+                f"the unpacked checkpoint is in {stage}. Details: " + "; ".join(problems)
+            ) from first
+        shutil.rmtree(stage, ignore_errors=True)
+        try:
+            aside.rmdir()
+        except OSError:
+            pass
+        raise
+    # Restored. The old state is in the "Before restore" checkpoint (when
+    # one was made); the set-aside copy goes, as the old wipe did.
+    shutil.rmtree(aside, ignore_errors=True)
+    shutil.rmtree(stage, ignore_errors=True)
+
+
+# Every rename in a restore's swap goes through here, so a test can make
+# one fail part-way.
+_rename = os.rename
+
+
 def restore_checkpoint(project_dir: Path,
                        checkpoint: CheckpointInfo,
                        *,
@@ -402,17 +490,23 @@ def restore_checkpoint(project_dir: Path,
          "Before restore (auto)" checkpoint of the current state
          so the user can roll back if the restore was a mistake.
          On by default; pass ``backup_current=False`` to skip.
-      2. **Wipe project_dir** of everything except the
-         ``_checkpoints/`` directory itself (we never delete the
-         user's checkpoint history).
-      3. **Extract the archive** into ``project_dir``. The
-         embedded ``_checkpoint_meta.json`` is also extracted —
-         harmless and self-describing.
+      2. **Unpack the archive beside the project** (into a hidden
+         folder inside ``_checkpoints/``, so on the same disk). If
+         that fails (a damaged archive, a full disk) the project has
+         not been touched (D.14; it used to be emptied first).
+      3. **Swap**: the project's current entries (everything except
+         ``_checkpoints/``, and a Video Studio folder the checkpoint
+         does not hold) are renamed aside, the unpacked ones renamed
+         in. If a rename fails, every entry is put back and the
+         project is as it was. Only then is the set-aside copy
+         removed. The embedded ``_checkpoint_meta.json`` is restored
+         too — harmless and self-describing.
 
     Returns the auto-checkpoint :class:`CheckpointInfo` if one was
-    created, else None. Raises on any failure during extraction
-    (the caller should surface the error; the auto-checkpoint
-    means the user hasn't lost data).
+    created, else None. Raises on any failure; the project is then
+    unchanged, except in the one case :class:`RestoreIncomplete`
+    describes (putting an entry back failed too), whose message says
+    exactly where each part is.
 
     Optional ``progress(done, total, label)`` reports the safety
     checkpoint and then the extraction. A restore cannot be cancelled:
@@ -457,35 +551,10 @@ def restore_checkpoint(project_dir: Path,
                 f"Couldn't create safety checkpoint before "
                 f"restore: {e}. Restore aborted.") from e
 
-    # Wipe project contents EXCEPT _checkpoints/. We rebuild
-    # from the zip in the next step.
-    cp_dirname = CHECKPOINTS_DIRNAME
-    for entry in list(project_dir.iterdir()):
-        if entry.name == cp_dirname:
-            continue
-        if keep_video_studio and entry.is_dir() and entry.name.endswith(VIDEO_STUDIO_SUFFIX):
-            continue                    # not in this checkpoint: leave it as it is
-        try:
-            if entry.is_dir() and not entry.is_symlink():
-                shutil.rmtree(entry)
-            else:
-                entry.unlink()
-        except Exception:
-            # Continue on best-effort — extraction below will
-            # still write what it can. Worst case: leftover
-            # files that the next checkpoint will tidy.
-            pass
-
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        members = zf.infolist()
-        total = sum(m.file_size for m in members) or 1
-        done = 0
-        _report(progress, 0, total, "Restoring")
-        for member in members:
-            zf.extract(member, project_dir)
-            done += member.file_size
-            _report(progress, done, total, f"Restoring: {member.filename}")
-
+    # D.14: unpack beside the project first, then swap. A failure while
+    # unpacking leaves the project exactly as it was; a failure during the
+    # swap puts every entry back where it was (``_swap_in``).
+    _swap_in(project_dir, zip_path, keep_video_studio, progress)
     return auto_info
 
 

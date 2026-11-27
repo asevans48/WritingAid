@@ -197,9 +197,11 @@ def app():
     return QApplication.instance() or QApplication([])
 
 
-def test_dialog_rates_shows_changes_and_logs_use(app, project, monkeypatch):
+def test_suggestions_rate_show_changes_and_log_use(app, project, monkeypatch):
+    # Was the old Suggestions window's test; D.12 moved it to the Improve window.
     import src.data.rephrase_database as rd
-    from src.ui.passage_critique_dialog import PassageCritiqueDialog, SuggestionWorker
+    from src.ui.improve_window import ImproveWindow
+    from src.ui.passage_critique_dialog import SuggestionWorker
     monkeypatch.setattr(rd, "is_collection_enabled", lambda: True)
     llm = FakeLLM(reply("Mara stared at the water and thought of her brother out there.",
                         "Mara watched the dark water and thought of her brother.",
@@ -213,18 +215,18 @@ def test_dialog_rates_shows_changes_and_logs_use(app, project, monkeypatch):
             self.run()
 
     s, e = TEXT.index("Mara looked"), TEXT.index("Tobin waited") - 1
-    dlg = PassageCritiqueDialog(TEXT, s, e, project, project.manuscript.chapters[1],
-                                worker_factory=Now)
-    assert dlg.suggestion_list.count() == 3
-    assert "line-through" in dlg.changes_view.toHtml()
-    dlg.suggestion_list.setCurrentRow(1)
-    dlg.rate_buttons["bad"].click()
-    assert dlg.rating_status.text() == "Saved."
-    dlg.suggestion_list.setCurrentRow(0)
-    dlg._use_selected()
+    win = ImproveWindow(TEXT, s, e, project, project.manuscript.chapters[1],
+                        suggestion_worker=Now)
+    assert win.version_list.count() == 3
+    assert "line-through" in win.changes_view.toHtml()
+    win.version_list.setCurrentRow(1)
+    win.rate_buttons["bad"].click()
+    assert win.rating_status.text() == "Saved."
+    win.version_list.setCurrentRow(0)
+    win._accept()
     rows = rd.get_rephrase_database().rated_examples(project_path="/p/a.json")
     assert [r["rating"] for r in rows["rejected"]] == ["bad"]
-    assert rows["chosen"][0]["output_text"] == dlg.replacement
+    assert rows["chosen"][0]["output_text"] == win.replacement
 
 
 # ── Rephrase ──────────────────────────────────────────────────────

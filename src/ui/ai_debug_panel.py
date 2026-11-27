@@ -51,6 +51,7 @@ class AIDebugPanel(QDockWidget):
         # Tabs for different views
         self.tabs = QTabWidget()
         self.tabs.setStyleSheet("QTabBar::tab { font-size: 11px; padding: 4px 8px; }")
+        from src.ui import tab_names; tab_names.whole(self.tabs, 11)   # D.13c: measured as drawn
 
         # Turn list
         self.turn_list = QTreeWidget()

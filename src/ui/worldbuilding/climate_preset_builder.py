@@ -10,6 +10,7 @@ from PyQt6.QtCore import pyqtSignal, Qt
 
 from src.models.worldbuilding_objects import ClimatePreset
 from src.ui.ui_kit import PALETTE, main_button  # one look (D.8)
+from src.ui.ui_kit import confirm_delete
 
 
 class ClimatePresetEditor(QDialog):
@@ -389,6 +390,8 @@ class ClimatePresetBuilderWidget(QWidget):
         """Remove selected preset."""
         items = self.preset_list.selectedItems()
         if not items:
+            return
+        if not confirm_delete(self, "climate preset", items[0].text()):   # D.14
             return
 
         preset_id = items[0].data(Qt.ItemDataRole.UserRole)

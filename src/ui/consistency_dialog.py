@@ -82,8 +82,9 @@ class ConsistencyDialog(QDialog):
         sv.addWidget(self.jump_btn)
         sv.addStretch()
         hint = QLabel("Double-click an occurrence to jump to it in the manuscript. "
-                      "Changes apply to every chapter, including ones that aren't open, "
-                      "and can be undone per chapter in the editor.")
+                      "Changes apply to every chapter, including ones that aren't open. "
+                      "Only the open chapter's changes can be undone (Ctrl+Z in it); the "
+                      "other chapters are changed directly, with no undo.")   # D.14: true words
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #6b7280; font-size: 11px;")
         sv.addWidget(hint)

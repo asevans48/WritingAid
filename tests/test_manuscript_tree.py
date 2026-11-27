@@ -115,8 +115,11 @@ def test_the_old_row_is_gone_and_the_counts_fall(app, tmp_path):
     from PyQt6.QtWidgets import QPushButton, QTabBar, QToolButton
     buttons = [b.text() for b in w.findChildren((QPushButton, QToolButton))
                if b.isVisibleTo(w) and (b.text().strip() or not b.icon().isNull())]
-    assert "Novellas ▾" not in buttons and len(buttons) == 18, buttons
-    assert not any(b.isVisibleTo(w) for b in w.findChildren(QTabBar))
+    # D.13: 18 became 11 (the top row and the toolbar became a ribbon whose
+    # tab shows its own row), and its tab names are the one tab bar shown.
+    assert "Novellas ▾" not in buttons and len(buttons) == 12, buttons   # 12: Details (27 Nov)
+    ribbon_bar = w.current_chapter_editor.write_ribbon.bar
+    assert not any(b.isVisibleTo(w) for b in w.findChildren(QTabBar) if b is not ribbon_bar)
     # Kept, hidden, and still kept right: other code reads them.
     assert w.subproject_tabs.count() == 2 and w.chapter_list.count() == 3
 
@@ -279,7 +282,8 @@ def test_a_chapters_menu_is_the_old_one_plus_move_to(app, tmp_path, monkeypatch)
     tree.chapter_menu(None, "m2", tree.viewport().mapToGlobal(tree.visualItemRect(item).center()))
     menu = captured[-1]
     labels = _labels(menu)
-    for old in ("Rename", "Insert Before", "New Draft", "Drafts...", "Delete Chapter",
+    # D.13: Rename is "Rename…" and edits the title in the tree.
+    for old in (mt.RENAME, "Insert Before", "New Draft", "Drafts...", "Delete Chapter",
                 "🗑 Bulk Cut Chapters…"):
         assert old in labels
     assert labels.index(mt.MOVE_TO) < labels.index("Delete Chapter")

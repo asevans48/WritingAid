@@ -402,7 +402,7 @@ class ChapterEditor(QWidget):
         # Text-to-Speech — one split button: click reads / pauses, the
         # arrow holds the rest.
         self.tts_speak_btn = QToolButton()
-        self.tts_speak_btn.setText("🗣 Read Aloud")
+        self.tts_speak_btn.setText("🔊 Read Aloud")
         self.tts_speak_btn.setToolTip("Read the chapter aloud (or the selection)")
         self.tts_speak_btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
         self.tts_speak_btn.setStyleSheet("QToolButton { font-size: 12px; padding: 2px 6px; }")
@@ -587,6 +587,7 @@ class ChapterEditor(QWidget):
         self.right_panel.setMinimumWidth(300)
         self.right_panel.setStyleSheet("QTabWidget::pane { border: none; } QTabBar::tab { font-size: 11px; padding: 4px 10px; }"
                                        + plain_qss(size=13, pad="8px 16px"))   # D.8: every side-panel button plain but the main one
+        from src.ui import tab_names; tab_names.whole(self.right_panel, 11)   # D.13c: whole tab names
         # A ✕ on the tab bar closes the panel; ◧ Panel (bottom right) and the
         # "Where you left off" Details button bring it back.
         from src.ui.companion_panel import close_button
@@ -636,6 +637,7 @@ class ChapterEditor(QWidget):
         # story memory.
         from src.ui.companion_panel import CompanionController
         self.companion = CompanionController(self)
+        from src.ui import feedback_sources; feedback_sources.install(self)   # D.13c: one Feedback tab
 
         self.main_splitter.addWidget(self.right_panel)
 
@@ -646,6 +648,8 @@ class ChapterEditor(QWidget):
         self.main_splitter.splitterMoved.connect(lambda _p, _i: self._on_splitter_moved())
 
         layout.addWidget(self.main_splitter)
+        from src.ui import write_ribbon; write_ribbon.build(self)          # D.13: Home · Review · Insert · Draft
+        from src.ui import left_off_ribbon; left_off_ribbon.install(self)  # D.13c: the line moves to the ribbon
 
     def side_panel_open(self) -> bool:
         return self.right_panel.isVisible()
@@ -2770,7 +2774,7 @@ Type: {tech.technology_type.value.replace('_', ' ').title() if hasattr(tech.tech
 
     def _reset_tts_buttons(self):
         """Restore Read button and disable Stop button after TTS ends."""
-        self.tts_speak_btn.setText("🗣 Read Aloud")
+        self.tts_speak_btn.setText("🔊 Read Aloud")
         self.tts_speak_btn.setEnabled(True)
         self.tts_read_range_btn.setEnabled(True)
         self.tts_stop_btn.setEnabled(False)
@@ -3065,6 +3069,7 @@ class ManuscriptEditor(QWidget):
 
         layout.addLayout(header_layout)
         from src.ui import write_toolbar; write_toolbar.install(self)     # D.7: Novellas ▾, Drafts ▾
+        from src.ui import write_ribbon; write_ribbon.install(self)       # D.13: the top row goes
 
         # Splitter for chapter list and editor
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -3226,8 +3231,9 @@ class ManuscriptEditor(QWidget):
             timestamps = chapter.get_backup_timestamps(project_dir)
             if timestamps:
                 revert_menu = menu.addMenu("Revert to Saved Copy")
+                from src.models.chapter_backups import label as copy_label  # D.12: (2) for a same-second copy
                 for ts in timestamps:
-                    label = ts.strftime("%b %d, %Y  %I:%M:%S %p")
+                    label = copy_label(ts)
                     action = revert_menu.addAction(label)
                     action.triggered.connect(
                         lambda checked, t=ts: self._revert_chapter_to_backup(t)
@@ -3993,6 +3999,7 @@ class ManuscriptEditor(QWidget):
             self.current_chapter_editor.chapter_critique_requested.connect(
                 self.chapter_critique_requested.emit)
             self.editor_layout.addWidget(self.current_chapter_editor)
+            from src.ui import write_ribbon; write_ribbon.attach(self, self.current_chapter_editor)  # D.13
 
             # Notify listeners NOW (after the new chapter is fully
             # in place) so they read self.current_chapter_editor.chapter
@@ -4052,7 +4059,7 @@ class ManuscriptEditor(QWidget):
 
         total = sum(chapter.word_count for chapter in self.manuscript.chapters)
         self.manuscript.total_word_count = total
-        self.total_word_count_label.setText(f"Total Words: {total:,}")
+        self.total_word_count_label.setText(f"Total: {total:,}")   # D.13: beside Words
 
     def load_manuscript(self, manuscript: Manuscript):
         """Load manuscript into editor."""
@@ -4256,6 +4263,9 @@ class ManuscriptEditor(QWidget):
                 "Keep: the chapters stay in the main tab and the novella "
                 "starts empty.\n\nWorldbuilding, characters and plot planning "
                 "are shared either way.")
+            from src.ui import manuscript_tree
+            box.setInformativeText(box.informativeText() + "\n\nIf you move them: "
+                                   + manuscript_tree.undo_note(n_drafts, name, new=True))
             move_btn = box.addButton(f"Move into '{name}'",
                                      QMessageBox.ButtonRole.AcceptRole)
             keep_btn = box.addButton("Keep in main",
@@ -4306,34 +4316,9 @@ class ManuscriptEditor(QWidget):
 
     def _create_novella_from_main(self, name: str, description: str = "") -> bool:
         """Create a novella and move the main manuscript's chapters and
-        drafts into it (transactional — see
-        WriterProject.move_main_content_to_subproject). Ends on the new tab."""
-        if self.project.active_subproject_id is not None:
-            self.switch_subproject(None)
-        self._flush_current_chapter()
-        self._sync_active_draft_out()
-        self._release_main_editor()
-        sp = self.project.create_subproject(name, description)
-        try:
-            moved = self.project.move_main_content_to_subproject(
-                sp.id, project_file=self.project.project_path or None)
-        except Exception as e:
-            self._discard_new_subproject(sp)
-            self.load_manuscript(self.project.manuscript)
-            QMessageBox.critical(
-                self, "Move Failed",
-                f"The chapters could not be moved, so nothing was changed:\n{e}")
-            return False
-        self.load_manuscript(self.project.manuscript)  # main, now empty
-        self.subprojects_changed.emit()
-        self._refresh_subproject_tabs()
-        self.switch_subproject(sp.id)
-        QMessageBox.information(
-            self, "Chapters Moved",
-            f"Moved {moved} chapter(s) into '{sp.name}'. The main manuscript "
-            f"tab is now empty.")
-        self._warn_cleanup_leftovers()
-        return True
+        drafts into it, with Undo (D.12: the manuscript tree's move)."""
+        from src.ui import manuscript_tree
+        return manuscript_tree.turn_main_into_novella(self, name, description)
 
     def _turn_main_into_novella(self) -> bool:
         """Turn the main manuscript's current content into a new novella."""
@@ -4349,12 +4334,9 @@ class ManuscriptEditor(QWidget):
         if named is None:
             return False
         name, description = named
+        from src.ui import manuscript_tree
         reply = QMessageBox.question(
-            self, "Turn into novella",
-            f"Move the main manuscript's {len(main.chapters)} chapter(s) and "
-            f"{len(self.project.drafts_for_scope(None))} draft(s) into a new "
-            f"novella '{name}'?\n\nThe main tab will be empty afterwards. A copy "
-            f"of the project file is kept as a backup.",
+            self, "Turn into novella", manuscript_tree.turn_main_question(self.project, name),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No)
         if reply != QMessageBox.StandardButton.Yes:
@@ -4488,10 +4470,13 @@ class ManuscriptEditor(QWidget):
         # Back to no novellas: offer to make the current content one.
         main = self.project.get_main_manuscript()
         if not self.project.subprojects and main.chapters:
+            from src.ui import manuscript_tree
             reply = QMessageBox.question(
                 self, "Turn into novella?",
                 f"There are no novellas now. Turn the main manuscript's "
-                f"{len(main.chapters)} chapter(s) into a novella?",
+                f"{len(main.chapters)} chapter(s) into a novella?\n\n"
+                + manuscript_tree.undo_note(len(self.project.drafts_for_scope(None)),
+                                            new=True),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No)
             if reply == QMessageBox.StandardButton.Yes:
@@ -4691,7 +4676,7 @@ class ManuscriptEditor(QWidget):
             notify.empty(
                 self, "No Draft Selected",
                 "Switch the 'Editing:' dropdown to a draft, then choose "
-                "Drafts ▾ ▸ Drop this draft.")
+                "📚 Manuscript ▾ ▸ Drop this draft.")
             return
         draft = self._active_draft
 
@@ -4753,7 +4738,7 @@ class ManuscriptEditor(QWidget):
             if not self._scoped_drafts():
                 notify.empty(
                     self, "No Drafts",
-                    "Create a draft first (Drafts ▾ ▸ Save the manuscript as a "
+                    "Create a draft first (📚 Manuscript ▾ ▸ Save the manuscript as a "
                     "new draft) so there's something to compare against.")
                 self.compare_drafts_btn.setChecked(False)
                 return
@@ -4815,7 +4800,7 @@ class ManuscriptEditor(QWidget):
         if not drafts:
             notify.empty(
                 self, "No Drafts",
-                "Create a draft first: Drafts ▾ ▸ Save the manuscript as a new draft.")
+                "Create a draft first: 📚 Manuscript ▾ ▸ Save the manuscript as a new draft.")
             return
         # Prefer a draft that's NOT the currently active one
         options = [d for d in drafts if

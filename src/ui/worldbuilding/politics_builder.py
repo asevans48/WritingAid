@@ -14,6 +14,7 @@ from src.models.worldbuilding_objects import PoliticalSystem, GovernmentBranch, 
 from PyQt6.QtWidgets import QMessageBox
 from src.ui.ui_kit import PALETTE, compact_button, empty_state, main_button  # narrow buttons show their symbol
 from src.ui import notify  # D.9: messages that need no click
+from src.ui.ui_kit import confirm_delete
 
 
 class GovernmentBranchEditor(QWidget):
@@ -130,7 +131,7 @@ class GovernmentBranchEditor(QWidget):
     def _remove_member(self):
         """Remove member."""
         current = self.members_list.currentRow()
-        if current >= 0:
+        if current >= 0 and confirm_delete(self, "member", self.members_list.item(current).text()):   # D.14
             self.members_list.takeItem(current)
 
     def _add_power(self):
@@ -142,7 +143,7 @@ class GovernmentBranchEditor(QWidget):
     def _remove_power(self):
         """Remove power."""
         current = self.powers_list.currentRow()
-        if current >= 0:
+        if current >= 0 and confirm_delete(self, "power", self.powers_list.item(current).text()):   # D.14
             self.powers_list.takeItem(current)
 
     def save_to_model(self):
@@ -293,6 +294,9 @@ class GovernmentTreeWidget(QWidget):
 
         branch_id = current_item.data(0, Qt.ItemDataRole.UserRole)
 
+        if not confirm_delete(self, "branch", current_item.text(0),   # D.14
+                              detail="Every branch under it goes too."):
+            return
         # Find and remove branch
         branch = next((b for b in self.political_system.branches if b.id == branch_id), None)
         if branch:
@@ -520,7 +524,7 @@ class PoliticalSystemEditor(QWidget):
     def _remove_opposition(self):
         """Remove opposition party."""
         current = self.opposition_list.currentRow()
-        if current >= 0:
+        if current >= 0 and confirm_delete(self, "opposition party", self.opposition_list.item(current).text()):   # D.14
             self.opposition_list.takeItem(current)
 
     def save_to_model(self):
@@ -662,7 +666,7 @@ class PoliticsBuilderWidget(QWidget):
     def _remove_system(self):
         """Remove selected political system."""
         current = self.system_list.currentItem()
-        if current:
+        if current and confirm_delete(self, "political system", current.text()):   # D.14
             system_id = current.data(Qt.ItemDataRole.UserRole)
             self.political_systems = [s for s in self.political_systems if s.id != system_id]
             self.system_list.takeItem(self.system_list.row(current))

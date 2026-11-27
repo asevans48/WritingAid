@@ -167,7 +167,122 @@ H.1, D.4, D.5, P.2b, 4.3 and the chapter's prose profile is **committed**
   against 70 s); Cydonia reads scenes more finely. The outlines did not
   change. Choose the Critique's model in Settings (section 3).
 
-Tests: 2,088 pass in one run, none fail (after the tension follow-ups' 8).
+- **Round 14** (27 November): **D.12, your three answers to D.11.** The
+  old Suggestions and Overly descriptive? windows are deleted (no way in
+  since D.11; their tests now check the Improve window); one more
+  never-reachable window, the Studio's chapter-deck editor, is kept for you
+  to decide (section 3). "Turn main manuscript into a novella…" now moves
+  by renaming, with Undo, like "Move main chapters into this novella", and
+  both questions say what Undo covers and what it does not. Two saves in
+  one second now keep two saved copies of a chapter (a `_2` name). A list
+  of other actions with no undo and no warning is in D.12's Outcome.
+
+- **Round 15** (27 November): **D.13, Write's ribbon.** Home · Review ·
+  Insert · Draft over one row; the top row and the Chapter Title row are
+  gone (Total is on the bottom row beside Words; the draft controls are on
+  Draft; Analyze ▾ is on Review), so the text has 95 px more at 1024 × 600.
+  Chapters are renamed in the tree: double-click, F2 or right-click ▸
+  Rename…, with Undo. Every shortcut works whichever tab shows; the Write
+  menu and right-click are unchanged. Visible buttons 18 → 11.
+
+- **Round 15b** (27 November): **the query letter addressed to your
+  agent** (9.3 addendum, your answer 4 of 26 Nov). On the Query letter, a
+  **To** list beside the document picker chooses an agent from your list:
+  the letter then says "Dear <name>," and has one line from what the list
+  holds (agency, and what they represent from a "Represents: …" line in
+  their Notes). "No agent chosen" gives today's letter back. **Compose
+  Email to Agent** now works: it addresses the letter to that agent and
+  opens a draft in your mail program (their address in To, the letter as
+  the body). Nothing is ever sent. A letter you have edited is never
+  refilled: you are asked before its greeting alone changes, and the old
+  text is kept in Earlier versions. No model needed; screen counts
+  unchanged.
+
+- **Round 16** (27 November): **D.14, Undo and warnings** (your answers to
+  D.12). Undo after "Turn main manuscript into a novella…" also removes
+  the novella while it is still empty. The last move stays on the tree's
+  right-click ("Undo the last move (…)") until you next save the project
+  yourself; the autosaves don't end it. The Studio deletes an action's
+  images only when its window closes, and never a picture used elsewhere.
+  A checkpoint restore unpacks beside the project, then swaps, so a failed
+  restore really leaves it unchanged. Plot's Remove tension / theme and
+  Consistency's hint say what is true. Every delete D.12 listed now asks
+  one plain question ("… This can't be undone.", Cancel the default).
+  Screen counts unchanged.
+
+- **Round 16b** (27 November): **D.13b, the ribbon polished, and 7.4's two
+  export answers.** The tab names are legible (body-text size, room round
+  them, the chosen one bold and underlined, a hover tint, a focus ring) and
+  wrap under "◂ Chapters" on a narrow Write instead of scrolling. Every
+  control has an icon and words (✨ Improve, 🎬 Scene break here, ◂
+  Chapters) and hover text that leads with its name, then its shortcut,
+  then what it does; screen readers get the same. The renames: this
+  chapter's "📄 Draft ▾" is **📄 Chapter ▾** (the "This chapter:" label is
+  gone) and the manuscript's "Drafts ▾" is **📚 Manuscript ▾**; same menus,
+  same entries. **Publisher Ready** now always puts a centred "#" at the
+  scenes you marked, and **Export Chapter / Book** remembers your "Mark
+  scene breaks" tick per project. The text has 5 px less than after D.13
+  (still 90 px more than before D.13 at 1024 × 600); no count rose.
+  Your answers the same day: the three old "Drafts ▾" messages now say
+  "📚 Manuscript ▾ ▸ …" (a one-off wording change in `manuscript_editor.py`,
+  as you allowed); Read Aloud's 🗣 is now 🔊, the same height as the rest;
+  no group captions. Also fixed: a ribbon test that failed in about half
+  of full runs. In a long session PyQt could hand back an old wrapper
+  for a toolbar entry, so the font box sometimes stayed on the hidden old
+  toolbar; the ribbon now asks the toolbar which widget each entry holds
+  (`write_ribbon._placed_widget`). This could have happened in the app.
+
+- **Round 17** (27 November): **D.13c, "Where you left off" on the
+  ribbon, one Feedback tab, whole tab names.** The "Where you left off"
+  line moved from above the text to the right end of the ribbon's tab-names
+  row, on every tab (shortened with "…" only when there is no room; hover
+  shows it all): the text gains 36 px when the line shows. **Details** now
+  opens the whole side panel on the Companion with "Where you left off"
+  open and at the top: before, if that section had ever been closed (or the
+  Companion was scrolled down), Details showed only its one header row.
+  The **Feedback** tab keeps your feedback and Analyze first, then lists,
+  for the open chapter, what the Companion (notes, Reader's eye), the
+  Critique (readiness findings, reports) and the Improve window (this
+  session, and your saved ratings) said, under three headings that fold,
+  each item with Go to and Open in …; read-only, nothing written. **Tab
+  names** were cut ("Plan…", "Feedb…") on the Mac because the panel set
+  their size on the tab but not the tab bar, which Qt measures with; the bar
+  now has the same font, so names shorten only when the panel is really too
+  narrow (also the main window's AI Assistant / Chapter Outline tabs and
+  the AI debug panel). Feedback's count rose as you asked (sections 0 → 3,
+  buttons 3 → 6: the headings); nothing else rose.
+
+- **Round 17b** (27 November): **your follow-up to D.13c.** The blue
+  "Where you left off" line is gone; **Details** is now an entry after
+  Draft on the ribbon's tab row (it opens and closes the whole side panel
+  on the Companion, at Where you left off, and is underlined while that
+  shows). The left-off words are still the Companion's first section.
+  Write's visible buttons 11 → 12 (Details), noted in
+  `screens_baseline.json` as your request.
+
+- **Round 18** (27 November): **D.14b, novella Undo and Improve notes
+  kept.** Undo after a move that made a novella now removes it only when
+  it holds nothing of its own: no chapters, drafts, files in its folder,
+  nothing saved for it beside the project (readiness results, route,
+  editorial letter, submission drafts, Critique reports, Improve notes …)
+  and no name or description changed since; otherwise it is kept and the
+  status bar says why ("kept: it has submission drafts"). Worldbuilding,
+  characters and plot are shared by the whole project, so nothing there
+  belongs to a novella. The Improve window's critiques and versions are
+  kept per project (`<project>.improve_notes.json`, newest 200 windows per
+  chapter), shown in the Feedback tab while their passage is in the
+  chapter, each with **Dismiss** (hidden, kept in the file); they follow a
+  moved chapter and Undo puts them back. No count rose.
+
+- **Round 18b** (27 November): **your answers to D.14b.** Undo now keeps a
+  novella only for what you made in it (chapters, drafts, a changed name
+  or description, files in its folder, a publishing route, scene markers,
+  submission drafts); results the app worked out (readiness checks, the
+  editorial letter, the voice reading, Improve notes, Critique reports) no
+  longer keep it, and stay in their files. `src/data/novella_content.py`
+  and its test.
+
+Tests: 2,249 pass in one run, none fail (D.14b added 14; round 18b changed one; checked 27 Nov).
 
 - **Tried 27 November:** you tried U.3b, D.11, 7.4, the tension follow-ups
   with your chosen model and V.4's addendum: all pass (noted under each in
@@ -304,7 +419,7 @@ Do this in the app, on a real project. Restart the app first.
       italics (no asterisks), "#" at scene breaks.
 - [ ] Export ▸ Export for Kindle; open it in Books. Italics, no asterisks,
       every chapter in the contents.
-- [ ] In a scratch chapter with some text, Draft ▾ ▸ Import from Word: it
+- [ ] In a scratch chapter with some text, Draft tab ▸ 📄 Chapter ▾ ▸ Import from Word: it
       asks first; after importing, Ctrl+Z brings the old text back.
 - [ ] Import a Word file with italics, save, reopen: the italics are still
       there.
@@ -319,7 +434,7 @@ Do this in the app, on a real project. Restart the app first.
 
 **Show less at once (D.7)**
 - [ ] Write: the novella buttons are one "Novellas ▾"; the manuscript-draft
-      ＋, 🗑 and ↗ are one "Drafts ▾" beside "Editing:"; 📝 adds an
+      ＋, 🗑 and ↗ are one  📝 adds an
       annotation and its arrow lists them. Ctrl+Shift+N still adds one.
 - [ ] Hover a flagged word: fixes, the Fix-all box and Ignore in view;
       "More ▾" shows Ask, Suggest in context and See all on the card.
@@ -338,11 +453,11 @@ Do this in the app, on a real project. Restart the app first.
 - [ ] Settings ▸ Features ▸ Messages ▸ "Show a box for every message" on:
       the boxes come back. Off again: quiet.
 - [ ] Anything about deleting, moving, replacing or an error still opens a
-      box (for example Drafts ▾ ▸ Drop this draft).
+      box (for example 📚 Manuscript ▾ ▸ Drop this draft).
 
 **One look (D.8, first session: Write, side panel, Companion, Critique, Settings)**
 - [ ] Write: no coloured buttons; ◀ Prev, Next ▶, ＋ ↑ ↓, ⇅ Split View,
-      Analyze ▾, Draft ▾ and ◧ Panel are white with a thin border, in the
+      Analyze ▾, 📄 Chapter ▾ and ◧ Panel are white with a thin border, in the
       same places. With the panel open, ◧ Panel shows a pale tint.
 - [ ] Side panel ▸ Style: the counts beside each check are readable blue
       numbers; clicking one still filters the list.
@@ -882,7 +997,7 @@ start the app once and wait a minute)
       Send coloured, Apply Last plain.
 - [ ] Publish: "Add" coloured; the empty right side reads "Add or select
       an agent/publisher", centred.
-- [ ] Write ▸ Drafts ▾ (the Drafts panel): 💾 Save coloured, Close plain.
+- [ ] Write ▸ Draft tab ▸ 📚 Manuscript ▾ (the Drafts panel): 💾 Save coloured, Close plain.
 
 **The model names the groups (V.3)**
 - [ ] With your on-device model loaded (use Rephrase once first), open
@@ -1198,9 +1313,7 @@ your text changes)
 - [ ] The tension chart and the outline show one entry per marked scene.
 - [ ] Move a marked chapter to a novella and Undo: the markers go and
       come back with it.
-- [ ] File ▸ Export Chapter: "Mark scene breaks" shows only when markers
-      exist. Unticked, the export is as before; ticked, a centred "#" at
-      each marker in the exported copy.
+- [ ] File ▸ Export Chapter: 
 - [ ] Add Annotation is now under More ▸ 📝 Note or scene break ▸ on the
       right-click (still one click on the toolbar's 📝, and Ctrl+Shift+N).
       *27 Nov: you tried these and they pass.*
@@ -1218,6 +1331,183 @@ your text changes)
       whether "more examples in your own voice" matches what you see when
       you rephrase.
       *27 Nov: you read it.*
+
+**Unreachable windows, the novella move and backups (D.12)** (try on a
+copy of a project first)
+- [ ] Right-click ✨ Improve this ▸ Suggestions… and Overly descriptive?…:
+      the Improve window opens, as since D.11 (the old windows are gone).
+- [ ] Right-click the main manuscript in the tree ▸ "Turn main manuscript
+      into a novella…": name it; the question says what Undo covers. Yes:
+      the novella opens on its first chapter, the main manuscript is empty,
+      "Chapters Moved" says so, and the status bar offers Undo.
+- [ ] Click Undo within 30 seconds: the chapters and drafts come back to
+      the main manuscript; the novella stays, empty (drop it if you like).
+- [ ] Right-click a novella ▸ "Move main chapters into this novella": the
+      question has the same Undo words.
+- [ ] Save a chapter twice quickly (type, Cmd+S, type, Cmd+S), then
+      right-click the chapter ▸ Revert to Saved Copy ▸: both copies are
+      listed (a "(2)" after one in the same second), and each restores.
+- [ ] Read D.12's Outcome list of other actions that can't be undone and
+      don't warn: which should warn (section 3)?
+
+**Write's ribbon (D.13)** (try on a copy of a project first)
+- [ ] Open Write: four tab names (Home · Review · Insert · Draft) over one
+      row; Home shows font, size, B I U, heading style and ✨ Improve. No top row,
+      no Chapter Title row; the text starts higher.
+- [ ] Bottom row: "Words: N  Total: N" then the reading level and grammar
+      status; ◧ Panel still at the right.
+- [ ] Review: ✓ Checks ▾, 🗣 Read Aloud, 🔍 Analyze ▾, each with every entry
+      it had. Insert: 📝 Annotation, 📋 View annotations, 🎬 Scene break here
+      (put the cursor in a paragraph; on a marked paragraph it reads Remove
+      scene break). Draft: Editing:, Drafts ▾, ⇅ Split View, then "This
+      chapter:" 📄 Draft ▾.
+- [ ] With Review or Draft showing, try Cmd+B, Cmd+I, Cmd+U, Cmd+R,
+      Cmd+Shift+N and Cmd+Shift+H: each works as before.
+- [ ] Pick a tab, switch chapters, quit and reopen: the same tab shows.
+- [ ] The ◂ Chapters before the tab names hides and shows the chapter tree.
+- [ ] In the tree, double-click a chapter (or select it and press F2):
+      edit the title, Enter keeps it; Esc cancels; an empty title is
+      refused. Right-click ▸ Rename… does the same. The status bar's Undo
+      (or Cmd+Z in the tree) puts the old title back. The new title shows
+      in exports and the Critique.
+- [ ] Narrow the window (or open the side panel): the row wraps onto a
+      second line; nothing is cut off.
+
+**The query letter addressed to your agent (9.3 addendum)**
+- [ ] On an agent's page, add a line to Notes such as "Represents: gothic
+      and literary horror", and fill in Agency and Email.
+- [ ] 📦 Submission package ▸ Query letter: the **To** list (beside the
+      document picker) shows "To: no agent chosen" and your agents. Choose
+      one: the letter now opens "Dear <name>," and has a line naming their
+      agency and what they represent. Is the line's wording right for you?
+- [ ] Choose "To: no agent chosen": the letter is back to "Dear [Agent's
+      name],". More ▾ › Earlier versions has the addressed one.
+- [ ] Edit the letter (a word in the hook), then choose another agent:
+      you are asked before only the greeting changes. Say No: nothing
+      changes. Choose again and say Yes: your edit is still there, only
+      "Dear …," changed, and Earlier versions has the text before.
+- [ ] On an agent's page, **Compose Email to Agent**: your mail program
+      opens a draft (not sent) to their address, subject "Query: <title>",
+      with the letter addressed to them. Close it without sending. Back in
+      the package, the Query letter shows that agent in To.
+- [ ] Compose Email for an agent with no email stored: the draft opens
+      with To empty for you to fill in.
+- [ ] At 1024 × 600, with a long agent name: the To list fits on the row
+      (the name is cut short; hover shows it in full).
+
+**Undo and warnings (D.14)**
+- [ ] On a copy of a project: right-click 📖 Main Manuscript ▸ Turn main
+      manuscript into a novella…. Read the question: does it say plainly
+      what Undo does and how long it lasts?
+- [ ] Wait until the status bar's Undo has gone (30 s), switch chapter a
+      few times, then right-click any manuscript row: "Undo the last move
+      (3 chapters to Novella 1)" is there. Choose it: the chapters and
+      drafts are back, and "Novella 1" is gone from the tree.
+- [ ] Do the move again, add a chapter to the novella, then Undo: the
+      novella is kept, with your new chapter, and the status bar says why.
+- [ ] Move a chapter (Move to ▸ or drag), then File ▸ Save Project (or
+      Ctrl+S): the right-click no longer offers Undo. Right-click a
+      chapter after a move (before saving): the entry sits under Move to ▸.
+- [ ] Try a few deletes: World ▸ a place's Remove, a map item's Delete,
+      Plot ▸ a timeline card's Delete, Characters ▸ Remove snapshot, the
+      Companion's Story memory Delete, the Planner's ✕ on an event, a
+      Feedback ×. Each asks once, names the item, says it can't be undone,
+      and Enter (or Esc) keeps it. Too many questions anywhere?
+- [ ] Plot ▸ Remove tension / Remove theme: no longer says "You can re-add
+      it later". Consistency (Check consistency…): the hint says only the
+      open chapter's changes can be undone.
+- [ ] Video Studio, on a copy: in a scene, Remove an action with images
+      (or Edit it ▸ Delete image). The question says the files go when the
+      window closes. Before closing, look in the Studio folder: the files
+      are still there; after Close, gone (a picture used elsewhere stays).
+- [ ] Checkpoints: restore one on a copy of a project. It still works as
+      before, and "Before restore (auto)" is made first.
+
+**The ribbon, polished (D.13b)** (try on a copy of a project first)
+- [ ] Open Write: Home · Review · Insert · Draft read clearly, the chosen
+      tab bold and underlined; hovering another tints it. Nothing squashed
+      at 1024 × 600 or with the text enlarged.
+- [ ] Every button on the four tabs has an icon and words: Home's ✨ is
+      "✨ Improve"; Insert's scene button is "🎬 Scene break here"; the ◂
+      before the tab names reads "◂ Chapters". B, I and U look bold, italic
+      and underlined.
+- [ ] Hover each control: the tip starts with its name, then its shortcut
+      if it has one (for example "Bold (⌘B): …", "Improve (⌘R): …",
+      "Annotation (⇧⌘N): …"), then one sentence. Hover a tab name: it says
+      what the tab holds. ✓ Checks ▾'s tip says which checks are on.
+- [ ] Draft: "Editing:", **📚 Manuscript ▾** (was Drafts ▾: Save the
+      manuscript as a new draft, Drop this draft…, Open a draft in its own
+      window…), ⇅ Split View, then **📄 Chapter ▾** (was "This chapter:" 📄
+      Draft ▾: Save draft, View drafts…, Import from Word…, Export to
+      Word…, Clean up formatting). Each entry works as before.
+- [ ] Keyboard: press Tab until the tab names have a ring; ← → switch tabs;
+      Tab on reaches each control, each with a ring. (On a Mac, turn on
+      System Settings ▸ Keyboard ▸ Keyboard navigation first.) With
+      VoiceOver on, each control is read by its name.
+- [ ] Narrow the window (or open the side panel): the tab names go under
+      "◂ Chapters" rather than behind scroll arrows; the controls wrap as
+      before.
+- [ ] Export ▸ Export Publisher Ready on a project with scene markers:
+      each marked scene starts with a centred "#"; a chapter without
+      markers looks as before; your text is unchanged.
+- [ ] File ▸ Export Chapter / Book on a project with markers: tick "Mark
+      scene breaks", export; export again: it is still ticked. Open the
+      other project: unticked there. Untick and export: next time it is
+      unticked. Cancel never changes it.
+- [ ] Review: Read Aloud shows 🔊 (was 🗣) and sits level with Checks and
+      Analyze. With no drafts, Split View's message says "📚 Manuscript ▾ ▸
+      Save the manuscript as a new draft".
+
+**Where you left off, Feedback and whole tab names (D.13c)**
+- [ ] Open a chapter: the row reads Home · Review · Insert · Draft ·
+      **Details**, on every tab. There is no blue "Where you left off" line
+      above the text or on the ribbon (your follow-up, 27 Nov).
+- [ ] Press **Details**: the whole side panel opens on the Companion with
+      "Where you left off" open and at the top (even if you had closed that
+      section); Details is underlined while it shows. Press it again: the
+      panel closes. Open the panel with ◧ Panel: Details is underlined too.
+- [ ] The side panel's tab names read **Planner · Feedback · Companion**
+      whole (also "Companion (3)") at 1024 × 600 and on a large screen;
+      they shorten only if you drag the panel very narrow. The same for the
+      main window's 💬 AI Assistant / 📋 Chapter Outline tabs.
+- [ ] **Feedback** tab: your feedback (+ Feedback) and Analysis are as
+      before, first. Under them: **From the Companion**, **From the
+      Critique**, **From the Improve window**, each with a count, folding
+      (remembered).
+- [ ] Write a few paragraphs until the Companion has notes, and run
+      Reader's eye: they show under From the Companion. **Go to** selects
+      the passage; **Open in the Companion** shows that note. Dismiss one in
+      the Companion: it is gone from the Feedback tab too.
+- [ ] Run Revise ▸ Critique on the chapter: its findings that need work
+      (check, words, why) and its reports' findings, newest first, show
+      under From the Critique; Go to and **Open in the Critique** (on this
+      chapter's row). Dismiss one in the Critique: gone here too.
+- [ ] Open ✨ Improve on a passage and close it: its critique points and
+      versions show under From the Improve window (this session); with data
+      collection on, versions you rated or accepted stay. **Open in
+      Improve** opens it on that passage.
+
+**Novella Undo and Improve notes kept (D.14b)**
+- [ ] Right-click Main Manuscript ▸ Turn main manuscript into a novella…,
+      then Undo (status bar or right-click ▸ Undo the last move): the
+      chapters go back and the status bar says "“Novella 1” was removed."
+- [ ] Do it again, then (before Undo) give the novella something of its
+      own: a submission draft (Publish ▸ Submission package), or its
+      description changed. Undo: the chapters go back, the novella stays,
+      and the status bar says why ("kept: it has submission drafts"). A
+      Critique run on it alone does not keep it (round 18b, your answer).
+- [ ] Move to ▸ ＋ A new novella… on one chapter, with a description, then
+      Undo: the novella goes (the description came with the move; your
+      answer: keep it that way).
+- [ ] Open ✨ Improve on a passage, get a critique and a version, close it.
+      Close and reopen the project: under Feedback ▸ From the Improve
+      window they are still there. `<project>.improve_notes.json` sits
+      beside the project file.
+- [ ] Press **Dismiss** on one: it goes from the list (and stays gone
+      after reopening). Change the passage's words in the chapter: its
+      notes no longer show.
+- [ ] Move that chapter to a novella: its Improve notes show there. Undo:
+      they are back with it in the main manuscript.
 
 **Other formats (planned; nothing built)**
 - [ ] Read README decision 18 and the list of phase F pieces (section 5,
@@ -1336,6 +1626,78 @@ chapter's prose profile (d0d347e, 58226e9).
       `screens_baseline.json` and the harness's comments
       (`scripts/screen_harness.py`), the answers in this file, the 8.1a
       brief's *Review notes*, and README decision 17 and the tracker.
+- [ ] Commit round 14: D.12 (`src/ui/passage_critique_dialog.py`,
+      `src/ui/overdescription_panel.py`, `src/ui/improve_tabs.py`,
+      `src/ui/manuscript_tree.py`, `src/models/chapter_backups.py`,
+      `src/models/project.py`, call lines in `manuscript_editor.py`,
+      `scripts/screen_harness.py`; `tests/test_unreachable_windows_novella_backups.py`
+      and the moved tests in `test_overdescription.py`,
+      `test_rewrite_quality.py`, `test_passage_suggestions.py`,
+      `test_companion.py`, `test_rewrite_chat.py`, `test_improve_window.py`,
+      `test_screen_harness.py`, `test_notify.py`; the D.12 brief).
+- [ ] Commit round 15: D.13 (`src/ui/write_ribbon.py`,
+      `src/ui/manuscript_tree.py`, `src/ui/scene_marks_ui.py`, call lines in
+      `manuscript_editor.py`, `scripts/screen_harness.py`,
+      `docs/publishing/screens_baseline.json`; `tests/test_write_ribbon.py`
+      and the changed counts in `test_show_less.py` and
+      `test_manuscript_tree.py`; the D.13 brief, this file and the README
+      tracker).
+- [ ] Commit the 9.3 addendum: the query addressed to your agent
+      (`src/ai/query_address.py`, `src/ui/query_email.py`, small changes in
+      `src/ai/submission_package.py`, `src/data/submission_store.py`,
+      `src/ui/submission_package_view.py`, `src/ui/agent_manager_widget.py`;
+      `tests/test_query_to_agent.py`; the 9.3 brief's *Outcome* addendum,
+      this file).
+- [ ] Commit round 16: D.14 (`src/ui/ui_kit.py` (`confirm_delete`),
+      `src/ui/manuscript_tree.py`, `src/ui/planner_deletes.py`,
+      `src/video_studio/pending_removals.py`,
+      `src/services/project_checkpoint.py`,
+      `src/ui/project_checkpoints_dialog.py`, `src/ui/consistency_dialog.py`,
+      `src/ui/video_studio/scene_editor.py`, `scene_action_dialog.py`,
+      `video_editor_dialog.py`, `chapter_deck_editor.py` (docstring),
+      `src/ui/plot/plot_manager.py`, `src/ui/characters_widget.py`,
+      `src/ui/characters/character_timeline.py`, `src/ui/companion_panel.py`,
+      `src/ui/feedback_widget.py`, `src/ui/grader_widget.py`, sixteen files
+      in `src/ui/worldbuilding/`; call lines only in `main_window.py` and
+      `chapter_planner_widget.py`; `tests/test_undo_and_warnings.py` and
+      the changed `test_unreachable_windows_novella_backups.py`,
+      `test_intentional.py`; the D.14 brief, this file and the README
+      tracker).
+- [ ] Commit round 16b: D.13b (`src/ui/write_ribbon.py`,
+      `src/data/scene_marks.py`, `src/ui/export_document_dialog.py`,
+      `src/export/manuscript_exporter.py`, `src/ui/listen_mark.py`,
+      `scripts/screen_harness.py` (one `GROUPED_MENUS` line), two call
+      lines in `src/ui/main_window.py`; `tests/test_ribbon_polish.py` and
+      the renamed words in `tests/test_write_ribbon.py` and
+      `tests/test_show_less.py`; the D.13b brief, this file and the README
+      tracker). With it, your answers the same day: the three messages and
+      🔊 Read Aloud in `src/ui/manuscript_editor.py` (five string changes),
+      `tests/test_listen_mark.py`, the harness's 🔊 group line, and the
+      ribbon fix (`write_ribbon._placed_widget`).
+- [ ] Commit round 17: D.13c (`src/ui/left_off_ribbon.py`,
+      `src/ui/feedback_sources.py`, `src/ui/tab_names.py`,
+      `src/ui/companion_panel.py`, `src/ui/feedback_widget.py`, one call
+      line each in `src/ui/improve_window.py`, `src/ui/ai_debug_panel.py`
+      and `src/ui/main_window.py`, three in `src/ui/manuscript_editor.py`,
+      the tab bar's weight in `src/ui/write_ribbon.py`,
+      `scripts/screen_harness.py` (the new screens),
+      `docs/publishing/screens_baseline.json` (Feedback 3 → 6 buttons,
+      0 → 3 sections, with its `_about` note); `tests/test_left_off_feedback.py`;
+      the D.13c brief, this file and the README tracker).
+      With it, the follow-up: `src/ui/left_off_ribbon.py` (Details after
+      Draft; the blue line hidden), `docs/publishing/screens_baseline.json`
+      (write 12), `tests/test_left_off_feedback.py`, `tests/test_companion.py`,
+      `tests/test_write_ribbon.py`, `tests/test_show_less.py`,
+      `tests/test_manuscript_tree.py`.
+- [ ] Commit round 18: D.14b (`src/data/novella_content.py`,
+      `src/data/improve_notes.py`, `src/ui/manuscript_tree.py`
+      (`remember_made`, `_drop_made`, the Undo words),
+      `src/ui/feedback_sources.py` (the notes file, Dismiss),
+      `src/data/chapter_move.py` (the notes follow a move);
+      `tests/test_novella_undo_improve_notes.py`, and the changed words in
+      `tests/test_undo_and_warnings.py` and
+      `tests/test_unreachable_windows_novella_backups.py`; the D.14b brief,
+      this file and the README tracker).
 - [ ] For anything you reject, untick it in the README tracker and write why
       under the piece's *Review notes*.
 
@@ -2055,6 +2417,9 @@ Write each answer in the README under *Decisions*, or tell the session.
       yes, per project. (d) **Older tension ratings** stay hidden for a
       chapter once it is marked, until the next check with the model rates
       the marked scenes. Fine? Recommended: fine.
+      *Answered 27 Nov: the recommendations: (a) keep; (b) Publisher Ready
+      always marks scene breaks; (c) remember the export tick per project;
+      (d) fine. (b) and (c) are built with D.13b.*
 - [ ] **V.4: the real trial (information).** No measurable gain and no
       harm (+0.007, within chance on 16 pairs). Keep V.4 as built?
       Recommended: keep (it does what it was built for); revisit with your
@@ -2078,6 +2443,151 @@ Write each answer in the README under *Decisions*, or tell the session.
       reached (not waiting for 9.1). (b) yes, use the undoable move, and
       warn people plainly about anything that cannot be undone. (c) yes,
       fix the backup bug. Built as one piece, D.12 (round 14).*
+- [ ] **D.12: four things.** (a) **The Studio's chapter-deck editor**
+      (`ChapterDeckEditorDialog`: reorder a chapter deck, a transition into
+      each part, one voice-over over it all) has never had a way in, and
+      nothing else does those things; F.10 plans to reuse it. Keep it for
+      F.10, or delete it? Recommended: keep for F.10. (b) **Undo after
+      "Turn main manuscript into a novella…"** puts the chapters and drafts
+      back but leaves the new novella, empty (the question says so). Should
+      Undo also remove it when it is still empty? Recommended: yes, a small
+      change. (c) **Undo lasts 30 seconds** on the status bar (or until
+      another message): long enough for a whole-manuscript move?
+      Recommended: keep it until the next move instead, for these two
+      moves. (d) **Other actions with no undo and no warning** (D.12's
+      Outcome: World's Remove buttons, the Plot timeline's Delete, the
+      Companion's Story memory and style-sheet Delete, the Planner's delete
+      buttons, Consistency ▸ Change all's wording, two Studio image
+      deletes, a failed checkpoint restore's wording): which should ask
+      first, or say so? Recommended: one small piece that adds "can't be
+      undone" questions to the deletes of whole items and fixes the three
+      wrong wordings.
+      *Answered 27 Nov: (a) keep the chapter-deck editor (for F.10).
+      (b) yes, Undo also removes the novella when it is still empty.
+      (c) 30 seconds is fine, but better to keep Undo until the first save
+      after the move (read as: the status bar's Undo still goes after 30 s,
+      and the move stays undoable from the tree's right-click until the
+      project is next saved). (d) fix the bugs (the Studio image deletes,
+      the restore message, the wrong wordings) and add a warning to the
+      deletes. Brief: [D.14](pieces/48j-D.14-undo-and-warnings.md), queued
+      after D.13.*
+- [ ] **D.13: one thing.** The Draft tab now holds both "Drafts ▾" (save,
+      drop or open a draft of the whole manuscript) and this chapter's
+      "📄 Draft ▾" (its saved drafts, Word import / export, clean up
+      formatting); a "This chapter:" label sits between them. Rename the
+      chapter's button (for example "📄 Chapter ▾"), or keep it as it is?
+      Recommended: rename it to "📄 Chapter ▾" (same menu, same entries).
+      *Answered 27 Nov: rename both: this chapter's button becomes
+      "📄 Chapter ▾" and the manuscript's "Drafts ▾" becomes "Manuscript ▾"
+      (same menus, same entries). Also: the ribbon's tab names look
+      squashed; make them legible, like Word, with icons and accessible
+      hover text. Brief: [D.13b](pieces/48k-D.13b-ribbon-polish.md).*
+- [ ] **What the agent represents: a Notes line, or a field of its own?**
+      The letter reads it from a line in the agent's Notes starting
+      "Represents:" (also "Looking for:", "Wishlist:", "MSWL:"), so the
+      project file and the agent's page are unchanged. A "Represents" box
+      on the agent's page would be easier to find but adds a field to the
+      project file (older versions ignore it). Recommended: keep the Notes
+      line (it's said in the Notes placeholder); add a field only if you
+      find yourself forgetting it.
+      *Answered 27 Nov: keep the Notes line.*
+- [ ] **The greeting: full name, or "Dear Ms./Mr. Surname"?** The letter
+      says "Dear Ada Voss," because the app doesn't know how an agent
+      wishes to be addressed. Recommended: keep the full name (safe and
+      common); you can edit any letter, and the app only asks before
+      changing a greeting you've written.
+      *Answered 27 Nov: the full name.*
+- [ ] **D.14: three things.** (a) **A novella you named yourself.** Undo
+      after ＋ New novella… ▸ "Move into …" and after Move to ▸ ＋ A new
+      novella… also removes the (still empty) novella, as after "Turn main
+      manuscript into a novella…". Keep that, or keep the novella in those
+      two and remove it only after "Turn main…"? Recommended: keep (Undo
+      then puts everything as it was before the click). (b) **One-line
+      entries.** Small list entries outside a window with Cancel (an ally's
+      name, a moon, a city, a tier of government) now ask too. Keep, or let
+      those go without a question? Recommended: keep for now; say if it
+      gets in the way. (c) **Dismiss on a Listen mark** in the Companion
+      clears the mark with no question. Add one? Recommended: no (it is a
+      note about the text, and dismissing is what the button is for).
+      *Answered 27 Nov: (a) Undo removes a novella (one you named too) only
+      when it has no chapters and no other content of its own: no
+      worldbuilding, characters, plot or other metadata. (b) yes, a small
+      one-line entry asks before it is deleted (as built). (c) Dismiss on a
+      Listen mark doesn't ask (as built). (a) is built in
+      [D.14b](pieces/48m-D.14b-novella-undo-and-improve-notes.md).*
+- [ ] **D.13b: three messages still say "Drafts ▾".** When you drop a
+      draft with none chosen, or open Split View / a pop-out with no
+      drafts, the message says "…choose Drafts ▾ ▸ Drop this draft" or
+      "Create a draft first (Drafts ▾ ▸ Save the manuscript as a new
+      draft)". The words live in `manuscript_editor.py` (over 3,000 lines,
+      so a session changes only call lines there). Change the three
+      messages to "📚 Manuscript ▾ ▸ …"? Recommended: yes (three string
+      changes, nothing else).
+      *Answered 27 Nov: yes, the one-off wording fix is fine. Done.*
+- [ ] **D.13b: Read Aloud's 🗣 is taller.** The 🗣 emoji draws 5 px taller
+      than the other icons, so Read Aloud stands a little taller than
+      Checks and Analyze (as it did in D.13). Swap it for 🔊 (same height
+      as the rest; also in the right-click's "🔊 Text to Speech")? The
+      words are set in `manuscript_editor.py` and the harness groups the
+      menu by "🗣 Read Aloud", so it is a small change of its own.
+      Recommended: swap to 🔊 when the messages above are changed.
+      *Answered 27 Nov: swap. Done (🔊 Read Aloud).*
+- [ ] **D.13b: group captions.** Word-style captions under the controls
+      ("Font", "Checks", "Notes", "Drafts") were optional and not added:
+      they would cost about 14 px of text at 1024 × 600. Want them anyway?
+      Recommended: no; the hover text names every control.
+      *Answered 27 Nov: no captions.*
+- [ ] **D.13c: was this "only opens for its own row"?** The side panel
+      already ran the full height beside the ribbon and the text; what
+      Details did not do was open "Where you left off": if you had closed
+      that section once, Details showed only its header row (and if the
+      Companion was scrolled, somewhere further down). Details now opens
+      the section and scrolls to it, for now only (your closed choice is
+      kept for next time). Is that what you saw? If it was something else
+      (for example the panel shorter than the window), say where.
+      *Answered 27 Nov: we wanted the Companion folded into the Write
+      ribbon as a button; the current version (Details after Draft) works
+      well.*
+- [ ] **D.13c: Improve's words after this session.** The Improve window
+      keeps nothing of its own: its critique and versions vanish when it
+      closes, and only rated versions are saved (with data collection on).
+      The Feedback tab keeps them in memory for this session. Keep them
+      across sessions (a small per-project file beside the project)?
+      Recommended: no for now; try it first.
+      *Answered 27 Nov: the Improve critiques should remain (kept across
+      sessions). Built in [D.14b](pieces/48m-D.14b-novella-undo-and-improve-notes.md).*
+- [ ] **D.13c: the Feedback tab's counts.** The three headings add three
+      sections and three buttons (they fold); the baseline was raised
+      because you asked for this content. Fine, or fold them into one
+      "From elsewhere" heading (one section, one button)? Recommended:
+      keep three; each names its source.
+      *Answered 27 Nov: keep the three headings.*
+- [ ] **D.14b: a novella's description.** The description you type when
+      naming a novella (＋ A new novella…, ＋ New novella… ▸ Move into …)
+      came with the move, so Undo takes it back with the novella; only one
+      written or changed afterwards keeps the novella. Keep, or keep any
+      novella that has a description? Recommended: keep as built.
+      *Answered 27 Nov: keep the current behaviour.*
+- [ ] **D.14b: a renamed novella.** Renaming the novella after the move
+      keeps it at Undo ("it has a new name"). Keep, or let Undo remove a
+      renamed but otherwise empty novella? Recommended: keep (nothing you
+      did is undone silently).
+      *Answered 27 Nov: keep it: a renamed novella is kept under its new name.*
+- [ ] **D.14b: results the app saved.** Anything saved for the novella as
+      a whole keeps it, including what the app makes when you ask it (a
+      voice reading, book-level readiness checks, an editorial letter).
+      Fine, or count only what you wrote (drafts, submission documents,
+      description, files)? Recommended: fine (they cost model time).
+      *Answered 27 Nov: the recommendation given in chat: count only what
+      you made (chapters, drafts, a changed name or description, files in
+      its folder, a publishing route, scene markers, submission drafts).
+      The app's own results (readiness checks, book checks, digests,
+      tension, the editorial letter, the voice reading, Improve notes,
+      Critique reports) no longer keep a novella; they can be made again
+      and stay in their files, unread. Done (round 18b).*
+- [ ] **D.14b: the Improve notes cap.** The newest 200 Improve windows per
+      chapter are kept; the oldest goes after that. Enough?
+      *Answered 27 Nov: 200 is enough.*
 - [ ] **U.3b: three things.** (a) **The short words.** ⭐ Excellent →
       ⭐ Best, Save for training → Save, and in the Studio 🎤 Slides,
       📑 Export, ✨ Refine (the full words return when there is room and
@@ -2135,6 +2645,13 @@ The routine from the README, as a checklist:
 - [x] [U.3a](pieces/50-U.3a-fit-and-scroll-sweep-the-screens-used-most.md) — built 26 Nov, for review (section 1, "Fit and scroll on the screens used most (U.3a)"); ("➕ Add Hierarchy" fixed there, section 3 D.8 (c)); then [U.3b](pieces/51-U.3b-fit-and-scroll-sweep-the-remaining-screens.md) — built 26 Nov, round 9, reviewed 27 Nov (section 1, "Fit and scroll on the remaining screens (U.3b)"): the main window fits 1024 × 600 again; 58 screens pass at all sizes; narrow rows shorten, then wrap. Left for an optional second session: about 80 windows the harness cannot open yet (its Outcome)
 - [x] Studio cards follow a moved chapter (answered 26 Nov, section 3) — built 26 Nov, round 9, for review (section 1, "Studio cards follow a moved chapter"; `chapter_move._retarget_studio`, `tests/test_chapter_move_studio.py`): when D.10's move gives a chapter a new id, the Studio's cards and decks for it take the new id too, and Undo puts them back. Small; touches the Studio's saved data, so rule 15 (nothing lost)
 - [x] [D.11](pieces/48g-D.11-retire-the-old-screens.md) Retire the old screens — built 26 Nov, round 10, reviewed 27 Nov (you tried it: it passes) (section 1, "The old screens retired (D.11)"). once the four groups for them in section 1 are checked (D.4, D.5, D.2b and D.2c, D.10) and the 0.3 safety check has run on both projects (answered 26 Nov: avoid redundancy; the gate narrowed to those groups the same day): the old manuscript tab row (D.10); the old ten tabs and Settings ▸ Main tabs (D.4); the older whole-manuscript move brought onto D.10's undoable chapter move (answered 26 Nov); the old analysis windows and "Show in a window (old)" (D.5); the old Rephrase, Suggestions and Overly descriptive? windows and Settings ▸ Features ▸ Improve window (D.2c). One piece; stored settings left in place, unread (rule 11); counts go down, never up
+- [x] [D.12](pieces/48h-D.12-unreachable-windows-the-novella-move-and-backups.md) Unreachable windows, the novella move and backups — built 27 Nov, round 14, for review (section 1, "Unreachable windows, the novella move and backups (D.12)"): the old Suggestions and Overly descriptive? windows deleted (tests moved onto the Improve window); "Turn main manuscript into a novella…" through D.10's undoable move, both whole-manuscript questions saying what Undo covers; same-second saved copies no longer overwrite each other; a list of other unwarned irreversible actions
+- [x] [D.13](pieces/48i-D.13-write-ribbon.md) Write's ribbon (the writer's idea, 27 Nov): Home · Review · Insert · Draft over one compact row; the top row goes (Total words to the bottom row); Analyze ▾ and Draft ▾ into the ribbon; the Chapter Title row goes, chapters rename in the tree — built 27 Nov, round 15, for review (section 1, "Write's ribbon (D.13)")
+- [x] [9.3 addendum](pieces/62-9.3-submission-package-and-marketability.md) The query addressed to your agent (answered 26 Nov) — built 27 Nov, round 15b, for review (section 1, "The query letter addressed to your agent (9.3 addendum)")
+- [x] [D.14](pieces/48j-D.14-undo-and-warnings.md) Undo and warnings (the writer's answers to D.12, 27 Nov): Undo removes the empty novella and lasts until the next save; the two Studio image deletes and the restore message fixed; a "can't be undone" question before every unwarned delete — built 27 Nov, round 16, for review (section 1, "Undo and warnings (D.14)")
+- [x] [D.13b](pieces/48k-D.13b-ribbon-polish.md) The ribbon, polished, and 7.4's two export answers: legible tab names (wrap when narrow), an icon and words and name-first hover text and screen-reader names on every control, 📄 Chapter ▾ and 📚 Manuscript ▾; Publisher Ready marks scene breaks; the export tick remembered per project; text −5 px (still +90 px since D.13 at 1024 × 600); no count rose — built 27 Nov, round 16b, for review
+- [x] [D.13c](pieces/48l-D.13c-left-off-feedback-and-panel-tabs.md) "Where you left off" on the ribbon, one Feedback tab, whole tab names: the line at the right of the ribbon's tab-names row on every tab (+36 px of text); Details opens the whole panel on "Where you left off", open and at the top; the Feedback tab lists the Companion's, the Critique's and the Improve window's feedback for the chapter (read-only, Go to and Open in …); tab names measured as drawn, whole unless too narrow; Feedback sections 0 → 3, buttons 3 → 6, as asked — built 27 Nov, round 17, for review (section 1, "Where you left off, Feedback and whole tab names (D.13c)")
+- [x] [D.14b](pieces/48m-D.14b-novella-undo-and-improve-notes.md) Novella Undo and Improve notes kept (the writer's answers, 27 Nov): Undo removes a novella only when it has no chapters and no content of its own; the Improve window's critiques and versions kept per project for the Feedback tab — built 27 Nov, round 18, for review (section 1, Novella Undo and Improve notes kept)
 
 **B. Better checks** (can run alongside A; no model needed)
 - [ ] [P.5](pieces/30-P.5-fix-or-hide-the-worst-checks.md) Fix or hide the worst checks (after step 2's report)

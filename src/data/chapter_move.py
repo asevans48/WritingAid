@@ -37,7 +37,8 @@ back. No Qt.
   (``<project>.readiness.json``): the chapter's readiness results and
   stage, its digest, its style-sheet facts, its draft-beside-plan
   corrections and its scene markers (7.4) (each kept per manuscript, so they are moved from the old
-  manuscript's part to the new one's). The companion file
+  manuscript's part to the new one's), and in ``<project>.improve_notes.json``
+  the Improve window's notes on it (D.14b, the same layout). The companion file
   (``<project>.companion_state.json``) keeps chapters by id alone, so its
   entry (last opened, where you stopped, heard marks) stays with the
   chapter; after an id clash it is copied to the new id. An entry already
@@ -206,6 +207,17 @@ def _move_state(project: Any, moves: List[Tuple[str, str, str, str]],
             if not rs.save(project, data):
                 raise ChapterMoveError("the readiness file could not be saved")
             result.state_files[-1] = (str(path), before, _read_bytes(path))
+    from src.data import improve_notes as notes      # the Improve window's notes (D.14b)
+    path = notes.path_for(project)
+    if path.is_file():
+        with notes._lock:
+            data = notes.load(project)
+            if not notes.is_read_only(data) and move_entries(data, moves):
+                before = _read_bytes(path)
+                result.state_files.append((str(path), before, None))
+                if not notes.save(project, data):
+                    raise ChapterMoveError("the Improve notes file could not be saved")
+                result.state_files[-1] = (str(path), before, _read_bytes(path))
     if renamed:
         data = cs.load(project)
         chapters = data.get("chapters")

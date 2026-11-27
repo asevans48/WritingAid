@@ -27,6 +27,8 @@ from PyQt6.QtWidgets import (
 )
 
 from src.video_studio.models import ActionImage, SceneAction
+from src.video_studio.pending_removals import PendingRemovals
+from src.ui.ui_kit import confirm_delete
 from src.ui.video_studio.conversation_panel import CreativeConversationPanel
 
 
@@ -73,6 +75,7 @@ class SceneActionDialog(QDialog):
         self.resize(min(640, max_w), min(natural_h, max_h))
         self.setMinimumSize(520, 360)
         self._action = action
+        self._pending_removals = PendingRemovals()   # D.14: files deleted on close
         self._scene_mode = scene_mode
         self._project = project
         self._generate_image_callback = generate_image_callback
@@ -569,6 +572,15 @@ class SceneActionDialog(QDialog):
         except Exception as e:
             print(f"[scene_action] close commit failed: {e}")
         self.done(QDialog.DialogCode.Accepted)
+
+    def done(self, result) -> None:
+        """Every way of closing ends here: images deleted while open go
+        from disk now, if the change was kept and nothing else uses
+        them (D.14)."""
+        super().done(result)
+        self._pending_removals.finish(
+            result == QDialog.DialogCode.Accepted,
+            getattr(self._project, "video_studio", None))
 
     def closeEvent(self, event) -> None:
         """Window-X / OS-quit — commit before closing."""
@@ -1077,15 +1089,15 @@ class SceneActionDialog(QDialog):
             None)
         if target is None:
             return
-        try:
-            p = Path(target.file_path)
-            if p.exists():
-                p.unlink()
-            sp = Path(target.sidecar_path) if target.sidecar_path else None
-            if sp and sp.exists():
-                sp.unlink()
-        except Exception as e:
-            print(f"[scene_action] image cleanup failed: {e}")
+        # D.14: ask first; the file is deleted only when this window
+        # closes with the change kept, and only if nothing else in the
+        # Studio uses it (``pending_removals``).
+        if not confirm_delete(
+                self, "image", item.text(),
+                detail=("The file is deleted when you close this window, unless "
+                        "another part of the Studio uses it.")):
+            return
+        self._pending_removals.add_images([target])
         self._action.images = [
             i for i in self._action.images if i.id != img_id]
         if self._action.favorite_image_id == img_id:

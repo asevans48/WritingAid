@@ -220,76 +220,82 @@ def app():
     return QApplication.instance() or QApplication([])
 
 
-def test_suggestions_dialog_has_the_sub_module_without_a_model(app, project, chapter):
-    from src.ui.passage_critique_dialog import PassageCritiqueDialog, SuggestionWorker
+def improve_window(project, chapter, tab="suggestions", llm=None, review_llm=None):
+    """The Improve window (every way in since D.11; the old Suggestions and
+    Overly descriptive? windows went in D.12) on PASSAGE, with workers that
+    run at once on a fake model (or none)."""
+    from src.ui import overdescription_panel as op
+    from src.ui.improve_window import ImproveWindow
+    from src.ui.passage_critique_dialog import SuggestionWorker
 
-    class NoModel(SuggestionWorker):
+    class Suggest(SuggestionWorker):
         def __init__(self, *a):
-            super().__init__(*a, llm_factory=lambda: (None, "AI features are turned off."))
+            super().__init__(*a, llm_factory=lambda: (llm, "" if llm else
+                                                       "AI features are turned off."),
+                             search_factory=lambda p: None)
 
         def start(self):
             self.run()
 
-    dlg = PassageCritiqueDialog(PASSAGE, 0, len(PASSAGE), project, chapter,
-                                worker_factory=NoModel)
-    assert "Overly descriptive (" in dlg.top_tabs.tabText(1)
-    assert dlg.passage_view.extraSelections()                  # highlighted
-    panel = dlg.over_panel
+    class Review(op.ReviewWorker):
+        def __init__(self, *a):
+            super().__init__(*a, llm_factory=lambda: (review_llm, "" if review_llm
+                                                       else "AI is off"))
+
+        def start(self):
+            self.run()
+
+    return ImproveWindow(PASSAGE, 0, len(PASSAGE), project, chapter, tab=tab,
+                         suggestion_worker=Suggest, review_worker=Review)
+
+
+def test_suggestions_have_the_sub_module_without_a_model(app, project, chapter):
+    # Was the old Suggestions window's test (D.12 moved it to the Improve window).
+    win = improve_window(project, chapter)
+    assert win.tab_key() == "expand"                           # no critique: the scan shown
+    assert win.tabs.tabText(3).startswith("🔍 Expand (")
+    assert win.passage_view.extraSelections()                  # highlighted
+    panel = win.tab_objects["expand"].panel
     assert panel.flag_list.count() >= 1 and not panel.more_btn.isEnabled()
     assert "no AI" in panel.status.text()
     panel.flag_list.setCurrentRow(0)
     panel.preview.setPlainText("She couldn't see her own hands.")
     panel._accept()
-    assert dlg.suggestion_list.count() == 1
-    assert "Your text, expanded" in dlg.suggestion_list.item(0).text()
-    dlg._use_selected()
-    assert dlg.replacement.startswith("She couldn't see her own hands. She almost fell")
+    assert win.version_list.count() == 1
+    assert "Your text, expanded" in win.version_list.item(0).text()
+    win._accept()
+    assert win.replacement.startswith("She couldn't see her own hands. She almost fell")
 
 
-def test_suggestions_dialog_uses_the_same_model_for_expansions(app, project, chapter):
-    from src.ui.passage_critique_dialog import PassageCritiqueDialog, SuggestionWorker
+def test_suggestions_use_the_same_model_for_expansions(app, project, chapter):
     critique = ("WHAT WORKS:\n- Quick.\n\nSUGGESTION 1:\nShe climbed into the dark attic and "
                 "nearly fell on the last stair.\nWHY: a\n\nSUGGESTION 2:\nThe attic was dark, "
                 "and she almost fell on the last stair.\nWHY: b\n\nSUGGESTION 3:\nShe stumbled "
                 "on the last stair of the dark attic.\nWHY: c")
-    llm = FakeLLM(critique, REVIEW)
-
-    class Now(SuggestionWorker):
-        def __init__(self, *a):
-            super().__init__(*a, llm_factory=lambda: (llm, ""), search_factory=lambda p: None)
-
-        def start(self):
-            self.run()
-
-    dlg = PassageCritiqueDialog(PASSAGE, 0, len(PASSAGE), project, chapter, worker_factory=Now)
-    assert dlg.over_panel.flag_list.count() == 2 and dlg.over_panel.more_btn.isEnabled()
-    assert "judged 1 other word-scan hit fine" in dlg.over_panel.status.text()
-    assert dlg.suggestion_list.count() == 3                     # the critique's rewrites
-    dlg.over_panel.flag_list.setCurrentRow(0)
-    assert dlg.over_panel.preview.toPlainText().startswith("She felt for the rafters")
-    dlg.over_panel._accept()
-    assert "Your text, expanded" in dlg.suggestion_list.item(0).text()
-    assert dlg.preview_edit.toPlainText().startswith("She felt for the rafters")
+    win = improve_window(project, chapter, llm=FakeLLM(critique, REVIEW))
+    panel = win.tab_objects["expand"].panel
+    assert panel.flag_list.count() == 2 and panel.more_btn.isEnabled()
+    assert "judged 1 other word-scan hit fine" in panel.status.text()
+    assert win.version_list.count() == 3                       # the critique's rewrites
+    panel.flag_list.setCurrentRow(0)
+    assert panel.preview.toPlainText().startswith("She felt for the rafters")
+    panel._accept()
+    assert "Your text, expanded" in win.version_list.item(0).text()
+    assert win.preview_edit.toPlainText().startswith("She felt for the rafters")
 
 
-def test_expand_dialog_and_editor(app, project, chapter, monkeypatch):
+def test_expand_and_editor(app, project, chapter, monkeypatch):
     from PyQt6.QtWidgets import QDialog
-    from src.ui import overdescription_panel as op
 
-    class Now(op.ReviewWorker):
-        def __init__(self, *a):
-            super().__init__(*a, llm_factory=lambda: (FakeLLM(REVIEW), ""))
-
-        def start(self):
-            self.run()
-
-    dlg = op.ExpandStatementDialog(PASSAGE, 0, len(PASSAGE), project, chapter,
-                                   worker_factory=Now)
-    assert dlg.panel.flag_list.count() == 2 and not dlg.use_btn.isEnabled()
-    dlg.panel.flag_list.setCurrentRow(1)
-    dlg.panel._accept()
-    dlg._use()
-    assert dlg.replacement.endswith("Trunks stood shoulder to shoulder under the eaves.")
+    # Was the old Overly descriptive? window's test (D.12 moved it).
+    win = improve_window(project, chapter, tab="expand", review_llm=FakeLLM(REVIEW))
+    panel = win.tab_objects["expand"].panel
+    assert panel.flag_list.count() == 2 and not win.accept_btn.isEnabled()
+    panel.flag_list.setCurrentRow(1)
+    panel._accept()
+    win._accept()
+    assert win.replacement.endswith("Trunks stood shoulder to shoulder under the eaves.")
+    assert win.tool == "expand"
 
     # The editor puts the accepted version in place of the passage.
     seen = {}
@@ -343,23 +349,3 @@ def test_hints_show_apostrophes_as_written():
     import html
     shown = "<br>".join(f"• {html.escape(h, quote=False)}" for h in flag.hints)
     assert "&#x27;" not in shown and "can't" in shown
-
-
-def test_expand_dialog_shows_the_word_scan_while_the_ai_checks(app, project, chapter):
-    from src.ui import overdescription_panel as op
-    held = []
-
-    class Held(op.ReviewWorker):
-        def __init__(self, *a):
-            super().__init__(*a, llm_factory=lambda: (FakeLLM(REVIEW), ""))
-
-        def start(self):
-            held.append(self)
-
-    dlg = op.ExpandStatementDialog(PASSAGE, 0, len(PASSAGE), project, chapter,
-                                   worker_factory=Held)
-    flags = dlg.panel.review.flags
-    assert flags[1].text.startswith("She almost fell") and dlg.passage_view.extraSelections()
-    assert "AI is checking" in dlg.panel.status.text()
-    held[0].run()
-    assert dlg.panel.review.flags[1].text.startswith("The attic")

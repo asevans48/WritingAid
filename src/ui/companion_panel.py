@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
 # Background work runs through the shared helper (R.2). These names are kept
 # so existing imports (and tests that wait on ``_RUNNING``) keep working.
 from src.ui import background as _background  # noqa: E402
+from src.ui.ui_kit import confirm_delete
 
 _RUNNING = _background._RUNNING
 BackgroundTask = _background.Task
@@ -54,6 +55,7 @@ class CompanionPanel(QWidget):
     style_sheet_changed = pyqtSignal()
     memory_changed = pyqtSignal()
     habit_changed = pyqtSignal()                # a writing goal was set or changed (H.1)
+    notes_changed = pyqtSignal()                # notes or Reader's eye changed (D.13c: Feedback tab)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -61,6 +63,8 @@ class CompanionPanel(QWidget):
         self.chapter_text = ""
         self.notes: list = []
         self.flags: list = []
+        self.reader_report = None                   # the last Reader's eye report (D.13c)
+        self.reader_time = ""
         self.sections: dict = {}
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -89,6 +93,7 @@ class CompanionPanel(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll = scroll
         body = QWidget()
         layout = QVBoxLayout(body)
         layout.setContentsMargins(6, 0, 6, 6)
@@ -284,6 +289,16 @@ class CompanionPanel(QWidget):
         if section is not None and not section.is_open():
             section.header.setChecked(True)
 
+    def show_left_off(self) -> None:
+        """Details (D.13c): "Where you left off" open and in view, at the
+        top. Opened for now, not remembered: the writer's own open or
+        closed choice for the section is kept as it was."""
+        section = self.sections.get("left_off")
+        if section is not None and not section.is_open():
+            section.set_open(True)
+        bar = self.scroll.verticalScrollBar()
+        bar.setValue(bar.minimum())
+
     def set_chapter(self, chapter, text: str = "") -> None:
         """The chapter everything above “Whole book” is about."""
         self.chapter_text = text or ""
@@ -345,6 +360,7 @@ class CompanionPanel(QWidget):
                                              f"{'s' if len(self.notes) != 1 else ''}."))
         self.sections["notes"].set_count(len(self.notes))
         self._update_note_buttons()
+        self.notes_changed.emit()
 
     def _current_note(self):
         row = self.notes_list.currentRow()
@@ -395,6 +411,10 @@ class CompanionPanel(QWidget):
 
     def set_reader_report(self, report, error: str = "") -> None:
         self.reader_btn.setEnabled(True)
+        from datetime import datetime
+        self.reader_report = report
+        self.reader_time = datetime.now().isoformat(timespec="seconds") if report else ""
+        self.notes_changed.emit()
         if report is None:
             self.reader_view.setHtml(f"<p style='color:{PALETTE['error_ink']}'>{html.escape(error)}</p>")
             return
@@ -522,7 +542,7 @@ class CompanionPanel(QWidget):
     def _delete_rule(self):
         from src.ai import style_sheet as ss
         r = self._current_rule()
-        if r is not None:
+        if r is not None and confirm_delete(self, "style-sheet rule", r.text):   # D.14
             ss.remove(self.project, r.id)
             from src.ai.intentional import rule_removed
             if rule_removed(self.project, r.id):       # 4.1: flagged again
@@ -604,7 +624,7 @@ class CompanionPanel(QWidget):
     def _delete_memory(self):
         from src.ai import story_memory
         e = self._current_memory()
-        if e is not None:
+        if e is not None and confirm_delete(self, "story memory", e.text):   # D.14
             story_memory.remove(self.project, e.id)
             self._changed()
 
@@ -629,13 +649,14 @@ def close_button(tooltip: str, color: str = PALETTE["ink_soft"], hover: str = PA
     btn.setToolTip(tooltip)
     btn.setAutoRaise(True)
     btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    if label == "✕":
-        btn.setFixedSize(22, 22)
-    else:
-        btn.setFixedHeight(22)
     btn.setStyleSheet(f"QToolButton {{ border: none; background: transparent; color: {color};"
                       f" font-size: 12px; font-weight: bold; padding: 0 4px; }}"
                       f"QToolButton:hover {{ background: {hover}; border-radius: 3px; }}")
+    if label == "✕":
+        btn.ensurePolished()                     # D.13c: never narrower than its ✕ needs
+        btn.setFixedSize(max(22, btn.minimumSizeHint().width()), 22)
+    else:
+        btn.setFixedHeight(22)
     return btn
 
 
@@ -649,7 +670,10 @@ class CompanionBanner(QFrame):
                            f" border: 1px solid {PALETTE['primary_border']}; border-radius: 4px; }}")
         row = QHBoxLayout(self)
         row.setContentsMargins(8, 3, 4, 3)
-        self.label = QLabel("")
+        # D.13c: shortened with "…" only when there is no room; the hover
+        # text then starts with the whole line.
+        from src.ui.ui_kit import ElidedLabel
+        self.label = ElidedLabel("", least_chars=8, text_in_tip=True)
         self.label.setStyleSheet(text_style("primary_ink", 11))
         self.label.setWordWrap(False)
         row.addWidget(self.label, 1)
@@ -670,6 +694,7 @@ class CompanionBanner(QFrame):
     def show_text(self, text: str, tooltip: str = "") -> None:
         self.label.setText(text)
         self.setToolTip(tooltip)
+        self.label.setToolTip(tooltip or text)       # whole line first when it is cut (D.13c)
         self.setVisible(bool(text))
 
 
@@ -798,11 +823,14 @@ class CompanionController(QObject):
             print(f"[habit] {e}")
 
     def open_panel(self) -> None:
-        """Details: show the Companion tab, or hide the panel if it's showing."""
+        """Details: show the Companion tab, or hide the panel if it's showing.
+        D.13c: the whole panel, on "Where you left off", open and in view
+        (a closed section showed as its one header row)."""
         if self.ce.side_panel_open() and self.ce.right_panel.currentWidget() is self.panel:
             self.ce._hide_right_panel()
         else:
             self.ce._show_right_panel(self.panel)
+            self.panel.show_left_off()
 
     # ── model helpers ────────────────────────────────────────────────
 

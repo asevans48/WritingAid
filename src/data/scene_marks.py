@@ -397,6 +397,50 @@ def from_model(project: Any, chapter_id: str, text: str,
 
 # ── Export ────────────────────────────────────────────────────────────
 
+# D.13b (7.4's answer): the export dialog's "Mark scene breaks" tick is
+# remembered per project, in the same readiness file, under its own
+# top-level key (true only; absent means unticked, as before). Written
+# only when the writer changes the tick and exports.
+EXPORT_KEY = "scene_marks_export"
+
+
+def export_tick(project: Any) -> bool:
+    """The project's remembered "Mark scene breaks" tick; False when none
+    is stored or the file cannot be read."""
+    if project is None:
+        return False
+    try:
+        from src.data import readiness_state as rs
+        return rs.load(project).get(EXPORT_KEY) is True
+    except Exception as e:
+        print(f"[scene marks] export tick unreadable: {e}")
+        return False
+
+
+def remember_export_tick(project: Any, on: bool) -> bool:
+    """Keep the tick for the next export of this project. Nothing is
+    written when it is unchanged. True when stored (or already so)."""
+    if project is None:
+        return False
+    on = bool(on)
+    if export_tick(project) == on:
+        return True
+    from src.data import readiness_state as rs
+
+    def change(data):                              # every other key is kept
+        if on:
+            data[EXPORT_KEY] = True
+        else:
+            data.pop(EXPORT_KEY, None)
+    try:
+        return bool(rs.update(project, change))
+    except Exception as e:
+        print(f"[scene marks] export tick not saved: {e}")
+        return False
+    finally:
+        _cache.clear()
+
+
 def insert_breaks(text: str, at: Sequence[int]) -> str:
     """``text`` with the standard "#" break before each offset (a
     paragraph start), separated as the text separates its paragraphs."""

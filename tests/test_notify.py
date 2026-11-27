@@ -139,7 +139,8 @@ def test_write_tab_select_text_first_opens_no_box(app, fresh, tmp_path):
 
 def test_a_box_that_stays_is_not_touched():
     """Moving chapters is work the writer must not miss: it stays a box."""
-    src = open("src/ui/manuscript_editor.py", encoding="utf-8").read()
+    # D.12: the move (and this box) went to the manuscript tree's module.
+    src = open("src/ui/manuscript_tree.py", encoding="utf-8").read()
     i = src.index('"Chapters Moved"')
     assert "QMessageBox.information(" in src[i - 80:i]
 

@@ -618,6 +618,7 @@ class ImproveWindow(QDialog):
         self.accept()
 
     def done(self, code: int) -> None:
+        from src.ui import feedback_sources; feedback_sources.remember_improve(self, code)  # D.13c
         # Workers still running keep running (background keeps them alive);
         # their results are dropped.
         for tab in self.tab_objects.values():

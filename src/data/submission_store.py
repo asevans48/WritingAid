@@ -28,7 +28,9 @@ Layout (``format_version`` 1)::
                       "generated": "… as the app or model made it",
                       "made_at": "2026-11-26 10:04", "model": "", "fit": 0.82,
                       "versions": [{"text": "…", "source": "…", "saved_at": "…"}]},
-         "query": {…}, "blurb": {…}, "audience": {…},
+         "query": {…, "to": {"id": "…", "name": "…", "agency": "…",
+                             "email": "…", "represents": "…"}},   # 9.3 addendum
+         "blurb": {…}, "audience": {…},
          "comps": {"chosen": ["Dracula — Bram Stoker"], "own": "…"}}}}
 
 No Qt.
@@ -168,9 +170,12 @@ def _keep(d: Dict[str, Any], new_text: str) -> bool:
 
 
 def put_draft(project: Any, scope: Optional[str], kind: str, new_text: str,
-              source: str, model: str = "", fit: Optional[float] = None) -> Dict[str, Any]:
+              source: str, model: str = "", fit: Optional[float] = None,
+              to: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """A new draft from the template or the model. The text it replaces is
-    kept as an earlier version. Returns {"saved": bool, "kept": bool}."""
+    kept as an earlier version. ``to``: the agent a query letter is
+    addressed to (9.3 addendum; left as it was when None). Returns
+    {"saved": bool, "kept": bool}."""
     out = {"saved": False, "kept": False}
 
     def change(data):
@@ -178,6 +183,8 @@ def put_draft(project: Any, scope: Optional[str], kind: str, new_text: str,
         out["kept"] = _keep(d, new_text)
         d.update(text=new_text, generated=new_text, source=source, model=model,
                  made_at=now(), fit=fit)
+        if to is not None:
+            d["to"] = dict(to)
     out["saved"] = update(project, change)
     return out
 
@@ -190,6 +197,34 @@ def set_text(project: Any, scope: Optional[str], kind: str, new_text: str) -> bo
         d.setdefault("generated", "")
         d.setdefault("source", "writer")
     return update(project, change)
+
+
+def set_to(project: Any, scope: Optional[str], to: Optional[Dict[str, str]]) -> bool:
+    """Which agent the query letter is addressed to (9.3 addendum). An
+    older app does not know the key and leaves it alone."""
+    def change(data):
+        _doc(data, scope, "query")["to"] = dict(to or {})
+    return update(project, change)
+
+
+def readdress(project: Any, scope: Optional[str], new_text: str,
+              to: Optional[Dict[str, str]]) -> Dict[str, Any]:
+    """The query letter with a new greeting (9.3 addendum). The text it
+    replaces is kept as an earlier version; a letter the writer hadn't
+    edited stays unedited (its made text moves with it), an edited one
+    stays the writer's. Returns {"saved": bool, "kept": bool}."""
+    out = {"saved": False, "kept": False}
+
+    def change(data):
+        d = _doc(data, scope, "query")
+        unedited = not is_edited(d)
+        out["kept"] = _keep(d, new_text)
+        d["text"] = new_text
+        if unedited:
+            d["generated"] = new_text
+        d["to"] = dict(to or {})
+    out["saved"] = update(project, change)
+    return out
 
 
 def restore(project: Any, scope: Optional[str], kind: str, index: int) -> Optional[str]:

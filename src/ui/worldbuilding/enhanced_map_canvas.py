@@ -17,6 +17,7 @@ from src.models.worldbuilding_objects import (
     WorldMap, Planet, ClimateZone
 )
 from src.ui.worldbuilding.map_builder import MapElementItem, MapLandmarkItem
+from src.ui.ui_kit import confirm_delete
 
 
 class MapProjection:
@@ -1210,7 +1211,7 @@ class EnhancedMapCanvas(QGraphicsView):
             delete_action = menu.addAction("Delete")
 
             action = menu.exec(self.mapToGlobal(pos))
-            if action == delete_action:
+            if action == delete_action and confirm_delete(self, "map item", _map_name(element_item)):   # D.14
                 self.delete_item(element_item)
 
     def delete_item(self, item):
@@ -1250,9 +1251,20 @@ class EnhancedMapCanvas(QGraphicsView):
         """Handle key press events."""
         if event.key() == Qt.Key.Key_Delete:
             # Delete selected items
-            selected_items = self.scene.selectedItems()
+            selected_items = [i for i in self.scene.selectedItems() if isinstance(
+                i, (MapElementItem, MapLandmarkItem, TerrainBrushItem, FactionBorderItem))]
+            if not selected_items or not confirm_delete(   # D.14
+                    self, "map item" if len(selected_items) == 1 else f"{len(selected_items)} map items",
+                    _map_name(selected_items[0]) if len(selected_items) == 1 else ""):
+                return
             for item in selected_items:
                 if isinstance(item, (MapElementItem, MapLandmarkItem, TerrainBrushItem, FactionBorderItem)):
                     self.delete_item(item)
         else:
             super().keyPressEvent(event)
+
+
+def _map_name(item) -> str:
+    """The name the Delete question shows for a map item (D.14)."""
+    obj = getattr(item, "element", None) or getattr(item, "landmark", None)
+    return str(getattr(obj, "name", "") or "")

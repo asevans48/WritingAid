@@ -11,13 +11,14 @@ text in place), ``talk`` (its ``ConversationPanel``, or None) and
 Nothing here is new behaviour. Each tab runs the workers its old window
 ran, with the model its old window used (``passage_critique_dialog``'s
 ``_build_llm``: the critique task model, else the default), and saves
-ratings through the same calls with the same values:
+ratings through the same calls with the same values (the old windows
+themselves were deleted in D.12):
 
 * Suggestions and Critique are one model call (``SuggestionWorker``), as
-  in ``PassageCritiqueDialog``; that run also fills Expand, unless Expand
+  in the old Suggestions window; that run also fills Expand, unless Expand
   already ran (no second call).
 * Expand is ``OverdescriptionPanel`` with ``ReviewWorker`` and
-  ``MoreWorker``, as in ``ExpandStatementDialog``. Its ✓ Accept is called
+  ``MoreWorker``, as in the old Overly descriptive? window. Its ✓ Accept is called
   **Apply to passage** here, so the window has one ✓ Accept. Applied
   expansions are logged with ``log_accepted`` (style "expansion") and
   build "Your text, expanded". When Suggestions has not run, that version
@@ -225,7 +226,7 @@ class SuggestionsTab:
                                      for v in result.versions)
         self.turns.append(ChatTurn("editor", note))
 
-    # Rating and accepting (PassageCritiqueDialog's calls and values)
+    # Rating and accepting (the old Suggestions window's calls and values)
 
     def rate(self, version, value: str, text: str) -> str:
         from src.ui.passage_critique_dialog import log_rating

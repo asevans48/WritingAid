@@ -16,15 +16,21 @@ def _harness():
 
 def test_draws_the_three_screens_the_brief_names(tmp_path):
     h = _harness()
-    results = h.run(["suggestions", "companion", "style"], tmp_path, sizes=[(1440, 900, 1.0)])
+    # The brief named suggestions, companion and style. Style (D.6) and the
+    # old Suggestions window (D.12) are retired; the Improve window's
+    # 💡 Suggestions tab is drawn in the old window's place.
+    results = h.run(["suggestions", "improve", "companion", "style"], tmp_path,
+                    sizes=[(1440, 900, 1.0)])
     report = results["1440x900"]
     assert report["screen"]["available"] == [1440, 900]
-    for name in ("suggestions", "companion"):
+    for name in ("improve", "companion"):
         assert "error" not in report["screens"][name], report["screens"][name]
         assert (tmp_path / f"{name}_1440x900.png").stat().st_size > 1000
-    # D.6 retired the Style tab: not drawn, counted as empty, and says where it went.
-    assert "retired" in report["screens"]["style"]
-    assert not (tmp_path / "style_1440x900.png").exists()
+    # D.6 retired the Style tab, D.12 the old Suggestions window: not drawn,
+    # counted as empty, and each says where it went.
+    for name, piece in (("style", "D.6"), ("suggestions", "D.12")):
+        assert report["screens"][name]["retired"].startswith(piece)
+        assert not (tmp_path / f"{name}_1440x900.png").exists()
     assert report["counts"]["screens"]["style"]["buttons"] == 0
     # Counts were taken at the baseline size and match it.
     baseline = json.loads(h.BASELINE.read_text())

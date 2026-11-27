@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
 from src.ui.worldbuilding._record_dialog import FieldSpec, edit_record
 from src.ui.ui_kit import compact_button, main_button  # narrow buttons show their symbol
 from src.ui import notify  # D.9: messages that need no click
+from src.ui.ui_kit import confirm_delete
 
 
 def populate_faction_combo(combo: QComboBox, factions: list,
@@ -75,7 +76,7 @@ class StringListWidget(QWidget):
 
     def _remove(self) -> None:
         i = self._list.currentRow()
-        if i >= 0:
+        if i >= 0 and confirm_delete(self, "entry", self._list.item(i).text()):   # D.14
             self._list.takeItem(i)
             self.content_changed.emit()
 
@@ -152,7 +153,8 @@ class SubRecordList(QWidget):
 
     def _remove(self) -> None:
         i = self._list.currentRow()
-        if 0 <= i < len(self.records):
+        if 0 <= i < len(self.records) and confirm_delete(
+                self, "entry", self._list.item(i).text()):   # D.14
             del self.records[i]
             self._refresh()
             self.content_changed.emit()
@@ -296,7 +298,7 @@ class SystemBuilderBase(QWidget):
 
     def _remove_system(self) -> None:
         current = self.system_list.currentItem()
-        if not current:
+        if not current or not confirm_delete(self, self.ITEM_NOUN, current.text()):   # D.14
             return
         sid = current.data(Qt.ItemDataRole.UserRole)
         self.systems = [s for s in self.systems if s.id != sid]

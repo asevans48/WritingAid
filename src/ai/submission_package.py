@@ -279,8 +279,11 @@ def query(f: Dict[str, Any]) -> str:
     sign = [x for x in (f["byline"] or "[Your name]",
                         (f["contact"] or {}).get("email", ""),
                         (f["contact"] or {}).get("phone", "")) if x]
-    return "\n\n".join([
-        "Dear [Agent's name],", hook, " ".join(body), details,
+    from src.ai import query_address as qa          # 9.3 addendum: the chosen agent
+    agent = f.get("agent") or {}
+    paras = [qa.greeting(agent), hook, " ".join(body), details,
+             qa.agent_line(agent, f["title"])]
+    return "\n\n".join([p for p in paras if p] + [
         "[A few lines about you: why you wrote this book, and any writing credits.]",
         "Thank you for your time and consideration.",
         "Sincerely,\n" + "\n".join(sign)])
@@ -335,9 +338,11 @@ TEMPLATES = {"synopsis": synopsis, "query": query, "blurb": blurb}
 
 
 def template(kind: str, project: Any, scope: Optional[str] = None,
-             chosen_comps: Sequence[str] = ()) -> str:
-    """The filled-in template for one document. Never needs a model."""
+             chosen_comps: Sequence[str] = (), agent: Optional[Dict[str, str]] = None) -> str:
+    """The filled-in template for one document. Never needs a model.
+    ``agent``: who the query letter is addressed to (9.3 addendum)."""
     f = facts(project, scope, chosen_comps)
+    f["agent"] = agent or {}
     if kind == "audience":
         return audience(f, placement(project, scope, f))
     return TEMPLATES[kind](f)
@@ -491,10 +496,13 @@ def generate(llm: Any, prompt: str, max_tokens: int) -> str:
 
 
 def draft(llm: Any, kind: str, project: Any, scope: Optional[str] = None,
-          chosen_comps: Sequence[str] = ()) -> Dict[str, Any]:
+          chosen_comps: Sequence[str] = (), agent: Optional[Dict[str, str]] = None
+          ) -> Dict[str, Any]:
     """A model draft of one document: {"text", "model", "fit"}. Raises when
-    the model fails or replies with nothing (the screen keeps what it had)."""
+    the model fails or replies with nothing (the screen keeps what it had).
+    ``agent``: who a query is addressed to (its greeting is the app's)."""
     f = facts(project, scope, chosen_comps)
+    f["agent"] = agent or {}
     lines = placement(project, scope, f) if kind == "audience" else []
     filled = audience(f, lines) if kind == "audience" else TEMPLATES[kind](f)
     compact = _is_local(llm)
@@ -521,6 +529,9 @@ def draft(llm: Any, kind: str, project: Any, scope: Optional[str] = None,
         where = "\n".join(f"- {x}" for x in lines)
         reply = (f"Who it's for\n\n{reply}\n\nComparable titles\n\n{comps}"
                  f"\n\nWhere it sits\n\n{where}")
+    if kind == "query" and agent and agent.get("name"):
+        from src.ai import query_address as qa
+        reply = qa.readdress(reply, None, agent, f["title"])["text"]
     fit = None
     if kind in ("query", "blurb") and fit_voice is not None:
         try:

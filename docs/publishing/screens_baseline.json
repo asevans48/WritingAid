@@ -1,5 +1,5 @@
 {
- "_about": "Clutter baseline. Agreed by the writer on 24 Nov 2026 after D.1, D.6, D.7 and D.9, measured at 1440x900, with menu items counted as decision 11 says (a closely related submenu counts as one; different actions count one by one). Rule 13: no piece may raise a count. The first baseline, from piece 0.2 (22 Nov 2026), is kept below under 'baseline_0_2'. Right-click lowered from 9 / 13 to 7 / 11 by D.2b (25 Nov 2026), as decision 16 settled: the three entries of ✨ Improve this ▸ open one Improve window and count as one group; nothing on screen changed. Agreed by the writer on 26 Nov 2026: 5 top-level tabs (D.4, was 10); the Improve window's tabs (D.2b, D.2c: improve, improve_critique, improve_expand, improve_rephrase); the Publishing tab with the submission package open (9.3: publishing_package). Asked for by the writer on 26 Nov 2026: Video Studio shows Save and Load and folds Arrange, Clear and Fit into one \"+\" menu (video_studio: 12 buttons → 10, menu items 0 → 1, one grouped entry).",
+ "_about": "Clutter baseline. Agreed by the writer on 24 Nov 2026 after D.1, D.6, D.7 and D.9, measured at 1440x900, with menu items counted as decision 11 says (a closely related submenu counts as one; different actions count one by one). Rule 13: no piece may raise a count. The first baseline, from piece 0.2 (22 Nov 2026), is kept below under 'baseline_0_2'. Right-click lowered from 9 / 13 to 7 / 11 by D.2b (25 Nov 2026), as decision 16 settled: the three entries of ✨ Improve this ▸ open one Improve window and count as one group; nothing on screen changed. Agreed by the writer on 26 Nov 2026: 5 top-level tabs (D.4, was 10); the Improve window's tabs (D.2b, D.2c: improve, improve_critique, improve_expand, improve_rephrase); the Publishing tab with the submission package open (9.3: publishing_package). Asked for by the writer on 26 Nov 2026: Video Studio shows Save and Load and folds Arrange, Clear and Fit into one \"+\" menu (video_studio: 12 buttons → 10, menu items 0 → 1, one grouped entry). Agreed by the writer on 27 Nov 2026 (D.13, Write's ribbon): Write's inner_tabs 0 → 4 (the ribbon's Home · Review · Insert · Draft), as long as the visible buttons go down; they went from 18 to 11 and the visible menu items from 28 to 0 (Home is shown first; the harness reports every tab's contents beside 'write' as write_ribbon: Home 4 buttons, Review 3 with 21 menu items, Insert 3 with 1, Draft 3 with 6). Nothing was removed: the other tabs hold the rest. Asked for by the writer on 27 Nov 2026 (D.13c, one Feedback tab: \"incorporate our feedback updates from other sections in the Feedback tab\"): the Feedback tab lists what the Companion, the Critique and the Improve window said about the open chapter, under three headings that fold (feedback: sections 0 → 3; buttons 3 → 6, the three headings; each item's Go to and Open in … are links, not buttons). Nothing else rose. Asked for by the writer on 27 Nov 2026 (D.13c follow-up: \"move the blue box to a button next to Draft … we can call the tab Details\"): Write's buttons 11 → 12, the Details entry after Draft; the blue \"Where you left off\" line is gone.",
  "main_window": {
   "top_level_tabs": 5,
   "sidebar_tabs": 2,
@@ -7,10 +7,10 @@
  },
  "screens": {
   "write": {
-   "buttons": 18,
-   "menu_items": 28,
+   "buttons": 12,
+   "menu_items": 0,
    "sections": 0,
-   "inner_tabs": 0
+   "inner_tabs": 4
   },
   "planner": {
    "buttons": 8,
@@ -25,9 +25,9 @@
    "inner_tabs": 0
   },
   "feedback": {
-   "buttons": 3,
+   "buttons": 6,
    "menu_items": 0,
-   "sections": 0,
+   "sections": 3,
    "inner_tabs": 0
   },
   "companion": {

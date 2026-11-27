@@ -4,7 +4,7 @@ One command draws screens at every size the plan supports, checks them, and
 counts their clutter against the 0.2 baseline:
 
     venv/bin/python scripts/screen_harness.py                  # every screen
-    venv/bin/python scripts/screen_harness.py suggestions companion write
+    venv/bin/python scripts/screen_harness.py improve companion write
     venv/bin/python scripts/screen_harness.py --list
     venv/bin/python scripts/screen_harness.py --compare <earlier run folder>
     venv/bin/python scripts/screen_harness.py --menus write     # menus as counted
@@ -51,8 +51,7 @@ COUNT_AT = (1440, 900, 1.0)          # the baseline was measured at this size
 
 SCREENS = {
     # name: (kind, description)  kind: "dialog" | "page" | "panel"
-    "suggestions": ("dialog", "The old Suggestions window (passage critique), with a sample "
-                              "reply; no way in since D.11, the Improve window opens instead"),
+    "suggestions": ("retired", "The old Suggestions window (retired in D.12)"),
     "companion": ("panel", "Write side panel: Companion"),
     "style": ("retired", "Write side panel: Style (retired in D.6)"),
     "planner": ("panel", "Write side panel: Planner"),
@@ -138,8 +137,26 @@ DIALOG_SCREENS = {
 }
 for _name, (_m, _c, _what) in DIALOG_SCREENS.items():
     SCREENS[_name] = ("dialog", f"{_what}, opened empty (U.3b)")
+# Added by D.13: Write with each of its ribbon's other tabs shown (Home is
+# "write"). Drawn here; what each tab holds is counted with "write" and
+# reported beside it (``write_ribbon``), not against the baseline.
+RIBBON_SCREENS = {"write_review": "Review", "write_insert": "Insert", "write_draft": "Draft"}
+for _name, _tab in RIBBON_SCREENS.items():
+    SCREENS[_name] = ("page", f"Write with the ribbon's {_tab} tab shown (D.13)")
+# Added by D.13c: Write with "Where you left off" on the ribbon's row (a
+# sample line), on each tab, and the Feedback tab with a sample item from
+# each source (the Companion, the Critique, the Improve window). Drawn, not
+# counted ("write" and "feedback" are counted).
+LEFT_OFF_SCREENS = {"write_left_off": "Home", "write_left_off_review": "Review",
+                    "write_left_off_insert": "Insert", "write_left_off_draft": "Draft"}
+for _name, _tab in LEFT_OFF_SCREENS.items():
+    SCREENS[_name] = ("page", f"Write with “Where you left off” on the ribbon, its {_tab} "
+                              "tab shown (D.13c)")
+SCREENS["feedback_sources"] = ("panel", "Write side panel: Feedback with sample items from the "
+                                        "Companion, the Critique and the Improve window (D.13c)")
 SWEEP_SCREENS = ("write_tree", "write_tiled", "critique_window", "fix_all", "hover_card",
-                 "chapter_stages", "settings", *TILED_SCREENS, *DIALOG_SCREENS)
+                 "chapter_stages", "settings", *TILED_SCREENS, *DIALOG_SCREENS,
+                 *RIBBON_SCREENS, *LEFT_OFF_SCREENS, "feedback_sources")
 # The Publishing tab with the submission package open (9.3): drawn and
 # counted on its own ("publishing" is the tab with nothing chosen in its
 # list); its figures joined the baseline on 26 Nov 2026.
@@ -174,7 +191,9 @@ PANELS = {"planner": lambda ed: ed.planner_widget,
 RETIRED = {"style": "D.6: its list is the Companion's next-fix card (✓ Checks ▾ → Style "
                     "issues panel…), its switches are ✓ Checks ▾ → Style checks",
            "main_tabs_ten": "D.11: the ten tabs and Settings ▸ Main tabs went; every screen is "
-                            "in the five groups (main_tabs)"}
+                            "in the five groups (main_tabs)",
+           "suggestions": "D.12: the old Suggestions window was deleted (no way in since D.11); "
+                          "the Improve window's 💡 Suggestions tab is drawn as improve"}
 
 # How menu items are counted (decision 11, 24 Nov 2026). A menu whose items
 # are one closely related group counts as ONE entry: a list of words, one
@@ -192,9 +211,11 @@ GROUPED_MENUS = (
     "Look Up Context",          # right-click: the reference look-ups
     "Heading Style",            # right-click → More: Normal, Heading 1 to 3
     "🔊 Text to Speech",        # right-click → More: read and generate aloud
-    "🗣 Read Aloud",            # Write toolbar: the same, as a split button
+    "🔊 Read Aloud",            # Write toolbar: the same, as a split button (🗣 before D.13b's answers)
+    "🗣 Read Aloud",            # the old name, still grouped
     "Novellas",                 # Write header: Novellas ▾
     "Drafts",                   # Write header: Drafts ▾ (manuscript drafts)
+    "📚 Manuscript",            # the same menu, renamed by D.13b (Draft tab: 📚 Manuscript ▾)
     "📝",                       # Write toolbar: annotations (add, view all)
     "✨ Improve this",          # right-click: Rephrase, Suggestions, Overly descriptive? (decision 16)
     "+",                        # Video Studio: the board's Arrange, Clear, Fit (the writer, 26 Nov)
@@ -376,6 +397,9 @@ def main(argv: List[str]) -> int:
                    and "menu_items_itemised" in c else "") for k in
                 ("buttons", "menu_items", "sections", "inner_tabs"))
                 + ("  — retired" if SCREENS.get(name, ("",))[0] == "retired" else ""))
+        for tab, c in counts.get("write_ribbon", {}).items():
+            print(f"  write ribbon {tab:7} buttons {c['buttons']}  menu items {c['menu_items']}"
+                  f" {{{c['menu_items_itemised']}}}  " + " · ".join(c.get("shown", [])))
         for key, value in counts.get("main_window", {}).items():
             print(f"  main window {key}: {value} ({baseline.get('main_window', {}).get(key, '?')})")
         every = counts.get("right_click_itemised", {})
@@ -531,8 +555,6 @@ def _show_full(widget) -> None:
 def _build(name: str, project):
     """(window to draw, widget to count in) for a screen."""
     kind = SCREENS[name][0]
-    if name == "suggestions":
-        return _suggestions(project)
     if name in IMPROVE_SCREENS:
         return _improve(project, IMPROVE_SCREENS[name])
     if name in HABIT_SCREENS:
@@ -805,6 +827,45 @@ def _tree_project():
     return p
 
 
+LEFT_OFF_LINE = ("Where you left off — last time added 412 words · next: Slip past the "
+                 "patrol boat in the harbour fog · 2 to-dos")
+
+
+def _feedback_sources_screen(project):
+    """The Feedback tab with a sample item from each source (D.13c): the
+    Companion's notes and Reader's eye, the Critique's findings and a
+    report (sample files, read as the app reads them), and what an Improve
+    window said this session. Nothing is written."""
+    from src.ai.companion import Note, ReaderReport
+    from src.ui import feedback_sources as fs
+    ed = _chapter_editor(project)
+    chapter = ed.chapter
+    panel = ed.companion.panel
+    panel.set_notes([Note("pov", "The point of view slips to Voss here.", 0, "\"Too late,\" he said."),
+                     Note("voice", "Voss sounds more formal than usual.", 0, "She didn't answer.")])
+    panel.set_reader_report(ReaderReport(
+        dips=[("It was very, very cold.", "The weather repeats what we already feel.")],
+        questions=["What is in the letter?"], overall="Tense and quick; the ending lands."))
+    item = {"start": SAMPLE_TEXT.index("very, very"), "end": SAMPLE_TEXT.index("very, very") + 10,
+            "text": "very, very", "reason": "Two intensifiers in a row.", "key": "k1"}
+    fs._readiness_data = lambda p: {"manuscripts": {"main": {"chapters": {chapter.id: {
+        "made_at": "2026-11-26T18:20:00", "text_hash": "", "results": {
+            "repetition": {"check": "repetition", "stage": "line", "status": "needs_work",
+                           "count": 1, "items": [item]}}}}}}}
+    fs._history_data = lambda p: {"x": [{"timestamp": "2026-11-25T09:00:00", "chapters": {
+        chapter.title: {"reports": {"pacing": {
+            "major": ["The middle stalls between the pier and the letter."],
+            "minor": []}}}}}]}
+    fs._SESSION[fs._key(project, chapter)] = [{
+        "when": "2026-11-27T10:15:00", "passage": "Nobody slept.", "accepted": "",
+        "critique": {"issues": ["“Nobody slept” tells; show one sleepless face."],
+                     "dialogue": [], "order": [], "works": ["The lanterns set the scene."]},
+        "versions": [{"text": "Not one window on the hill went dark.", "source": "suggestions",
+                      "why": "Shows the sleeplessness.", "rating": "good"}]}]
+    ed._show_right_panel(ed.feedback_widget)
+    return ed, ed.feedback_widget
+
+
 def _sweep_screen(name: str, project):
     """The screens U.3a added to the sweep."""
     from PyQt6.QtWidgets import QApplication
@@ -822,6 +883,23 @@ def _sweep_screen(name: str, project):
         w.move(avail.right() - share + 1, avail.top())
         w.show()
         w.setProperty("harness_share", share)
+        return w, w
+    if name in LEFT_OFF_SCREENS:
+        from src.ui import write_ribbon
+        w = _page("write", project)
+        _show_full(w)
+        write_ribbon.show_tab(w, LEFT_OFF_SCREENS[name], remember=False)
+        w.current_chapter_editor.companion_banner.show_text(
+            LEFT_OFF_LINE, "Last time (yesterday) you added 412 words and stopped at "
+            "“She didn't answer.”\nNext beat: Slip past the patrol boat in the harbour fog")
+        return w, w
+    if name == "feedback_sources":
+        return _feedback_sources_screen(project)
+    if name in RIBBON_SCREENS:
+        from src.ui import write_ribbon
+        w = _page("write", project)
+        _show_full(w)
+        write_ribbon.show_tab(w, RIBBON_SCREENS[name], remember=False)
         return w, w
     if name in ("write_tree", "write_tiled"):
         from src.ui import screen_groups
@@ -934,39 +1012,6 @@ def _main_tabs(project, placeholders: bool = False):
     sg.install(win)
     sg.show(win, win.characters_widget)              # a group's inner tabs, drawn
     return win
-
-
-def _suggestions(project):
-    from src.ai import passage_critique as pc
-    from src.ui.passage_critique_dialog import PassageCritiqueDialog
-    chapter = project.manuscript.chapters[0]
-    sel = (SAMPLE_TEXT.index("ran to the pier"), SAMPLE_TEXT.index("ran to the pier") + 15)
-    s, e = pc.expand_to_sentences(SAMPLE_TEXT, *sel)
-
-    class _Reply:
-        def generate_text(self, *a, **k):
-            return SAMPLE_REPLY
-
-    factory = None
-    try:
-        from src.ui.passage_critique_dialog import SuggestionWorker
-
-        class _Now(SuggestionWorker):
-            def __init__(self, *a):
-                super().__init__(*a, llm_factory=lambda: (_Reply(), ""),
-                                 search_factory=lambda p: None)
-
-            def start(self):
-                self.run()
-        factory = _Now
-    except Exception:
-        factory = None                      # still drawn, without a reply
-    kwargs = {"selection": sel}
-    if factory is not None:
-        kwargs["worker_factory"] = factory
-    dlg = PassageCritiqueDialog(SAMPLE_TEXT, s, e, project, chapter, **kwargs)
-    dlg.show()                              # a dialog opens at its own size
-    return dlg, dlg
 
 
 def _improve(project, tab: str):
@@ -1228,6 +1273,34 @@ def _write_menus(top, out: Dict[str, Any]) -> None:
                 else _tree(b.menu()))
 
 
+def _write_ribbon(top, out: Dict[str, Any], app) -> None:
+    """What each of Write's ribbon tabs holds (D.13): "write" counts the
+    tab shown (Home); this reports every tab, shown in turn."""
+    try:
+        from PyQt6.QtWidgets import QPushButton, QToolButton
+        from src.ui import write_ribbon
+    except Exception:
+        return
+    ce = getattr(top, "current_chapter_editor", None)
+    ribbon = getattr(ce, "write_ribbon", None)
+    if ribbon is None:
+        return
+    shown = ribbon.current()
+    tabs = {}
+    for tab in write_ribbon.TABS:
+        ribbon.show_tab(tab, remember=False)
+        _settle(app)
+        page = ribbon.stack.currentWidget()
+        c = count_widget(page)
+        texts = [b.text().replace("&&", "&") for b in page.findChildren((QToolButton, QPushButton))
+                 if b.isVisibleTo(page) and (b.text().strip() or not b.icon().isNull())]
+        tabs[tab] = {"buttons": c["buttons"], "menu_items": c["menu_items"],
+                     "menu_items_itemised": c["menu_items_itemised"], "shown": texts}
+    ribbon.show_tab(shown, remember=False)
+    _settle(app)
+    out["write_ribbon"] = tabs
+
+
 def _counts(names: List[str], project, app) -> Dict[str, Any]:
     from PyQt6.QtWidgets import QMenu
     out: Dict[str, Any] = {"screens": {}, "right_click": {}}
@@ -1272,6 +1345,7 @@ def _counts(names: List[str], project, app) -> Dict[str, Any]:
                 out["screens"][name] = count_widget(w)
                 if name == "write":
                     _write_menus(w, out)
+                    _write_ribbon(w, out, app)
                 w.close()
         except Exception as e:
             out["screens"][name] = {"error": str(e)[:200]}

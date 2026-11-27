@@ -11,6 +11,7 @@ from PyQt6.QtCore import pyqtSignal, Qt
 from src.models.worldbuilding_objects import Myth, Faction
 from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
 from src.ui.ui_kit import PALETTE, main_button  # one look (D.8)
+from src.ui.ui_kit import confirm_delete
 
 
 class MythEditor(QDialog):
@@ -433,6 +434,8 @@ class MythologyBuilderWidget(QWidget):
         """Remove selected myth."""
         items = self.myth_list.selectedItems()
         if not items:
+            return
+        if not confirm_delete(self, "myth", items[0].text()):   # D.14
             return
 
         current_row = self.myth_list.row(items[0])

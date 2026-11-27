@@ -16,6 +16,7 @@ from datetime import datetime
 from src.models.project import Character, LoveInterest
 from src.ui import notify  # D.9: messages that need no click
 from src.ui.ui_kit import PALETTE, empty_state, main_button, plain  # one look (D.8)
+from src.ui.ui_kit import confirm_delete
 
 if TYPE_CHECKING:
     from src.models.project import WriterProject
@@ -947,7 +948,7 @@ class CharacterWidget(QWidget):
     def _remove_love_interest(self):
         """Remove the currently selected love interest."""
         item = self.love_list.currentItem()
-        if not item:
+        if not item or not confirm_delete(self, "love interest", item.text()):   # D.14
             return
         target_id = item.data(Qt.ItemDataRole.UserRole)
         self.character.love_interests = [
@@ -1039,6 +1040,8 @@ class CharacterWidget(QWidget):
         """Remove the selected personality snapshot."""
         row = self.arc_list.currentRow()
         if row < 0 or row >= len(self.character.personality_arc):
+            return
+        if not confirm_delete(self, "personality snapshot", self.arc_list.item(row).text()):   # D.14
             return
         self.character.personality_arc.pop(row)
         self._refresh_arc_list()

@@ -12,6 +12,7 @@ import uuid
 
 from src.models.worldbuilding_objects import StarSystem, Star, Planet, PlanetType, ClimateZone
 from src.ui.ui_kit import PALETTE, main_button, scroll_dialog  # one look (D.8); U.3b
+from src.ui.ui_kit import confirm_delete
 
 
 class PlanetEditorDialog(QDialog):
@@ -233,7 +234,7 @@ class PlanetEditorDialog(QDialog):
     def _remove_climate_zone(self):
         """Remove selected climate zone."""
         current = self.climate_list.currentItem()
-        if not current:
+        if not current or not confirm_delete(self, "climate zone", current.text()):   # D.14
             return
 
         index = self.climate_list.currentRow()
@@ -576,7 +577,7 @@ class EnhancedStarSystemEditor(QDialog):
     def _remove_star(self):
         """Remove selected star."""
         current = self.stars_list.currentItem()
-        if not current:
+        if not current or not confirm_delete(self, "star", current.text()):   # D.14
             return
 
         star_id = current.data(Qt.ItemDataRole.UserRole)
@@ -620,7 +621,7 @@ class EnhancedStarSystemEditor(QDialog):
     def _remove_planet(self):
         """Remove selected planet."""
         current = self.planets_list.currentItem()
-        if not current:
+        if not current or not confirm_delete(self, "planet", current.text()):   # D.14
             return
 
         planet_id = current.data(Qt.ItemDataRole.UserRole)
@@ -811,6 +812,8 @@ class EnhancedStarSystemBuilderWidget(QWidget):
         """Remove selected star system."""
         items = self.list_widget.selectedItems()
         if not items:
+            return
+        if not confirm_delete(self, "star system", items[0].text()):   # D.14
             return
 
         system_id = items[0].data(Qt.ItemDataRole.UserRole)

@@ -15,6 +15,7 @@ import uuid
 from src.ui.styles import SYSTEM_FONT
 from src.ui.ui_kit import ARC_COLOURS, PALETTE, PRIMARY_BUTTON, compact_button, plain_qss, text_style  # shared parts (U.1, D.8)
 from src.ui import notify  # D.9: messages that need no click
+from src.ui import planner_deletes  # D.14: a question before each delete
 
 
 # Tags the chapter-planner AI emits when it wants to propose a new
@@ -1405,6 +1406,8 @@ class ChapterPlannerWidget(QWidget):
         """Remove a note entry by index."""
         if self._current_subject_index < 0:
             return
+        if not planner_deletes.note(self, index):   # D.14
+            return
         subject = self._notes_data[self._current_subject_index]
         if 0 <= index < len(subject['entries']):
             subject['entries'].pop(index)
@@ -1566,7 +1569,8 @@ class ChapterPlannerWidget(QWidget):
 
     def _remove_subplot_note(self, index: int):
         """Remove a subplot note entry."""
-        self._save_subplot_entries()
+        if not planner_deletes.subplot_note(self, index):   # D.14
+            return
         if 0 <= index < len(self._subplot_data):
             self._subplot_data.pop(index)
             self._refresh_subplot_entries()
@@ -1818,6 +1822,8 @@ class ChapterPlannerWidget(QWidget):
 
     def _remove_event_item(self, event_id: str):
         """Remove a story event."""
+        if not planner_deletes.event(self, event_id):   # D.14
+            return
         for item in self._event_widgets:
             if item.event_id == event_id:
                 self._event_widgets.remove(item)
@@ -2008,6 +2014,8 @@ class ChapterPlannerWidget(QWidget):
 
     def _remove_todo_item(self, item_id: str):
         """Remove a todo item."""
+        if not planner_deletes.todo(self, item_id):   # D.14
+            return
         for item in self._todo_widgets:
             if item.item_id == item_id:
                 self._todo_widgets.remove(item)

@@ -69,7 +69,9 @@ class AgentContactWidget(QWidget):
         notes_layout = QVBoxLayout()
 
         self.notes_edit = QTextEdit()
-        self.notes_edit.setPlaceholderText("Notes about this agent or agency...")
+        self.notes_edit.setPlaceholderText(
+            "Notes about this agent or agency... A line such as “Represents: gothic "
+            "and literary horror” is used in your query letter.")
         self.notes_edit.textChanged.connect(self.content_changed.emit)
         notes_layout.addWidget(self.notes_edit)
 
@@ -78,6 +80,8 @@ class AgentContactWidget(QWidget):
 
         # Send email button
         email_button = QPushButton("Compose Email to Agent")
+        email_button.setToolTip("Opens a draft in your mail program: your query letter, "
+                                "addressed to this agent. Nothing is sent.")
         email_button.clicked.connect(self._compose_email)
         layout.addWidget(email_button)
 
@@ -93,14 +97,14 @@ class AgentContactWidget(QWidget):
         self.phone_edit.setText(self.agent.phone)
         self.notes_edit.setPlainText(self.agent.notes)
 
+    manager = None          # the Publishing tab, for the project's query letter (9.3 addendum)
+
     def _compose_email(self):
-        """Compose email to agent."""
-        # TODO: Integrate email functionality
-        notify.empty(
-            self,
-            "Email",
-            f"Email composition to {self.agent.email} will be implemented soon."
-        )
+        """A draft in the writer's mail program with the query letter
+        addressed to this agent. Nothing is sent (9.3 addendum)."""
+        self.save_to_model()
+        from src.ui import query_email
+        query_email.compose(self, self.agent, self.manager)
 
     def save_to_model(self):
         """Save widget data to agent model."""
@@ -288,6 +292,7 @@ class AgentManagerWidget(QWidget):
 
         if agent:
             self.current_agent_widget = AgentContactWidget(agent)
+            self.current_agent_widget.manager = self
             self.current_agent_widget.content_changed.connect(self.content_changed.emit)
             self.details_scroll.setWidget(self.current_agent_widget)
 

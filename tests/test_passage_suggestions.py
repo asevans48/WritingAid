@@ -234,24 +234,31 @@ def run_now(reply_llm):
     return Now
 
 
-def test_dialog_shows_discussion_and_returns_edited_choice(app, project, chapter):
-    from src.ui.passage_critique_dialog import PassageCritiqueDialog
+def improve_window(project, chapter, s, e, worker, selection=None):
+    """The Improve window's Suggestions (every way in since D.11; the old
+    Suggestions window went in D.12)."""
+    from src.ui.improve_window import ImproveWindow
+    return ImproveWindow(TEXT, s, e, project, chapter, selection=selection,
+                         suggestion_worker=worker)
+
+
+def test_suggestions_show_discussion_and_return_edited_choice(app, project, chapter):
     s, e = pc.expand_to_sentences(TEXT, *span("ran to the pier"))
-    dlg = PassageCritiqueDialog(TEXT, s, e, project, chapter, selection=span("ran to the pier"),
-                                worker_factory=run_now(FakeLLM(CLEAN)))
-    assert "start of the sentence" in dlg.expanded_label.text()
-    html = dlg.discussion.toHtml()
+    win = improve_window(project, chapter, s, e, run_now(FakeLLM(CLEAN)),
+                         selection=span("ran to the pier"))
+    assert "start of the sentence" in win.expanded_label.text()
+    html = win.tab_objects["critique"].discussion.toHtml()
     assert "What works" in html and "told, not shown" in html
-    assert dlg.suggestion_list.count() == 3
-    dlg.suggestion_list.setCurrentRow(2)
-    assert "salt in her mouth" in dlg.preview_edit.toPlainText()
-    dlg.preview_edit.setPlainText("My own edit.")
-    dlg._use_selected()
-    assert dlg.replacement == "My own edit."
+    assert win.version_list.count() == 3
+    win.version_list.setCurrentRow(2)
+    assert "salt in her mouth" in win.preview_edit.toPlainText()
+    win.preview_edit.setPlainText("My own edit.")
+    win._accept()
+    assert win.replacement == "My own edit."
 
 
-def test_dialog_reports_missing_model(app, project, chapter):
-    from src.ui.passage_critique_dialog import PassageCritiqueDialog, SuggestionWorker
+def test_suggestions_report_missing_model(app, project, chapter):
+    from src.ui.passage_critique_dialog import SuggestionWorker
 
     class NoModel(SuggestionWorker):
         def __init__(self, *a):
@@ -260,9 +267,10 @@ def test_dialog_reports_missing_model(app, project, chapter):
         def start(self):
             self.run()
 
-    dlg = PassageCritiqueDialog(TEXT, 0, 24, project, chapter, worker_factory=NoModel)
-    assert "No AI model" in dlg.discussion.toPlainText()
-    assert not dlg.use_btn.isEnabled()
+    win = improve_window(project, chapter, 0, 24, NoModel)
+    assert "No AI model" in win.tab_objects["critique"].discussion.toPlainText()
+    assert "No AI model" in win.status_label.text()
+    assert not win.accept_btn.isEnabled()
 
 
 def test_editor_replaces_the_whole_sentences(app, project, chapter, monkeypatch):
@@ -421,14 +429,12 @@ def test_words_that_merely_mention_a_passage_are_kept():
     assert strip_passage_markers(text) == text
 
 
-def test_dialog_never_shows_markers(app, project, chapter):
-    from src.ui.passage_critique_dialog import PassageCritiqueDialog
+def test_suggestions_never_show_markers(app, project, chapter):
     reply = ("WHAT WORKS:\n- ⟦PASSAGE START⟧ opens well.\n\nSUGGESTION 1 (tightened):\n"
              "Before. ⟦PASSAGE START⟧ Mara sprinted for the pier. ⟦PASSAGE END⟧ After.\nWHY: a")
     s, e = pc.expand_to_sentences(TEXT, *span("ran to the pier"))
-    dlg = PassageCritiqueDialog(TEXT, s, e, project, chapter,
-                                worker_factory=run_now(FakeLLM(reply, "", "")))
-    assert "PASSAGE" not in dlg.discussion.toPlainText().upper()
-    assert dlg.preview_edit.toPlainText() == "Mara sprinted for the pier."
-    dlg._use_selected()
-    assert "PASSAGE" not in dlg.replacement.upper()
+    win = improve_window(project, chapter, s, e, run_now(FakeLLM(reply, "", "")))
+    assert "PASSAGE" not in win.tab_objects["critique"].discussion.toPlainText().upper()
+    assert win.preview_edit.toPlainText() == "Mara sprinted for the pier."
+    win._accept()
+    assert "PASSAGE" not in win.replacement.upper()

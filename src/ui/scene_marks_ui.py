@@ -18,6 +18,8 @@ The markers themselves (storage, anchoring, Undo) are
   More ▸ 📝 Note or scene break ▸, beside Add Annotation (both are marks
   kept beside the text, at a line). After a change the status bar says
   so, with Undo.
+* **Write's Insert tab** (D.13): the same entry as a button, for the
+  paragraph the text cursor is in (``at_cursor``, ``toggle_at_cursor``).
 """
 
 from __future__ import annotations
@@ -423,6 +425,31 @@ def add_to_menu(ce: Any, menu: Any, position: QPoint) -> None:
         act.setEnabled(False)
         act.setToolTip("The chapter's first paragraph already starts a scene.")
     act.triggered.connect(lambda _=False: _change(ce, para, True))
+
+
+def at_cursor(ce: Any):
+    """(paragraph, marked) for the paragraph the text cursor is in, or None
+    (no chapter, a blank line): Write's Insert tab (D.13)."""
+    place = _chapter_place(ce)
+    if place is None:
+        return None
+    project, cid, scope = place
+    sm = _sm()
+    text = ce.editor.toPlainText()
+    para = sm.para_at_line(text, ce.editor.textCursor().blockNumber())
+    if para is None:
+        return None
+    return para, sm.marked_at(project, cid, text, para, scope) is not None
+
+
+def toggle_at_cursor(ce: Any) -> bool:
+    """Scene break here, or Remove scene break, at the text cursor (the
+    Insert tab's button; the same change as the right-click entry)."""
+    state = at_cursor(ce)
+    if state is None or (state[0] == 0 and not state[1]):
+        return False
+    _change(ce, state[0], not state[1])
+    return True
 
 
 def _change(ce: Any, para: int, add: bool) -> None:

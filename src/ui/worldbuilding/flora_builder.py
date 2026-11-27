@@ -11,6 +11,7 @@ from typing import List, Optional
 from src.models.worldbuilding_objects import Flora, FloraType
 from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
 from src.ui.ui_kit import PALETTE, main_button  # one look (D.8)
+from src.ui.ui_kit import confirm_delete
 
 
 class FloraEditor(QDialog):
@@ -407,6 +408,8 @@ class FloraBuilderWidget(QWidget):
         """Remove selected flora."""
         items = self.list_widget.selectedItems()
         if not items:
+            return
+        if not confirm_delete(self, "plant", items[0].text()):   # D.14
             return
 
         current_row = self.list_widget.row(items[0])

@@ -12,6 +12,7 @@ from PyQt6.QtCore import pyqtSignal, Qt
 from src.models.worldbuilding_objects import Technology, TechnologyType, Faction
 from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
 from src.ui.ui_kit import PALETTE, main_button  # one look (D.8)
+from src.ui.ui_kit import confirm_delete
 
 
 class TechnologyEditor(QDialog):
@@ -556,6 +557,8 @@ class TechnologyBuilderWidget(QWidget):
         """Remove selected technology."""
         items = self.tech_list.selectedItems()
         if not items:
+            return
+        if not confirm_delete(self, "technology", items[0].text()):   # D.14
             return
 
         current_row = self.tech_list.row(items[0])

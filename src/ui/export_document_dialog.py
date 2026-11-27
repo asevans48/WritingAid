@@ -3,7 +3,9 @@
 
 When the project has scene markers (7.4), one tick, "Mark scene breaks",
 puts the standard centred "#" at each marked scene in the exported copy
-only. Unticked by default: the export is the text exactly as written."""
+only. Unticked by default: the export is the text exactly as written.
+Given the project (D.13b), the tick starts as the writer last left it for
+that project, and is remembered when the export goes ahead."""
 
 from __future__ import annotations
 
@@ -22,6 +24,7 @@ class ExportDocumentDialog(QDialog):
 
     def __init__(
         self, has_current_chapter: bool, parent=None, scene_marks: bool = False,
+        project=None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Export Chapter / Book")
@@ -54,6 +57,10 @@ class ExportDocumentDialog(QDialog):
         self._marks.setToolTip("Put the standard centred “#” at each scene you marked, in the "
                                "exported copy only. Your text is not changed.")
         self._has_marks = bool(scene_marks)
+        self._project = project
+        if self._has_marks and project is not None:     # D.13b: as last left
+            from src.data import scene_marks as marks_store
+            self._marks.setChecked(marks_store.export_tick(project))
         self._marks.setVisible(self._has_marks)
         if scene_marks:
             form.addRow("", self._marks)
@@ -65,6 +72,15 @@ class ExportDocumentDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         v.addWidget(buttons)
+
+    def accept(self) -> None:
+        if self._has_marks and self._project is not None:   # D.13b: remembered
+            try:
+                from src.data import scene_marks as marks_store
+                marks_store.remember_export_tick(self._project, self._marks.isChecked())
+            except Exception as e:                  # never block the export
+                print(f"[export] scene-break tick not remembered: {e}")
+        super().accept()
 
     def scope(self) -> str:
         return "chapter" if self._chapter_radio.isChecked() else "book"

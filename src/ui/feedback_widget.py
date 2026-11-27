@@ -15,6 +15,7 @@ import copy
 from src.ui.styles import SYSTEM_FONT
 from src.ui.ui_kit import PALETTE, PRIMARY_BUTTON, compact_button, plain_qss, text_style  # shared parts (U.1, D.8)
 from src.ui import notify  # D.9: messages that need no click
+from src.ui.ui_kit import confirm_delete
 
 
 # Common feedback source presets
@@ -69,12 +70,20 @@ class FeedbackWidget(QWidget):
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.container = QWidget()
-        self.entries_layout = QVBoxLayout(self.container)
+        # D.13c: the writer's own feedback first, then what the Companion,
+        # the Critique and the Improve window said (``feedback_sources``).
+        self.sources_layout = QVBoxLayout(self.container)
+        self.sources_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.sources_layout.setSpacing(3)
+        self.sources_layout.setContentsMargins(0, 0, 0, 0)
+        entries = QWidget()
+        self.entries_layout = QVBoxLayout(entries)
         self.entries_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.entries_layout.setSpacing(3)
         self.entries_layout.setContentsMargins(0, 0, 0, 0)
+        self.sources_layout.addWidget(entries)
         self.scroll.setWidget(self.container)
-        layout.addWidget(self.scroll)
+        layout.addWidget(self.scroll, 1)          # D.13c: the lists get the room; Analysis its own size
 
         # AI analysis section (collapsible)
         analysis_frame = QFrame()
@@ -169,7 +178,11 @@ class FeedbackWidget(QWidget):
         self.feedback_changed.emit()
 
     def _remove_entry(self, index: int):
-        if 0 <= index < len(self._feedback_data):
+        self._save_current_entries()             # D.14: the question names what is typed
+        if 0 <= index < len(self._feedback_data) and confirm_delete(   # D.14
+                self, "feedback", self._feedback_data[index].get('title', ''),
+                empty=not any(str(self._feedback_data[index].get(k) or '').strip()
+                              for k in ('title', 'content'))):
             self._feedback_data.pop(index)
             self._refresh_entries()
             self.feedback_changed.emit()

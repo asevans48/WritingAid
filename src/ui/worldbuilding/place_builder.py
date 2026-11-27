@@ -12,6 +12,7 @@ import uuid
 from src.models.worldbuilding_objects import Place, PlaceType, Faction
 from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
 from src.ui.ui_kit import PALETTE, main_button  # one look (D.8)
+from src.ui.ui_kit import confirm_delete
 
 
 class PlaceEditor(QDialog):
@@ -410,6 +411,8 @@ class PlaceBuilderWidget(QWidget):
         """Remove selected place."""
         items = self.list_widget.selectedItems()
         if not items:
+            return
+        if not confirm_delete(self, "place", items[0].text()):   # D.14
             return
 
         current_row = self.list_widget.row(items[0])

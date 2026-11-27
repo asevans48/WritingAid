@@ -1,5 +1,5 @@
-"""D.2b One Improve window: Suggestions, Critique and Expand in one window,
-behind a trial switch, with the old windows one tick away.
+"""D.2b One Improve window: Suggestions, Critique and Expand in one window
+(the old windows it replaced were deleted in D.12).
 
 Every test uses a scratch HOME (conftest), temporary stores, and fake
 models; no real model is ever loaded."""
@@ -325,23 +325,28 @@ def _rows():
     return rows
 
 
+def _row(output, rating, accepted, style="suggestion", source=PASSAGE,
+         before="Mara climbed to the attic. ", after=" Voss lit the lamp."):
+    """A rated rewrite's row, as the old windows wrote it (recorded from
+    them before D.12 deleted them)."""
+    return {"source_text": source, "output_text": output, "source_type": "rephrase",
+            "style": style, "voice": "", "surrounding_before": before,
+            "surrounding_after": after, "character_name": "", "genre": "",
+            "accepted": accepted, "rating": rating, "project_path": "/p/saga.writerproj",
+            "notes": "", "system_prompt": ""}
+
+
 def test_suggestion_ratings_and_accept_write_the_same_rows_as_the_old_window(
         app, project, chapter, monkeypatch):
     import src.data.rephrase_database as rd
-    from src.ui.passage_critique_dialog import PassageCritiqueDialog
     monkeypatch.setattr(rd, "is_collection_enabled", lambda: True)
     _rows()
-    factories, _ = workers(FakeLLM(CRITIQUE, REVIEW))
-    s, e = span()
-    old = PassageCritiqueDialog(TEXT, s, e, project, chapter,
-                                worker_factory=factories["suggestion_worker"])
-    old.suggestion_list.setCurrentRow(1)
-    old.rate_buttons["excellent"].click()
-    old.suggestion_list.setCurrentRow(2)
-    old.rate_buttons["bad"].click()
-    old.suggestion_list.setCurrentRow(1)
-    old._use_selected()
-    before = _rows()
+    second = "The attic was dark, and she almost fell on the last stair."
+    third = "She stumbled on the last stair of the dark attic."
+    # What the old Suggestions window wrote for: rate 2 Excellent, rate 3 Bad,
+    # back to 2 and Use This Suggestion (recorded before D.12).
+    before = [_row(second, "excellent", 1), _row(third, "bad", 0),
+              _row(second, "excellent", 1)]
     win, _ = window(project, chapter, llm=FakeLLM(CRITIQUE, REVIEW))
     win.version_list.setCurrentRow(1)
     win.rate_buttons["excellent"].click()
@@ -350,8 +355,8 @@ def test_suggestion_ratings_and_accept_write_the_same_rows_as_the_old_window(
     win.version_list.setCurrentRow(1)
     win._accept()
     after = _rows()
-    assert before and after == before
-    assert win.replacement == old.replacement and win.tool == "suggestions"
+    assert after == before
+    assert win.replacement == second and win.tool == "suggestions"
     assert {r["style"] for r in after} == {"suggestion"}
 
 
@@ -359,25 +364,21 @@ def test_applied_expansions_and_avoided_phrases_are_saved_as_before(app, project
                                                                     monkeypatch):
     import src.data.rephrase_database as rd
     import src.ai.rewrite_quality as rq
-    from src.ui.overdescription_panel import ExpandStatementDialog
     monkeypatch.setattr(rd, "is_collection_enabled", lambda: True)
     avoided = []
     monkeypatch.setattr(rq, "add_avoid_phrase", lambda p: avoided.append(p) or True)
     _rows()
-    factories, _ = workers(None, FakeLLM(REVIEW))
-    s, e = span()
-    old = ExpandStatementDialog(TEXT, s, e, project, chapter,
-                                worker_factory=factories["review_worker"],
-                                more_factory=factories["more_worker"])
-    old.panel.flag_list.setCurrentRow(0)
-    old.panel._accept()
-    before = _rows()
+    # What the old Overly descriptive? window wrote for accepting the first
+    # statement's expansion (recorded before D.12).
+    before = [_row("She felt for the rafters with both hands, blind past her own wrists.",
+                   "good", 1, style="expansion", source="The room was almost too dark to see.",
+                   before="", after="")]
     win, _ = window(project, chapter, tab="expand", review_llm=FakeLLM(REVIEW))
     panel = win.tab_objects["expand"].panel
     assert panel.accept_btn.text() == "Apply to passage"
     panel.flag_list.setCurrentRow(0)
     panel._accept()
-    assert _rows() == before and before[0]["style"] == "expansion"
+    assert _rows() == before
     assert win.label(win.versions[0]).startswith("Your text, expanded")
     win._avoid_phrase(phrase="blind past")
     assert avoided == ["blind past"] and "blind past" in win.rating_status.text()
@@ -428,7 +429,6 @@ def test_each_tab_uses_its_old_model_and_the_window_builds_none(app, project, ch
 def test_examples_are_asked_for_as_before_and_the_tooltip_says_where_from(app, project, chapter,
                                                                          monkeypatch):
     import src.ai.rewrite_quality as rq
-    from src.ui.passage_critique_dialog import PassageCritiqueDialog
     calls = []
 
     def examples(*a, **k):
@@ -437,12 +437,12 @@ def test_examples_are_asked_for_as_before_and_the_tooltip_says_where_from(app, p
             k["note"]["from"] = "from your voice group “Harbour”"
         return ""
     monkeypatch.setattr(rq, "examples_prompt", examples)
-    factories, _ = workers(FakeLLM(CRITIQUE, REVIEW))
-    s, e = span()
-    PassageCritiqueDialog(TEXT, s, e, project, chapter,
-                          worker_factory=factories["suggestion_worker"])
     win, _ = window(project, chapter, llm=FakeLLM(CRITIQUE, REVIEW))
-    assert len(calls) == 2 and calls[0] == calls[1]
+    # As the old Suggestions window asked (recorded before D.12): the passage,
+    # the project, and the text either side.
+    s, e = span()
+    assert calls == [((PASSAGE, "/p/saga.writerproj"),
+                      {"before": TEXT[:s], "after": TEXT[e:]})]
     assert "Harbour" in win.rate_buttons["good"].toolTip()
 
 

@@ -25,6 +25,8 @@ from PyQt6.QtWidgets import (
 )
 
 from src.video_studio.models import Scene, VideoClip
+from src.video_studio.pending_removals import PendingRemovals
+from src.ui.ui_kit import confirm_delete
 from src.ui.video_studio.conversation_panel import CreativeConversationPanel
 
 
@@ -62,6 +64,7 @@ class SceneEditorDialog(QDialog):
         self.resize(min(760, max_w), min(820, max_h))
         self.setMinimumSize(560, 360)
         self._scene = scene
+        self._pending_removals = PendingRemovals()   # D.14: files deleted on close
         self._rewrite_callback = rewrite_callback
         # Optional refs used by the narration UX. ``project`` gives
         # us chapter prose; ``project_dir`` is where per-scene audio
@@ -1449,23 +1452,22 @@ class SceneEditorDialog(QDialog):
         action_id = self._selected_action_id()
         if action_id is None:
             return
-        # Clean up any image files attached to this action so they
-        # don't accumulate in the project dir.
         action = next(
             (a for a in self._scene.actions if a.id == action_id),
             None)
         if action is not None:
-            for img in action.images:
-                try:
-                    p = Path(img.file_path)
-                    if p.exists():
-                        p.unlink()
-                    sp = (Path(img.sidecar_path)
-                          if img.sidecar_path else None)
-                    if sp and sp.exists():
-                        sp.unlink()
-                except Exception as e:
-                    print(f"[scene] action image cleanup failed: {e}")
+            # D.14: ask first; its image files are deleted only when
+            # this window closes with the change kept, and only those
+            # nothing else in the Studio uses (``pending_removals``).
+            n = sum(1 for i in action.images if i.file_path)
+            if not confirm_delete(
+                    self, "action", action.name or action.description,
+                    verb="Remove",
+                    detail=(f"Its {n} image file(s) are deleted when you close this "
+                            "window, unless another part of the Studio uses them."
+                            if n else "")):
+                return
+            self._pending_removals.add_images(action.images)
         self._scene.remove_action(action_id)
         self._actions_dirty = True
         self._refresh_actions_list()
@@ -1697,6 +1699,15 @@ class SceneEditorDialog(QDialog):
         # Accepted result so the host's contentChanged fires
         # unconditionally.
         self.done(QDialog.DialogCode.Accepted)
+
+    def done(self, result) -> None:
+        """Every way of closing ends here (Save, Close, Esc, X): the
+        image files of actions removed while open are deleted now, if
+        the change was kept and nothing else uses them (D.14)."""
+        super().done(result)
+        self._pending_removals.finish(
+            result == QDialog.DialogCode.Accepted,
+            getattr(self._project, "video_studio", None))
 
     def closeEvent(self, event) -> None:
         """Window-X / OS-quit — commit form changes first."""
