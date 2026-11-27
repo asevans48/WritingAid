@@ -759,7 +759,17 @@ class SceneCanvasView(QGraphicsView):
             menu.addAction(
                 "Cancel pending hop",
                 lambda: self._cancel_connect())
+        self._add_extra_actions(menu)
         menu.exec(event.globalPos())
+
+    def _add_extra_actions(self, menu) -> None:
+        """The Studio's own entries (Backend status…, Hints…; 26 Nov),
+        set in ``extra_empty_actions`` as (text, callback) pairs."""
+        extra = getattr(self, "extra_empty_actions", None) or []
+        if extra:
+            menu.addSeparator()
+            for text, callback in extra:
+                menu.addAction(text, callback)
 
     # ------------------------------------------------------------------
     # Public refresh after model mutation

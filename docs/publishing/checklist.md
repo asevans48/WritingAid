@@ -124,7 +124,7 @@ H.1, D.4, D.5, P.2b, 4.3 and the chapter's prose profile is **committed**
   No count rose. About 80 windows the harness cannot open yet (the Studio's
   editors, the Training Studio's run dialogs) are listed in U.3b's Outcome.
 
-Tests: 2,034 pass in one run, none fail (after the Studio fix's 5, U.3b's 19 and the "+" menu's 1).
+Tests: 2,038 pass in one run, none fail (after the Studio fix's 5, U.3b's 19, the "+" menu's 1 and the Studio side panel's 4).
 
 What is waiting for you:
 
@@ -1089,6 +1089,10 @@ start the app once and wait a minute)
 - [ ] Video Studio: Save and Load on the toolbar, and "+" beside them
       opens Arrange, Clear and Fit (each does what its button did).
 - [ ] World ▸ Hierarchies: "➕ Add Hierarchy" reads whole again.
+- [ ] Video Studio opens without its side panel: the canvas has the whole
+      width. Right-click empty canvas: **Backend status…** and **Hints…**
+      each open a small window. ▶◀ brings the panel back; reopen the app
+      and it is still open (and stays closed once you close it).
 - [ ] The Critique in its own window at 150 %: the verdict's words sit
       under the verdict.
 - [ ] The World editors (map event, place, landmark, star system,
@@ -1176,7 +1180,10 @@ chapter's prose profile (d0d347e, 58226e9).
       U.3a test's one change; the U.3b brief and notes in F.10, F.15, 9.1;
       then your three U.3b answers: `ui_kit.fold_into_menu`, the Studio's
       "+" call line, World's 290 px cap, the harness's "+" group and
-      `screens_baseline.json`).
+      `screens_baseline.json`); and the Studio side panel dropped by
+      default (`src/ui/video_studio/studio_side_panel.py`, one call line
+      in `studio_widget.py`, the right-click hook in `scene_canvas.py`,
+      `tests/test_studio_side_panel.py`).
 - [ ] Commit the second round of section 3 answers (26 Nov): F.0's seven,
       the Studio-card fix, U.3a's two (this file, README decision 18 and
       the tracker, the F.0 brief's *Review notes*, the U.3b brief's notes).

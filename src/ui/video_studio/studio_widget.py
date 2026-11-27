@@ -577,6 +577,7 @@ class VideoStudioWidget(QWidget):
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([900, 320])
         root.addWidget(splitter, stretch=1)
+        from src.ui.video_studio import studio_side_panel; studio_side_panel.install(self)  # 26 Nov: dropped by default, on right-click
 
     @staticmethod
     def _vline() -> QFrame:
