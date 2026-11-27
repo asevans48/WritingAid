@@ -437,6 +437,9 @@ def test_accept_writes_the_same_text_and_the_same_rows_as_the_old_window(
     assert [(r["rating"], r["accepted"]) for r in after] == [
         ("excellent", 1), ("poor", 0), ("poor", 1), ("neutral", 0)]
     assert "edited" in after[0]["style"] and after[-1]["output_text"] == OPTIONS[1][0]
+    # Each row carries the style of the option rated (option 1, then option 2).
+    assert [r["style"] for r in after] == ["concise/neutral | edited", "clearer/neutral | edited",
+                                           "clearer/neutral | edited", "clearer/neutral"]
     assert new_ed.editor.toPlainText() == old_ed.editor.toPlainText()
     assert "The room was Black as pitch, nearly." in new_ed.editor.toPlainText()
     (old_a, old_k), (new_a, new_k) = fake_rephrase       # the same arguments, hosted

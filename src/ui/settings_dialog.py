@@ -2836,6 +2836,8 @@ class SettingsDialog(QDialog):
         self.tabs_option = TabsOption(layout)
         from src.ui.improve import ImproveOption   # the one Improve window, or the old ones (D.2b)
         self.improve_option = ImproveOption(layout)
+        from src.ui.manuscript_tree import TreeOption   # one manuscript tree, or the old tab row (D.10)
+        self.tree_option = TreeOption(layout)
 
         # Rephrasing Settings
         rephrase_group = QGroupBox("Rephrasing Settings")
@@ -3487,6 +3489,7 @@ class SettingsDialog(QDialog):
         self.habit_option.save()            # writing goals and the nudge (H.1)
         self.tabs_option.save()             # the main tabs: five groups or ten (D.4)
         self.improve_option.save()          # the Improve window switch (D.2b)
+        self.tree_option.save()             # the manuscript tree switch (D.10)
         # Call parent accept to close dialog
         super().accept()
 

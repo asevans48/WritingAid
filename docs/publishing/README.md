@@ -10,6 +10,11 @@ It is 67 pieces (D.5 was added in 0.2). Each is one file in [pieces/](pieces/), 
 coding session, reviewed before it is coded, and leaves the app working when it
 is finished.
 
+**After this plan: other formats (phase F, added 26 November 2026).** Sixteen
+more pieces make the app work for video story scripts, podcasts, editorial
+series and journalism as well as novels, keeping every story feature
+(decision 18). They start after the final sweep (9.1).
+
 | File | What it is | Who reads it |
 |---|---|---|
 | This file | How to work, the rules, the tracker, the decisions | Every session |
@@ -159,6 +164,14 @@ These are the specs agreed earlier. A piece is not done unless it meets all of t
       Readiness, the scorecard, stages, the queue and the editorial letter all
       work per manuscript, and a chapter in a novella is treated exactly like
       one in the main manuscript. No piece may assume a single manuscript.
+    - **Not only novels (from 26 November 2026, decision 18).** A project
+      will have a kind (Novel, Video series, Podcast, Editorial series,
+      Journalism), and the words "chapter", "novella" and "manuscript"
+      will come from the kind. Until phase F builds that, a piece that adds
+      or moves text shown to the writer keeps those words in one place per
+      screen (a constant or a small function), not scattered through the
+      code, so F.1 can replace them. A Novel project must never change
+      because of another kind.
     - **Two live projects.** Two projects are in daily use. Anything learned or
       stored by a new feature is kept per project. Nothing a piece does in one
       project may change what the other shows. Before a piece that touches
@@ -391,9 +404,15 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 - [x] [D.6](pieces/48b-D.6-retire-the-trial-screens.md) Retire the trial screens, and bring the counts back down (S, added 24 Nov; after you have used 3.2, D.3 and 2.5) — built, for review: the Style tab and Today's three fixes are gone (their actions are on the Companion card and in ✓ Checks ▾); menus counted by decision 11; every count at or under the baseline
 - [x] [D.7](pieces/48c-D.7-show-less-at-once.md) Show less at once: toolbar, hover card, Companion sections, Drafts into File (M, added 24 Nov) — built, for review
 - [~] [D.8](pieces/48d-D.8-one-look.md) One look: the same buttons, colours and spacing everywhere (M, repeatable, added 24 Nov) — first session done (24 Nov): Write and its side panel, the Companion, the Critique and Settings take their colours and button styles from `ui_kit`; second session (25 Nov): Plot, Characters, World, Visuals, Video Studio, Publishing, Drafts, Print; left: Training Studio, the assistant, Video Studio's editors
-- [~] [D.9](pieces/48e-D.9-fewer-interruptions.md) Fewer interruptions: messages that do not need a click (M, repeatable, added 24 Nov) — first session done (24 Nov): 49 of the 68 boxes in Write, the Companion, the Critique and the main window are quiet; second session (25 Nov): 67 more on the other screens in the main window; boxes in separate windows stay (a decision for the writer)
+- [~] [D.9](pieces/48e-D.9-fewer-interruptions.md) Fewer interruptions: messages that do not need a click (M, repeatable, added 24 Nov) — first session done (24 Nov): 49 of the 68 boxes in Write, the Companion, the Critique and the main window are quiet; second session (25 Nov): 67 more on the other screens in the main window; boxes in separate windows stay as boxes (answered 26 Nov)
 - [x] [D.4](pieces/49-D.4-fewer-top-level-tabs.md) Fewer top-level tabs (M, after 0.2) — built, for review: five groups (Write · Story · Revise · Publish · Studio); right-click any tab to open it in its own window (one mover, the Critique menu and Multi-Window Mode included; "⧉ Own window" retired); the old ten tabs one switch away in Settings during the trial
 - [x] [D.5](pieces/49b-D.5-analyses-run-as-critique-reports.md) Analyses run as Critique reports (M, after 2.1; added in 0.2) — built, for review: the six Analyze ▾ entries run in Revise ▸ Critique (rated, saved, in history); Writing hints is a real report; the old windows one link away ("Show in a window (old)") during the trial
+
+**Small pieces from the 26 November answers** (no brief; described in checklist section 5)
+- [x] Two small fixes: the grammar check's results handler that aborts in tests; the two old Rephrase slips (S) — built 26 Nov (round 6)
+- [x] Shared-folder warning when saving a project beside another (S, touches saving) — built 26 Nov (round 6)
+- [x] [D.10](pieces/48f-D.10-manuscript-tree.md) One manuscript tree on the left: manuscripts, novellas and chapters in the left panel; drag-and-drop and right-click moves (M, added 26 Nov) — built 26 Nov, for review; the old tab row one switch away (Settings ▸ Features ▸ Manuscript tree)
+- [ ] Retire the old screens (and bring the older whole-manuscript move onto D.10's undoable move; D.10's manuscript tab row, D.4's ten tabs, D.5's old windows, the three old Improve windows and their switches), once the writer has checked everything (S, after U.3)
 
 **Interface sweep (after U.2)**
 - [ ] [U.3a](pieces/50-U.3a-fit-and-scroll-sweep-the-screens-used-most.md) Fit-and-scroll sweep: the screens used most (M)
@@ -417,6 +436,24 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 - [ ] [8.1b](pieces/64-8.1b-job-queue-build.md) Job queue: build (M)
 - [x] [8.2](pieces/65-8.2-editorial-letter.md) Editorial letter (M) — built; not yet tried with a real model
 - [ ] [8.3](pieces/66-8.3-server-prompts.md) Server prompts (M)
+
+**Phase F. Other formats** (after 9.1; added 26 Nov; decision 18)
+- [ ] [F.0](pieces/70-F.0-project-kinds-design.md) Project kinds: design (S, design, no code) — review before F.1
+- [ ] [F.1](pieces/71-F.1-project-kind-and-its-words.md) Project kind and its words (M)
+- [ ] [F.2](pieces/72-F.2-checks-by-kind.md) Checks by kind (M)
+- [ ] [F.3](pieces/73-F.3-runtime-and-targets.md) Runtime estimate and targets by length (S)
+- [ ] [F.4](pieces/74-F.4-speakers-and-cues.md) Speakers and cues in a script (M)
+- [ ] [F.5](pieces/75-F.5-written-for-the-ear.md) Checks for the ear (M)
+- [ ] [F.6](pieces/76-F.6-hook-and-retention.md) Hook and retention checks (M; a model adds to it)
+- [ ] [F.7](pieces/77-F.7-sources-list.md) Sources list (M)
+- [ ] [F.8](pieces/78-F.8-unsourced-claims.md) Unsourced-claim check and the claims report (M; a model adds to it)
+- [ ] [F.9](pieces/79-F.9-people-and-timeline.md) Real people and the timeline (M)
+- [ ] [F.10](pieces/80-F.10-a-chapters-video-in-the-studio.md) A chapter's video in the Studio (M)
+- [ ] [F.11](pieces/81-F.11-video-and-podcast-packages.md) Video and podcast packages (M; a model adds to it)
+- [ ] [F.12](pieces/82-F.12-article-export.md) Article export (S)
+- [ ] [F.13](pieces/83-F.13-series-page.md) The series page (M)
+- [ ] [F.14](pieces/84-F.14-export-a-compilation-or-one-novella.md) Export a compilation, or one novella on its own (S)
+- [ ] [F.15](pieces/85-F.15-sweep-for-the-new-kinds.md) Sweep for the new kinds (M, repeatable; last)
 
 **Cut** (see [cut.md](cut.md)): 5.1, 5.2, U.4, U.5, 9.4, 10.1
 
@@ -680,3 +717,29 @@ New baselines wait for the writer's agreement.
     - Switching project pauses the job.
 
     (8.1a, 8.1b)
+18. ~~**Other formats.**~~ Settled 26 November 2026 (the writer's request):
+    the app also serves stories that are not novels, keeping every story
+    feature.
+    - A project has a **kind**: Novel (novels and novellas as today, and
+      every existing project), Video series, Podcast, Editorial series,
+      Journalism. Chosen per project, changeable later.
+    - The shape is the same for every kind (main manuscript, novellas,
+      chapters). A chapter is one video, episode or part; a novella is a
+      story told over several. A video stands for a chapter in a novel,
+      novella or story, and for an episode in a video series or podcast
+      (confirmed 26 November).
+    - The words on screen are set by the kind and editable per project.
+    - An uploaded video goes to the Studio for the selected chapter and
+      becomes a card that is refined there.
+    - Spoken kinds gain a runtime estimate, hook and retention checks,
+      checks for the ear, and speakers and cues.
+    - Nonfiction gains a sources list, an unsourced-claim check, real
+      people and a timeline; fiction-only checks start off there.
+    - Publishing prepares a video package, a podcast package, an article
+      export and a series page, as well as the novel and novella export:
+      a compilation of a project with its novellas, or one novella on its
+      own as a novel, story or short story.
+    - It is a new phase after the final sweep. Sending to sites stays a
+      later integration (settled decision 7).
+
+    (Phase F)

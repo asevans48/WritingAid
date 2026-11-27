@@ -600,6 +600,8 @@ class WritingHighlighter(QSyntaxHighlighter, FlagRules):
     def _on_grammar_results(self, results: dict) -> None:
         if not results:
             return
+        from src.ui.grammar_results import drop_if_stale
+        if drop_if_stale(self): return   # editor gone or torn down: drop quietly
         self._lt_cache.update(results)
         if len(self._lt_cache) > 5000:
             # Keep only paragraphs still in the document.

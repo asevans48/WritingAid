@@ -3521,6 +3521,7 @@ class ManuscriptEditor(QWidget):
 
         left_panel.setMaximumWidth(250)
         self.left_panel = left_panel
+        from src.ui import manuscript_tree; manuscript_tree.install(self)  # D.10: one manuscript tree
         splitter.addWidget(left_panel)
 
         # Right panel - chapter editor
@@ -3633,6 +3634,7 @@ class ManuscriptEditor(QWidget):
             "→ Project Checkpoints.")
         bulk_cut_action.triggered.connect(self._open_bulk_cut_chapters)
 
+        from src.ui import manuscript_tree; manuscript_tree.add_move_menu(self, menu)  # D.10: Move to ▸
         menu.exec(self.chapter_list.mapToGlobal(position))
 
     def _get_context_chapter(self):

@@ -46,6 +46,10 @@ def _visible_buttons(top):
 
 
 def test_the_write_screen_shows_19_buttons_not_24(me):
+    # D.10 folds Novellas ▾ into the manuscript tree (18 buttons there, see
+    # test_manuscript_tree); this counts D.7's arrangement, the tree switched off.
+    from src.ui import manuscript_tree
+    manuscript_tree.set_on(False)
     texts = [b.text() for b in _visible_buttons(me)]
     assert len(texts) == 19, texts
     for gone in ("＋ Novella", "⇢ Move main chapters…", "🗑 Drop novella", "↗", "📋"):

@@ -17,10 +17,9 @@ and each brief's *When you finish* say the same):
 
 The writer ticks sections 1 to 3. A session never ticks those for them.
 
-**Where things stand** (25 November): everything up to and including
+**Where things stand** (26 November): everything up to and including
 H.1, D.4, D.5, P.2b, 4.3 and the chapter's prose profile is **committed**
-(d0d347e and 58226e9, after 0733233). **Built since, not committed, in
-three rounds:**
+(d0d347e and 58226e9, after 0733233). **Built since, not committed:**
 
 - **Round 1.** P.6 (LanguageTool's n-gram data, installed, Download /
   Remove in Settings ▸ Language: harder confused words caught 13% → 38%,
@@ -41,8 +40,12 @@ three rounds:**
   button and the kit's colours on Plot, Characters, World, Visuals, Video
   Studio, Publishing, Drafts and Print). 0.3's screen check (the safety
   check also opens every screen on a copy, saves it from the window and
-  compares). The D.2a design for the One Improve window (for your
-  review).
+  compares). The D.2a design for the One Improve window (reviewed 25
+  November: decision 16).
+- **Two fixes you asked for** (25 November): Listen and mark reads only
+  the highlighted text (the whole chapter when nothing is highlighted);
+  pause no longer stutters (the player is stopped and resumed from the
+  place, a quarter-second back).
 - **D.2b** (25 November): the One Improve window. Suggestions and Overly
   descriptive? open one window with tabs 💡 Suggestions · 📝 Critique ·
   🔍 Expand; the old windows are one tick away (Settings ▸ Features ▸
@@ -54,13 +57,14 @@ three rounds:**
   options sit behind ▸ Change options; no "Discard your edit?". Rating
   rows are the same as the old window's (tested column by column). The
   old Rephrase window is behind the same switch. Every D.2 piece is done.
-- **8.1a** (26 November): the job-queue design is written (no code), for your review; eight questions in section 3, "8.1a: review the job-queue design".
+- **8.1a** (26 November): the job-queue design is written (no code) and
+  reviewed: its eight questions answered as recommended (decision 17).
 - **4.2** (26 November): **dropped at its gate.** The voice measure tells a
   different human author apart (74% of chapters) but not a model's
   rewrites of your own passages (0 of 14 sets caught; they move it about
   0.25, your own chapters differ by up to 0.6). Nothing built; the proof
   is `scripts/voice_drift_gate.py` and the numbers are in the brief's
-  *Outcome*. Two questions in section 3, "4.2: voice drift".
+  *Outcome*. You agreed to drop it (section 3).
 - **9.3** (26 November): the submission package, in Publish ▸ Publishing
   (the list's first entry, 📦 Submission package): synopsis, query letter,
   blurb, and readers and comps with where the book sits. Filled in from the
@@ -71,9 +75,35 @@ three rounds:**
   the model had answered, after the whole Suggestions run when that ran
   first. The word scan (no model, milliseconds) now shows at once, and the
   AI's review takes its place when it comes.
+- **Your section 3 answers** (26 November): every open question answered
+  (the recommendations, with your changes: retire the old screens only
+  once everything is checked; the shared-folder warning should exist).
+  The agreed figures are in `screens_baseline.json`.
+- **Round 6** (26 November): three small pieces from those answers.
+  The grammar check's results no longer reach an editor that is being
+  torn down (the abort seen only in tests). Rephrase ratings carry the
+  style of the option you rated, and "Auto-detect from text" is back in
+  the character-voice list. Save As warns when the folder already holds
+  another project and offers a new subfolder.
+- **D.10, your request** (26 November, round 7): **built.** One tree in
+  the Write screen's left panel holds the main manuscript and every novella
+  with their chapters, always shown. Chapters move by drag-and-drop or
+  right-click ▸ Move to ▸ (main → novella, between novellas, and back),
+  with Undo. The top row of manuscript tabs and Novellas ▾ are gone, one
+  switch away (Settings ▸ Features ▸ Manuscript tree). The Write screen
+  went from 19 buttons and 29 menu items to 18 and 28; the baseline was
+  lowered to match. Its section 3 items are answered.
+- **Other formats: planned** (26 November, your request; README decision
+  18). The app is to work for video story scripts, podcasts, editorial
+  series and journalism as well as novels, keeping every story feature.
+  A new phase, **F**, of sixteen pieces is written
+  (`pieces/70-…` to `pieces/85-…`) and starts after the final sweep; F.0 is
+  a design for your review. The sweep briefs (U.3a, U.3b, 9.1) and rule 11
+  have notes so the remaining work does not make it harder. Your answers
+  are recorded in section 3, "Other formats".
 
-Tests: 1,925 pass in one run, none fail (after 9.3's 22 tests and the
-Expand fix's 4). No screen count rose above
+Tests: 1,993 pass in one run, none fail (after D.10's 45: 20 for moving
+a chapter, 25 for the tree). No screen count rose above
 `screens_baseline.json` in any of these. On 26 November the figures you
 agreed in section 3 were written into it: 5 top-level tabs (was 10), the
 Improve window's four tabs and the open submission package.
@@ -81,30 +111,34 @@ Improve window's four tabs and the open submission package.
 What is waiting for you:
 
 - **Try it (section 1).** Nothing there is ticked yet. The newest items,
-  from the end: the submission package (9.3), Rephrase in the Improve window (D.2c), the One Improve
+  from the end: the manuscript tree (D.10), round 6 (the shared-folder
+  warning, the two Rephrase fixes), Expand no longer keeps you waiting (26 Nov fix), the
+  submission package (9.3), voice drift's numbers (4.2), Rephrase in the
+  Improve window (D.2c), the One Improve
   window (D.2b), the screen check (0.3; run it on both projects), D.9's
   other screens, the model naming groups (V.3), managing groups (V.5),
   rewrites in the same voice (V.4), marks becoming notes (6.2), listen
   and mark (6.1), LanguageTool in full (P.6), voice groups (V.2), character
-  analysis (P.8) and the voice fingerprint (V.1). Before them: the
-  chapter's prose profile and everything earlier.
-- **Stop the old LanguageTool servers** (about 40, left before the fix),
-  with the app closed: `pkill -f languagetool-server`.
+  analysis (P.8) and the voice fingerprint (V.1); also the two fixes of
+  25 November (listen and mark with a highlight; pause). Before them: the
+  chapter's prose profile and everything earlier. **Checking all of
+  section 1 is what lets the old screens be retired** (section 5).
 - **Run the genre script (P.3)** with the app closed:
   `venv/bin/python scripts/genre_baseline.py`, then `--show`.
 - **D.2b and D.2c are built** on the reviewed D.2a design (decision 16);
   try them (section 1). Their figures are now the window's baseline.
-- **Decide (section 3).** Every question is answered: on 26 November
-  you took the recommendations for all the open ones, recorded under each
-  item. The figures you agreed are in `screens_baseline.json` (5 top-level
-  tabs; the Improve window's four tabs; the open submission package).
-  The boxes are yours to tick.
-- **Commit rounds 1, 2 and 3, D.2b and D.2c,** when you are happy with
-  them (end of section 1).
+- **Run the measurement (section 2)** when you can: P.5 waits for it.
+- **Decide (section 3).** Every question is answered (26 November),
+  recorded under each item (round 6's test-only weak spots: fixed in
+  9.1). The boxes are yours to tick.
+- **Commit** when you are happy: rounds 1, 2 and 3, the two fixes of 25
+  November, D.2b, D.2c, 4.2, 9.3, the Expand fix, the section 3 answers,
+  round 6, D.10 and the phase F docs (the commit lines are at the end of
+  section 1).
 - **Next pieces (section 5): what remains.**
-  - More one-look and fewer-interruptions sessions if you want them:
-    Training Studio, the assistant, Video Studio's editors (D.8); boxes in
-    separate windows (D.9, section 3).
+  - Optional, if you want them: more one-look sessions for the Training
+    Studio, the assistant and Video Studio's editors (D.8). D.9's boxes in
+    separate windows stay as boxes (section 3).
   - Checks: P.5 after section 2's measurement (now that P.2 and P.6 are
     in).
   - Needs a model (run with the app closed): try 8.2; 7.2; try 9.3's
@@ -112,8 +146,11 @@ What is waiting for you:
     the real tests of V.3 and V.4.
   - When the server is connected: 8.1b (8.1a is reviewed: decision 17),
     P.7, 8.3.
-  - Next, no model: the two small fixes (the grammar check's results; the
-    two old Rephrase slips), then U.3a, then U.3b; then 9.1.
+  - Next, no model: U.3a and U.3b (they sweep the screens that stay, not the ones to be retired).
+    Once you have checked everything in section 1: retire the old screens;
+    then 9.1, the last piece for novels.
+  - After 9.1: phase F, other formats (section 5, group H). F.0, its
+    design, is first and is for your review.
 
 ## 1. Try what is built
 
@@ -931,6 +968,61 @@ start the app once and wait a minute)
 - [ ] With the old windows (Settings ▸ Features ▸ Improve window unticked),
       Overly descriptive? shows the word scan at once too.
 
+**Round 6 (26 November)**
+- [ ] **Shared-folder warning:** File ▸ Save As, and choose a folder that
+      already holds another project's `.writerproj` file. One box: "Another
+      project is in this folder", with **Save in New Folder** (the default),
+      **Save Here Anyway** and Cancel. Save in New Folder puts the project in
+      a new folder named after it (a number is added if that name is taken)
+      and leaves the other project alone. An ordinary Save never asks.
+- [ ] **Rephrase ratings carry the right style:** in Rephrase (the Improve
+      window's tab, or the old window), rate the second or third option.
+      In Training Studio ▸ Browse rows, the new row's style is that
+      option's ("clearer/…", "elaborate/…"), not always "concise/…". Rows
+      from before keep what they had.
+- [ ] **Auto-detect from text:** Rephrase ▸ Change options ▸ character
+      voice: "Auto-detect from text" is the first entry. Choose it on a
+      line of dialogue: the summary reads "Voice: auto-detect" and the
+      rephrase is in the speaker's voice.
+- [ ] Nothing to try for the grammar fix: it only stops a late result from
+      reaching an editor that is being closed. Grammar underlines should
+      appear as before.
+
+**The manuscript tree (D.10)**
+- [ ] Write: the top row of manuscript tabs and Novellas ▾ are gone. The
+      left panel shows 📖 Main Manuscript with its chapters under it, each
+      novella as 📘 with its chapter count, and "＋ New novella…" at the end.
+      With no novellas, the chapters are still under Main Manuscript.
+- [ ] Click a novella's row: it opens, as its tab did. Click a chapter
+      under another manuscript: the app switches to it and opens the
+      chapter. Arrow keys move through the rows; Enter opens.
+- [ ] Right-click a manuscript row: everything the tab's menu had (critique,
+      continuity, rename, description, turn main into a novella, drop
+      novella, new novella). Right-click a chapter: its old menu, plus
+      **Move to ▸**.
+- [ ] **On a copy of a project first:** drag a chapter up or down inside
+      its manuscript (the same as ↑ ↓). Drag a chapter from the main
+      manuscript onto a novella, from one novella to another, and back to
+      the main manuscript. Select several and drag them together. Drop one
+      on "＋ New novella…".
+- [ ] After a move, the status bar says "Moved “…” to …" with **Undo** for
+      30 seconds. Press Undo: the chapter is back where it was, with its
+      drafts, saved copies, notes and marks.
+- [ ] Move a chapter with Move to ▸ too, and check its drafts (right-click ▸
+      Drafts…) and its notes in the Companion came with it.
+- [ ] While "Editing:" shows a draft, a move is refused with a message
+      (section 3 asks whether it should switch back by itself).
+- [ ] At 1024 × 600: the tree fits and scrolls, and long names are
+      shortened with "…".
+- [ ] Settings ▸ Features ▸ Manuscript tree: untick it, and the tab row,
+      Novellas ▾ and the chapter list are back exactly as before; tick it
+      again.
+
+**Other formats (planned; nothing built)**
+- [ ] Read README decision 18 and the list of phase F pieces (section 5,
+      group H). Is anything missing or wrong for the videos, podcasts and
+      series you have in mind?
+
 **When you are happy**
 Already committed by you: phase 3, D.3, 2.5 and 0.5 (7e48893); R.7, D.1,
 9.2, 7.1 (206300a); D.7 and D.9 (ccc779b); D.8, P.2a, 4.1, 7.3, P.3, D.6,
@@ -971,6 +1063,21 @@ chapter's prose profile (d0d347e, 58226e9).
 - [ ] Commit the Expand fix: the word scan shows at once while the AI checks
       (`src/ui/improve_tabs.py`, `src/ui/overdescription_panel.py`, four tests
       in `tests/test_improve_window.py` and `tests/test_overdescription.py`).
+- [ ] Commit round 6: the grammar results (`src/ui/grammar_results.py`, two
+      call lines in `enhanced_text_editor.py`, `tests/test_grammar_results.py`);
+      the Rephrase slips (`src/ui/rephrase_dialog.py`,
+      `tests/test_rephrase_slips.py`, one assertion in
+      `tests/test_improve_rephrase.py`); the shared-folder warning
+      (`src/ui/save_location.py`, two call lines in `main_window.py`,
+      `tests/test_save_location.py`).
+- [ ] Commit D.10: the manuscript tree (`src/ui/manuscript_tree.py`,
+      `src/data/chapter_move.py`, two call lines in `manuscript_editor.py`,
+      three in `settings_dialog.py`, `tests/test_manuscript_tree.py`,
+      `tests/test_chapter_move.py`, the change in `tests/test_show_less.py`,
+      the "write" figures in `screens_baseline.json`, the D.10 brief).
+- [ ] Commit the phase F docs: the sixteen briefs (`pieces/70-…` to
+      `pieces/85-…`), README decision 18, the tracker and rule 11's note,
+      the notes in the U.3a, U.3b and 9.1 briefs, this file.
 - [ ] Commit the section 3 answers (26 Nov): the new figures in
       `screens_baseline.json` and the harness's comments
       (`scripts/screen_harness.py`), the answers in this file, the 8.1a
@@ -1077,7 +1184,7 @@ Write each answer in the README under *Decisions*, or tell the session.
       projects is set up that way). Want a warning when saving a project into
       a folder that already holds another project file? That would be a
       small piece of its own, since it touches saving.
-      *Answered 26 Nov (the recommendations): no warning for now; no piece.*
+      *Answered 26 Nov: yes, the warning should exist. A small piece of its own, since it touches saving ("Shared-folder warning", section 5).*
 - [ ] **D.9: did a quiet message go somewhere you'd rather keep a box?**
       You said you'd likely have notes once you see it. Each moved message
       is one word to move back (``notify.done``/``notify.empty`` →
@@ -1183,7 +1290,7 @@ Write each answer in the README under *Decisions*, or tell the session.
       step removes that switch, and the old `SecondaryWindow` (no longer
       used) with it; the stored setting is left in place, unread. Say when,
       or keep the switch for good.
-      *Answered 26 Nov (the recommendations): keep the switch for now; retire it later, when you say.*
+      *Answered 26 Nov: Retire once everything in section 1 is checked, in one piece with the other old screens, so nothing is there twice ("Retire the old screens", section 5).*
 - [ ] **D.4: reopen windows at start-up?** A screen left in its own window
       comes back into its tab when the app restarts (as the Critique's
       window always has: 2.5 recorded it but nothing reopened it). Keep
@@ -1196,7 +1303,7 @@ Write each answer in the README under *Decisions*, or tell the session.
       the reports on both projects and agree, a small step removes the two
       old windows (`ProseAnalysisDialog`, `PromiseCheckDialog`) and that
       link. Say when.
-      *Answered 26 Nov (the recommendations): keep them for now; retire later, when you say.*
+      *Answered 26 Nov: Retire once everything in section 1 is checked, in one piece with the other old screens, so nothing is there twice ("Retire the old screens", section 5).*
 - [ ] **D.5: the new reports in the full critique?** Promises, Prose
       profile fit, Character check, Plot vs plan and Writing hints run only
       from Analyze ▾ (and "Run again"). Adding them as tick boxes in
@@ -1225,7 +1332,7 @@ Write each answer in the README under *Decisions*, or tell the session.
       about 6,000 rows. Keep the full copy (safest; needs 1.9 GB once), or
       copy only your own rows (a few MB; the corpus rows can be downloaded
       again)? Nothing is copied until the app next opens.
-      *Answered 26 Nov (the recommendations): keep the full copy (safest, rule 15). Note: your own rated rewrites are 398 rows, not about 6,000 as written above.*
+      *Answered 26 Nov: keep the full copy (safest, rule 15); confirmed by you. Note: your own rated rewrites are 398 rows, not about 6,000 as written above.*
 - [ ] **V.1/V.2: which ratings shape the voice groups.** Only Rephrase
       ratings get a fingerprint. The 250 rows made from downloaded corpora,
       and rows with no project, are left out of the grouping (they aren't
@@ -1372,7 +1479,7 @@ Write each answer in the README under *Decisions*, or tell the session.
       stages: make them one set? (c) "➕ Add Hierarchy" reads "Add
       Hierarch" at 1024×600 (as before): shorten the label or widen the
       list?
-      *Answered 26 Nov (the recommendations): (a) keep Add as the main button; (b) leave the two sets of colours as they are; (c) left for the U.3 sweep, which fixes labels cut off at 1024 × 600.*
+      *Answered 26 Nov (the recommendations): (a) keep Add as the main button; (b) leave the two sets of colours as they are; (c) fix it in the U.3 sweep (confirmed by you).*
 - [ ] **D.9: four kinds of box left on purpose.** Say which to make quiet:
       (a) "Image saved to …" and the chapter-deck exports (4): a status
       line with Show file, like other exports? (b) "Open a project before
@@ -1412,7 +1519,7 @@ Write each answer in the README under *Decisions*, or tell the session.
       Suggestions and Overly descriptive? windows (and the switch) is its
       own small step (rule 11). Recommended: after a week of use on both
       projects.
-      *Answered 26 Nov (the recommendations): after a week of use on both projects.*
+      *Answered 26 Nov: Retire once everything in section 1 is checked, in one piece with the other old screens, so nothing is there twice ("Retire the old screens", section 5).*
 - [ ] **6.2: order and undo.** Marks come before other line fixes of the
       same standing. Clearing a mark has no undo (like Dismiss on notes
       today). Both fine?
@@ -1497,6 +1604,50 @@ Write each answer in the README under *Decisions*, or tell the session.
       file is over 3,000 lines, so the fix goes in a new module with only
       call lines in the editor. Recommended: yes, before the U.3 sweep.
       *Answered 26 Nov (the recommendations): yes, a small fix before the U.3 sweep.*
+- [ ] **Round 6: two test-only weak spots, found while fixing the grammar
+      abort (not changed).** (a) The editor's typing timer has no parent
+      (`QTimer()` in `enhanced_text_editor.py`), so an editor being closed
+      can lose it first; the new check covers grammar results, but giving
+      the timer a parent (`QTimer(self)`) removes the cause. (b) The one-look
+      test starts a real LanguageTool server and leaves a half-closed editor
+      behind; and six tests in `tests/test_next_fixes.py` fail when run after
+      the other editor tests (they pass alone and in the full suite).
+      Recommended: fix both in 9.1's final sweep (a one-line change in the
+      editor and test set-up only).
+      *Answered 26 Nov: fix both in 9.1's final sweep.*
+- [ ] **D.10: two things.** (a) **A stray folder.** If a move needs a
+      folder name that an unused folder already has, that folder is kept
+      beside it as `chapter_NNN_2` (never deleted), and Undo gives it its
+      name back. Keep that, or move such folders somewhere else?
+      Recommended: keep. (b) **Moving while a draft is open.** While
+      "Editing:" shows a draft, a move is refused with a message. Keep, or
+      have the app switch back to the manuscript by itself and then move?
+      Recommended: keep (a move changes the manuscript, not the draft, and
+      switching by itself could surprise). The old tab row is retired with
+      the other old screens, as you said.
+      *Answered 26 Nov: (a) keep the numbered folder; (b) keep the refusal.*
+- [ ] **D.10: the older whole-manuscript move.** "Move main chapters into
+      this novella" (from before D.10) copies, checks, then deletes, where
+      D.10's chapter move renames in place and can be undone. Bring the
+      older one onto the new move, as a small piece? Recommended: yes,
+      with the "Retire the old screens" piece.
+      *Answered 26 Nov: yes.*
+- [ ] **Other formats (phase F).** *Answered 26 Nov, recorded in README
+      decision 18 and the F.0 brief:* a kind per project (Novel, Video
+      series, Podcast, Editorial series, Journalism); the words set by the
+      kind and editable; an uploaded video goes to the Studio for the
+      selected chapter and becomes a card refined there; spoken kinds gain
+      a runtime estimate, hook and retention checks, checks for the ear,
+      speakers and cues; nonfiction gains a sources list, an
+      unsourced-claim check, real people and a timeline, with fiction
+      checks off; publishing prepares a video package, a podcast package,
+      an article export, a series page, a compilation of a project with
+      its novellas, and one novella on its own as a novel, story or short
+      story; a new phase after the final sweep. A video stands for a
+      chapter in a novel, novella or story, and for an episode in a video
+      series or podcast (confirmed 26 Nov). **Still to answer, in
+      F.0's design:** the exact words for each kind; how a true story is
+      marked; where a video file is kept (copied or linked).
 
 ## 4. For every piece from here on
 
@@ -1530,8 +1681,11 @@ The routine from the README, as a checklist:
 - [x] [D.2b](pieces/46-D.2b-one-improve-window-build-with-suggestions-and-ex.md) — built 25 Nov, for review (section 1, "The One Improve window (D.2b)")
 - [x] then [D.2c](pieces/47-D.2c-one-improve-window-rephrase-joins.md) — built 26 Nov, for review (section 1, "The One Improve window: Rephrase joins (D.2c)"). Every D.2 piece is done.
 - [x] [D.5](pieces/49b-D.5-analyses-run-as-critique-reports.md) Analyses run as Critique reports (adds kinds to critique history) — built, for review
-- [ ] Two small fixes before the sweep (answered 26 Nov, section 3): the grammar check's results handler that aborts in tests (a new module, call lines only in `enhanced_text_editor.py`); and the two old Rephrase slips (each rating stamped with the option you rated; "Auto-detect from text" back in the character-voice list; new rows only)
-- [ ] [U.3a](pieces/50-U.3a-fit-and-scroll-sweep-the-screens-used-most.md) (also: "➕ Add Hierarchy" cut off at 1024 × 600, section 3 D.8 (c)), then [U.3b](pieces/51-U.3b-fit-and-scroll-sweep-the-remaining-screens.md) Fit-and-scroll sweep (last, so it sweeps the final screens)
+- [x] Two small fixes before the sweep (answered 26 Nov, section 3) — built 26 Nov, round 6: the grammar check's results handler that aborts in tests (a new module, call lines only in `enhanced_text_editor.py`); and the two old Rephrase slips (each rating stamped with the option you rated; "Auto-detect from text" back in the character-voice list; new rows only)
+- [x] Shared-folder warning (answered 26 Nov, section 3) — built 26 Nov, round 6 (Save As and a new project's first save; ordinary saves never ask): warn when a project is saved into a folder that already holds another project file, since the two could collide over chapter folders. Touches saving, so a small piece of its own (rule 15: nothing overwritten)
+- [x] [D.10](pieces/48f-D.10-manuscript-tree.md) — built 26 Nov, for review (section 1, "The manuscript tree (D.10)"). One manuscript tree on the left (your request, 26 Nov): manuscripts and novellas with their chapters in the left panel; chapters moved by drag-and-drop or right-click; the top row of manuscript tabs and Novellas ▾ go (behind a switch until retired). Before U.3, so the sweep sees the final Write screen
+- [ ] [U.3a](pieces/50-U.3a-fit-and-scroll-sweep-the-screens-used-most.md) (also: "➕ Add Hierarchy" cut off at 1024 × 600, section 3 D.8 (c)), then [U.3b](pieces/51-U.3b-fit-and-scroll-sweep-the-remaining-screens.md) Fit-and-scroll sweep (late, so it sweeps the final screens; it skips the old screens due to be retired)
+- [ ] Retire the old screens, once everything in section 1 is checked (answered 26 Nov: avoid redundancy): the old manuscript tab row (D.10); the old ten tabs and Settings ▸ Main tabs (D.4); the older whole-manuscript move brought onto D.10's undoable chapter move (answered 26 Nov); the old analysis windows and "Show in a window (old)" (D.5); the old Rephrase, Suggestions and Overly descriptive? windows and Settings ▸ Features ▸ Improve window (D.2c). One piece; stored settings left in place, unread (rule 11); counts go down, never up
 
 **B. Better checks** (can run alongside A; no model needed)
 - [ ] [P.5](pieces/30-P.5-fix-or-hide-the-worst-checks.md) Fix or hide the worst checks (after step 2's report)
@@ -1548,7 +1702,7 @@ The routine from the README, as a checklist:
 - [x] [7.3](pieces/59-7.3-draft-beside-plan-and-the-tension-curve.md) Draft beside plan — built, for review (no-model tier)
 - [x] [6.1](pieces/55-6.1-listen-and-mark.md) Listen and mark — built, for review (untried with a real voice)
 - [x] [6.2](pieces/56-6.2-marks-become-notes.md) Marks become notes — built, for review
-- [ ] [9.1](pieces/60-9.1-final-sweep.md) Final sweep
+- [ ] [9.1](pieces/60-9.1-final-sweep.md) Final sweep (last: after the old screens are retired and U.3)
 - [x] [9.2](pieces/61-9.2-export-and-import-check.md) Export and import check — built, for review
 - [x] [P.8](pieces/36-P.8-character-analysis.md) Character analysis — built, for review (the arc part asks a model only when you click)
 
@@ -1580,9 +1734,20 @@ The routine from the README, as a checklist:
 - [x] The 4 old failures in `tests/test_overuse_context.py`: the test setup hid the WordNet data; fixed in `tests/conftest.py`
 - [x] Your request (25 Nov): the chapter's prose profile — the Prose Profile tab measures the chapter open in Write (`src/ai/prose_snapshot.py`, `src/ui/prose_profile_chapter.py`); the AI chat answers "prose profile" at once and "review my prose" with the full report (`src/ai/prose_chat.py`) — built, for review
 
+**H. Other formats: phase F** (after 9.1; your request, 26 Nov; README decision 18)
+- [ ] [F.0](pieces/70-F.0-project-kinds-design.md) Project kinds: design (no code). **Review the design before F.1.**
+- [ ] [F.1](pieces/71-F.1-project-kind-and-its-words.md) Project kind and its words (everything else needs it)
+- [ ] [F.2](pieces/72-F.2-checks-by-kind.md) Checks by kind
+- [ ] [F.10](pieces/80-F.10-a-chapters-video-in-the-studio.md) A chapter's video in the Studio (needs only F.1; can come early)
+- [ ] [F.14](pieces/84-F.14-export-a-compilation-or-one-novella.md) Export a compilation, or one novella on its own (needs only 9.2; can come early)
+- [ ] Spoken: [F.3](pieces/73-F.3-runtime-and-targets.md) Runtime and targets, [F.4](pieces/74-F.4-speakers-and-cues.md) Speakers and cues, [F.5](pieces/75-F.5-written-for-the-ear.md) Checks for the ear, [F.6](pieces/76-F.6-hook-and-retention.md) Hook and retention (a model adds to it)
+- [ ] Nonfiction: [F.7](pieces/77-F.7-sources-list.md) Sources list, [F.8](pieces/78-F.8-unsourced-claims.md) Unsourced claims (a model adds to it), [F.9](pieces/79-F.9-people-and-timeline.md) Real people and the timeline
+- [ ] Publishing: [F.11](pieces/81-F.11-video-and-podcast-packages.md) Video and podcast packages (a model adds to it), [F.12](pieces/82-F.12-article-export.md) Article export, [F.13](pieces/83-F.13-series-page.md) The series page
+- [ ] [F.15](pieces/85-F.15-sweep-for-the-new-kinds.md) Sweep for the new kinds (last)
+
 ## 6. Finished when
 
-- [ ] Every box in the README tracker is ticked or deliberately cut.
+- [ ] Every box in the README tracker is ticked or deliberately cut (the plan for novels ends at 9.1; phase F, other formats, follows it).
 - [ ] Every check that is on by default meets the quality target (P.5).
 - [ ] The harness counts are at or under `screens_baseline.json` on every
       screen.

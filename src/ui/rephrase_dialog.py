@@ -213,6 +213,9 @@ class RephraseDialog(QDialog):
         # programmatically populate the preview (option-switch).
         self._preview_dirty: bool = False
         self._original_option_text: str = ""  # what was in preview before edits
+        # Row of the option loaded in the preview (the one a rating is
+        # for); -1 when none. Stamps each rating row with its own style.
+        self._preview_row: int = -1
 
         # Debounced training-data save for ratings. Writing on the
         # click instant loses in-flight edits (the user clicks Poor
@@ -519,10 +522,7 @@ class RephraseDialog(QDialog):
         self.char_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
         self.char_list.setMaximumHeight(90)
         self.char_list.setStyleSheet("font-size: 10px;")
-        # Add auto-detect as first item
-        auto_item = QListWidgetItem("Auto-detect from text")
-        auto_item.setData(Qt.ItemDataRole.UserRole, "__auto__")
-        self.char_list.addItem(auto_item)
+        # "Auto-detect from text" first, then the project's characters
         self._populate_character_list()
         pov_inner.addWidget(self.char_list)
 
@@ -946,8 +946,12 @@ class RephraseDialog(QDialog):
         )
 
     def _populate_character_list(self):
-        """Populate the character list from the project."""
+        """Populate the character list from the project, after the
+        "Auto-detect from text" item (always first, kept on a refill)."""
         self.char_list.clear()
+        auto_item = QListWidgetItem("Auto-detect from text")
+        auto_item.setData(Qt.ItemDataRole.UserRole, "__auto__")
+        self.char_list.addItem(auto_item)
         if not self.project or not hasattr(self.project, 'characters'):
             return
         for char in self.project.characters:
@@ -1251,6 +1255,7 @@ class RephraseDialog(QDialog):
             self._loading_preview = True
             self.preview_edit.clear()
             self._loading_preview = False
+            self._preview_row = -1
             self.style_label.clear()
             self.use_btn.setEnabled(False)
             self._set_preview_dirty(False)
@@ -1299,6 +1304,7 @@ class RephraseDialog(QDialog):
         finally:
             self._loading_preview = False
         self._original_option_text = option.text
+        self._preview_row = row
         self.style_label.setText(f"Style: {option.style} | Tone: {option.tone} — {option.explanation}")
         self.use_btn.setEnabled(True)
         self._set_preview_dirty(False)
@@ -1554,7 +1560,16 @@ class RephraseDialog(QDialog):
         # Pull the selected style/tone if we have a result handy
         style = ""
         if self.result and self.result.options:
-            row = self.results_list.currentRow() if hasattr(self, 'results_list') else 0
+            # The option in the preview is the one rated (both the old
+            # window and the Improve window's hosted tab load options
+            # through options_list). While switching, options_list
+            # already shows the new row but the flushed rating is for
+            # the option being left, so the preview's row wins.
+            row = getattr(self, '_preview_row', -1)
+            if not 0 <= row < len(self.result.options):
+                row = self.options_list.currentRow()
+            if not 0 <= row < len(self.result.options):
+                row = 0                         # as before: the first option
             if 0 <= row < len(self.result.options):
                 opt = self.result.options[row]
                 style = f"{opt.style}/{opt.tone}".strip("/")

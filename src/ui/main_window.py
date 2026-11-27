@@ -3956,6 +3956,8 @@ class MainWindow(QMainWindow):
             "Writer Project Files (*.writerproj);;All Files (*)"
         )
 
+        from src.ui.save_location import choose_save_path
+        file_path = choose_save_path(self, file_path)
         if file_path:
             self._save_to_path(file_path)
 

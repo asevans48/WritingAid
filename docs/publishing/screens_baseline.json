@@ -7,10 +7,10 @@
  },
  "screens": {
   "write": {
-   "buttons": 19,
-   "menu_items": 29,
+   "buttons": 18,
+   "menu_items": 28,
    "sections": 0,
-   "inner_tabs": 1
+   "inner_tabs": 0
   },
   "planner": {
    "buttons": 8,
