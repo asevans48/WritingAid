@@ -11,7 +11,7 @@ from typing import List, Optional
 import uuid
 
 from src.models.worldbuilding_objects import StarSystem, Star, Planet, PlanetType, ClimateZone
-from src.ui.ui_kit import PALETTE, main_button  # one look (D.8)
+from src.ui.ui_kit import PALETTE, main_button, scroll_dialog  # one look (D.8); U.3b
 
 
 class PlanetEditorDialog(QDialog):
@@ -365,6 +365,7 @@ class EnhancedStarSystemEditor(QDialog):
         self.available_fauna = available_fauna or []
         self.available_climate_presets = available_climate_presets or []
         self._init_ui()
+        scroll_dialog(self)  # U.3b: scrolls on a small screen, its buttons stay
         if star_system:
             self._load_system()
 

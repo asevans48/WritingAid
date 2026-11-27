@@ -11,7 +11,7 @@ from PyQt6.QtCore import pyqtSignal, Qt
 
 from src.models.worldbuilding_objects import MagicSystem, MagicType, Faction
 from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
-from src.ui.ui_kit import PALETTE, main_button  # one look (D.8)
+from src.ui.ui_kit import PALETTE, fit_to_screen, main_button  # one look (D.8); U.3b
 
 
 class MagicSystemEditor(QDialog):
@@ -29,6 +29,7 @@ class MagicSystemEditor(QDialog):
         self._project = project
         self.available_factions = available_factions or []
         self._init_ui()
+        fit_to_screen(self, 750, 650)  # U.3b: opens within a small screen
         if magic_system:
             self._load_magic_system()
 

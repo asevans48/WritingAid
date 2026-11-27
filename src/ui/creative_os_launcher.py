@@ -107,6 +107,8 @@ class CreativeOSLauncher(QMainWindow):
         self.setWindowTitle("CreativeOS")
         self.resize(900, 640)
         self._init_ui()
+        from src.ui.ui_kit import scroll_dialog  # U.3b: fits a small screen
+        scroll_dialog(self, 900, 640)
 
     # ── UI ──
 

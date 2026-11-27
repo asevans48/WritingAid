@@ -227,6 +227,8 @@ class ModelHubWindow(QMainWindow):
         self.setWindowTitle("Local Models Hub")
         self.resize(1100, 720)
         self._build_ui()
+        from src.ui.ui_kit import scroll_dialog  # U.3b: fits a small screen
+        scroll_dialog(self, 1100, 720)
         self._refresh_registry()
         self._refresh_loaded_panel()
         # Periodically refresh the "loaded" column + RAM bar so

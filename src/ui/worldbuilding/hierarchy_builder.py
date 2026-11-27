@@ -12,6 +12,7 @@ import uuid
 
 from src.models.worldbuilding_objects import PowerHierarchy, HierarchyNode
 from src.ui.ui_kit import PALETTE, compact_button, empty_state, main_button  # narrow buttons show their symbol
+from src.ui.ui_kit import FlowLayout, short_label  # U.3a, U.3b
 from src.ui import notify  # D.9: messages that need no click
 
 
@@ -492,8 +493,8 @@ class HierarchyBuilderWidget(QWidget):
         self.hierarchy_list.currentItemChanged.connect(self._on_hierarchy_selected)
         left_layout.addWidget(self.hierarchy_list)
 
-        btn_layout = QHBoxLayout()
-        add_btn = main_button("➕ Add Hierarchy")
+        btn_layout = FlowLayout()          # U.3a: wraps, so "Add Hierarchy" is never cut
+        add_btn = short_label(main_button("➕ Add Hierarchy"), "➕ Add")   # U.3b: narrow
         add_btn.clicked.connect(self._add_hierarchy)
         btn_layout.addWidget(add_btn)
 
@@ -510,7 +511,7 @@ class HierarchyBuilderWidget(QWidget):
 
         left_layout.addLayout(btn_layout)
 
-        left_panel.setMaximumWidth(250)
+        left_panel.setMaximumWidth(290)   # 26 Nov: "➕ Add Hierarchy" reads whole when there is room
         splitter.addWidget(left_panel)
 
         # Right: Hierarchy editor

@@ -25,6 +25,7 @@ from src.utils.thesaurus import get_synonyms, get_antonyms
 from src.ui.styles import SYSTEM_FONT
 from src.ui import notify  # quiet messages (D.9)
 from src.ui.ui_kit import PALETTE, PRIMARY_BUTTON, compact_button, plain, plain_qss, text_style  # shared parts (U.1, D.8)
+from src.ui.ui_kit import ElidedLabel, grow_with_text  # U.3a
 
 
 class AnnotationMarginArea(QWidget):
@@ -258,7 +259,8 @@ class ChapterEditor(QWidget):
         self.font_size_spin = QSpinBox()
         self.font_size_spin.setRange(8, 72)
         self.font_size_spin.setValue(12)
-        self.font_size_spin.setMaximumWidth(50)
+        self.font_size_spin.setMaximumWidth(56)
+        self.font_size_spin.setStyleSheet("QSpinBox { padding: 4px 2px; }")   # U.3a: "12" was cut off
         # Block signals initially to prevent spurious valueChanged during initialization
         self.font_size_spin.blockSignals(True)
         self.font_size_spin.valueChanged.connect(self._change_font_size)
@@ -292,8 +294,7 @@ class ChapterEditor(QWidget):
         self.heading_combo = QComboBox()
         self.heading_combo.addItems(["Normal", "Title", "H1", "H2", "H3", "H4"])
         self.heading_combo.setToolTip("Apply heading style (exports properly to Word, HTML, Markdown)")
-        self.heading_combo.setMinimumWidth(84)
-        self.heading_combo.setMaximumWidth(96)
+        # U.3a: sized to its longest item, no cap ("Normal" read "Norma")
         # Use activated instead of currentTextChanged so we can apply the same style multiple times
         self.heading_combo.activated.connect(self._on_heading_combo_activated)
         toolbar.addWidget(self.heading_combo)
@@ -432,7 +433,7 @@ class ChapterEditor(QWidget):
         title_layout.addWidget(title_label)
 
         self.title_edit = QTextEdit()
-        self.title_edit.setMaximumHeight(40)
+        grow_with_text(self.title_edit)     # U.3a: one line, up to three, no fixed height
         self.title_edit.setPlaceholderText("Enter chapter title...")
         self.title_edit.textChanged.connect(self.content_changed.emit)
         title_layout.addWidget(self.title_edit)
@@ -504,18 +505,19 @@ class ChapterEditor(QWidget):
         bottom_toolbar.setSpacing(4)
 
         # Word count
-        self.word_count_label = QLabel("Words: 0")
+        self.word_count_label = ElidedLabel("Words: 0")      # U.3a: these give up width
+        # rather than widen the window (the side panel needed 1,094 px)
         self.word_count_label.setStyleSheet("font-size: 11px;")
         bottom_toolbar.addWidget(self.word_count_label)
 
         # Flesch-Kincaid readability (chapter, or the current selection)
-        self.readability_label = QLabel("")
+        self.readability_label = ElidedLabel("", least_chars=3)
         self.readability_label.setStyleSheet(text_style("ink_soft", 11, extra="padding-left: 8px;"))
         self.readability_label.setTextFormat(Qt.TextFormat.RichText)
         bottom_toolbar.addWidget(self.readability_label)
 
         # Grammar engine status (LanguageTool starting / ready / basic rules)
-        self.grammar_status_label = QLabel("")
+        self.grammar_status_label = ElidedLabel("", least_chars=3)
         self.grammar_status_label.setStyleSheet(text_style("ink_faint", 10, extra="padding-left: 8px;"))
         bottom_toolbar.addWidget(self.grammar_status_label)
         self.editor.writing_highlighter.grammar_status.connect(
@@ -3515,7 +3517,7 @@ class ManuscriptEditor(QWidget):
         left_layout.addLayout(button_layout)
 
         # Hint label
-        hint_label = QLabel("Right-click chapter for more options")
+        hint_label = ElidedLabel("Right-click chapter for more options")   # U.3a: never widens
         hint_label.setStyleSheet(text_style("ink_faint", 10, italic=True))
         left_layout.addWidget(hint_label)
 

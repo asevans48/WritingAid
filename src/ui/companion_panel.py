@@ -121,7 +121,8 @@ class CompanionPanel(QWidget):
         self.notes_list.setMinimumHeight(110)
         self.notes_list.itemDoubleClicked.connect(lambda _i: self._go_to_note())
         v.addWidget(self.notes_list)
-        row = QHBoxLayout()
+        from src.ui.ui_kit import FlowLayout, short_label
+        row = FlowLayout()                     # U.3a: wraps in a narrow panel
         self.go_btn = QPushButton("Go to")
         self.go_btn.clicked.connect(self._go_to_note)
         self.fix_note_btn = QPushButton("💡 Suggest fix")
@@ -133,9 +134,12 @@ class CompanionPanel(QWidget):
         self.dismiss_btn.clicked.connect(self._dismiss_note)
         self.ask_btn = QPushButton("💬 Ask")
         self.ask_btn.clicked.connect(self._ask_note)
+        # U.3b: shorter words in a narrow panel before the row wraps
+        for b, short in ((self.fix_note_btn, "💡 Fix"), (self.act_btn, "✓ Beat"),
+                         (self.dismiss_btn, "✕")):
+            short_label(b, short)
         for b in (self.go_btn, self.fix_note_btn, self.act_btn, self.ask_btn, self.dismiss_btn):
             row.addWidget(b)
-        row.addStretch()
         v.addLayout(row)
         self.notes_list.currentRowChanged.connect(self._update_note_buttons)
 

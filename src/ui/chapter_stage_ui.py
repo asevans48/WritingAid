@@ -62,8 +62,14 @@ class ChaptersDialog(QDialog):
         self.setWindowTitle("Set the stage of several chapters")
         now = cst.stages(project, scope)
         lay = QVBoxLayout(self)
-        lay.addWidget(QLabel(f"Chapters of “{html.escape(project.scope_label(scope))}”:"))
+        heading = QLabel(f"Chapters of “{html.escape(project.scope_label(scope))}”:")
+        heading.setWordWrap(True)          # U.3a: a long novella name wraps, never widens
+        heading.setTextFormat(Qt.TextFormat.RichText)   # the name is escaped: show it as typed
+        lay.addWidget(heading)
         self.list = QListWidget()
+        self.list.setWordWrap(True)        # long chapter names wrap
+        self.list.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         chosen = set(chosen)
         ms = next((m for s, m in project.iter_manuscripts() if s == scope), None)
         self.ids: List[str] = []

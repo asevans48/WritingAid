@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor
-from src.ui.ui_kit import PALETTE, PRIMARY_BUTTON, plain_qss  # shared parts (D.8)
+from src.ui.ui_kit import PALETTE, PRIMARY_BUTTON, fit_to_screen, plain_qss  # shared parts (D.8, U.3a)
 
 from src.config.credential_manager import get_credential_manager
 from src.ai.mlx_utils import can_use_mlx
@@ -447,6 +447,7 @@ class SettingsDialog(QDialog):
         # (≥420 px) both have breathing room on a 1366×768 laptop.
         # Height min lowered so the dialog still fits a 13" laptop.
         self.setMinimumSize(820, 480)
+        fit_to_screen(self, 980, 680, min_width=820, min_height=480)  # U.3a: within the screen, pages not cut
 
         layout = QVBoxLayout(self)
         self.setStyleSheet(plain_qss(size=13, pad="8px 16px"))     # D.8: Save is the one main button

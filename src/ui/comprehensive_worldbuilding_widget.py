@@ -27,7 +27,7 @@ from src.ui.worldbuilding.map_builder_widgets import MapBuilderWidget
 from src.ui.worldbuilding.magic_system_builder import MagicSystemBuilderWidget
 from src.ui.worldbuilding.encyclopedia_widget import EncyclopediaWidget
 from src.ui import notify  # D.9: messages that need no click
-from src.ui.ui_kit import PALETTE  # one look (D.8)
+from src.ui.ui_kit import PALETTE, scrollable  # one look (D.8); U.3b
 
 
 class ComprehensiveWorldBuildingWidget(QWidget):
@@ -73,6 +73,7 @@ class ComprehensiveWorldBuildingWidget(QWidget):
 
         subtitle = QLabel("Build your universe with interconnected systems")
         subtitle.setStyleSheet(f"font-size: 12px; color: {PALETTE['ink_faint']};")
+        subtitle.setWordWrap(True)                 # U.3b: a detail, wraps in a narrow window
         header_layout.addWidget(subtitle)
 
         layout.addWidget(header)
@@ -122,7 +123,10 @@ class ComprehensiveWorldBuildingWidget(QWidget):
             widget = widget_class()
             widget.content_changed.connect(self.content_changed.emit)
             setattr(self, attr_name, widget)
-            self.stack.addWidget(widget)
+            # U.3b: each section scrolls when the window is shorter (or
+            # narrower) than it needs, instead of the tallest section, even
+            # when hidden, setting the whole screen's minimum.
+            self.stack.addWidget(scrollable(widget))
             self.section_combo.addItem(display_name)
 
         self.section_combo.currentIndexChanged.connect(self.stack.setCurrentIndex)

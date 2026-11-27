@@ -141,6 +141,8 @@ class ImportGuideDialog(QDialog):
         self.resize(1000, 800)
         self._prompts = {}  # Store prompts for export
         self._init_ui()
+        from src.ui.ui_kit import scroll_dialog  # U.3b: fits a small screen, buttons stay
+        scroll_dialog(self, 1000, 800)
 
     def _init_ui(self):
         """Initialize the UI."""

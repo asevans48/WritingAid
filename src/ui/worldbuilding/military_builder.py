@@ -14,6 +14,7 @@ import uuid
 from src.models.worldbuilding_objects import Army, MilitaryBranch, Faction
 from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
 from src.ui import notify  # D.9: messages that need no click
+from src.ui.ui_kit import scroll_dialog  # U.3b
 
 
 class MilitaryBranchEditor(QDialog):
@@ -205,6 +206,7 @@ class ArmyEditorDialog(QDialog):
         self.setWindowTitle("Edit Military Force" if army else "New Military Force")
         self.resize(750, 650)
         self._init_ui()
+        scroll_dialog(self)  # U.3b: scrolls on a small screen, its buttons stay
         if army:
             self._load_army()
 

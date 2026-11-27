@@ -16,7 +16,7 @@ from src.models.worldbuilding_objects import Faction, FactionType
 from src.ui.styles import SYSTEM_FONT
 from src.ui.worldbuilding.filter_sort_widget import FilterSortWidget
 from src.ui import notify  # D.9: messages that need no click
-from src.ui.ui_kit import CHART_COLOURS, PALETTE, main_button  # one look (D.8)
+from src.ui.ui_kit import CHART_COLOURS, PALETTE, FlowLayout, main_button  # D.8; U.3b
 
 
 class FactionRelationshipGraph(QWidget):
@@ -706,7 +706,7 @@ class FactionBuilderWidget(QWidget):
         layout.addWidget(self.filter_sort)
 
         # Toolbar
-        toolbar = QHBoxLayout()
+        toolbar = FlowLayout()                     # U.3b: wraps in a narrow window
 
         add_btn = main_button("Add Faction")
         add_btn.clicked.connect(self._add_faction)

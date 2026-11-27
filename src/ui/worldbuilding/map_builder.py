@@ -18,6 +18,7 @@ from src.models.worldbuilding_objects import (
     WorldMap, MapPlace, MapLandmark, PlaceType, Faction
 )
 from src.ui.ui_kit import PALETTE  # one look (D.8)
+from src.ui.ui_kit import scroll_dialog  # U.3b
 
 
 class MapUndoCommand:
@@ -325,6 +326,7 @@ class PlaceEditorDialog(QDialog):
         self.setWindowTitle("Place Editor")
         self.resize(500, 450)
         self._init_ui()
+        scroll_dialog(self)  # U.3b: scrolls on a small screen, its buttons stay
         if place:
             self._load_place()
 

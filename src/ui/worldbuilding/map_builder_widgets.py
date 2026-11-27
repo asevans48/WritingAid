@@ -19,6 +19,7 @@ from src.ui.worldbuilding.map_builder import PlaceEditorDialog
 from src.ui.worldbuilding.enhanced_map_canvas import EnhancedMapCanvas
 from src.ui import notify  # D.9: messages that need no click
 from src.ui.ui_kit import PALETTE, main_button  # one look (D.8)
+from src.ui.ui_kit import scroll_dialog  # U.3b
 
 
 class LandmarkEditorDialog(QDialog):
@@ -35,6 +36,7 @@ class LandmarkEditorDialog(QDialog):
         self.setWindowTitle("Landmark Editor")
         self.resize(500, 400)
         self._init_ui()
+        scroll_dialog(self)  # U.3b: scrolls on a small screen, its buttons stay
         if landmark:
             self._load_landmark()
 
@@ -191,6 +193,7 @@ class EventEditorDialog(QDialog):
         self.setWindowTitle("Event Editor")
         self.resize(500, 500)
         self._init_ui()
+        scroll_dialog(self)  # U.3b: scrolls on a small screen, its buttons stay
         if event:
             self._load_event()
 

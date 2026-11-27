@@ -573,7 +573,8 @@ class GraderWidget(QWidget):
         # Main scroll area
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # U.3a: what cannot narrow further scrolls sideways, never cut off
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
         container = QWidget()
         layout = QVBoxLayout(container)

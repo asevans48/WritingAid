@@ -22,6 +22,14 @@ back. No Qt.
 * **An id clash gets a new id.** If the manuscript the chapter goes to
   already has a chapter with its id, the moved chapter gets a new one, and
   what refers to it is updated (below). Undo gives the old id back.
+* **The Studio's cards follow it** (the fix after F.0). The Video Studio
+  lists only the main manuscript's chapters, so a card's, chapter deck's
+  or slide deck's ``chapter_id`` (and the Studio's chosen chapter) always
+  means a main-manuscript chapter. After an id clash, those are pointed at
+  the new id when the moved chapter came from the main manuscript; when it
+  came from a novella they are left alone (they mean the chapter that
+  stays). Folders on disk are not renamed: a deck keeps its own
+  ``working_dir``. Undo and a failed move put the old ids back.
 * **What travels in the project file** (the chapter's own entry): its
   text, title, drafts list, outline and planning (events, notes, to-dos,
   subplot notes, feedback) and annotations.
@@ -236,6 +244,29 @@ def _retarget_refs(project: Any, renamed: List[Tuple[str, str, str]],
     return changed
 
 
+def _retarget_studio(project: Any, renamed: List[Tuple[str, str]]
+                     ) -> List[Tuple[Any, str, str, str]]:
+    """After an id clash: point the Studio's cards, chapter decks, slide
+    decks and chosen chapter at the moved chapter's new id. ``renamed`` holds
+    only chapters that left the main manuscript (see the module notes)."""
+    studio = getattr(project, "video_studio", None)
+    if studio is None or not renamed:
+        return []
+    ids = dict(renamed)
+    changed = []
+    for name in ("scenes", "chapter_decks", "slide_decks"):
+        for obj in getattr(studio, name, []) or []:
+            old = getattr(obj, "chapter_id", None)
+            if old and old in ids:
+                obj.chapter_id = ids[old]
+                changed.append((obj, "chapter_id", old, ids[old]))
+    old = getattr(studio, "active_chapter_id", "") or ""
+    if old in ids:
+        studio.active_chapter_id = ids[old]
+        changed.append((studio, "active_chapter_id", old, ids[old]))
+    return changed
+
+
 # ── The move ───────────────────────────────────────────────────────────
 
 def move_chapters(project: Any, chapters: Sequence[Tuple[Optional[str], str]],
@@ -403,7 +434,7 @@ def move_chapters(project: Any, chapters: Sequence[Tuple[Optional[str], str]],
             ms.chapters = new_lists[s]
             ms.total_word_count = sum(c.word_count for c in ms.chapters)
         from src.data.readiness_state import scope_key
-        moves, renamed, renamed_titled = [], [], []
+        moves, renamed, renamed_titled, from_main = [], [], [], []
         clashing = {c.id: c.title for c in target_old}
         for scope, ch, idx in picked:
             cid = new_id[id(ch)]
@@ -412,9 +443,12 @@ def move_chapters(project: Any, chapters: Sequence[Tuple[Optional[str], str]],
             if cid != ch.id:
                 renamed.append((ch.id, cid))
                 renamed_titled.append((ch.id, cid, ch.title))
+                if scope is None:
+                    from_main.append((ch.id, cid))
                 ch.id = cid
         project._normalize_manuscript_roots()
         result.refs = _retarget_refs(project, renamed_titled, clashing)
+        result.refs += _retarget_studio(project, from_main)
 
         # ── What is kept beside the project ──
         _move_state(project, moves, renamed, result)

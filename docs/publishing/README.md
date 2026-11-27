@@ -415,8 +415,9 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 - [ ] Retire the old screens (and bring the older whole-manuscript move onto D.10's undoable move; D.10's manuscript tab row, D.4's ten tabs, D.5's old windows, the three old Improve windows and their switches), once the writer has checked everything (S, after U.3)
 
 **Interface sweep (after U.2)**
-- [ ] [U.3a](pieces/50-U.3a-fit-and-scroll-sweep-the-screens-used-most.md) Fit-and-scroll sweep: the screens used most (M)
-- [ ] [U.3b](pieces/51-U.3b-fit-and-scroll-sweep-the-remaining-screens.md) Fit-and-scroll sweep: the remaining screens (M, repeatable)
+- [x] [U.3a](pieces/50-U.3a-fit-and-scroll-sweep-the-screens-used-most.md) Fit-and-scroll sweep: the screens used most (M) — built 26 Nov, for review: Write, the side panel, the Critique window, the stage chooser, the tree and Settings fit at 1024 × 600 and 150%; Video Studio and World left for U.3b
+- [x] Studio cards follow a moved chapter (S, small fix; answered 26 Nov) — built 26 Nov, for review: on an id clash, D.10's move points the Studio's cards, chapter decks, slide decks and chosen chapter at the new id when the chapter leaves the main manuscript (the Studio lists only main's chapters); Undo and a failed move restore them; no folder is renamed
+- [x] [U.3b](pieces/51-U.3b-fit-and-scroll-sweep-the-remaining-screens.md) Fit-and-scroll sweep: the remaining screens (M, repeatable) — built 26 Nov, for review: the main window fits 1024 × 600 again (Video Studio 1,407 → 216 px, World 545 → 170 px high); all 58 harness screens pass at all four sizes; narrow rows shorten, then wrap (U.3a's included); about 80 windows the harness cannot open yet are left for an optional second session
 
 **After the path, in any order**
 - [x] [4.1](pieces/52-4.1-mark-as-intentional.md) Mark as intentional (S)
@@ -438,7 +439,7 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 - [ ] [8.3](pieces/66-8.3-server-prompts.md) Server prompts (M)
 
 **Phase F. Other formats** (after 9.1; added 26 Nov; decision 18)
-- [ ] [F.0](pieces/70-F.0-project-kinds-design.md) Project kinds: design (S, design, no code) — review before F.1
+- [x] [F.0](pieces/70-F.0-project-kinds-design.md) Project kinds: design (S, design, no code) — written and reviewed 26 Nov; the seven questions answered as recommended (decision 18). F.1 can start after 9.1
 - [ ] [F.1](pieces/71-F.1-project-kind-and-its-words.md) Project kind and its words (M)
 - [ ] [F.2](pieces/72-F.2-checks-by-kind.md) Checks by kind (M)
 - [ ] [F.3](pieces/73-F.3-runtime-and-targets.md) Runtime estimate and targets by length (S)
@@ -481,7 +482,7 @@ plus these:
 | [D.2a–c](pieces/45-D.2a-one-improve-window-design.md) | Three help windows become one | Built, for review (D.2b, D.2c): Rephrase, Suggestions and Overly descriptive? open one Improve window (tabs Suggestions · Critique · Rephrase · Expand), from every place that opened them, the draft window too; right-click counted 7 / 11 (was 9 / 13); the old three windows behind one switch until you retire them |
 | [D.4](pieces/49-D.4-fewer-top-level-tabs.md) | Ten top-level tabs become five; one way to detach a screen, and the "⧉ Own window" button goes | Built, for review: 5 top-level tabs (baseline 10); the old ten one switch away in Settings |
 | [D.5](pieces/49b-D.5-analyses-run-as-critique-reports.md) | Six analysis windows become Critique reports | Built, for review: no count rises (Analyze ▾ keeps its eight entries; the links are inside the report); old windows retired after the trial |
-| [U.3a](pieces/50-U.3a-fit-and-scroll-sweep-the-screens-used-most.md), [U.3b](pieces/51-U.3b-fit-and-scroll-sweep-the-remaining-screens.md) | Every screen fits and scrolls | Not started |
+| [U.3a](pieces/50-U.3a-fit-and-scroll-sweep-the-screens-used-most.md), [U.3b](pieces/51-U.3b-fit-and-scroll-sweep-the-remaining-screens.md) | Every screen fits and scrolls | U.3a and U.3b done (26 Nov); a second U.3b session optional |
 
 **Suggested order:** D.6, D.1, D.7, D.9, D.8, D.4, D.2, D.5, then U.3. The
 first five change only what is shown. D.4 also reads saved window layouts and
@@ -741,5 +742,13 @@ New baselines wait for the writer's agreement.
       own as a novel, story or short story.
     - It is a new phase after the final sweep. Sending to sites stays a
       later integration (settled decision 7).
+    - F.0's design reviewed 26 November (its seven questions, as
+      recommended): the default words as in F.0 §1; a true story is a
+      tick (not for Editorial series or Journalism, which are always true;
+      offered for Novel); a chapter's video is copied into the project;
+      the Kind row is the one visible change in a Novel project; script
+      marks `## Heading`, `[B-ROLL: …]`, `[MUSIC: …]`, `[AD BREAK]`,
+      `HOST: …`; each kind's export takes Publisher Ready's place; series
+      status stores only planned, recorded (filed) and published.
 
     (Phase F)

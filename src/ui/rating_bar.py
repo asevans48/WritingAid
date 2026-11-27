@@ -27,6 +27,8 @@ _RATING_BUTTONS = [
     ("poor",      "👎 Poor",      "#f59e0b"),
     ("bad",       "✖ Bad",        "#ef4444"),
 ]
+# U.3b: the words a narrow row switches to before it wraps (the others are short).
+_SHORT_WORDS = {"excellent": "⭐ Best"}
 
 
 class RatingBar(QWidget):
@@ -50,12 +52,13 @@ class RatingBar(QWidget):
         self._selected_rating: str = ""
         self._save_default = self._is_collection_enabled_default()
 
-        layout = QHBoxLayout(self)
+        from src.ui.ui_kit import FlowLayout, short_label
+        layout = FlowLayout(self, spacing=6)       # U.3a: wraps in a narrow window
         layout.setContentsMargins(0, 4, 0, 4)
-        layout.setSpacing(6)
 
         lbl = QLabel(label)
         lbl.setStyleSheet("color: #6b7280; font-size: 11px;")
+        short_label(lbl, "Rate:")                  # U.3b: shorter words, then wrap
         layout.addWidget(lbl)
 
         for value, text, color in _RATING_BUTTONS:
@@ -76,6 +79,8 @@ class RatingBar(QWidget):
             """)
             btn.clicked.connect(lambda _checked=False, v=value: self._on_clicked(v))
             self._buttons[value] = btn
+            if value in _SHORT_WORDS:
+                short_label(btn, _SHORT_WORDS[value])
             layout.addWidget(btn)
 
         self.save_check = QCheckBox("Save for training")
@@ -86,9 +91,8 @@ class RatingBar(QWidget):
             "in Creative OS settings.")
         self.save_check.setChecked(self._save_default)
         self.save_check.setStyleSheet("font-size: 11px; color: #4b5563;")
+        short_label(self.save_check, "Save")
         layout.addWidget(self.save_check)
-
-        layout.addStretch()
 
         self.status_label = QLabel("")
         self.status_label.setStyleSheet(

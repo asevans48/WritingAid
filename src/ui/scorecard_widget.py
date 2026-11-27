@@ -29,8 +29,8 @@ from PyQt6.QtWidgets import (
 )
 
 from src.ui.ui_kit import (
-    PALETTE, STAGE_COLOURS, CollapsibleSection, empty_state, plain, primary_button, relayout,
-    size_class,
+    PALETTE, STAGE_COLOURS, CollapsibleSection, FlowLayout, empty_state, plain, primary_button,
+    relayout, size_class, stack_when_narrow,
 )
 
 HONEST_LINE = ("This covers the mechanics an edit would fix. It cannot tell you whether the "
@@ -98,12 +98,17 @@ class ScorecardWidget(QWidget):
         self.manuscript_combo.setToolTip("The main manuscript or a novella: each has its own "
                                          "scorecard and its own figure.")
         self.manuscript_combo.currentIndexChanged.connect(self._on_manuscript)
+        # U.3a: a long manuscript or novella name is cut short, not the window widened
+        self.manuscript_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.manuscript_combo.setMinimumContentsLength(14)
         top.addWidget(self.manuscript_combo)
         top.addStretch()
         # Judging with the model is the writer's choice (2.3): a link beside the
         # button, shown when a model is set up and the book isn't fully judged.
         self.model_link = QLabel("<a href='model'>Check the book with the model…</a>")
         self.model_link.setTextFormat(Qt.TextFormat.RichText)
+        self.model_link.setWordWrap(True)          # U.3a: wraps in a narrow window
         self.model_link.setToolTip("Have the model judge every flag, chapter by chapter, in the "
                                    "background. You'll see an estimate first.")
         self.model_link.linkActivated.connect(self._on_note_link)
@@ -151,6 +156,8 @@ class ScorecardWidget(QWidget):
         self.trend_label.setStyleSheet(f"color: {PALETTE['ink_soft']}; font-size: 12px;")
         figure_row.addWidget(self.trend_label)
         outer.addLayout(figure_row)
+        # U.3b: in a narrow window the words go under the verdict, not beside it
+        stack_when_narrow(figure_row, self, lambda: self.figure_label.sizeHint().width() + 360)
 
         self.note_label = QLabel("")
         self.note_label.setTextFormat(Qt.TextFormat.RichText)
@@ -200,13 +207,11 @@ class ScorecardWidget(QWidget):
         self.empty = empty_state("")
         outer.addWidget(self.empty)
 
-        legend = QHBoxLayout()
-        legend.setSpacing(10)
+        legend = FlowLayout(spacing=10)           # U.3a: wraps in a narrow window
         for status, text in LEGEND:
             swatch = QLabel(f"<span style='color:{STATUS_COLOURS[status]}'>■</span> {text}")
             swatch.setStyleSheet(f"color: {PALETTE['ink_soft']}; font-size: 11px;")
             legend.addWidget(swatch)
-        legend.addStretch()
         self.legend = QWidget()
         self.legend.setLayout(legend)
         outer.addWidget(self.legend)

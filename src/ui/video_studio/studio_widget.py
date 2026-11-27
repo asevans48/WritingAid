@@ -51,6 +51,7 @@ from src.ui.video_studio.scene_editor import (
 )
 from src.ui import notify  # D.9: messages that need no click
 from src.ui.ui_kit import PALETTE, main_button, text_style  # one look (D.8)
+from src.ui.ui_kit import ElidedLabel, FlowLayout, fold_into_menu, scrollable, short_label  # U.3b
 
 
 class VideoStudioWidget(QWidget):
@@ -242,7 +243,7 @@ class VideoStudioWidget(QWidget):
         # holds the primary "what do I want to make?" controls; row
         # 2 holds backend settings + board management.
         # ──────────────────────────────────────────────────────────
-        toolbar_row1 = QHBoxLayout()
+        toolbar_row1 = FlowLayout()
         toolbar_row1.setSpacing(6)
         toolbar_row1.setContentsMargins(0, 0, 0, 0)
 
@@ -347,7 +348,7 @@ class VideoStudioWidget(QWidget):
             "structured prompt on any LLM failure.")
         self._refine_prompt_check.toggled.connect(
             self._on_refine_toggle)
-        toolbar_row1.addWidget(self._refine_prompt_check)
+        toolbar_row1.addWidget(short_label(self._refine_prompt_check, "✨ Refine"))
 
         toolbar_row1.addWidget(self._vline())
 
@@ -372,7 +373,7 @@ class VideoStudioWidget(QWidget):
             "export as PowerPoint or MP4 with per-slide narration.")
         self._slide_editor_btn.clicked.connect(
             self._open_slide_editor)
-        toolbar_row1.addWidget(self._slide_editor_btn)
+        toolbar_row1.addWidget(short_label(self._slide_editor_btn, "🎤 Slides"))
 
         self._export_deck_btn = QPushButton("📑 Export deck")
         self._export_deck_btn.setToolTip(
@@ -381,7 +382,7 @@ class VideoStudioWidget(QWidget):
             "deck. Optionally adds a title card before each scene.")
         self._export_deck_btn.clicked.connect(
             self._export_chapter_deck)
-        toolbar_row1.addWidget(self._export_deck_btn)
+        toolbar_row1.addWidget(short_label(self._export_deck_btn, "📑 Export"))
 
         toolbar_row1.addWidget(self._vline())
 
@@ -403,11 +404,11 @@ class VideoStudioWidget(QWidget):
         # Row 2 surfaces the current selection as a read-only
         # label and offers a one-click "Install…" button for the
         # currently-selected video backend.
-        toolbar_row2 = QHBoxLayout()
+        toolbar_row2 = FlowLayout()
         toolbar_row2.setSpacing(6)
         toolbar_row2.setContentsMargins(0, 0, 0, 0)
 
-        self._backends_label = QLabel("Backends: …")
+        self._backends_label = ElidedLabel("Backends: …", text_in_tip=True)
         self._backends_label.setStyleSheet(text_style("ink_soft", 11))
         self._backends_label.setToolTip(
             "Image and video backends are configured in "
@@ -451,24 +452,22 @@ class VideoStudioWidget(QWidget):
             "the hops (topological) when possible; falls back to "
             "creation order on cycles.")
         self._arrange_btn.clicked.connect(self._auto_arrange_board)
-        toolbar_row2.addWidget(self._arrange_btn)
 
         self._clear_board_btn = QPushButton("Clear")
         self._clear_board_btn.setToolTip(
             "Delete every scene and hop on the board. Character "
             "references and backend preferences are kept.")
         self._clear_board_btn.clicked.connect(self._clear_board)
-        toolbar_row2.addWidget(self._clear_board_btn)
 
         self._fit_view_btn = QPushButton("Fit")
         self._fit_view_btn.setToolTip(
             "Zoom and pan so the whole board fits in view. "
             "Ctrl + mouse wheel zooms manually.")
         self._fit_view_btn.clicked.connect(self._fit_canvas_to_view)
-        toolbar_row2.addWidget(self._fit_view_btn)
+        toolbar_row2.addWidget(fold_into_menu("+", (self._arrange_btn, self._clear_board_btn, self._fit_view_btn), "Arrange, Clear, Fit", like=self._load_board_btn))  # 26 Nov: the writer's "+"
 
         toolbar_row2.addStretch()
-        self._status_label = QLabel("")
+        self._status_label = ElidedLabel("")
         self._status_label.setStyleSheet(text_style("ink_soft", 11))
         self._status_label.setSizePolicy(
             QSizePolicy.Policy.Expanding,
@@ -573,7 +572,7 @@ class VideoStudioWidget(QWidget):
         side_layout.addWidget(tips_box)
 
         side_layout.addStretch()
-        splitter.addWidget(side)
+        splitter.addWidget(scrollable(side))
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([900, 320])

@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QLineEdit, QComboBox, QLabel
 )
 from PyQt6.QtCore import pyqtSignal
-from src.ui.ui_kit import PALETTE  # one look (D.8)
+from src.ui.ui_kit import PALETTE, FlowLayout  # one look (D.8); U.3b
 
 
 class FilterSortWidget(QWidget):
@@ -28,7 +28,7 @@ class FilterSortWidget(QWidget):
 
     def _init_ui(self, filter_placeholder: str):
         """Initialize UI."""
-        layout = QHBoxLayout(self)
+        layout = FlowLayout(self)                  # U.3b: wraps in a narrow window
         layout.setContentsMargins(0, 0, 0, 8)
         layout.setSpacing(8)
 

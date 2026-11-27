@@ -101,17 +101,35 @@ H.1, D.4, D.5, P.2b, 4.3 and the chapter's prose profile is **committed**
   a design for your review. The sweep briefs (U.3a, U.3b, 9.1) and rule 11
   have notes so the remaining work does not make it harder. Your answers
   are recorded in section 3, "Other formats".
+- **Round 8** (26 November): **U.3a** (the fit-and-scroll sweep of the
+  screens used most) is built. Write, the side panel (Companion, Planner,
+  Feedback), the Critique in its own window, the stage chooser, the
+  manuscript tree and Settings now fit at 1024 × 600 and at 150%. The side
+  panel needed 1,094 px and now needs 713: the line under the text no
+  longer refuses to shrink. "Add Hierarch" reads "Add Hierarchy". No count
+  rose. Left for U.3b: Video Studio (1,407 px wide), which keeps the main
+  window from fitting, and World's height. **F.0** (the other-formats
+  design) is written and reviewed: its seven questions, the Studio-card
+  bug and U.3a's two things were answered on 26 November (section 3).
 
-Tests: 1,993 pass in one run, none fail (after D.10's 45: 20 for moving
-a chapter, 25 for the tree). No screen count rose above
-`screens_baseline.json` in any of these. On 26 November the figures you
-agreed in section 3 were written into it: 5 top-level tabs (was 10), the
-Improve window's four tabs and the open submission package.
+- **Round 9** (26 November): **the Studio cards fix** (a moved chapter's
+  cards, decks and chosen chapter follow its new id after a clash; Undo
+  puts them back) and **U.3b** (the fit-and-scroll sweep of the remaining
+  screens). The whole main window, Write included, fits 1024 × 600 again:
+  Video Studio needed 1,407 px and now 216; the main window 1,415 × 641,
+  now 508 × 472; World 677 × 545, now 401 × 170. All 58 screens the
+  harness draws pass at all four sizes. Narrow rows now shorten, then wrap
+  (your rule): 💡 Fix, ✓ Beat, ✕ in the Companion; ⭐ Best and Save on the
+  rating bar; 🎤 Slides, 📑 Export, ✨ Refine in the Studio; ➕ Add in World.
+  No count rose. About 80 windows the harness cannot open yet (the Studio's
+  editors, the Training Studio's run dialogs) are listed in U.3b's Outcome.
+
+Tests: 2,034 pass in one run, none fail (after the Studio fix's 5, U.3b's 19 and the "+" menu's 1).
 
 What is waiting for you:
 
 - **Try it (section 1).** Nothing there is ticked yet. The newest items,
-  from the end: the manuscript tree (D.10), round 6 (the shared-folder
+  from the end: the fit-and-scroll sweep (U.3a), the manuscript tree (D.10), round 6 (the shared-folder
   warning, the two Rephrase fixes), Expand no longer keeps you waiting (26 Nov fix), the
   submission package (9.3), voice drift's numbers (4.2), Rephrase in the
   Improve window (D.2c), the One Improve
@@ -133,7 +151,7 @@ What is waiting for you:
   9.1). The boxes are yours to tick.
 - **Commit** when you are happy: rounds 1, 2 and 3, the two fixes of 25
   November, D.2b, D.2c, 4.2, 9.3, the Expand fix, the section 3 answers,
-  round 6, D.10 and the phase F docs (the commit lines are at the end of
+  round 6, D.10, the phase F docs, U.3a, F.0's design, the Studio cards fix and U.3b (the commit lines are at the end of
   section 1).
 - **Next pieces (section 5): what remains.**
   - Optional, if you want them: more one-look sessions for the Training
@@ -146,11 +164,15 @@ What is waiting for you:
     the real tests of V.3 and V.4.
   - When the server is connected: 8.1b (8.1a is reviewed: decision 17),
     P.7, 8.3.
-  - Next, no model: U.3a and U.3b (they sweep the screens that stay, not the ones to be retired).
+  - Done in round 9: the Studio cards fix and U.3b. Optional, no model:
+    a second U.3b session for the windows the harness cannot open yet
+    (U.3b's Outcome). Also free to run: the query letter addressed to the
+    chosen agent (9.3, agreed), and more D.8 sessions (optional).
     Once you have checked everything in section 1: retire the old screens;
     then 9.1, the last piece for novels.
   - After 9.1: phase F, other formats (section 5, group H). F.0, its
-    design, is first and is for your review.
+    design, is reviewed: its seven questions are answered (26 Nov,
+    README decision 18), so F.1 can start after 9.1.
 
 ## 1. Try what is built
 
@@ -1018,6 +1040,62 @@ start the app once and wait a minute)
       Novellas ▾ and the chapter list are back exactly as before; tick it
       again.
 
+**Fit and scroll on the screens used most (U.3a)**
+- [ ] On the small laptop screen (1024 × 600), or the window made that
+      small: Write with the side panel open (Companion, Planner, Feedback)
+      fits beside the text with nothing cut off. The line under the text
+      ("Words: …", the reading level, the grammar status) shortens with
+      "…"; hover for the full text.
+- [ ] The Chapter Title box grows to two or three lines for a long title
+      and shrinks back.
+- [ ] The toolbar's font size shows "12" whole, and the heading box shows
+      "Normal" whole.
+- [ ] The Companion's note buttons (Go to, Suggest fix, Ask, Dismiss) and
+      the scorecard's legend wrap onto a second line in a narrow panel,
+      instead of making it wider.
+- [ ] World ▸ Hierarchies: the button reads "➕ Add Hierarchy".
+- [ ] The Critique in its own window, narrow: "Check the book with the
+      model…" wraps, a long manuscript name shortens, and the page scrolls
+      sideways instead of cutting things off.
+- [ ] A chapter's stage chooser with a long novella name: the heading and
+      chapter names wrap.
+- [ ] Settings opens within the screen at 1024 × 600, with every page
+      whole.
+- [ ] At exactly 1024 px with the side panel closed: is 🗣 Read Aloud behind
+      the toolbar's ››? (Section 3 asks whether to narrow the chapter
+      list to bring it back.)
+
+**Studio cards follow a moved chapter (the small fix, 26 Nov)**
+- [ ] Rare to see: it needs two chapters with the same id, one in the
+      main manuscript and one in a novella (a chapter copied between
+      them). Move the main one into that novella. Its Video Studio cards,
+      chapter deck and slide deck still belong to it (Studio ▸ the
+      chapter list), and ↶ Undo moves them back with it. Without a clash
+      nothing in the Studio changes.
+
+**Fit and scroll on the remaining screens (U.3b)**
+- [ ] At 1024 × 600, all five tabs fit, and no window is wider than the
+      screen.
+- [ ] Video Studio narrow (or in its own window): the toolbar wraps and
+      reads 🎤 Slides, 📑 Export, ✨ Refine; widen it and the full words come
+      back. Hover the Backends line to read all of it.
+- [ ] World ▸ History & Timeline on a small screen scrolls. World in its
+      own window: the search, filter and sort row and the Factions buttons
+      wrap.
+- [ ] A narrow Companion: 💡 Fix, ✓ Beat, ✕; hover each for the full name.
+      Wide: Suggest fix, Mark beat done, Dismiss as before.
+- [ ] The rating bar, narrow: ⭐ Best and Save (hover: Excellent, Save for
+      training).
+- [ ] Video Studio: Save and Load on the toolbar, and "+" beside them
+      opens Arrange, Clear and Fit (each does what its button did).
+- [ ] World ▸ Hierarchies: "➕ Add Hierarchy" reads whole again.
+- [ ] The Critique in its own window at 150 %: the verdict's words sit
+      under the verdict.
+- [ ] The World editors (map event, place, landmark, star system,
+      military, magic), the Import guide, Import AI data, the CreativeOS
+      launcher and Model Hub open within the screen, with Save / Close
+      visible; Model Hub's ☆ stars show.
+
 **Other formats (planned; nothing built)**
 - [ ] Read README decision 18 and the list of phase F pieces (section 5,
       group H). Is anything missing or wrong for the videos, podcasts and
@@ -1078,6 +1156,30 @@ chapter's prose profile (d0d347e, 58226e9).
 - [ ] Commit the phase F docs: the sixteen briefs (`pieces/70-…` to
       `pieces/85-…`), README decision 18, the tracker and rule 11's note,
       the notes in the U.3a, U.3b and 9.1 briefs, this file.
+- [ ] Commit U.3a: the fit-and-scroll sweep (`src/ui/ui_kit.py`'s
+      `ElidedLabel`, `FlowLayout` and `grow_with_text`; changes in
+      `companion_panel.py`, `scorecard_widget.py`, `rating_bar.py`,
+      `chapter_stage_ui.py`, `worldbuilding/hierarchy_builder.py`,
+      `grader_widget.py`; call lines in `manuscript_editor.py` and
+      `settings_dialog.py`; the harness's new screens and cut-off check;
+      `tests/test_fit_sweep_u3a.py`; the U.3a and U.3b briefs).
+- [ ] Commit F.0's design (the F.0 brief) and the notes it added to the
+      other phase F briefs.
+- [ ] Commit the Studio cards fix (`src/data/chapter_move.py`,
+      `tests/test_chapter_move_studio.py`, the note in the F.0 and F.10
+      briefs).
+- [ ] Commit U.3b (`src/ui/ui_kit.py`; `scripts/screen_harness.py`; the
+      Companion, rating bar, World, scorecard and test-history widgets;
+      call lines in Characters, Visuals, the World editors, the import
+      dialogs, Model Hub, the launcher, `studio_widget.py` and
+      `training_tool_window.py`; `tests/test_fit_sweep_u3b.py` and the
+      U.3a test's one change; the U.3b brief and notes in F.10, F.15, 9.1;
+      then your three U.3b answers: `ui_kit.fold_into_menu`, the Studio's
+      "+" call line, World's 290 px cap, the harness's "+" group and
+      `screens_baseline.json`).
+- [ ] Commit the second round of section 3 answers (26 Nov): F.0's seven,
+      the Studio-card fix, U.3a's two (this file, README decision 18 and
+      the tracker, the F.0 brief's *Review notes*, the U.3b brief's notes).
 - [ ] Commit the section 3 answers (26 Nov): the new figures in
       `screens_baseline.json` and the harness's comments
       (`scripts/screen_harness.py`), the answers in this file, the 8.1a
@@ -1648,6 +1750,103 @@ Write each answer in the README under *Decisions*, or tell the session.
       series or podcast (confirmed 26 Nov). **Still to answer, in
       F.0's design:** the exact words for each kind; how a true story is
       marked; where a video file is kept (copied or linked).
+      *Answered 26 Nov in F.0's seven questions below.*
+- [ ] **F.0: review the project-kinds design** (its brief, section
+      *Design*). In short: the kind is one key in the project file, written
+      only when the kind is not Novel, so **a Novel project's file never
+      changes**. One module holds the kinds and their words; for a Novel
+      every screen shows exactly today's text. Kind-only data (minutes,
+      targets, series status, People, dates, which card is a chapter's
+      video) goes in a new `<project>.kind.json`, and sources in a private
+      `<project>.sources.json`, each made only when first used. Changing
+      kind deletes nothing and offers Undo. New Project gains a Kind field;
+      the kind is changed in Revise ▸ Prose Profile ▸ Project Targets.
+      Build order: F.1, F.14, F.2, F.3, then spoken (F.4, F.10, F.5, F.6,
+      F.11, F.13), then nonfiction (F.7, F.8, F.9, F.12), then F.15. Then
+      answer:
+      1. **The words.** Main manuscript: Main channel (Video series), Main
+         feed (Podcast), Main column (Editorial series), Main collection
+         (Journalism); Novella: Series, Season, Series, Series; Chapter:
+         Video, Episode, Part, Article; a heading inside one: Section or
+         Segment; "Project" stays. Recommended: as listed.
+      2. **A true story** is a tick, not a sixth kind; not shown for
+         Editorial series or Journalism (always true); also offered for a
+         Novel (memoir). Recommended: yes.
+      3. **A chapter's video is copied into the project** (the Studio's
+         rule today), with its size and the free space shown first for
+         files over 1 GB. Recommended: yes.
+      4. **The one visible change in a Novel project** is the Kind row in
+         Prose Profile and in New Project. Recommended: accept.
+      5. **Marking in a script:** `## Heading` for sections (they become
+         timestamps), `[B-ROLL: …]`, `[MUSIC: …]`, `[AD BREAK]` for cues,
+         `HOST: …` for a speaker (only known names count). Recommended:
+         accept.
+      6. **Each kind's export takes Publisher Ready's place** in its
+         Export menu (Script, Transcript, Article), so no menu grows.
+         Recommended: yes.
+      7. **Series status:** drafted and revised come from the chapter
+         stages; only planned, recorded (or filed) and published are
+         stored. Recommended: yes.
+      *Answered 26 Nov (the recommendations, all seven): 1. the words as
+      listed; 2. a tick, not a sixth kind; 3. copied into the project;
+      4. accepted; 5. accepted; 6. yes, it takes Publisher Ready's place;
+      7. yes. Recorded in README decision 18 and the F.0 brief. F.1 can
+      start after 9.1.*
+- [ ] **A bug the design found, already affecting novels: moving a chapter
+      can lose its Studio cards.** When D.10's move has to give a chapter a
+      new id (another chapter in the target has the same one), it updates
+      the characters' readings but not the Studio's cards and decks, which
+      keep the old id. The cards stay in the Studio, but no longer belong
+      to the chapter. Rare (ids are random; it needs a chapter copied
+      between manuscripts), but it should not happen. Fix it as a small
+      piece now (the Studio's chapter ids join the move and its Undo)?
+      Recommended: yes, next.
+      *Answered 26 Nov: yes, next ("Studio cards follow a moved chapter",
+      section 5).*
+- [ ] **Three more things the design found (no action now; for the
+      pieces named).** (a) Saving writes every field of the project with
+      its default, so any new field on a project, chapter, character or
+      card would change every Novel project's file; phase F adds no field
+      to them (F.1 tests it). (b) The Studio stores full paths to its
+      media, so a moved project folder loses them (F.10 looks in the
+      project's own folder first). (c) The export uses the open
+      manuscript only; a novella is exported by opening it first (F.14
+      fixes this).
+- [ ] **U.3a: two things.** (a) **Read Aloud at exactly 1024 px.** With
+      the side panel closed, 🗣 Read Aloud now sits behind the toolbar's
+      ››, because the chapter list takes its natural 250 px (before, the
+      editor's oversized minimum squeezed it to 228). Narrow the list to
+      about 220 px on every screen to bring Read Aloud back, or keep it?
+      Recommended: keep (it is one click away, and the list's names are
+      easier to read). (b) **Wrapping rows.** The Companion's note buttons
+      and the scorecard legend now wrap onto a second line in a narrow
+      panel, instead of making the panel wider. Keep? Recommended: keep.
+      *Answered 26 Nov: (a) keep. (b) Wrap only where it doesn't look odd:
+      **shorten, then wrap.** Details (the legend, notes text) wrap freely.
+      Titles and headings never wrap: they shorten with … and show the full
+      text on hover. Buttons first switch to shorter words, icon kept, full
+      name in the tooltip (💡 Suggest fix → 💡 Fix, Mark beat done → ✓ Beat,
+      Dismiss → ✕), and wrap only if that still doesn't fit. Icon-only
+      buttons stay only where they already are (🗑️). Applied in U.3b, to
+      U.3a's rows too (the U.3b brief).* Built in U.3b (section 1).
+- [ ] **U.3b: three things.** (a) **The short words.** ⭐ Excellent →
+      ⭐ Best, Save for training → Save, and in the Studio 🎤 Slides,
+      📑 Export, ✨ Refine (the full words return when there is room and
+      always head the tooltip). Right, or name others? (b) **"➕ Add
+      Hierarchy" always reads "➕ Add"**, because World's hierarchy column is
+      capped at 250 px on every screen. Keep, or widen the cap to about
+      290 px so the full words show on larger screens? Recommended: widen
+      (one number; nothing else moves). (c) **The Studio toolbar at
+      420 px** takes five lines, about half the height. Folding Save,
+      Load, Arrange, Clear and Fit into one "Board ▾" menu would make it
+      three, but that is a declutter piece (it changes what is on
+      screen), not a sweep. Do it as a small piece, or leave it?
+      Recommended: a small piece, with the next D.8 session.
+      *Answered 26 Nov: (a) the short words are fine. (b) widen: the cap is
+      290 px, so "➕ Add Hierarchy" reads whole. (c) show Save and Load and
+      fold the rest into a "+" menu: done (Arrange, Clear, Fit behind "+";
+      `video_studio` in `screens_baseline.json` is now 10 buttons and 1
+      grouped menu entry, was 12 and 0).*
 
 ## 4. For every piece from here on
 
@@ -1684,7 +1883,8 @@ The routine from the README, as a checklist:
 - [x] Two small fixes before the sweep (answered 26 Nov, section 3) — built 26 Nov, round 6: the grammar check's results handler that aborts in tests (a new module, call lines only in `enhanced_text_editor.py`); and the two old Rephrase slips (each rating stamped with the option you rated; "Auto-detect from text" back in the character-voice list; new rows only)
 - [x] Shared-folder warning (answered 26 Nov, section 3) — built 26 Nov, round 6 (Save As and a new project's first save; ordinary saves never ask): warn when a project is saved into a folder that already holds another project file, since the two could collide over chapter folders. Touches saving, so a small piece of its own (rule 15: nothing overwritten)
 - [x] [D.10](pieces/48f-D.10-manuscript-tree.md) — built 26 Nov, for review (section 1, "The manuscript tree (D.10)"). One manuscript tree on the left (your request, 26 Nov): manuscripts and novellas with their chapters in the left panel; chapters moved by drag-and-drop or right-click; the top row of manuscript tabs and Novellas ▾ go (behind a switch until retired). Before U.3, so the sweep sees the final Write screen
-- [ ] [U.3a](pieces/50-U.3a-fit-and-scroll-sweep-the-screens-used-most.md) (also: "➕ Add Hierarchy" cut off at 1024 × 600, section 3 D.8 (c)), then [U.3b](pieces/51-U.3b-fit-and-scroll-sweep-the-remaining-screens.md) Fit-and-scroll sweep (late, so it sweeps the final screens; it skips the old screens due to be retired)
+- [x] [U.3a](pieces/50-U.3a-fit-and-scroll-sweep-the-screens-used-most.md) — built 26 Nov, for review (section 1, "Fit and scroll on the screens used most (U.3a)"); ("➕ Add Hierarchy" fixed there, section 3 D.8 (c)); then [U.3b](pieces/51-U.3b-fit-and-scroll-sweep-the-remaining-screens.md) — built 26 Nov, round 9, for review (section 1, "Fit and scroll on the remaining screens (U.3b)"): the main window fits 1024 × 600 again; 58 screens pass at all sizes; narrow rows shorten, then wrap. Left for an optional second session: about 80 windows the harness cannot open yet (its Outcome)
+- [x] Studio cards follow a moved chapter (answered 26 Nov, section 3) — built 26 Nov, round 9, for review (section 1, "Studio cards follow a moved chapter"; `chapter_move._retarget_studio`, `tests/test_chapter_move_studio.py`): when D.10's move gives a chapter a new id, the Studio's cards and decks for it take the new id too, and Undo puts them back. Small; touches the Studio's saved data, so rule 15 (nothing lost)
 - [ ] Retire the old screens, once everything in section 1 is checked (answered 26 Nov: avoid redundancy): the old manuscript tab row (D.10); the old ten tabs and Settings ▸ Main tabs (D.4); the older whole-manuscript move brought onto D.10's undoable chapter move (answered 26 Nov); the old analysis windows and "Show in a window (old)" (D.5); the old Rephrase, Suggestions and Overly descriptive? windows and Settings ▸ Features ▸ Improve window (D.2c). One piece; stored settings left in place, unread (rule 11); counts go down, never up
 
 **B. Better checks** (can run alongside A; no model needed)
@@ -1735,7 +1935,7 @@ The routine from the README, as a checklist:
 - [x] Your request (25 Nov): the chapter's prose profile — the Prose Profile tab measures the chapter open in Write (`src/ai/prose_snapshot.py`, `src/ui/prose_profile_chapter.py`); the AI chat answers "prose profile" at once and "review my prose" with the full report (`src/ai/prose_chat.py`) — built, for review
 
 **H. Other formats: phase F** (after 9.1; your request, 26 Nov; README decision 18)
-- [ ] [F.0](pieces/70-F.0-project-kinds-design.md) Project kinds: design (no code). **Review the design before F.1.**
+- [x] [F.0](pieces/70-F.0-project-kinds-design.md) Project kinds: design (no code) — written and reviewed 26 Nov: the seven questions answered as recommended (README decision 18). F.1 can start after 9.1.
 - [ ] [F.1](pieces/71-F.1-project-kind-and-its-words.md) Project kind and its words (everything else needs it)
 - [ ] [F.2](pieces/72-F.2-checks-by-kind.md) Checks by kind
 - [ ] [F.10](pieces/80-F.10-a-chapters-video-in-the-studio.md) A chapter's video in the Studio (needs only F.1; can come early)

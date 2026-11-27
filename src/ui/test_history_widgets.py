@@ -100,13 +100,13 @@ class _StarRating(QWidget):
                 btn.setText("★")
                 btn.setStyleSheet(
                     "QPushButton { font-size: 18px; color: #f59e0b; "
-                    "background: transparent; border: none; }"
+                    "background: transparent; border: none; padding: 0px; min-width: 28px; }"  # U.3b
                     "QPushButton:hover { color: #d97706; }")
             else:
                 btn.setText("☆")
                 btn.setStyleSheet(
                     "QPushButton { font-size: 18px; color: #d1d5db; "
-                    "background: transparent; border: none; }"
+                    "background: transparent; border: none; padding: 0px; min-width: 28px; }"  # U.3b
                     "QPushButton:hover { color: #f59e0b; }")
 
 

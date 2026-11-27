@@ -2017,6 +2017,8 @@ class _ModalCostDialog(QDialog):
         self.setMinimumSize(720, 640)
         self._build_ui()
         self._refresh()
+        from src.ui.ui_kit import scroll_dialog  # U.3b: fits a small screen
+        scroll_dialog(self, 720, 640)
 
     def _build_ui(self):
         from PyQt6.QtWidgets import (
@@ -14255,6 +14257,8 @@ class _AddLocalCorpusDialog(QDialog):
         self._picked_path: Optional[Path] = None
         self._picked_kind: str = ""    # "folder" | "zip"
         self._init_ui()
+        from src.ui.ui_kit import scroll_dialog  # U.3b: fits a small screen
+        scroll_dialog(self, 620, 640)
 
     def _init_ui(self) -> None:
         layout = QVBoxLayout(self)

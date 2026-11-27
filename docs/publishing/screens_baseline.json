@@ -1,5 +1,5 @@
 {
- "_about": "Clutter baseline. Agreed by the writer on 24 Nov 2026 after D.1, D.6, D.7 and D.9, measured at 1440x900, with menu items counted as decision 11 says (a closely related submenu counts as one; different actions count one by one). Rule 13: no piece may raise a count. The first baseline, from piece 0.2 (22 Nov 2026), is kept below under 'baseline_0_2'. Right-click lowered from 9 / 13 to 7 / 11 by D.2b (25 Nov 2026), as decision 16 settled: the three entries of ✨ Improve this ▸ open one Improve window and count as one group; nothing on screen changed. Agreed by the writer on 26 Nov 2026: 5 top-level tabs (D.4, was 10); the Improve window's tabs (D.2b, D.2c: improve, improve_critique, improve_expand, improve_rephrase); the Publishing tab with the submission package open (9.3: publishing_package).",
+ "_about": "Clutter baseline. Agreed by the writer on 24 Nov 2026 after D.1, D.6, D.7 and D.9, measured at 1440x900, with menu items counted as decision 11 says (a closely related submenu counts as one; different actions count one by one). Rule 13: no piece may raise a count. The first baseline, from piece 0.2 (22 Nov 2026), is kept below under 'baseline_0_2'. Right-click lowered from 9 / 13 to 7 / 11 by D.2b (25 Nov 2026), as decision 16 settled: the three entries of ✨ Improve this ▸ open one Improve window and count as one group; nothing on screen changed. Agreed by the writer on 26 Nov 2026: 5 top-level tabs (D.4, was 10); the Improve window's tabs (D.2b, D.2c: improve, improve_critique, improve_expand, improve_rephrase); the Publishing tab with the submission package open (9.3: publishing_package). Asked for by the writer on 26 Nov 2026: Video Studio shows Save and Load and folds Arrange, Clear and Fit into one \"+\" menu (video_studio: 12 buttons → 10, menu items 0 → 1, one grouped entry).",
  "main_window": {
   "top_level_tabs": 5,
   "sidebar_tabs": 2,
@@ -79,8 +79,8 @@
    "inner_tabs": 1
   },
   "video_studio": {
-   "buttons": 12,
-   "menu_items": 0,
+   "buttons": 10,
+   "menu_items": 1,
    "sections": 2,
    "inner_tabs": 0
   },

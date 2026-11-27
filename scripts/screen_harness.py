@@ -84,7 +84,61 @@ SCREENS = {
                                    "model (D.2c)"),
     "publishing_package": ("page", "Publishing tab with 📦 Submission package open: the "
                                    "synopsis filled in from a sample plan, no model (9.3)"),
+    "write_tree": ("page", "Write: the manuscript tree with long names, eight novellas and "
+                           "the “Moved … · Undo” line (D.10, U.3a)"),
+    "write_tiled": ("page", "Write at the main window's share when a screen is in its own "
+                            "window (58% of the screen; D.4, U.3a)"),
+    "critique_window": ("dialog", "The Critique in its own window at 42% of the screen (at "
+                                  "least 420 px), with a sample report (2.5, D.4, U.3a)"),
+    "fix_all": ("dialog", "Fix all like this: the list with a tick box each (3.4, U.3a)"),
+    "hover_card": ("dialog", "The editor's hover card on a repeated misspelling, with its "
+                             "“Fix all … like this” tick box (3.4, U.3a)"),
+    "chapter_stages": ("dialog", "Set the stage of several chapters, on a novella with a "
+                                 "long name and twelve chapters (3.1, U.3a)"),
+    "settings": ("dialog", "Settings at the size it opens, on ✨ AI Features (the other "
+                           "pages built on a stand-in, as the tests do; U.3a)"),
 }
+# Added by U.3b: each screen D.4 can open in its own window, at the width it
+# is tiled at the first time (42% of the screen, at least 420 px). A screen
+# that needs more than that share is a problem.
+TILED_SCREENS = {f"{key}_tiled": key for key in (
+    "plot", "characters", "world", "visuals", "video_studio", "prose_profile",
+    "attributions", "publishing")}
+for _tiled, _key in TILED_SCREENS.items():
+    SCREENS[_tiled] = ("page", f"{SCREENS[_key][1]} in its own window, at 42% of the "
+                               "screen (at least 420 px; D.4, U.3b)")
+# Added by U.3a: the sweep's screens that were not drawn before. Drawn, not
+# counted (not in the 0.2 baseline; Write is counted as "write").
+# Added by U.3b: windows that could not fit 1024 × 600 (taller than the
+# screen, or opening larger than it), each opened empty, as a new entry.
+DIALOG_SCREENS = {
+    "world_event_editor": ("src.ui.worldbuilding.map_builder_widgets", "EventEditorDialog",
+                           "World ▸ Maps: an event"),
+    "world_place_editor": ("src.ui.worldbuilding.map_builder", "PlaceEditorDialog",
+                           "World ▸ Maps: a place"),
+    "world_landmark_editor": ("src.ui.worldbuilding.map_builder_widgets",
+                              "LandmarkEditorDialog", "World ▸ Maps: a landmark"),
+    "star_system_editor": ("src.ui.worldbuilding.enhanced_star_system_builder",
+                           "EnhancedStarSystemEditor", "World ▸ Star Systems: a system"),
+    "army_editor": ("src.ui.worldbuilding.military_builder", "ArmyEditorDialog",
+                    "World ▸ Military: a force"),
+    "magic_system_editor": ("src.ui.worldbuilding.magic_system_builder", "MagicSystemEditor",
+                            "World ▸ Magic Systems: a system"),
+    "import_guide": ("src.ui.import_guide_dialog", "ImportGuideDialog",
+                     "Project Import & Setup Guide"),
+    "json_import": ("src.ui.json_import_dialog", "JSONImportDialog",
+                    "Import AI-Generated Data"),
+    "launcher": ("src.ui.creative_os_launcher", "CreativeOSLauncher", "The CreativeOS launcher"),
+    "model_hub": ("src.ui.model_hub_window", "ModelHubWindow", "Local Models Hub"),
+    "modal_cost": ("src.ui.training_tool_window", "_ModalCostDialog",
+                   "Training Studio: Modal cost and pricing"),
+    "local_corpus": ("src.ui.training_tool_window", "_AddLocalCorpusDialog",
+                     "Training Studio: Add Local Corpus"),
+}
+for _name, (_m, _c, _what) in DIALOG_SCREENS.items():
+    SCREENS[_name] = ("dialog", f"{_what}, opened empty (U.3b)")
+SWEEP_SCREENS = ("write_tree", "write_tiled", "critique_window", "fix_all", "hover_card",
+                 "chapter_stages", "settings", *TILED_SCREENS, *DIALOG_SCREENS)
 # The Publishing tab with the submission package open (9.3): drawn and
 # counted on its own ("publishing" is the tab with nothing chosen in its
 # list); its figures joined the baseline on 26 Nov 2026.
@@ -139,6 +193,7 @@ GROUPED_MENUS = (
     "Drafts",                   # Write header: Drafts ▾ (manuscript drafts)
     "📝",                       # Write toolbar: annotations (add, view all)
     "✨ Improve this",          # right-click: Rephrase, Suggestions, Overly descriptive? (decision 16)
+    "+",                        # Video Studio: the board's Arrange, Clear, Fit (the writer, 26 Nov)
 )
 
 SAMPLE_TEXT = (
@@ -373,7 +428,9 @@ def child(tag: str, names: List[str], out: Path, report_path: Path, count: bool)
             _settle(app)
             img = out / f"{name}_{tag}.png"
             top.grab().save(str(img))
+            least = top.minimumSizeHint().expandedTo(top.minimumSize())
             info = {"image": img.name, "window": [top.width(), top.height()],
+                    "needs": [least.width(), least.height()],   # its smallest (U.3a)
                     "problems": _check(top, focus, app)}
             report["screens"][name] = info
             top.close()
@@ -484,6 +541,8 @@ def _build(name: str, project):
         return _voice_screen(name, project)
     if name in PACKAGE_SCREENS:
         return _package_screen(project)
+    if name in SWEEP_SCREENS:
+        return _sweep_screen(name, project)
     if name in TAB_SCREENS:
         win = _main_tabs(project, grouped=name == "main_tabs")
         _show_full(win)
@@ -719,6 +778,132 @@ def _voice_screen(name: str, project):
     return dlg, dlg
 
 
+LONG_NAME = "The Saltmarsh Wardens and the Drowned Bell Tower of Gallow's Reach"
+LONG_CHAPTER = "The Night the Harbour Lanterns Burned Down to the Waterline"
+FIX_ALL_TEXT = ("Teh rain fell on teh harbor.\n"
+                "She watched teh boats from the window, and the gulls cried.\n"
+                "By noon teh tide had turned, and the boats came in.")
+
+
+def _tree_project():
+    """Long manuscript, novella and chapter names, and eight novellas (D.10)."""
+    from src.models.project import Chapter, Manuscript, WriterProject
+    p = WriterProject(name="Sample", manuscript=Manuscript(title="Book One: " + LONG_NAME))
+    p.manuscript.chapters = [Chapter(id=f"c{i}", number=i, content=SAMPLE_TEXT,
+                                     title=LONG_CHAPTER if i == 2 else f"Chapter {i}")
+                             for i in (1, 2, 3)]
+    for n in range(8):
+        sp = p.create_subproject(f"Novella {n + 1}: {LONG_NAME}" if n % 2 == 0 else f"Tide {n + 1}")
+        sp.manuscript.chapters = [Chapter(id=f"n{n}c{i}", number=i, content="Text.",
+                                          title=LONG_CHAPTER if i == 1 else f"Chapter {i}")
+                                  for i in (1, 2)]
+    p._normalize_manuscript_roots()
+    return p
+
+
+def _sweep_screen(name: str, project):
+    """The screens U.3a added to the sweep."""
+    from PyQt6.QtWidgets import QApplication
+    avail = QApplication.primaryScreen().availableGeometry()
+    if name in DIALOG_SCREENS:
+        module, cls, _what = DIALOG_SCREENS[name]
+        dlg = getattr(__import__(module, fromlist=[cls]), cls)()
+        dlg.show()
+        return dlg, dlg
+    if name in TILED_SCREENS:              # its own window, tiled at its first-open share
+        from src.ui import screen_groups
+        w = _page(TILED_SCREENS[name], project)
+        share = max(420, int(avail.width() * screen_groups.SHARE))
+        w.resize(share, avail.height())
+        w.move(avail.right() - share + 1, avail.top())
+        w.show()
+        w.setProperty("harness_share", share)
+        return w, w
+    if name in ("write_tree", "write_tiled"):
+        from src.ui import screen_groups
+        w = _page("write", _tree_project() if name == "write_tree" else project)
+        _show_full(w)
+        if name == "write_tiled":          # what screen_groups leaves the main window
+            right = max(420, int(avail.width() * screen_groups.SHARE))
+            w.resize(avail.width() - right, avail.height())
+            w.setProperty("harness_share", avail.width() - right)
+        else:
+            tree = getattr(w, "manuscript_tree", None)
+            if tree is not None:
+                tree.rebuild()
+                tree.announce(f"Moved “{LONG_CHAPTER}” to Novella 1: {LONG_NAME}")
+        return w, w
+    if name == "critique_window":
+        from src.ui import screen_groups
+        g, _ = _analysis_screen("critique_analysis", project)
+        g.resize(max(420, int(avail.width() * screen_groups.SHARE)), avail.height())
+        g.setProperty("harness_share", g.width())
+        g.move(avail.right() - g.width() + 1, avail.top())
+        return g, g
+    if name in ("fix_all", "hover_card"):
+        from src.ui.enhanced_text_editor import EnhancedTextEditor
+        from src.ui import fix_all
+        ed = EnhancedTextEditor()
+        _show_full(ed)
+        ed.setPlainText(FIX_ALL_TEXT)
+        ed.set_project_vocabulary(project)
+        ed.do_initial_check()
+        QApplication.processEvents()
+        at = FIX_ALL_TEXT.index("teh")
+        block = ed.document().findBlock(at)
+        err = ed.writing_highlighter.get_error_at(block.blockNumber(), at - block.position())
+        if name == "fix_all":
+            dlg = fix_all.FixAllDialog(ed, err, fix_all._fixes(err)[0])
+            dlg.show()
+            return dlg, dlg
+        rect = ed.cursorRect(ed._cursor_at(at + 1))
+        ed._show_error_tooltip(ed.viewport().mapToGlobal(rect.center()), rect.center())
+        QApplication.processEvents()
+        return ed.error_card, ed.error_card
+    if name == "chapter_stages":
+        from src.models.project import Chapter
+        from src.ui.chapter_stage_ui import ChaptersDialog
+        p = _tree_project()
+        sp = p.subprojects[0]
+        sp.manuscript.chapters = [Chapter(id=f"s{i}", number=i, content="Text.",
+                                          title=LONG_CHAPTER if i % 4 == 1 else f"Chapter {i}")
+                                  for i in range(1, 13)]
+        dlg = ChaptersDialog(p, sp.id, chosen=["s1", "s2"])
+        dlg.show()
+        return dlg, dlg
+    if name == "settings":
+        dlg = _settings_dialog()
+        return dlg, dlg
+    raise KeyError(name)
+
+
+def _settings_dialog():
+    """The Settings window as it opens, on ✨ AI Features. A whole
+    SettingsDialog starts background work of its own, so every page is
+    built on a stand-in for the dialog (as tests/test_lt_ngrams.py does)
+    and the frame around them is the real one."""
+    from src.ui.settings_dialog import SettingsDialog
+
+    class Host:
+        settings: Dict[str, Any] = {}
+
+        def __getattr__(self, name):
+            if name.startswith("_"):
+                return lambda *a, **k: None
+            raise AttributeError(name)
+
+    pages = [n for n in vars(SettingsDialog) if n.startswith("_create_") and n.endswith("_tab")]
+    host = Host()
+    light = type("HarnessSettings", (SettingsDialog,), {
+        n: (lambda self, _n=n: getattr(SettingsDialog, _n)(host)) for n in pages})
+    dlg = light({})
+    for i in range(dlg._category_list.count()):
+        if "AI Features" in dlg._category_list.item(i).text():
+            dlg._category_list.setCurrentRow(i)
+    dlg.show()
+    return dlg
+
+
 def _main_tabs(project, grouped: bool = True, placeholders: bool = False):
     """The main window's tab area as the main window builds it: the ten
     screens added in their old order with their labels, then grouped by
@@ -905,6 +1090,10 @@ def _check(top, focus, app) -> List[str]:
     if need.width() > avail.width() or need.height() > avail.height():
         problems.append(f"needs at least {need.width()}×{need.height()}, more than the "
                         f"screen ({avail.width()}×{avail.height()})")
+    share = top.property("harness_share")        # drawn at a share of the screen (U.3b)
+    if share and need.width() > share:
+        problems.append(f"needs at least {need.width()} px wide, more than its share of "
+                        f"the screen ({share} px)")
     one_line = (QLabel, QPushButton, QToolButton, QLineEdit, QComboBox, QHeaderView)
     areas = (QTextEdit, QPlainTextEdit, QAbstractItemView)
     squeezed = []
@@ -932,6 +1121,22 @@ def _check(top, focus, app) -> List[str]:
         need = b.minimumSizeHint().width()
         if need > 0 and b.width() + 2 < need:
             narrow.append(f"“{b.text()[:20]}” {b.width()}px < {need}px")
+    # Content wider than a scroll area that cannot scroll sideways is cut
+    # off at the side (U.3a: the Critique in its own window).
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QScrollArea
+    cut = []
+    for area in focus.findChildren(QScrollArea):
+        page = area.widget()
+        if page is None or not area.isVisibleTo(top) or area.viewport().width() <= 0 \
+                or area.horizontalScrollBarPolicy() != Qt.ScrollBarPolicy.ScrollBarAlwaysOff:
+            continue
+        need = page.minimumSizeHint().expandedTo(page.minimumSize()).width()
+        if need > area.viewport().width() + 2:
+            cut.append(f"{need}px in {area.viewport().width()}px")
+    if cut:
+        problems.append(f"{len(cut)} scroll area(s) cut off at the side (no sideways "
+                        "scrolling): " + "; ".join(cut[:6]))
     if narrow:
         problems.append(f"{len(narrow)} button(s) too narrow for their label: "
                         + "; ".join(narrow[:6]) + (" …" if len(narrow) > 6 else ""))
@@ -1039,7 +1244,7 @@ def _counts(names: List[str], project, app) -> Dict[str, Any]:
                 out["screens"][name] = {"error": str(e)[:200]}
             continue
         if name == "suggestions" or name in HABIT_SCREENS or name in ANALYSIS_SCREENS \
-                or name in CHARACTER_SCREENS or name in VOICE_SCREENS:
+                or name in CHARACTER_SCREENS or name in VOICE_SCREENS or name in SWEEP_SCREENS:
             continue                                    # not in the 0.2 baseline
         if name in TAB_SCREENS:
             if name == "main_tabs":                     # the baseline's top_level_tabs
