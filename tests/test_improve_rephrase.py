@@ -76,8 +76,8 @@ def fake_rephrase(monkeypatch):
 
 @pytest.fixture
 def merged():
+    """Every way in opens the Improve window (the trial switch went in D.11)."""
     from src.ui import improve
-    improve.set_merged(True)
     return improve
 
 
@@ -311,30 +311,18 @@ def test_a_style_flags_rewrite_opens_rephrase_with_the_hint(app, project, chapte
     assert got["rephrase"]["text"] == "She almost fell on the last stair."
 
 
-def test_the_switch_off_opens_the_old_rephrase_window_exactly_as_before(
-        app, project, chapter, opened, monkeypatch):
-    from PyQt6.QtWidgets import QDialog
-    from src.ui import improve
-    from src.ui import rephrase_dialog as rd
+def test_a_stored_switch_off_from_before_still_opens_rephrase_in_the_improve_window(
+        app, project, chapter, opened):
+    """A settings file from before D.11 with the switch off: Ctrl+R opens
+    the Improve window on Rephrase, and the stored value is left alone."""
+    from src.ui import improve, ui_kit
     from src.ui.manuscript_editor import ChapterEditor
-    improve.set_merged(False)
-    seen = []
-
-    class Old:
-        def __init__(self, text, project, parent, **k):
-            seen.append((text, k))
-
-        def exec(self):
-            return QDialog.DialogCode.Accepted
-
-        def get_selected_text(self):
-            return "It was black."
-    monkeypatch.setattr(rd, "RephraseDialog", Old)
+    ui_kit._settings().setValue(improve.SETTING_KEY, "false")
     ed = ChapterEditor(chapter, project=project)
     select(ed, HIGHLIGHT)
     ed._rephrase_selection()
-    assert opened == [] and seen[0][0] == HIGHLIGHT
-    assert "The room was It was black." in ed.editor.toPlainText()
+    assert opened[-1]["tab"] == "rephrase" and opened[-1]["rephrase"]["text"] == HIGHLIGHT
+    assert ui_kit._settings().value(improve.SETTING_KEY) == "false"
 
 
 def test_the_draft_windows_rephrase_opens_the_whole_window_and_writes_the_draft(
@@ -369,21 +357,12 @@ def test_the_draft_windows_rephrase_opens_the_whole_window_and_writes_the_draft(
 
 # ── Same text, same rows (rule 15, the ratings database) ───────────────
 
-def _old_run(ed, monkeypatch, script):
-    """The old window, with ``script`` doing what the writer does in it.
-    (RephraseDialog.result is its options, so QDialog's result is asked.)"""
-    from PyQt6.QtWidgets import QDialog
-    from src.ui import rephrase_dialog as rd
-    monkeypatch.setattr(rd.RephraseDialog, "exec",
-                        lambda self: (script(self), QDialog.result(self))[1])
-    ed._rephrase_selection()
-
-
 def test_accept_writes_the_same_text_and_the_same_rows_as_the_old_window(
         app, project, chapter, fake_rephrase, collect, monkeypatch):
     """The delayed save with its "edited" mark, a Poor rating then Accept,
-    and the "neutral" row for the unedited option: the same rows, column by
-    column, and the same chapter text."""
+    and the "neutral" row for the unedited option: the rows the old window
+    wrote (compared column by column in D.2c; the old window's path went in
+    D.11, so they are stated here), and the same chapter text."""
     import src.ui.improve_window as iw
     from PyQt6.QtWidgets import QMessageBox
     from src.ui import improve
@@ -391,18 +370,6 @@ def test_accept_writes_the_same_text_and_the_same_rows_as_the_old_window(
     asked = []
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: asked.append(a[2]) or
                         QMessageBox.StandardButton.Yes)
-
-    def old(d):
-        d._on_generation_complete(result())
-        d.options_list.setCurrentRow(0)
-        d.rate_excellent_btn.click()
-        d.preview_edit.setPlainText(OPTIONS[0][0] + " Edited.")
-        fire(d)
-        d.options_list.setCurrentRow(1)                   # asks "Discard your edit?"
-        d.rate_poor_btn.click()
-        d.preview_edit.setPlainText("Black as pitch, nearly.")
-        d._use_selected()
-        return None
 
     def new(win):
         d = win.tab_objects["rephrase"].dlg
@@ -418,34 +385,26 @@ def test_accept_writes_the_same_text_and_the_same_rows_as_the_old_window(
         win._accept()
         return win.result()
 
-    improve.set_merged(False)
-    old_ed = ChapterEditor(Chapter(id="a", number=1, title="A", content=TEXT), project=project)
-    select(old_ed, HIGHLIGHT)
-    _old_run(old_ed, monkeypatch, old)
-    before = collect()
-    assert len(asked) == 1
-
-    improve.set_merged(True)
     monkeypatch.setattr(iw.ImproveWindow, "exec", new)
     new_ed = ChapterEditor(Chapter(id="b", number=1, title="B", content=TEXT), project=project)
     select(new_ed, HIGHLIGHT)
     new_ed._rephrase_selection()
     after = collect()
-    assert len(asked) == 1                                # the new tab asked nothing
-
-    assert before and after == before
+    assert asked == []                                    # the tab asks nothing
     assert [(r["rating"], r["accepted"]) for r in after] == [
         ("excellent", 1), ("poor", 0), ("poor", 1), ("neutral", 0)]
     assert "edited" in after[0]["style"] and after[-1]["output_text"] == OPTIONS[1][0]
     # Each row carries the style of the option rated (option 1, then option 2).
     assert [r["style"] for r in after] == ["concise/neutral | edited", "clearer/neutral | edited",
                                            "clearer/neutral | edited", "clearer/neutral"]
-    assert new_ed.editor.toPlainText() == old_ed.editor.toPlainText()
-    assert "The room was Black as pitch, nearly." in new_ed.editor.toPlainText()
-    (old_a, old_k), (new_a, new_k) = fake_rephrase       # the same arguments, hosted
-    assert new_a[:2] == old_a[:2] and new_k.pop("hosted") is True
-    assert (old_k.pop("chapter").id, new_k.pop("chapter").id) == ("a", "b")
-    assert new_k == dict(old_k, instruction="")         # "" is the old default
+    assert new_ed.editor.toPlainText() == TEXT.replace(HIGHLIGHT, "Black as pitch, nearly.")
+    ((new_a, new_k),) = fake_rephrase                    # the old window's arguments, hosted
+    assert new_a[0] == HIGHLIGHT and new_a[1] is project and new_k.pop("hosted") is True
+    assert new_k.pop("chapter").id == "b"
+    i = TEXT.index(HIGHLIGHT)
+    j = i + len(HIGHLIGHT)
+    assert new_k == dict(surrounding_context=(TEXT[max(0, i - 500):i], TEXT[j:j + 500]),
+                         chapter_content=TEXT, instruction="", text_before=TEXT[:i])
 
 
 def test_an_unrated_accept_and_closing_with_a_rating_waiting_match_the_old_window(
@@ -454,25 +413,11 @@ def test_an_unrated_accept_and_closing_with_a_rating_waiting_match_the_old_windo
     from src.ui import improve
     from src.ui.manuscript_editor import ChapterEditor
 
-    def old_accept(d):
-        d._on_generation_complete(result())
-        d.options_list.setCurrentRow(2)
-        d._use_selected()                                 # unrated: saved as good
-        return None
-
     def new_accept(win):
         win.tab_objects["rephrase"].dlg._on_generation_complete(result())
         win.version_list.setCurrentRow(rephrase_rows(win)[2])
         win._accept()
         return win.result()
-
-    def old_close(d):
-        d._on_generation_complete(result())
-        d.rate_good_btn.click()
-        d.reject()
-        d._save_timer.stop()
-        d._flush_pending_rating_save()                    # the timer fires after closing
-        return None
 
     def new_close(win):
         win.tab_objects["rephrase"].dlg._on_generation_complete(result())
@@ -480,23 +425,21 @@ def test_an_unrated_accept_and_closing_with_a_rating_waiting_match_the_old_windo
         win.reject()                                      # saved as it closes
         return win.result()
 
-    rows = {}
-    for name, old, new in (("accept", old_accept, new_accept), ("close", old_close, new_close)):
-        improve.set_merged(False)
-        ed = ChapterEditor(Chapter(id="a", number=1, title="A", content=TEXT), project=project)
-        select(ed, HIGHLIGHT)
-        _old_run(ed, monkeypatch, old)
-        before = collect()
-        improve.set_merged(True)
+    rows, texts = {}, {}
+    for name, new in (("accept", new_accept), ("close", new_close)):
         monkeypatch.setattr(iw.ImproveWindow, "exec", new)
-        ed2 = ChapterEditor(Chapter(id="b", number=1, title="B", content=TEXT), project=project)
+        ed2 = ChapterEditor(Chapter(id=name, number=1, title="B", content=TEXT), project=project)
         select(ed2, HIGHLIGHT)
+        collect()                                         # start from no rows
         ed2._rephrase_selection()
-        rows[name] = (before, collect())
-        assert ed2.editor.toPlainText() == ed.editor.toPlainText()
-    assert rows["accept"][0] == rows["accept"][1] and rows["accept"][0][0]["rating"] == "good"
-    assert rows["close"][0] == rows["close"][1], rows["close"]
-    assert [(r["rating"], r["accepted"]) for r in rows["close"][0]] == [("good", 1)]
+        rows[name] = collect()
+        texts[name] = ed2.editor.toPlainText()
+    # What the old window wrote (D.2c compared them row by row).
+    assert [(r["rating"], r["accepted"]) for r in rows["accept"]] == [("good", 1)]
+    assert rows["accept"][0]["output_text"] == OPTIONS[2][0]
+    assert texts["accept"] == TEXT.replace(HIGHLIGHT, OPTIONS[2][0])
+    assert [(r["rating"], r["accepted"]) for r in rows["close"]] == [("good", 1)]
+    assert texts["close"] == TEXT
 
 
 def test_a_rating_shows_its_delayed_save_in_the_windows_status(app, project, chapter,

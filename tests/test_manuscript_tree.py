@@ -2,8 +2,9 @@
 
 The tree replaces the row of manuscript tabs and Novellas ▾; the old chapter
 list and tab bar are kept, hidden, and driven by it. The switch in
-Settings ▸ Features brings the old row back exactly. Projects are built in
-``tmp_path``; no model runs.
+Settings ▸ Features that brought the old row back was retired in D.11 (its
+stored value is left alone). Projects are built in ``tmp_path``; no model
+runs.
 """
 
 from __future__ import annotations
@@ -120,50 +121,25 @@ def test_the_old_row_is_gone_and_the_counts_fall(app, tmp_path):
     assert w.subproject_tabs.count() == 2 and w.chapter_list.count() == 3
 
 
-def test_the_switch_off_shows_the_old_row_exactly_as_before(app, tmp_path):
-    mt.set_on(False)
+@pytest.mark.parametrize("stored", ["false", "true", "perhaps", None])
+def test_a_stored_switch_from_before_still_shows_the_tree(app, tmp_path, stored):
+    """D.11: the Manuscript tree switch went. A settings file that has it
+    off (or on, or junk) shows the tree, and the value is left as it was."""
+    from src.ui import ui_kit
+    if stored is not None:
+        ui_kit._settings().setValue(mt.SETTING_KEY, stored)
     p = _project(tmp_path)
     w = _editor(app, p)
-    from PyQt6.QtWidgets import QPushButton, QToolButton
-    buttons = [b.text() for b in w.findChildren((QPushButton, QToolButton))
-               if b.isVisibleTo(w) and (b.text().strip() or not b.icon().isNull())]
-    assert "Novellas ▾" in buttons and len(buttons) == 19
-    assert w.subproject_tabs.isVisibleTo(w) and w.chapter_list.isVisibleTo(w)
-    assert not w.manuscript_tree.isVisibleTo(w)
-    # No Move to ▸ in the old chapter menu.
+    assert w.manuscript_tree.isVisibleTo(w)
+    assert not w.subproject_tabs.isVisibleTo(w) and not w.chapter_list.isVisibleTo(w)
+    assert not hasattr(w, "novellas_menu_btn")
     from PyQt6.QtWidgets import QMenu
     menu = QMenu()
-    mt.add_move_menu(w, menu)
-    assert not menu.actions()
-    # And back on, live.
-    mt.set_on(True)
-    app.processEvents()
-    assert w.manuscript_tree.isVisibleTo(w) and not w.subproject_tabs.isVisibleTo(w)
-    assert not w.novellas_menu_btn.isVisibleTo(w)
-
-
-def test_the_switch_starts_on_and_reads_bad_values_as_on(app, monkeypatch):
-    assert mt.on() is True
-    mt.set_on(False)
-    assert mt.on() is False
-    mt._settings().setValue(mt.SETTING_KEY, "perhaps")
-    assert mt.on() is True
-
-    def broken():
-        raise RuntimeError("unreadable")
-    monkeypatch.setattr(mt, "_settings", broken)
-    assert mt.on() is True
-
-
-def test_the_settings_option(app):
-    from PyQt6.QtWidgets import QVBoxLayout, QWidget
-    host = QWidget()
-    lay = QVBoxLayout(host)
-    opt = mt.TreeOption(lay)
-    assert opt.box.isChecked()
-    opt.box.setChecked(False)
-    opt.save()
-    assert mt.on() is False
+    mt.add_move_menu(w, menu)                    # Move to ▸, always
+    assert any(a.menu() is not None and a.text() == mt.MOVE_TO for a in menu.actions())
+    assert ui_kit._settings().value(mt.SETTING_KEY, None) == stored
+    for gone in ("on", "set_on", "TreeOption", "STARTS_ON"):
+        assert not hasattr(mt, gone), gone
 
 
 # ── Opening ──────────────────────────────────────────────────────────
@@ -246,24 +222,27 @@ def _labels(menu):
     return out
 
 
+# The old tab menu's entries (``_show_subproject_tab_menu``, compared entry
+# for entry by D.10; the tab row and its menu went in D.11).
+OLD_TAB_MENU = {
+    "main": ["🧐 Critique main manuscript “Main Manuscript”…",
+             "🧐 Critique main project + continuity across novellas…",
+             "🔗 Check continuity across novellas…", "Rename…",
+             "Turn main manuscript into a novella…", mt.NEW_NOVELLA],
+    "novella": ["🧐 Critique this novella “The Fall”…", "Rename…", "Edit description…",
+                "Move main chapters into this novella (3)…", "Drop novella and its content…",
+                mt.NEW_NOVELLA],
+}
+
+
 @pytest.mark.parametrize("which", ["main", "novella"])
-def test_a_manuscript_rows_menu_has_every_entry_of_its_old_tab_menu(app, tmp_path, monkeypatch, which):
+def test_a_manuscript_rows_menu_has_every_entry_of_its_old_tab_menu(app, tmp_path, which):
     p = _project(tmp_path)
     w = _editor(app, p)
     scope = None if which == "main" else p.subprojects[0].id
-    from PyQt6.QtWidgets import QMenu
-    captured = []
-    monkeypatch.setattr(QMenu, "exec", lambda self, *a: captured.append(_labels(self)))
-    mt.set_on(False)
-    app.processEvents()
-    tabs = w.subproject_tabs
-    i = next(i for i in range(tabs.count()) if (tabs.tabData(i) or None) == scope)
-    w._show_subproject_tab_menu(tabs.tabRect(i).center())
-    old = captured[-1]
-    mt.set_on(True)
     menu, actions = w.manuscript_tree.manuscript_menu(scope)
-    assert _labels(menu) == old and len(actions) == len(old)
-    assert any("Critique" in t for t in old) and "Rename…" in old and mt.NEW_NOVELLA in old
+    assert _labels(menu) == OLD_TAB_MENU[which] and len(actions) == len(OLD_TAB_MENU[which])
+    assert not hasattr(w, "_show_subproject_tab_menu")
 
 
 def test_a_manuscript_rows_entries_call_the_same_methods(app, tmp_path, monkeypatch):

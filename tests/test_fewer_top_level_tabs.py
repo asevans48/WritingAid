@@ -1,7 +1,8 @@
 """D.4 Fewer top-level tabs: ten tabs become five groups, every screen is
 still reached by its tab, its menu entry and its signal; one way to put a
 screen (or a group) in its own window; old tab numbers, settings and
-projects still open; the old ten tabs are one switch away."""
+projects still open. The old ten tabs and their switch were retired in
+D.11: a settings file that asked for ten opens as the five groups."""
 
 import os
 import pwd
@@ -247,62 +248,31 @@ def test_the_critique_goes_out_by_either_entry_and_comes_back_the_same_way(app):
     _close(win)
 
 
-# ── The old arrangement, one switch away ─────────────────────────────
+# ── The old arrangement, retired (D.11) ──────────────────────────────
 
-def test_the_old_ten_tabs_are_one_switch_away_and_back(app):
+@pytest.mark.parametrize("stored", ["ten", "groups", "something else"])
+def test_a_settings_file_that_asked_for_ten_tabs_opens_as_the_five_groups(app, stored):
+    """The Main tabs switch went in D.11. Its stored value is left in place,
+    unread, so an older app still finds it; every screen is in its group."""
+    sg._set(sg.ARRANGEMENT_KEY, stored)
     win = _shell(app)
     groups = sg.install(win)
-    sg.show(win, win.characters_widget)
-    groups.detach(groups.screens["visuals"])
-    sg.set_grouped(False, win)
-    assert sg._settings().value(sg.ARRANGEMENT_KEY) == "ten"
-    assert _labels(win.tab_widget) == [label for _, _, label in OLD]   # as before D.4
-    assert not any(u.is_out for u in groups.all_units())               # brought back first
-    assert sg.current_screen(win) is win.characters_widget             # still on it
-    for key, attr, _ in OLD:
-        sg.show(win, getattr(win, attr))
-        assert sg.current_screen(win) is getattr(win, attr) and getattr(win, attr).isVisibleTo(win)
-    groups.detach(groups.screens["plot"])                              # detaching works here too
-    assert win.story_planning_widget.window() is groups.screens["plot"].window
-    sg.set_grouped(True, win)
     assert len(_labels(win.tab_widget)) == 5
     for key, attr, _ in OLD:
         sg.show(win, getattr(win, attr))
         assert sg.current_screen(win) is getattr(win, attr)
-        assert getattr(win, attr).window() is win and getattr(win, attr).isVisibleTo(win)
+        assert getattr(win, attr).isVisibleTo(win)
+    groups.detach(groups.screens["plot"])                              # still detaches
+    assert win.story_planning_widget.window() is groups.screens["plot"].window
+    groups.bring_back(groups.screens["plot"])
+    assert sg._settings().value(sg.ARRANGEMENT_KEY) == stored           # left as it was
     _close(win)
 
 
-def test_a_main_window_started_with_the_ten_tabs_setting_shows_ten(app):
-    sg._set(sg.ARRANGEMENT_KEY, "ten")
-    win = _shell(app)
-    sg.install(win)
-    assert _labels(win.tab_widget) == [label for _, _, label in OLD]
-    _close(win)
-
-
-def test_the_settings_switch(app):
-    from PyQt6.QtWidgets import QVBoxLayout
-    holder = QWidget()
-    lay = QVBoxLayout(holder)
-    option = sg.TabsOption(lay)
-    assert option.box.isChecked()                                      # groups by default
-    win = _shell(app)
-    sg.install(win)
-    option.box.setChecked(False)
-    from src.ui.window_manager import WindowManager
-    wm = WindowManager()
-    old_main = wm.get_main_window()
-    wm._main_window = win
-    try:
-        option.save()
-        assert win.tab_widget.count() == 10
-        option.box.setChecked(True)
-        option.save()
-        assert win.tab_widget.count() == 5
-    finally:
-        wm._main_window = old_main
-    _close(win)
+def test_the_switch_and_its_option_are_gone():
+    for gone in ("grouped", "set_grouped", "TabsOption"):
+        assert not hasattr(sg, gone), gone
+    assert not (Path(__file__).parent.parent / "src" / "ui" / "secondary_window.py").exists()
 
 
 # ── Settings and layouts saved before the piece ──────────────────────
@@ -431,11 +401,7 @@ def test_the_main_window_has_five_groups_and_every_entry_lands(app, main_window,
     assert all(u.is_out for u in win.screen_groups.groups.values())
     win._toggle_multi_window_mode(False)
     assert not any(u.is_out for u in win.screen_groups.all_units())
-    # The old arrangement, live.
-    sg.set_grouped(False, win)
-    assert win.tab_widget.count() == 10
-    sg.set_grouped(True, win)
-    assert win.tab_widget.count() == 5
+    assert win.tab_widget.count() == 5                 # the five, always (D.11)
     # The project saves and reopens unchanged.
     win.current_project.save_project(str(path))
     again = WriterProject.load_project(str(path))

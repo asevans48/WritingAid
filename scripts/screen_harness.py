@@ -51,7 +51,8 @@ COUNT_AT = (1440, 900, 1.0)          # the baseline was measured at this size
 
 SCREENS = {
     # name: (kind, description)  kind: "dialog" | "page" | "panel"
-    "suggestions": ("dialog", "Suggestions window (passage critique), with a sample reply"),
+    "suggestions": ("dialog", "The old Suggestions window (passage critique), with a sample "
+                              "reply; no way in since D.11, the Improve window opens instead"),
     "companion": ("panel", "Write side panel: Companion"),
     "style": ("retired", "Write side panel: Style (retired in D.6)"),
     "planner": ("panel", "Write side panel: Planner"),
@@ -71,7 +72,7 @@ SCREENS = {
     "companion_goal": ("panel", "Companion with writing goals set and a sample record (H.1)"),
     "habit": ("dialog", "Your writing record: the 12-week window, with a sample record (H.1)"),
     "main_tabs": ("tabs", "Main window's top-level tabs: the five groups, Story open (D.4)"),
-    "main_tabs_ten": ("tabs", "The same with the old ten tabs (Settings ▸ Main tabs unticked)"),
+    "main_tabs_ten": ("retired", "The same with the old ten tabs (retired in D.11)"),
     "critique_analysis": ("report", "Critique: Analyze ▾ ▸ Prose run as a report, with a sample reply (D.5)"),
     "critique_analysis_nomodel": ("report", "Critique: Analyze ▾ ▸ Writing hints with no model (D.5)"),
     "critique_character_check": ("report", "Critique: Analyze ▾ ▸ Characters with no model, the scan across the book (P.8)"),
@@ -148,7 +149,8 @@ PACKAGE_SCREENS = ("publishing_package",)
 IMPROVE_SCREENS = {"improve": "suggestions", "improve_critique": "critique",
                    "improve_expand": "expand", "improve_rephrase": "rephrase"}
 # The main window's ten screens, with the labels it gives them (D.4 groups
-# them; every screen is also drawn on its own above, as before).
+# them; every screen is also drawn on its own above, as before). The old
+# ten-tab arrangement (main_tabs_ten) was retired in D.11: not drawn, not counted.
 TAB_SCREENS = ("main_tabs", "main_tabs_ten")
 # Drawn with a sample writing record and goals, which are put back after;
 # not counted (not in the 0.2 baseline; the Companion is counted as "companion").
@@ -170,7 +172,9 @@ PANELS = {"planner": lambda ed: ed.planner_widget,
           "companion": lambda ed: ed.companion.panel}
 # Screens retired by a piece: not drawn, counted as empty, and where they went.
 RETIRED = {"style": "D.6: its list is the Companion's next-fix card (✓ Checks ▾ → Style "
-                    "issues panel…), its switches are ✓ Checks ▾ → Style checks"}
+                    "issues panel…), its switches are ✓ Checks ▾ → Style checks",
+           "main_tabs_ten": "D.11: the ten tabs and Settings ▸ Main tabs went; every screen is "
+                            "in the five groups (main_tabs)"}
 
 # How menu items are counted (decision 11, 24 Nov 2026). A menu whose items
 # are one closely related group counts as ONE entry: a list of words, one
@@ -544,7 +548,7 @@ def _build(name: str, project):
     if name in SWEEP_SCREENS:
         return _sweep_screen(name, project)
     if name in TAB_SCREENS:
-        win = _main_tabs(project, grouped=name == "main_tabs")
+        win = _main_tabs(project)
         _show_full(win)
         return win, win.tab_widget
     if kind == "panel":
@@ -904,10 +908,10 @@ def _settings_dialog():
     return dlg
 
 
-def _main_tabs(project, grouped: bool = True, placeholders: bool = False):
+def _main_tabs(project, placeholders: bool = False):
     """The main window's tab area as the main window builds it: the ten
     screens added in their old order with their labels, then grouped by
-    ``screen_groups`` (or left as ten). ``placeholders`` uses empty pages
+    ``screen_groups``. ``placeholders`` uses empty pages
     (for counting tabs, which do not depend on what a page holds)."""
     from PyQt6.QtWidgets import QMainWindow, QTabWidget, QWidget
     from src.ui import screen_groups as sg
@@ -927,14 +931,8 @@ def _main_tabs(project, grouped: bool = True, placeholders: bool = False):
         page = QWidget() if placeholders else _page(key, project)
         setattr(win, attr, page)
         win.tab_widget.addTab(page, labels[key])
-    previous = sg._get(sg.ARRANGEMENT_KEY, "groups")
-    sg._set(sg.ARRANGEMENT_KEY, "groups" if grouped else "ten")
-    try:
-        sg.install(win)
-    finally:
-        sg._set(sg.ARRANGEMENT_KEY, previous)
-    if grouped:
-        sg.show(win, win.characters_widget)          # a group's inner tabs, drawn
+    sg.install(win)
+    sg.show(win, win.characters_widget)              # a group's inner tabs, drawn
     return win
 
 
@@ -1248,7 +1246,7 @@ def _counts(names: List[str], project, app) -> Dict[str, Any]:
             continue                                    # not in the 0.2 baseline
         if name in TAB_SCREENS:
             if name == "main_tabs":                     # the baseline's top_level_tabs
-                win = _main_tabs(project, grouped=True, placeholders=True)
+                win = _main_tabs(project, placeholders=True)
                 out["main_window"] = {"top_level_tabs": win.tab_widget.count()}
                 win.close()
             continue

@@ -9,7 +9,9 @@ scenes (whose point of view, what happens, what it changes) is
 **Scenes** are split at a scene-break line (``***``, ``* * *``, ``#`` …:
 ``markdown_editor.SCENE_BREAKS``) or at two or more blank lines in a row.
 This is the one rules-based scene splitter; other code should use
-``split_scenes``.
+``split_scenes``. **Scene markers** (7.4, ``src/data/scene_marks``) are
+breaks kept beside the text, never in it: pass their offsets as
+``marks`` and a scene starts at each of them as well.
 
 **Speakers** come from ``dialogue_speakers.attribute_lines`` (tags and
 action beats). A line whose speaker it cannot tell counts as dialogue but
@@ -54,9 +56,11 @@ def _words(text: str) -> int:
     return len(re.findall(r"[A-Za-z0-9’']+", text))
 
 
-def split_scenes(text: str) -> List[Tuple[int, int]]:
+def split_scenes(text: str, marks: Iterable[int] = ()) -> List[Tuple[int, int]]:
     """[(start, end)] of each scene in ``text``; breaks are not part of a
-    scene. A text with no breaks is one scene."""
+    scene. A text with no breaks is one scene. ``marks`` are offsets where
+    a scene also starts (the scene markers, 7.4: each the start of a
+    paragraph); one already at a scene's start changes nothing."""
     text = text or ""
     spans: List[Tuple[int, int]] = []
     start = 0
@@ -82,7 +86,13 @@ def split_scenes(text: str) -> List[Tuple[int, int]]:
             blank_run = 0
         pos = line_end + 1
     spans.append((start, len(text)))
-    return [(s, e) for s, e in spans if text[s:e].strip()]
+    spans = [(s, e) for s, e in spans if text[s:e].strip()]
+    for m in sorted({int(m) for m in marks or () if 0 < int(m) < len(text)}):
+        for i, (s, e) in enumerate(spans):
+            if s < m < e and text[s:m].strip() and text[m:e].strip():
+                spans[i:i + 1] = [(s, m), (m, e)]
+                break
+    return spans
 
 
 def _opening(text: str, n: int = 10) -> str:
@@ -90,16 +100,18 @@ def _opening(text: str, n: int = 10) -> str:
     return " ".join(words[:n])
 
 
-def outline(text: str, names: Iterable[str] = ()) -> List[Scene]:
-    """The chapter's scenes, in order."""
+def outline(text: str, names: Iterable[str] = (), marks: Iterable[int] = ()) -> List[Scene]:
+    """The chapter's scenes, in order (``marks``: as ``split_scenes``)."""
     names = sorted({n for n in names if n})
-    key = hashlib.sha1(((text or "") + "\x00" + "\x01".join(names)).encode("utf-8")).hexdigest()
+    marks = sorted({int(m) for m in marks or ()})
+    key = hashlib.sha1(((text or "") + "\x00" + "\x01".join(names) + "\x00"
+                        + ",".join(map(str, marks))).encode("utf-8")).hexdigest()
     if key in _CACHE:
         _CACHE.move_to_end(key)
         return _CACHE[key]
     from src.ai.dialogue_speakers import attribute_lines
     scenes: List[Scene] = []
-    for n, (s, e) in enumerate(split_scenes(text), 1):
+    for n, (s, e) in enumerate(split_scenes(text, marks), 1):
         part = text[s:e]
         counts: Dict[str, int] = {}
         unattributed = 0

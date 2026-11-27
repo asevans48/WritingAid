@@ -294,15 +294,17 @@ def test_expand_dialog_and_editor(app, project, chapter, monkeypatch):
     # The editor puts the accepted version in place of the passage.
     seen = {}
 
-    class Accepting:
+    class Accepting:                  # the Improve window's Expand (every way in since D.11)
         def __init__(self, text, start, end, *a, **k):
             seen["passage"] = text[start:end]
             self.replacement = "It was dark."
+            self.span, self.tool = (start, end), k.get("tab", "expand")
 
         def exec(self):
             return QDialog.DialogCode.Accepted
 
-    monkeypatch.setattr(op, "ExpandStatementDialog", Accepting)
+    import src.ui.improve_window as iw
+    monkeypatch.setattr(iw, "ImproveWindow", Accepting)
     from src.ui.manuscript_editor import ChapterEditor
     ed = ChapterEditor(chapter, project=project)
     doc = ed.editor.toPlainText()

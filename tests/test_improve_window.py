@@ -77,8 +77,8 @@ def chapter():
 
 @pytest.fixture
 def merged():
+    """Every way in opens the Improve window (the trial switch went in D.11)."""
     from src.ui import improve
-    improve.set_merged(True)
     return improve
 
 
@@ -128,44 +128,16 @@ def window(project, chapter, tab="suggestions", llm=None, review_llm=None, log=N
     return win, log
 
 
-# ── The trial switch ───────────────────────────────────────────────────
+# ── The retired trial switch (D.11) ────────────────────────────────────
 
-def test_the_switch_starts_on_in_the_app():
-    """Shipped as decision 16 says (conftest turns it off for older tests)."""
+def test_the_switch_and_its_option_are_gone_and_the_tabs_stay():
     spec = importlib.util.spec_from_file_location("improve_fresh", ROOT / "src/ui/improve.py")
     fresh = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(fresh)
-    assert fresh.STARTS_ON is True
+    for gone in ("merged", "set_merged", "ImproveOption", "STARTS_ON"):
+        assert not hasattr(fresh, gone), gone
+    assert fresh.SETTING_KEY == "improve/merged"          # named, so it is left alone
     assert fresh.TABS == ("suggestions", "critique", "rephrase", "expand")
-
-
-def test_the_switch_missing_unreadable_and_set(monkeypatch):
-    from src.ui import improve
-    monkeypatch.setattr(improve, "STARTS_ON", True)
-    assert improve.merged() is True                       # missing: the starting position
-    improve.set_merged(False)
-    assert improve.merged() is False
-    improve.set_merged(True)
-    assert improve.merged() is True
-    improve._settings().setValue(improve.SETTING_KEY, "perhaps")
-    assert improve.merged() is True                       # unreadable value: the default
-
-    def broken():
-        raise OSError("disk gone")
-    monkeypatch.setattr(improve, "_settings", broken)
-    assert improve.merged() is True
-
-
-def test_the_settings_option(app):
-    from PyQt6.QtWidgets import QVBoxLayout, QWidget
-    from src.ui import improve
-    holder = QWidget()
-    option = improve.ImproveOption(QVBoxLayout(holder))
-    assert not option.box.isChecked()                     # tests start with it off
-    option.box.setChecked(True)
-    option.save()
-    assert improve.merged()
-    assert "Suggestions and Overly descriptive?" in option.box.text()
 
 
 # ── Every caller lands on the right tab, over the right window ─────────
@@ -257,34 +229,25 @@ def test_the_companion_opens_suggestions_with_a_focus_and_accept_anywhere_counts
     assert recorder.opened[-1]["tab"] == "expand"
 
 
-def test_the_switch_off_opens_the_old_windows_as_before(app, project, chapter, monkeypatch,
-                                                         recorder):
-    from PyQt6.QtWidgets import QDialog
-    from src.ui import improve
-    from src.ui import overdescription_panel as op
-    from src.ui import passage_critique_dialog as pd
+@pytest.mark.parametrize("stored", ["false", "true", "perhaps", None])
+def test_a_stored_switch_from_before_still_opens_the_improve_window(app, project, chapter,
+                                                                    recorder, stored):
+    """A settings file from before D.11, with the switch off (or on, or
+    junk): every way in opens the Improve window, and the stored value is
+    left exactly as it was, for an older version of the app."""
+    from src.ui import improve, ui_kit
     from src.ui.manuscript_editor import ChapterEditor
-    improve.set_merged(False)
-    seen = []
-
-    class Old:
-        def __init__(self, text, start, end, *a, **k):
-            seen.append((type(self).__name__, text[start:end], k.get("focus", "")))
-            self.replacement = "It was dark."
-
-        def exec(self):
-            return QDialog.DialogCode.Accepted
-
-    monkeypatch.setattr(pd, "PassageCritiqueDialog", type("PassageCritiqueDialog", (Old,), {}))
-    monkeypatch.setattr(op, "ExpandStatementDialog", type("ExpandStatementDialog", (Old,), {}))
+    if stored is not None:
+        ui_kit._settings().setValue(improve.SETTING_KEY, stored)
+        ui_kit._settings().sync()
     ed = ChapterEditor(chapter, project=project)
-    s, e = span()
     i = ed.editor.toPlainText().index("The room")
     assert ed.suggest_for_span(i, i + len("The room was almost too dark to see."), focus="f")
     i = ed.editor.toPlainText().index("She almost")
+    Recorder.tool = "expand"
     assert ed.expand_statement(i, i + len("She almost fell on the last stair."))
-    assert [n for n, _, _ in seen] == ["PassageCritiqueDialog", "ExpandStatementDialog"]
-    assert recorder.opened == []
+    assert [o["tab"] for o in recorder.opened] == ["suggestions", "expand"]
+    assert ui_kit._settings().value(improve.SETTING_KEY, None) == stored
 
 
 # ── Same text, same call (rule 15) ─────────────────────────────────────

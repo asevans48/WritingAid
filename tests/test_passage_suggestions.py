@@ -268,20 +268,21 @@ def test_dialog_reports_missing_model(app, project, chapter):
 def test_editor_replaces_the_whole_sentences(app, project, chapter, monkeypatch):
     from PyQt6.QtGui import QTextCursor
     from PyQt6.QtWidgets import QDialog
-    from src.ui import passage_critique_dialog as pd
+    from src.ui import improve_window as iw
     from src.ui.manuscript_editor import ChapterEditor
 
     seen = {}
 
-    class Accepting:
+    class Accepting:                  # the Improve window (every way in since D.11)
         def __init__(self, text, start, end, *a, **k):
             seen["passage"] = text[start:end]
             self.replacement = "Mara walked to the pier."
+            self.span, self.tool = (start, end), k.get("tab", "suggestions")
 
         def exec(self):
             return QDialog.DialogCode.Accepted
 
-    monkeypatch.setattr(pd, "PassageCritiqueDialog", Accepting)
+    monkeypatch.setattr(iw, "ImproveWindow", Accepting)
     chapter.content = "🔥 " + TEXT          # emoji: Qt and Python positions differ
     ed = ChapterEditor(chapter, project=project)
     doc = ed.editor.toPlainText()

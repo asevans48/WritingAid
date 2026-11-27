@@ -106,7 +106,7 @@ class _Editor:
     def parent(self):
         return None
 
-    def __getattr__(self, name):                    # the old windows' methods
+    def __getattr__(self, name):                    # the old windows' methods (gone, D.11)
         if name.startswith("_") and name in ("_check_promises", "_analyze_prose",
                                              "_analyze_characters", "_analyze_world",
                                              "_analyze_plot"):
@@ -209,25 +209,27 @@ def test_quotes_link_to_the_chapter(qapp, no_real_model):
     assert shown == [("c1", "The storm broke at dusk")]
 
 
-def test_copy_run_again_and_the_old_window_links(qapp, no_real_model, monkeypatch):
+def test_copy_and_run_again_links_and_no_old_window(qapp, no_real_model, monkeypatch):
+    """D.11: the "Show in a window (old)" link and the old windows went; Copy
+    and Run again stay, and an "old" link kept from before runs it again."""
     from PyQt6.QtWidgets import QApplication
     from src.ai.analysis_reports import AnalysisKind
     from src.ui import analysis_menu
     no_real_model["llm"] = FakeLLM()
     g, ed = _run(qapp, _project(), "prose")
     html = g._report_tabs[AnalysisKind.PROSE_FIT][0].toHtml()
-    for action in ("again", "copy", "old"):
+    for action in ("again", "copy"):
         assert f"analysis:{action}:prose" in html
+    assert "analysis:old:" not in html and "Show in a window" not in html
     analysis_menu.on_link(g, "analysis:copy:prose")
     assert "Tense." in QApplication.clipboard().text()
-    analysis_menu.on_link(g, "analysis:old:prose")
-    assert ed.opened == ["_analyze_prose"]
     runs = []
     monkeypatch.setattr(analysis_menu, "run", lambda ce, key: runs.append(key))
     analysis_menu.on_link(g, "analysis:again:prose")
-    assert runs == ["prose"]
-    # Writing hints never had a window; the others' links name theirs.
-    assert "analysis:old:hints" not in analysis_menu.tab_links(AnalysisKind.HINTS)
+    analysis_menu.on_link(g, "analysis:old:prose")
+    assert runs == ["prose", "prose"] and ed.opened == []
+    for kind in (AnalysisKind.HINTS, AnalysisKind.PROMISES, AnalysisKind.PROSE_FIT):
+        assert "analysis:old:" not in analysis_menu.tab_links(kind)
 
 
 # ── No model: one line, the scans, never an empty tab ─────────────────
@@ -369,43 +371,40 @@ def test_analyze_menu_entries_run_in_the_critique(qapp, no_real_model, monkeypat
     assert "Writing hints" in _tabs(mw.grader_widget)
 
 
-def test_without_a_critique_the_entry_opens_the_old_window(qapp, monkeypatch):
-    from src.ui import analysis_menu
+def test_without_a_critique_the_entry_says_where_to_run_it(qapp, monkeypatch):
+    from src.ui import analysis_menu, notify
     ed = _Editor(_project())
+    said = []
+    monkeypatch.setattr(notify, "empty", lambda w, title, text: said.append((title, text)))
     monkeypatch.setattr(analysis_menu, "main_window_of", lambda w: None)
     assert analysis_menu.run(ed, "world") is False
-    assert ed.opened == ["_analyze_world"]
+    assert ed.opened == []
+    assert said and said[0][0] == "Worldbuilding" and "Critique" in said[0][1]
 
 
-def test_the_old_windows_still_work(qapp, monkeypatch):
-    """'Show in a window (old)': the prose window opens with the same prompt
-    (handed to a fake handler, never a model)."""
-    from PyQt6.QtWidgets import QDialog
-    from src.ai import analysis_prompts
+def test_the_old_windows_are_gone(qapp):
     from src.ui import manuscript_editor as me
-    p = _project()
-    ce = me.ChapterEditor(p.manuscript.chapters[0], project=p, manuscript=p.manuscript)
-    asked = []
-    monkeypatch.setattr(me.ChapterEditor, "_get_ai_handler",
-                        lambda self: (lambda prompt, mode: asked.append(prompt) or REPLY))
-    import threading
-    monkeypatch.setattr(threading.Thread, "start", lambda self: self.run())
-    for method, make in (("_analyze_prose", lambda: analysis_prompts.prose_prompt(p, TEXT)),
-                         ("_analyze_characters",
-                          lambda: analysis_prompts.character_prompt(p, ce.chapter, TEXT)),
-                         ("_analyze_world", lambda: analysis_prompts.world_prompt(p, ce.chapter, TEXT)),
-                         ("_analyze_plot", lambda: analysis_prompts.plot_prompt(p, ce.chapter, TEXT))):
-        getattr(ce, method)()
-        assert asked[-1] == make(), method
-    qapp.processEvents()
-    assert "Tense." in ce._prose_analysis_dialog._results.toPlainText()
-    shown = []
-    monkeypatch.setattr(QDialog, "exec", lambda self, *a: shown.append(type(self).__name__) or 0)
-    ce._check_promises()
-    assert shown == ["PromiseCheckDialog"]
-    for name in ("_prose_analysis_dialog", "_character_analysis_dialog",
-                 "_world_analysis_dialog", "_plot_analysis_dialog"):
-        getattr(ce, name).close()
+    for name in ("ProseAnalysisDialog", "PromiseCheckDialog"):
+        assert not hasattr(me, name), name
+    for name in ("_check_promises", "_analyze_prose", "_analyze_characters", "_analyze_world",
+                 "_analyze_plot", "_prose_analysis_ready", "_get_ai_handler"):
+        assert not hasattr(me.ChapterEditor, name), name
+    from src.ui import analysis_menu
+    assert not hasattr(analysis_menu, "OLD_WINDOWS")
+
+
+def test_the_no_model_line_names_why_a_local_model_would_not_load(monkeypatch):
+    """What the old Promise Check window said, now on the report (D.11)."""
+    from src.ai import analysis_reports as ar, task_llm
+    monkeypatch.setattr(task_llm, "_last_error", "")
+    plain = ar.no_model_line("the check", "Nothing else.")
+    assert plain == ar.NO_MODEL.format(what="the check", shown="Nothing else.")
+    monkeypatch.setattr(task_llm, "_last_error",
+                        "Couldn't load the local model 'mlx-community/x': boom")
+    line = ar.no_model_line("the check", "Nothing else.")
+    assert line.startswith(plain) and line.endswith("'mlx-community/x': boom.")
+    monkeypatch.setattr(task_llm, "_last_error", "AI features are turned off in Settings.")
+    assert ar.no_model_line("the check", "Nothing else.") == plain
 
 
 def test_a_project_from_before_the_piece_runs_an_analysis_and_saves_unchanged(qapp, no_real_model):

@@ -24,6 +24,7 @@ CLEANED = [
     # D.2b: the one Improve window.
     "src/ui/improve.py", "src/ui/improve_window.py", "src/ui/improve_tabs.py",
     "src/ui/improve_rephrase.py",                   # D.2c
+    "src/ui/scene_marks_ui.py",                     # 7.4
     # Session 2 (25 November 2026): Story, Visuals, Video Studio, Publishing, Drafts, Print.
     "src/ui/plot/plot_manager.py", "src/ui/plot/plot_timeline.py",
     "src/ui/plot/freytag_pyramid_visual.py", "src/ui/plot/plot_event_editor.py",

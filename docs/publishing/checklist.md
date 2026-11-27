@@ -124,7 +124,54 @@ H.1, D.4, D.5, P.2b, 4.3 and the chapter's prose profile is **committed**
   No count rose. About 80 windows the harness cannot open yet (the Studio's
   editors, the Training Studio's run dialogs) are listed in U.3b's Outcome.
 
-Tests: 2,038 pass in one run, none fail (after the Studio fix's 5, U.3b's 19, the "+" menu's 1 and the Studio side panel's 4).
+- **Round 10** (26 November): **D.11, the old screens retired** (your
+  answer: the four groups work). Gone: the ten-tab mode and Settings ▸ Main
+  tabs; the two old analysis windows and "Show in a window (old)"; the old
+  Rephrase, Suggestions and Overly descriptive? paths and Settings ▸
+  Features ▸ Improve window; the manuscript tab row, Novellas ▾ and
+  Settings ▸ Features ▸ Manuscript tree. Every action has a home (the
+  capability checklist is in D.11's Outcome). "Move main chapters into
+  this novella" now goes through D.10's move: renamed in place, with Undo.
+  Your stored settings stay in the file, unread. No count rose; about 1,170
+  lines fewer. Then the model queue started (the V.4 real trial, then 7.2).
+
+- **Round 11** (26–27 November): **the model queue** (the app closed, the
+  on-device Gemma model, one job at a time; resumed once after the session
+  stopped). **V.4's real trial:** 16 of your rated passages, 2 rewrites
+  each, with today's examples and with V.4's. Examples in the passage's own
+  voice rose from 66% to 83%; voice fit 0.912 → 0.919, which is within
+  chance (better 6, same 5, worse 5): V.4 does no harm and does what it was
+  built for, but a real gain would need about 100 pairs or your own blind
+  ratings. **7.2 built:** tension rated twice per chapter agreed 25 of 25
+  (bar: 90% within one point and kappa 0.6), so the Critique's scene
+  outline now shows the model's scenes (who, what happens, what it is for)
+  and "Tension N of 5: why", and the chart's tension line is joined up. A
+  fix to 8.2's outline reader came with it (the model sometimes returned
+  the prompt's field names as a fake scene).
+
+- **Round 12** (27 November): **7.2 on Cydonia** (fails the bar on
+  readable answers; Gemma passes; section 3) and **7.4, scene markers kept
+  beside the text**: right-click a paragraph ▸ More ▸ 📝 Note or scene
+  break ▸ Scene break here; a dashed line in the margin; "Use the model's
+  scenes" in the Critique's Scene outline; ✕ and Undo; markers follow edits
+  and moves; the outline, tension and chart use them; export unchanged
+  unless you tick "Mark scene breaks". Your text and its saved files are
+  never touched. Then the tension follow-ups started (the app closed).
+
+- **Round 13** (27 November): **the tension follow-ups.** An unreadable
+  tension answer is remembered (with the chapter's text, markers, model and
+  prompt), so that model isn't asked again until one of them changes. A
+  firmer prompt: **Cydonia now passes** (readable 29% → 100%; kappa 0.85 at
+  the app's setting), and Gemma still does (kappa 1.00). Gemma is steadier,
+  uses more of the scale and is about 6× faster (about 11 s a chapter
+  against 70 s); Cydonia reads scenes more finely. The outlines did not
+  change. Choose the Critique's model in Settings (section 3).
+
+Tests: 2,088 pass in one run, none fail (after the tension follow-ups' 8).
+
+- **Tried 27 November:** you tried U.3b, D.11, 7.4, the tension follow-ups
+  with your chosen model and V.4's addendum: all pass (noted under each in
+  section 1; the boxes are yours to tick).
 
 What is waiting for you:
 
@@ -159,17 +206,18 @@ What is waiting for you:
     separate windows stay as boxes (section 3).
   - Checks: P.5 after section 2's measurement (now that P.2 and P.6 are
     in).
-  - Needs a model (run with the app closed): try 8.2; 7.2; try 9.3's
-    model tier (built; section 1); (4.2 was dropped at its gate); and
-    the real tests of V.3 and V.4.
+  - Done in round 11 (the app closed, the model): V.4's real trial and 7.2.
+    The app can be opened again.
+  - Needs a model, for you to judge in the app: try 8.2; try 9.3's model
+    tier (section 1); V.3's group names. (4.2 was dropped at its gate.)
   - When the server is connected: 8.1b (8.1a is reviewed: decision 17),
     P.7, 8.3.
   - Done in round 9: the Studio cards fix and U.3b. Optional, no model:
     a second U.3b session for the windows the harness cannot open yet
     (U.3b's Outcome). Also free to run: the query letter addressed to the
     chosen agent (9.3, agreed), and more D.8 sessions (optional).
-    Once you have checked everything in section 1: retire the old screens;
-    then 9.1, the last piece for novels.
+    The old screens are retired (D.11, round 10). Next for novels: the
+    rest of section 1 checked, then 9.1, the last piece for novels.
   - After 9.1: phase F, other formats (section 5, group H). F.0, its
     design, is reviewed: its seven questions are answered (26 Nov,
     README decision 18), so F.1 can start after 9.1.
@@ -530,6 +578,10 @@ so run the safety check from 0.3 first and take a checkpoint)
 **Fewer top-level tabs (D.4)** (no model; nothing in your projects
 changes; three new window settings, all in the file that already keeps
 window positions)
+*Your note, 26 Nov: you have been testing and using the five tabs and they
+work well. Tick the items below as you confirm each; then the old ten tabs
+can go in "Retire the old screens".*
+*Needed before the old screens retire (26 Nov). Your answer, 26 Nov: "everything is working" (all of this group), so retirement can start; the boxes stay yours to tick.*
 - [ ] The main window has five tabs: Write · Story · Revise · Publish ·
       Studio. Write and Publish look exactly as before (no second row of
       tabs). Hovering Story, Revise or Studio lists the screens inside.
@@ -570,6 +622,7 @@ window positions)
 **Analyses as Critique reports (D.5)** (run the safety check from 0.3 first:
 critique history and saved critiques gain new keys; nothing in your
 projects changes. With a model, run it with the app's model as usual.)
+*Needed before the old screens retire (26 Nov). Your answer, 26 Nov: "everything is working" (all of this group), so retirement can start; the boxes stay yours to tick.*
 - [ ] Write ▸ 🔍 Analyze ▾ still lists the same entries. Choose "Prose —
       tone, style && voice": the app switches to Revise ▸ Critique (or
       raises the Critique's own window if it is out), runs, and opens on the
@@ -795,6 +848,7 @@ start the app once and wait a minute)
       comparison before and after trying these.
 
 **The screen check (0.3)**
+*Needed before the old screens retire (26 Nov). Your answer, 26 Nov: "everything is working" (all of this group), so retirement can start; the boxes stay yours to tick.*
 - [ ] `venv/bin/python scripts/check_project_safety.py "<path to Adelphus -
       Born in Blood.writerproj>"`: ends "RESULT: safe", with a line
       "screens: opened N on the copy …" and "original untouched".
@@ -859,6 +913,7 @@ start the app once and wait a minute)
       and pausing in the short gap between paragraphs.
 
 **The One Improve window (D.2b)**
+*Needed before the old screens retire (26 Nov). Your answer, 26 Nov: "everything is working" (all of this group), so retirement can start; the boxes stay yours to tick.*
 - [ ] Highlight a sentence or two, right-click ▸ ✨ Improve this ▸ 💡
       Suggestions…: one window, "Improve — …", with tabs 💡 Suggestions ·
       📝 Critique · 🔍 Expand. Suggestions runs at once; the versions list,
@@ -895,6 +950,7 @@ start the app once and wait a minute)
       until D.2c.
 
 **The One Improve window: Rephrase joins (D.2c)**
+*Needed before the old screens retire (26 Nov). Your answer, 26 Nov: "everything is working" (all of this group), so retirement can start; the boxes stay yours to tick.*
 - [ ] Highlight a phrase and press Ctrl+R (or ✨ on the toolbar): the
       Improve window opens on ✨ Rephrase, the third of four tabs. The
       line under the tabs says it works on exactly what you highlighted;
@@ -1011,6 +1067,7 @@ start the app once and wait a minute)
       appear as before.
 
 **The manuscript tree (D.10)**
+*Needed before the old screens retire (26 Nov). Your answer, 26 Nov: "everything is working" (all of this group), so retirement can start; the boxes stay yours to tick.*
 - [ ] Write: the top row of manuscript tabs and Novellas ▾ are gone. The
       left panel shows 📖 Main Manuscript with its chapters under it, each
       novella as 📘 with its chapter count, and "＋ New novella…" at the end.
@@ -1099,6 +1156,68 @@ start the app once and wait a minute)
       military, magic), the Import guide, Import AI data, the CreativeOS
       launcher and Model Hub open within the screen, with Save / Close
       visible; Model Hub's ☆ stars show.
+      *27 Nov: you tried these and they pass.*
+
+**The old screens retired (D.11)** (try on a copy of a project first)
+- [ ] Open the app: five tabs, the manuscript tree, no tab row above
+      Write; Settings has no Main tabs, Improve window or Manuscript tree
+      boxes. Nothing asks a question at start.
+- [ ] Ctrl+R, ✨, the right-click ✨ Improve this ▸ entries and a draft
+      window's Rephrase all open the Improve window.
+- [ ] Analyze ▾ ▸ any entry: the report shows "Run again · Copy" (no
+      "Show in a window (old)").
+- [ ] Right-click a novella in the tree ▸ "Move main chapters into this
+      novella": it asks first (mentioning Undo), moves every main chapter
+      with its drafts, and the status bar offers Undo; Undo puts everything
+      back.
+      *27 Nov: you tried these and they pass.*
+
+**The reverse outline with a model (7.2)** (run the safety check from 0.3
+first; one more request per chapter when the book is checked with the
+model, about 2–6 seconds on the on-device model)
+- [ ] Revise ▸ Critique ▸ "Check the book with the model…", then open a
+      chapter's Scene outline ▸: under each scene, the model's scenes (who,
+      what happens → what it is for, or "changes nothing?") and "Tension N
+      of 5: why". The chart's tension line runs through the chapters.
+- [ ] Do the scene readings and tension numbers match your sense of the
+      chapters? (On Born in Blood ch. 1 the trial model called all four
+      scenes "changes nothing": a misreading; see section 3.)
+- [ ] Change a chapter and check it again: its readings are redone; an
+      unchanged chapter keeps its stored ones.
+
+**Scene markers (7.4)** (try on a copy of a project first; nothing in
+your text changes)
+- [ ] Right-click a paragraph ▸ More ▸ 📝 Note or scene break ▸ Scene break
+      here: a thin dashed line appears above it; hover for "Scene 2". The
+      status bar offers Undo. Right-click it again ▸ Remove scene break.
+- [ ] Type or cut text above a marked paragraph: the line follows it.
+- [ ] Revise ▸ Critique ▸ a chapter's Scene outline ▸: marked scenes read
+      "· marked ✕"; ✕ removes one; the Undo link and Cmd+Z put it back. On a
+      chapter checked with the model, "Use the model's scenes" lists the
+      paragraphs first, then "Mark these N".
+- [ ] The tension chart and the outline show one entry per marked scene.
+- [ ] Move a marked chapter to a novella and Undo: the markers go and
+      come back with it.
+- [ ] File ▸ Export Chapter: "Mark scene breaks" shows only when markers
+      exist. Unticked, the export is as before; ticked, a centred "#" at
+      each marker in the exported copy.
+- [ ] Add Annotation is now under More ▸ 📝 Note or scene break ▸ on the
+      right-click (still one click on the toolbar's 📝, and Ctrl+Shift+N).
+      *27 Nov: you tried these and they pass.*
+
+**Tension with your chosen model (round 13)** (the app's model, as usual)
+- [ ] Settings ▸ the Critique's model: choose Gemma or Cydonia. Then
+      "Check the book with the model…": tension lines and the chart's curve
+      appear for each chapter.
+- [ ] Check again without changing anything: no chapter is rated again
+      (fast). Change one chapter: only it is asked again.
+      *27 Nov: you tried these and they pass.*
+
+**V.4's real trial (information; nothing changed in the app)**
+- [ ] Read the addendum in V.4's Outcome: the side-by-side rewrites, and
+      whether "more examples in your own voice" matches what you see when
+      you rephrase.
+      *27 Nov: you read it.*
 
 **Other formats (planned; nothing built)**
 - [ ] Read README decision 18 and the list of phase F pieces (section 5,
@@ -1169,6 +1288,32 @@ chapter's prose profile (d0d347e, 58226e9).
       `tests/test_fit_sweep_u3a.py`; the U.3a and U.3b briefs).
 - [ ] Commit F.0's design (the F.0 brief) and the notes it added to the
       other phase F briefs.
+- [ ] Commit round 13: the tension follow-ups (`src/ai/scene_tension.py`,
+      `tests/test_scene_tension.py`, `tests/test_readiness_judge.py`, 7.2's
+      second addendum).
+- [ ] Commit round 12: 7.4 (`src/data/scene_marks.py`,
+      `src/ui/scene_marks_ui.py`, `tests/test_scene_marks.py`;
+      `reverse_outline.py`, `scene_tension.py`, `plan_match.py`,
+      `outline_section.py`, `plan_section.py`, `readiness_issues.py`,
+      `write_menu.py`, `export_document_dialog.py`,
+      `manuscript_exporter.py`, `chapter_move.py`; call lines in
+      `manuscript_editor.py` and `main_window.py`; `tests/test_one_look.py`;
+      the 7.4 brief and notes in 9.1 and F.6) and the Cydonia trial
+      (`scripts/tension_repeat_trial.py`, 7.2's addendum).
+- [ ] Commit round 11: 7.2 (`src/ai/scene_tension.py`,
+      `src/ai/scene_reading.py`, `src/ui/outline_section.py`,
+      `src/ai/readiness_checks/editor.py`, `src/ai/chapter_digest.py`,
+      `tests/test_scene_tension.py`, `tests/test_scene_reading.py`,
+      `tests/test_readiness_judge.py`, `scripts/tension_repeat_trial.py`,
+      the 7.2 brief and notes in 7.3, 8.1b, 8.3, F.6) and V.4's trial
+      (`scripts/voice_examples_model_trial.py`, the V.4 brief's addendum).
+- [ ] Commit D.11 (the old screens retired): `src/ui/secondary_window.py`
+      and `tests/test_promise_check_dialog.py` deleted; `screen_groups.py`,
+      `main_window.py`, `settings_dialog.py`, `manuscript_editor.py`,
+      `manuscript_tree.py`, `write_toolbar.py`, `analysis_menu.py`,
+      `src/ai/analysis_reports.py`, `improve.py`, `draft_editor_window.py`,
+      `scripts/screen_harness.py`; `tests/test_retire_old_screens.py` and
+      the changed tests; the D.11 brief and notes in 9.1 and U.3b.
 - [ ] Commit the Studio cards fix (`src/data/chapter_move.py`,
       `tests/test_chapter_move_studio.py`, the note in the F.0 and F.10
       briefs).
@@ -1400,6 +1545,7 @@ Write each answer in the README under *Decisions*, or tell the session.
       used) with it; the stored setting is left in place, unread. Say when,
       or keep the switch for good.
       *Answered 26 Nov: Retire once everything in section 1 is checked, in one piece with the other old screens, so nothing is there twice ("Retire the old screens", section 5).*
+      *Changed 26 Nov: retirement waits only on the four groups for the old screens (D.4, D.5, the One Improve window D.2b and D.2c, the manuscript tree D.10) and the 0.3 safety check; the rest of section 1 is checked before 9.1.*
 - [ ] **D.4: reopen windows at start-up?** A screen left in its own window
       comes back into its tab when the app restarts (as the Critique's
       window always has: 2.5 recorded it but nothing reopened it). Keep
@@ -1413,6 +1559,7 @@ Write each answer in the README under *Decisions*, or tell the session.
       old windows (`ProseAnalysisDialog`, `PromiseCheckDialog`) and that
       link. Say when.
       *Answered 26 Nov: Retire once everything in section 1 is checked, in one piece with the other old screens, so nothing is there twice ("Retire the old screens", section 5).*
+      *Changed 26 Nov: retirement waits only on the four groups for the old screens (D.4, D.5, the One Improve window D.2b and D.2c, the manuscript tree D.10) and the 0.3 safety check; the rest of section 1 is checked before 9.1.*
 - [ ] **D.5: the new reports in the full critique?** Promises, Prose
       profile fit, Character check, Plot vs plan and Writing hints run only
       from Analyze ▾ (and "Run again"). Adding them as tick boxes in
@@ -1629,6 +1776,7 @@ Write each answer in the README under *Decisions*, or tell the session.
       own small step (rule 11). Recommended: after a week of use on both
       projects.
       *Answered 26 Nov: Retire once everything in section 1 is checked, in one piece with the other old screens, so nothing is there twice ("Retire the old screens", section 5).*
+      *Changed 26 Nov: retirement waits only on the four groups for the old screens (D.4, D.5, the One Improve window D.2b and D.2c, the manuscript tree D.10) and the 0.3 safety check; the rest of section 1 is checked before 9.1.*
 - [ ] **6.2: order and undo.** Marks come before other line fixes of the
       same standing. Clearing a mark has no undo (like Dismiss on notes
       today). Both fine?
@@ -1836,6 +1984,100 @@ Write each answer in the README under *Decisions*, or tell the session.
       Dismiss → ✕), and wrap only if that still doesn't fit. Icon-only
       buttons stay only where they already are (🗑️). Applied in U.3b, to
       U.3a's rows too (the U.3b brief).* Built in U.3b (section 1).
+- [ ] **7.2: three things.** (a) **Which model the Critique uses.** With
+      no Critique model chosen, it falls back to your Plot model
+      (`model_for_plot`: Cydonia 24B, in `~/.creativeos/config.json`); the
+      tension proof ran on Gemma 4 26B (your main local model). Choose
+      Gemma for the Critique (Settings, one choice), or have a session rerun
+      the proof on Cydonia (app closed)? Recommended: rerun on Cydonia, so
+      the proof holds for the model you actually use.
+      *Answered 27 Nov: try Cydonia as well.* **Done 27 Nov: Cydonia fails
+      the bar, Gemma passes** (7.2's Outcome, addendum). Cydonia's tension
+      answers could be read only 29% of the time (it rates beats in its own
+      format and runs out of room); its judgement itself is steady. Its
+      scene outline is better (finer scenes, no fake scenes, Born in Blood
+      ch. 1 read correctly: 0 of 4 "changes nothing" against Gemma's 4 of
+      4), but it is about 7 times slower (about 80 s a chapter against 12).
+      With Cydonia today the app shows no tension and no check is affected,
+      but it asks the unreadable tension question again on every check
+      (about 19 s a chapter). Nothing changed. **Three answers needed:**
+      1. **Stop the wasted request:** remember "couldn't be read" with the
+         chapter's text, so a model that fails isn't asked again until the
+         chapter changes. Recommended: yes, a small fix.
+      2. **The Critique's model:** Gemma (tension works, about 7× faster)
+         or Cydonia (better scene reading, no tension). One model does both
+         (rule 2: no per-request model setting). Recommended: Gemma if the
+         tension curve matters to you; Cydonia if the outline matters more.
+      3. **A firmer tension prompt** (pre-filled answer line), then rerun
+         the proof on both models: later, optional. Recommended: yes, as a
+         small piece after 1, since it could give Cydonia tension too.
+      For (c), "changes nothing": with Cydonia it reads as plausible quiet
+      beats; Gemma's misreading caused the over-flagging. Recommended: keep
+      it on.
+      *Answered 27 Nov: 1. yes, stop the wasted request. 2. Tension
+      matters more, and the better substantive model matters; the model
+      stays yours to choose in Settings (the Critique's model; nothing
+      hard-wired). Until step 3 says otherwise, choose Gemma as the
+      Critique's local model there. 3. yes, a firmer prompt and a rerun on
+      both models. Queued after 7.4 (1 needs no model; 3 runs with the app
+      closed).* **Done 27 Nov (round 13):** 1 built; 3: both pass with the
+      new prompt (Gemma kappa 1.00 / 0.96, Cydonia 0.85 / 0.78; Cydonia only
+      uses 3 to 5, Gemma 2 to 5). **Your choice in Settings ▸ the Critique's
+      model:** Gemma (recommended: steadier, fuller curve, about 6× faster)
+      or Cydonia (finer scenes, no false "changes nothing"). Note: chapters
+      rated with the old prompt keep those ratings until they change, so a
+      book can mix the two (all within one point on Gemma).
+      (b) **Scene breaks.**
+      Your chapters have no break lines, so the outline and the chart see
+      one scene per chapter (the model found 1 to 6). Adding `***` between
+      scenes gives the chart a point per scene and plan matching more to go
+      on. Your call as the writer; nothing changes if you don't.
+      *Answered 27 Nov: add markers for scenes, but not in the text. Brief
+      written: [7.4 Scene markers](pieces/59b-7.4-scene-markers.md) (kept
+      beside the chapter; added from the outline's "Use the model's scenes"
+      or the right-click; shown as a margin line; exports unchanged unless
+      you tick "Mark scene breaks"). Built after the Cydonia run.*
+      (c) **"Scenes that change nothing"** over-flags on this model (all
+      four of Born in Blood ch. 1). Keep the check on, turn it off by
+      default, or decide after (a)? Recommended: decide after the Cydonia
+      rerun.
+- [ ] **7.4: four things.** (a) **Where "Scene break here" sits.** To keep
+      the right-click count at 7 / 11, More ▸ 📝 Add Annotation became a
+      submenu, More ▸ 📝 Note or scene break ▸ (Add Annotation, View
+      Annotations, Scene break here), counted as one 📝 group, as the
+      toolbar's 📝 is. Add Annotation is one level deeper on the right-click
+      (still one click on the toolbar and Ctrl+Shift+N). Keep that, or put
+      the scene entry straight in More ▸ and raise the baseline by one?
+      Recommended: keep. (b) **Publisher Ready** ignores markers (it has no
+      dialog). Always mark them there, or never? Recommended: always, since
+      a publisher-ready file should show scene changes. (c) **The export
+      tick** starts off each time. Remember your last choice? Recommended:
+      yes, per project. (d) **Older tension ratings** stay hidden for a
+      chapter once it is marked, until the next check with the model rates
+      the marked scenes. Fine? Recommended: fine.
+- [ ] **V.4: the real trial (information).** No measurable gain and no
+      harm (+0.007, within chance on 16 pairs). Keep V.4 as built?
+      Recommended: keep (it does what it was built for); revisit with your
+      own blind ratings later if you want proof.
+      *Answered 27 Nov: keep as built.*
+- [ ] **D.11: three things found while retiring.** (a) **Two old
+      windows kept in the code, with no way in:** the old Suggestions
+      (`PassageCritiqueDialog`) and Overly descriptive? (`ExpandStatementDialog`)
+      windows. The Improve window uses parts of their modules and about a
+      dozen tests check features through them. Delete them too (moving those
+      tests onto the Improve window)? Recommended: yes, in 9.1's sweep.
+      (b) **"Turn main manuscript into a novella…"** still uses the older
+      copy, check and delete move. Bring it onto D.10's move with Undo, like
+      "Move main chapters into this novella"? Recommended: yes, a small
+      piece. (c) **A bug that predates this:** a chapter's saved copies
+      (`backup_*.md`) are named to the second, so two saves in the same
+      second write the same file (the earlier copy of that second is lost;
+      rule 15). Fix it as a small piece (a unique name, nothing else
+      changes)? Recommended: yes, next.
+      *Answered 27 Nov: (a) delete every old window that can no longer be
+      reached (not waiting for 9.1). (b) yes, use the undoable move, and
+      warn people plainly about anything that cannot be undone. (c) yes,
+      fix the backup bug. Built as one piece, D.12 (round 14).*
 - [ ] **U.3b: three things.** (a) **The short words.** ⭐ Excellent →
       ⭐ Best, Save for training → Save, and in the Studio 🎤 Slides,
       📑 Export, ✨ Refine (the full words return when there is room and
@@ -1890,9 +2132,9 @@ The routine from the README, as a checklist:
 - [x] Two small fixes before the sweep (answered 26 Nov, section 3) — built 26 Nov, round 6: the grammar check's results handler that aborts in tests (a new module, call lines only in `enhanced_text_editor.py`); and the two old Rephrase slips (each rating stamped with the option you rated; "Auto-detect from text" back in the character-voice list; new rows only)
 - [x] Shared-folder warning (answered 26 Nov, section 3) — built 26 Nov, round 6 (Save As and a new project's first save; ordinary saves never ask): warn when a project is saved into a folder that already holds another project file, since the two could collide over chapter folders. Touches saving, so a small piece of its own (rule 15: nothing overwritten)
 - [x] [D.10](pieces/48f-D.10-manuscript-tree.md) — built 26 Nov, for review (section 1, "The manuscript tree (D.10)"). One manuscript tree on the left (your request, 26 Nov): manuscripts and novellas with their chapters in the left panel; chapters moved by drag-and-drop or right-click; the top row of manuscript tabs and Novellas ▾ go (behind a switch until retired). Before U.3, so the sweep sees the final Write screen
-- [x] [U.3a](pieces/50-U.3a-fit-and-scroll-sweep-the-screens-used-most.md) — built 26 Nov, for review (section 1, "Fit and scroll on the screens used most (U.3a)"); ("➕ Add Hierarchy" fixed there, section 3 D.8 (c)); then [U.3b](pieces/51-U.3b-fit-and-scroll-sweep-the-remaining-screens.md) — built 26 Nov, round 9, for review (section 1, "Fit and scroll on the remaining screens (U.3b)"): the main window fits 1024 × 600 again; 58 screens pass at all sizes; narrow rows shorten, then wrap. Left for an optional second session: about 80 windows the harness cannot open yet (its Outcome)
+- [x] [U.3a](pieces/50-U.3a-fit-and-scroll-sweep-the-screens-used-most.md) — built 26 Nov, for review (section 1, "Fit and scroll on the screens used most (U.3a)"); ("➕ Add Hierarchy" fixed there, section 3 D.8 (c)); then [U.3b](pieces/51-U.3b-fit-and-scroll-sweep-the-remaining-screens.md) — built 26 Nov, round 9, reviewed 27 Nov (section 1, "Fit and scroll on the remaining screens (U.3b)"): the main window fits 1024 × 600 again; 58 screens pass at all sizes; narrow rows shorten, then wrap. Left for an optional second session: about 80 windows the harness cannot open yet (its Outcome)
 - [x] Studio cards follow a moved chapter (answered 26 Nov, section 3) — built 26 Nov, round 9, for review (section 1, "Studio cards follow a moved chapter"; `chapter_move._retarget_studio`, `tests/test_chapter_move_studio.py`): when D.10's move gives a chapter a new id, the Studio's cards and decks for it take the new id too, and Undo puts them back. Small; touches the Studio's saved data, so rule 15 (nothing lost)
-- [ ] Retire the old screens, once everything in section 1 is checked (answered 26 Nov: avoid redundancy): the old manuscript tab row (D.10); the old ten tabs and Settings ▸ Main tabs (D.4); the older whole-manuscript move brought onto D.10's undoable chapter move (answered 26 Nov); the old analysis windows and "Show in a window (old)" (D.5); the old Rephrase, Suggestions and Overly descriptive? windows and Settings ▸ Features ▸ Improve window (D.2c). One piece; stored settings left in place, unread (rule 11); counts go down, never up
+- [x] [D.11](pieces/48g-D.11-retire-the-old-screens.md) Retire the old screens — built 26 Nov, round 10, reviewed 27 Nov (you tried it: it passes) (section 1, "The old screens retired (D.11)"). once the four groups for them in section 1 are checked (D.4, D.5, D.2b and D.2c, D.10) and the 0.3 safety check has run on both projects (answered 26 Nov: avoid redundancy; the gate narrowed to those groups the same day): the old manuscript tab row (D.10); the old ten tabs and Settings ▸ Main tabs (D.4); the older whole-manuscript move brought onto D.10's undoable chapter move (answered 26 Nov); the old analysis windows and "Show in a window (old)" (D.5); the old Rephrase, Suggestions and Overly descriptive? windows and Settings ▸ Features ▸ Improve window (D.2c). One piece; stored settings left in place, unread (rule 11); counts go down, never up
 
 **B. Better checks** (can run alongside A; no model needed)
 - [ ] [P.5](pieces/30-P.5-fix-or-hide-the-worst-checks.md) Fix or hide the worst checks (after step 2's report)
@@ -1909,7 +2151,7 @@ The routine from the README, as a checklist:
 - [x] [7.3](pieces/59-7.3-draft-beside-plan-and-the-tension-curve.md) Draft beside plan — built, for review (no-model tier)
 - [x] [6.1](pieces/55-6.1-listen-and-mark.md) Listen and mark — built, for review (untried with a real voice)
 - [x] [6.2](pieces/56-6.2-marks-become-notes.md) Marks become notes — built, for review
-- [ ] [9.1](pieces/60-9.1-final-sweep.md) Final sweep (last: after the old screens are retired and U.3)
+- [ ] [9.1](pieces/60-9.1-final-sweep.md) Final sweep (last: after the old screens are retired, U.3, and the rest of section 1 checked)
 - [x] [9.2](pieces/61-9.2-export-and-import-check.md) Export and import check — built, for review
 - [x] [P.8](pieces/36-P.8-character-analysis.md) Character analysis — built, for review (the arc part asks a model only when you click)
 
@@ -1925,7 +2167,9 @@ The routine from the README, as a checklist:
 
 **E. Needs a model** (run with the app closed, or on the server)
 - [ ] Try [8.2](pieces/65-8.2-editorial-letter.md) Editorial letter with a real model; it is built but untried
-- [ ] [7.2](pieces/58-7.2-reverse-outline-with-a-model.md) Reverse outline with a model (its two checks already exist)
+- [x] [7.4](pieces/59b-7.4-scene-markers.md) Scene markers kept beside the text — built 27 Nov, round 12, reviewed 27 Nov (section 1, "Scene markers (7.4)")
+- [x] Tension follow-ups — built 27 Nov, round 13, reviewed 27 Nov (7.2's Outcome, second addendum; Cydonia now passes with the firmer prompt): remember an unreadable tension answer per chapter text so it isn't asked again; a firmer tension prompt; rerun the proof on Gemma and Cydonia (app closed)
+- [x] [7.2](pieces/58-7.2-reverse-outline-with-a-model.md) Reverse outline with a model — built 26–27 Nov, round 11, for review (section 1, "The reverse outline with a model (7.2)"): tension proven (25 of 25 repeat ratings identical); scene readings and tension in the Critique's outline; the two checks were already on the scorecard. V.4's real trial ran in the same round (V.4's Outcome)
 - [x] [4.2](pieces/53-4.2-voice-drift.md) Voice drift (prove the measure first; drop it if it fails) — dropped 26 Nov at its gate: the measure cannot tell a model's rewrites from your prose; proof in `scripts/voice_drift_gate.py`
 - [x] [9.3](pieces/62-9.3-submission-package-and-marketability.md) Submission package and marketability — built 26 Nov, for review (untried with a real model; section 1, "The submission package (9.3)")
 

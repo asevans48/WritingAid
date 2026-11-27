@@ -412,12 +412,12 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 - [x] Two small fixes: the grammar check's results handler that aborts in tests; the two old Rephrase slips (S) — built 26 Nov (round 6)
 - [x] Shared-folder warning when saving a project beside another (S, touches saving) — built 26 Nov (round 6)
 - [x] [D.10](pieces/48f-D.10-manuscript-tree.md) One manuscript tree on the left: manuscripts, novellas and chapters in the left panel; drag-and-drop and right-click moves (M, added 26 Nov) — built 26 Nov, for review; the old tab row one switch away (Settings ▸ Features ▸ Manuscript tree)
-- [ ] Retire the old screens (and bring the older whole-manuscript move onto D.10's undoable move; D.10's manuscript tab row, D.4's ten tabs, D.5's old windows, the three old Improve windows and their switches), once the writer has checked everything (S, after U.3)
+- [x] [D.11](pieces/48g-D.11-retire-the-old-screens.md) Retire the old screens — built 26 Nov, reviewed 27 Nov: the ten-tab mode, the two old analysis windows, the old Improve paths and the manuscript tab row are gone with their three switches (stored settings left, unread); "Move main chapters into this novella" goes through D.10's undoable move; no count rose
 
 **Interface sweep (after U.2)**
 - [x] [U.3a](pieces/50-U.3a-fit-and-scroll-sweep-the-screens-used-most.md) Fit-and-scroll sweep: the screens used most (M) — built 26 Nov, for review: Write, the side panel, the Critique window, the stage chooser, the tree and Settings fit at 1024 × 600 and 150%; Video Studio and World left for U.3b
 - [x] Studio cards follow a moved chapter (S, small fix; answered 26 Nov) — built 26 Nov, for review: on an id clash, D.10's move points the Studio's cards, chapter decks, slide decks and chosen chapter at the new id when the chapter leaves the main manuscript (the Studio lists only main's chapters); Undo and a failed move restore them; no folder is renamed
-- [x] [U.3b](pieces/51-U.3b-fit-and-scroll-sweep-the-remaining-screens.md) Fit-and-scroll sweep: the remaining screens (M, repeatable) — built 26 Nov, for review: the main window fits 1024 × 600 again (Video Studio 1,407 → 216 px, World 545 → 170 px high); all 58 harness screens pass at all four sizes; narrow rows shorten, then wrap (U.3a's included); about 80 windows the harness cannot open yet are left for an optional second session
+- [x] [U.3b](pieces/51-U.3b-fit-and-scroll-sweep-the-remaining-screens.md) Fit-and-scroll sweep: the remaining screens (M, repeatable) — built 26 Nov, reviewed 27 Nov: the main window fits 1024 × 600 again (Video Studio 1,407 → 216 px, World 545 → 170 px high); all 58 harness screens pass at all four sizes; narrow rows shorten, then wrap (U.3a's included); about 80 windows the harness cannot open yet are left for an optional second session
 
 **After the path, in any order**
 - [x] [4.1](pieces/52-4.1-mark-as-intentional.md) Mark as intentional (S)
@@ -426,7 +426,8 @@ Work top to bottom within a group. A piece's file lists what it depends on.
 - [x] [6.1](pieces/55-6.1-listen-and-mark.md) Listen and mark (M)
 - [x] [6.2](pieces/56-6.2-marks-become-notes.md) Marks become notes (S)
 - [x] [7.1](pieces/57-7.1-reverse-outline-without-a-model.md) Reverse outline without a model (M) — built, for review
-- [ ] [7.2](pieces/58-7.2-reverse-outline-with-a-model.md) Reverse outline with a model (M, experimental)
+- [x] [7.4](pieces/59b-7.4-scene-markers.md) Scene markers kept beside the text (S–M; the writer's answer, 27 Nov) — built 27 Nov, reviewed 27 Nov: stored beside the chapter, never in the text; right-click, margin line, "Use the model's scenes", Undo; feeds the outline, tension and chart; export unchanged unless ticked
+- [x] [7.2](pieces/58-7.2-reverse-outline-with-a-model.md) Reverse outline with a model (M, experimental) — built 26–27 Nov, for review: tension proven stable on the on-device model (25 of 25 repeat ratings identical); the model's scenes and tension in the Critique's outline and chart
 - [x] [7.3](pieces/59-7.3-draft-beside-plan-and-the-tension-curve.md) Draft beside plan, and the tension curve (M) — built, for review: no-model tier; tension waits for 7.2
 - [ ] [9.1](pieces/60-9.1-final-sweep.md) Final sweep (M)
 - [x] [9.2](pieces/61-9.2-export-and-import-check.md) Export and import check (M) — built, for review

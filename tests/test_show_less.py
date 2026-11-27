@@ -45,22 +45,18 @@ def _visible_buttons(top):
             if b.isVisibleTo(top) and (b.text().strip() or not b.icon().isNull())]
 
 
-def test_the_write_screen_shows_19_buttons_not_24(me):
-    # D.10 folds Novellas ▾ into the manuscript tree (18 buttons there, see
-    # test_manuscript_tree); this counts D.7's arrangement, the tree switched off.
-    from src.ui import manuscript_tree
-    manuscript_tree.set_on(False)
+def test_the_write_screen_shows_18_buttons_not_24(me):
+    # D.7 made 24 into 19; D.10 folded Novellas ▾ into the manuscript tree,
+    # and D.11 retired it with the old row (its entries are the tree's).
     texts = [b.text() for b in _visible_buttons(me)]
-    assert len(texts) == 19, texts
-    for gone in ("＋ Novella", "⇢ Move main chapters…", "🗑 Drop novella", "↗", "📋"):
+    assert len(texts) == 18, texts
+    for gone in ("＋ Novella", "⇢ Move main chapters…", "🗑 Drop novella", "↗", "📋",
+                 "Novellas ▾"):
         assert gone not in texts
-    assert "Novellas ▾" in texts and "Drafts ▾" in texts and "⇅ Split View" in texts
+    assert "Drafts ▾" in texts and "⇅ Split View" in texts
 
 
 @pytest.mark.parametrize("menu_attr,label,button_attr", [
-    ("novellas_menu_btn", "＋ New novella…", "new_subproject_btn"),
-    ("novellas_menu_btn", "⇢ Move main chapters into a novella…", "move_to_novella_btn"),
-    ("novellas_menu_btn", "🗑 Drop a novella…", "drop_novella_btn"),
     ("drafts_menu_btn", "＋ Save the manuscript as a new draft", "new_draft_btn"),
     ("drafts_menu_btn", "🗑 Drop this draft…", "drop_draft_btn"),
     ("drafts_menu_btn", "↗ Open a draft in its own window…", "popout_draft_btn"),

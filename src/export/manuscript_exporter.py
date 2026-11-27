@@ -45,6 +45,14 @@ def _html_runs(text: str) -> str:
     return "".join(out)
 
 
+# A centred paragraph style for ODT's scene breaks (7.4, "Mark scene breaks" only).
+_ODT_CENTRE_NS = (' xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0"'
+                  ' xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:'
+                  'xsl-fo-compatible:1.0"')
+_ODT_CENTRE_STYLE = ('<office:automatic-styles><style:style style:name="SceneBreak" '
+                     'style:family="paragraph"><style:paragraph-properties '
+                     'fo:text-align="center"/></style:style></office:automatic-styles>')
+
 # Office / document formats offered to the writer, in menu order.
 # (key, label, extension). ``key`` is what ``export_document`` accepts.
 DOCUMENT_FORMATS = [
@@ -87,12 +95,16 @@ class ManuscriptExporter:
         fmt: str,
         chapters: Optional[List[Chapter]] = None,
         title_page: bool = True,
+        centre_breaks: bool = False,
     ) -> bool:
         """Export ``chapters`` (default: the whole manuscript) to
         ``output_path`` in ``fmt`` — one of ``docx``, ``rtf``,
         ``txt``, ``odt``, ``ods``. ``title_page`` adds the book title +
         author heading (used for whole-book exports, skipped for a
-        single chapter). Returns True on success.
+        single chapter). ``centre_breaks`` (the export dialog's "Mark
+        scene breaks", 7.4) centres each scene-break line, as a standard
+        manuscript does; off, the output is as before. Returns True on
+        success.
 
         Dependency-free: DOCX reuses python-docx (already a project
         dep); RTF, TXT, ODT and ODS are written directly, so no
@@ -111,11 +123,19 @@ class ManuscriptExporter:
         if writer is None:
             print(f"[export] unknown document format: {fmt}")
             return False
+        self._centre_breaks = bool(centre_breaks)
         try:
             return writer(output_path, chapters, title_page)
         except Exception as e:
             print(f"[export] {fmt} export failed: {e}")
             return False
+
+    def _centre(self) -> bool:
+        return bool(getattr(self, "_centre_breaks", False))
+
+    def _centred(self, para: str) -> bool:
+        """A scene-break line, centred (only with "Mark scene breaks", 7.4)."""
+        return self._centre() and is_scene_break(para)
 
     def _write_docx(
         self, output_path: str, chapters: List[Chapter],
@@ -137,7 +157,9 @@ class ManuscriptExporter:
             doc.add_heading(chapter.title or f"Chapter {i + 1}", 1)
             for para in _paragraphs(chapter.content):
                 style, text = get_line_style(para)
-                if style != MarkdownStyle.NORMAL:
+                if self._centred(para):
+                    doc.add_paragraph(para.strip()).alignment = WD_ALIGN_PARAGRAPH.CENTER
+                elif style != MarkdownStyle.NORMAL:
                     doc.add_paragraph(text.strip()).alignment = WD_ALIGN_PARAGRAPH.CENTER
                 else:
                     _add_runs(doc.add_paragraph(), para)
@@ -206,6 +228,9 @@ class ManuscriptExporter:
                 + r"\b0\fs24\par")
             for para in _paragraphs(chapter.content):
                 style, text = get_line_style(para)
+                if self._centred(para):
+                    parts.append(r"\qc " + esc(para.strip()) + r"\par\ql")
+                    continue
                 if style != MarkdownStyle.NORMAL:
                     parts.append(r"\qc " + esc(text.strip()) + r"\par\ql")
                     continue
@@ -243,6 +268,10 @@ class ManuscriptExporter:
                 + _xml_escape(chapter.title or f"Chapter {i + 1}")
                 + '</text:h>')
             for para in _paragraphs(chapter.content):
+                if self._centred(para):
+                    body.append('<text:p text:style-name="SceneBreak">'
+                                + _xml_escape(para.strip()) + '</text:p>')
+                    continue
                 body.append(
                     '<text:p>' + _xml_escape(strip_markdown(para)) + '</text:p>')
         content = (
@@ -251,8 +280,10 @@ class ManuscriptExporter:
             'xmlns:office="urn:oasis:names:tc:opendocument:xmlns:'
             'office:1.0" '
             'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:'
-            'text:1.0" office:version="1.2">'
-            '<office:body><office:text>'
+            'text:1.0"' + (_ODT_CENTRE_NS if self._centre() else '')
+            + ' office:version="1.2">'
+            + (_ODT_CENTRE_STYLE if self._centre() else '')
+            + '<office:body><office:text>'
             + "".join(body) +
             '</office:text></office:body></office:document-content>')
         self._write_odf_zip(
@@ -283,7 +314,8 @@ class ManuscriptExporter:
                      cell("Content")])]
         for i, ch in enumerate(chapters):
             text = "\n\n".join(strip_markdown(p) for p in _paragraphs(ch.content))
-            words = str(len((ch.content or "").split()))
+            words = str(len((ch.content or "").split()) - sum(   # 7.4: a "#" is not a word
+                1 for p in _paragraphs(ch.content) if self._centred(p)))
             rows.append(row([
                 cell(ch.title or f"Chapter {i + 1}"),
                 cell(words, numeric=True),

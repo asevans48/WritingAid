@@ -35,14 +35,28 @@ def _digest(ctx: CheckContext):
     def make():
         from src.ai import chapter_digest
         try:
-            return chapter_digest.for_book(ctx.book).ensure(ctx.llm, ctx.chapter, ctx.text,
-                                                            _compact(ctx.llm))
+            found = chapter_digest.for_book(ctx.book).ensure(ctx.llm, ctx.chapter, ctx.text,
+                                                             _compact(ctx.llm))
         except Exception as e:
             return e
+        _tension(ctx)
+        return found
     found = ctx._lazy("chapter_digest", make)
     if isinstance(found, Exception):
         raise found
     return found
+
+
+def _tension(ctx: CheckContext) -> None:
+    """With the outline, each scene's tension for the outline's chart (7.2):
+    one more request, made once per version of the chapter. Never fails the
+    outline's checks."""
+    try:
+        from src.ai import scene_tension
+        scene_tension.ensure(ctx.llm, ctx.book.project, ctx.book.scope, ctx.chapter, ctx.text,
+                             _compact(ctx.llm))
+    except Exception as e:
+        print(f"[tension] not rated: {e}")
 
 
 NEEDS = CheckOutput(message="Needs the model to outline the chapter.")

@@ -198,10 +198,6 @@ class ChapterEditor(QWidget):
     consistency_requested = pyqtSignal()
     # Analyze ▸ Critique this chapter — MainWindow runs it in the Critique tab.
     chapter_critique_requested = pyqtSignal()
-    _prose_analysis_ready = pyqtSignal(str)  # Signal to deliver prose analysis result to main thread
-    _character_analysis_ready = pyqtSignal(str)
-    _world_analysis_ready = pyqtSignal(str)
-    _plot_analysis_ready = pyqtSignal(str)
 
     def __init__(self, chapter: Chapter, project=None,
                  manuscript: Optional[Manuscript] = None,
@@ -222,10 +218,6 @@ class ChapterEditor(QWidget):
         self.project = project
         self.manuscript = manuscript
         self._llm_client = None
-        self._prose_analysis_ready.connect(self._on_prose_analysis_complete)
-        self._character_analysis_ready.connect(self._on_character_analysis_complete)
-        self._world_analysis_ready.connect(self._on_world_analysis_complete)
-        self._plot_analysis_ready.connect(self._on_plot_analysis_complete)
         self._init_ui()
         self._init_ai()
         self._load_chapter()
@@ -493,6 +485,7 @@ class ChapterEditor(QWidget):
 
         editor_container.addWidget(self.annotation_margin)
         editor_container.addWidget(self.editor)
+        from src.ui import scene_marks_ui; scene_marks_ui.install(self)  # 7.4: scene markers' margin line
 
         # "Where you left off" — one line above the text (see Companion tab).
         from src.ui.companion_panel import CompanionBanner
@@ -1574,24 +1567,8 @@ class ChapterEditor(QWidget):
         selected = cursor.selectedText()
         if not selected.strip():
             return
-        from src.ui import improve      # the one Improve window (D.2c), or the old one
-        if improve.merged():
-            improve.rephrase(self, cursor, instruction=hint, chapter=self.chapter)
-            return
-        doc_text = self.editor.toPlainText()
-        from src.ui.rephrase_dialog import RephraseDialog
-        from src.ai.passage_critique import qt_to_py_index
-        dialog = RephraseDialog(selected, self.project, self,
-                                surrounding_context=(doc_text[max(0, start - 500):start],
-                                                     doc_text[end:end + 500]),
-                                chapter_content=doc_text, chapter=self.chapter,
-                                instruction=hint,
-                                text_before=doc_text[:qt_to_py_index(doc_text, start)])
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            replacement = dialog.get_selected_text()
-            if replacement:
-                cursor.insertText(self._tidy_replacement(cursor.selectedText(), replacement,
-                                                         doc_text))
+        from src.ui import improve      # the one Improve window (D.2c, D.11)
+        improve.rephrase(self, cursor, instruction=hint, chapter=self.chapter)
 
     def _recheck_writing(self):
         """Rerun all on-demand checks on the chapter."""
@@ -1641,32 +1618,8 @@ class ChapterEditor(QWidget):
                 "Please select some text to rephrase."
             )
             return
-        from src.ui import improve      # the one Improve window (D.2c), or the old one
-        if improve.merged():
-            improve.rephrase(self, cursor, chapter=self.chapter)
-            return
-
-        # Extract surrounding text for context (up to ~500 chars before and after)
-        doc_text = self.editor.toPlainText()
-        sel_start = cursor.selectionStart()
-        sel_end = cursor.selectionEnd()
-        ctx_before = doc_text[max(0, sel_start - 500):sel_start]
-        ctx_after = doc_text[sel_end:sel_end + 500]
-        surrounding_context = (ctx_before, ctx_after)
-
-        # Open rephrase dialog
-        from src.ui.rephrase_dialog import RephraseDialog
-        from src.ai.passage_critique import qt_to_py_index
-        dialog = RephraseDialog(selected_text, self.project, self,
-                                surrounding_context=surrounding_context,
-                                chapter_content=doc_text,
-                                chapter=self.chapter,
-                                text_before=doc_text[:qt_to_py_index(doc_text, sel_start)])
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            replacement = dialog.get_selected_text()
-            if replacement:
-                cursor.insertText(self._tidy_replacement(cursor.selectedText(), replacement,
-                                                         doc_text))
+        from src.ui import improve      # the one Improve window (D.2c, D.11)
+        improve.rephrase(self, cursor, chapter=self.chapter)
 
     def _tidy_replacement(self, original: str, replacement: str, doc_text: str) -> str:
         """Paragraph a rewrite like the chapter (blank line between paragraphs
@@ -1699,15 +1652,8 @@ class ChapterEditor(QWidget):
         doc_text = self.editor.toPlainText()
         if not doc_text[start:end].strip():
             return False
-        from src.ui import improve      # the one Improve window (D.2b), or the old one
-        if improve.merged():
-            return improve.open(self, "suggestions", doc_text, start, end, selection=selection, focus=focus)
-        from src.ui.passage_critique_dialog import PassageCritiqueDialog
-        dialog = PassageCritiqueDialog(doc_text, start, end, self.project, self.chapter,
-                                       self, selection=selection, focus=focus)
-        if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.replacement:
-            return False
-        return self._replace_span(doc_text, start, end, dialog.replacement, "Suggestions")
+        from src.ui import improve      # the one Improve window (D.2b, D.11)
+        return improve.open(self, "suggestions", doc_text, start, end, selection=selection, focus=focus)
 
     def _expand_selection(self):
         """Overly descriptive statements in the highlighted text (widened
@@ -1730,14 +1676,8 @@ class ChapterEditor(QWidget):
         doc_text = self.editor.toPlainText()
         if not doc_text[start:end].strip():
             return False
-        from src.ui import improve      # the one Improve window (D.2b), or the old one
-        if improve.merged():
-            return improve.open(self, "expand", doc_text, start, end)
-        from src.ui import overdescription_panel as op
-        dialog = op.ExpandStatementDialog(doc_text, start, end, self.project, self.chapter, self)
-        if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.replacement:
-            return False
-        return self._replace_span(doc_text, start, end, dialog.replacement, "Overly descriptive")
+        from src.ui import improve      # the one Improve window (D.2b, D.11)
+        return improve.open(self, "expand", doc_text, start, end)
 
     def _replace_span(self, doc_text: str, start: int, end: int, replacement: str,
                       tool: str) -> bool:
@@ -1795,293 +1735,6 @@ class ChapterEditor(QWidget):
         """Writing hints for the chapter: a report in the Critique (D.5)."""
         from src.ui import analysis_menu
         analysis_menu.run(self, "hints")
-
-    def _check_promises(self):
-        """Check chapter against story promises and character consistency."""
-        if not self.project:
-            QMessageBox.warning(
-                self,
-                "No Project",
-                "Please save the project first to enable promise checking."
-            )
-            return
-
-        # Get promises and characters from project
-        promises = []
-        if hasattr(self.project, 'story_planning') and self.project.story_planning:
-            for p in self.project.story_planning.promises:
-                promises.append({
-                    'promise_type': p.promise_type,
-                    'title': p.title,
-                    'description': p.description,
-                    'related_characters': p.related_characters
-                })
-
-        characters = []
-        if hasattr(self.project, 'characters'):
-            for c in self.project.characters:
-                characters.append({
-                    'name': c.name,
-                    'character_type': c.character_type,
-                    'personality': c.personality,
-                    'backstory': c.backstory
-                })
-
-        if not promises and not characters:
-            notify.empty(
-                self,
-                "No Promises Defined",
-                "No story promises or characters defined.\n\n"
-                "Add promises in Story Planning > Promises tab,\n"
-                "and add characters in the Characters section."
-            )
-            return
-
-        # Get chapter content
-        chapter_content = self.editor.toPlainText()
-        if not chapter_content.strip():
-            QMessageBox.warning(self, "Empty Chapter", "Please write some content first.")
-            return
-
-        # Get plot outline if available
-        plot_outline = ""
-        if hasattr(self.project, 'story_planning') and self.project.story_planning:
-            plot_outline = self.project.story_planning.main_plot
-
-        # Show the promise check dialog
-        dialog = PromiseCheckDialog(
-            chapter_title=self.chapter.title,
-            chapter_content=chapter_content,
-            promises=promises,
-            characters=characters,
-            plot_outline=plot_outline,
-            parent=self
-        )
-        dialog.exec()
-
-    def _analyze_prose(self):
-        """Analyze the tone, style, and voice of the current chapter using AI."""
-        text = self.editor.toPlainText()
-        if not text.strip():
-            QMessageBox.warning(self, "Empty Chapter", "Please write some content first.")
-            return
-
-        from src.ai import analysis_prompts        # the prompt, shared with the Critique (D.5)
-        prompt = analysis_prompts.prose_prompt(self.project, text)
-
-        # Show a progress indicator
-        self._prose_analysis_dialog = ProseAnalysisDialog(
-            chapter_title=self.chapter.title, parent=self)
-        self._prose_analysis_dialog.show()
-        self._prose_analysis_dialog.set_loading()
-
-        # Run AI request in background thread
-        import threading
-
-        def run_analysis():
-            try:
-                # Route through the same AI handler as chapter planner
-                # Walk up to find ManuscriptEditor for the AI handler
-                handler = self._get_ai_handler()
-                if handler:
-                    result = handler(prompt, "Auto")
-                else:
-                    result = self._fallback_local_analysis(prompt)
-
-                self._prose_analysis_ready.emit(result)
-
-            except Exception as e:
-                self._prose_analysis_ready.emit(f"Analysis failed: {str(e)}")
-
-        thread = threading.Thread(target=run_analysis, daemon=True)
-        thread.start()
-
-    def _get_ai_handler(self):
-        """Find the AI handler by walking up to the ManuscriptEditor."""
-        parent = self.parent()
-        while parent:
-            if hasattr(parent, '_handle_planner_ai_request'):
-                return parent._handle_planner_ai_request
-            parent = parent.parent() if hasattr(parent, 'parent') else None
-        return None
-
-    def _fallback_local_analysis(self, prompt: str) -> str:
-        """Fallback to local model if no handler found."""
-        try:
-            from src.ai.rephrasing_agent import RephrasingAgent
-            from src.config.ai_config import get_ai_config
-            config = get_ai_config()
-            settings = config.get_settings()
-            model_id = settings.get("reasoning_model_id") or settings.get("storytelling_model_id") or settings.get("local_model_id")
-            if not model_id:
-                return "No AI model configured. Please set up a model in Settings > Hugging Face / Local Models."
-            agent = RephrasingAgent()
-            agent.local_model_id = model_id
-            return agent._generate_local(prompt, max_tokens=2048)
-        except Exception as e:
-            return f"Local model error: {str(e)}"
-
-    def _on_prose_analysis_complete(self, result: str):
-        """Handle prose analysis result on the main thread."""
-        if hasattr(self, '_prose_analysis_dialog') and self._prose_analysis_dialog:
-            self._prose_analysis_dialog.set_result(result)
-
-    # ------------------------------------------------------------------
-    # Character Analysis
-    # ------------------------------------------------------------------
-
-    def _get_chapter_sample(self):
-        """Get chapter text, sampling if very long. Returns (sample, note) or None."""
-        from src.ai import analysis_prompts
-        result = analysis_prompts.chapter_sample(self.editor.toPlainText())
-        if result is None:
-            QMessageBox.warning(self, "Empty Chapter", "Please write some content first.")
-        return result
-
-    def _build_character_context(self):
-        """Build character reference data from the project (analysis_prompts, D.5)."""
-        from src.ai import analysis_prompts
-        return analysis_prompts.character_context(self.project)
-
-    def _analyze_characters(self):
-        """Analyze character consistency against character profiles. The old
-        window: since D.5 Analyze ▾ runs it in the Critique."""
-        if self._get_chapter_sample() is None:
-            return
-        from src.ai import analysis_prompts
-        prompt = analysis_prompts.character_prompt(self.project, self.chapter, self.editor.toPlainText())
-        if prompt is None:
-            QMessageBox.warning(
-                self, "No Characters",
-                "No characters defined in the project. Add characters first.")
-            return
-
-        self._character_analysis_dialog = ProseAnalysisDialog(
-            chapter_title=f"Character Analysis - {self.chapter.title}", parent=self)
-        self._character_analysis_dialog.show()
-        self._character_analysis_dialog.set_loading()
-
-        import threading
-
-        def run_analysis():
-            try:
-                handler = self._get_ai_handler()
-                if handler:
-                    result = handler(prompt, "Auto")
-                else:
-                    result = self._fallback_local_analysis(prompt)
-                self._character_analysis_ready.emit(result)
-            except Exception as e:
-                self._character_analysis_ready.emit(f"Analysis failed: {str(e)}")
-
-        thread = threading.Thread(target=run_analysis, daemon=True)
-        thread.start()
-
-    def _on_character_analysis_complete(self, result: str):
-        """Handle character analysis result."""
-        if hasattr(self, '_character_analysis_dialog') and self._character_analysis_dialog:
-            self._character_analysis_dialog.set_result(result)
-
-    # ------------------------------------------------------------------
-    # World Analysis
-    # ------------------------------------------------------------------
-
-    def _build_world_context(self):
-        """Build worldbuilding reference data from the project (analysis_prompts, D.5)."""
-        from src.ai import analysis_prompts
-        return analysis_prompts.world_context(self.project)
-
-    def _analyze_world(self):
-        """Analyze worldbuilding consistency in this chapter. The old window:
-        since D.5 Analyze ▾ runs the Worldbuilding report in the Critique."""
-        if self._get_chapter_sample() is None:
-            return
-        from src.ai import analysis_prompts
-        prompt = analysis_prompts.world_prompt(self.project, self.chapter, self.editor.toPlainText())
-        if prompt is None:
-            QMessageBox.warning(
-                self, "No Worldbuilding",
-                "No worldbuilding data defined in the project. Add places, factions, or other elements first.")
-            return
-
-        self._world_analysis_dialog = ProseAnalysisDialog(
-            chapter_title=f"World Analysis - {self.chapter.title}", parent=self)
-        self._world_analysis_dialog.show()
-        self._world_analysis_dialog.set_loading()
-
-        import threading
-
-        def run_analysis():
-            try:
-                handler = self._get_ai_handler()
-                if handler:
-                    result = handler(prompt, "Auto")
-                else:
-                    result = self._fallback_local_analysis(prompt)
-                self._world_analysis_ready.emit(result)
-            except Exception as e:
-                self._world_analysis_ready.emit(f"Analysis failed: {str(e)}")
-
-        thread = threading.Thread(target=run_analysis, daemon=True)
-        thread.start()
-
-    def _on_world_analysis_complete(self, result: str):
-        """Handle world analysis result."""
-        if hasattr(self, '_world_analysis_dialog') and self._world_analysis_dialog:
-            self._world_analysis_dialog.set_result(result)
-
-    # ------------------------------------------------------------------
-    # Plot Analysis
-    # ------------------------------------------------------------------
-
-    def _build_plot_context(self):
-        """Build plot reference data from the project (analysis_prompts, D.5)."""
-        from src.ai import analysis_prompts
-        return analysis_prompts.plot_context(self.project)
-
-    def _build_chapter_plan_context(self):
-        """Build the chapter-specific planning context (analysis_prompts, D.5)."""
-        from src.ai import analysis_prompts
-        return analysis_prompts.chapter_plan_context(self.chapter)
-
-    def _analyze_plot(self):
-        """Analyze plot adherence and pacing against story plan. The old
-        window: since D.5 Analyze ▾ runs it in the Critique."""
-        if self._get_chapter_sample() is None:
-            return
-        from src.ai import analysis_prompts
-        prompt = analysis_prompts.plot_prompt(self.project, self.chapter, self.editor.toPlainText())
-        if prompt is None:
-            QMessageBox.warning(
-                self, "No Plot Data",
-                "No story planning or chapter plan defined. Add a main plot, events, or chapter plan first.")
-            return
-
-        self._plot_analysis_dialog = ProseAnalysisDialog(
-            chapter_title=f"Plot Analysis - {self.chapter.title}", parent=self)
-        self._plot_analysis_dialog.show()
-        self._plot_analysis_dialog.set_loading()
-
-        import threading
-
-        def run_analysis():
-            try:
-                handler = self._get_ai_handler()
-                if handler:
-                    result = handler(prompt, "Auto")
-                else:
-                    result = self._fallback_local_analysis(prompt)
-                self._plot_analysis_ready.emit(result)
-            except Exception as e:
-                self._plot_analysis_ready.emit(f"Analysis failed: {str(e)}")
-
-        thread = threading.Thread(target=run_analysis, daemon=True)
-        thread.start()
-
-    def _on_plot_analysis_complete(self, result: str):
-        """Handle plot analysis result."""
-        if hasattr(self, '_plot_analysis_dialog') and self._plot_analysis_dialog:
-            self._plot_analysis_dialog.set_result(result)
 
     def _lookup_selected_text(self, text: str):
         """Look up context for selected text."""
@@ -3335,48 +2988,12 @@ class ManuscriptEditor(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Subproject tabs — the main manuscript plus one tab per novella
-        # sharing this project's worldbuilding, characters and plot.
-        tabs_row = QHBoxLayout()
-        tabs_row.setContentsMargins(12, 6, 12, 0)
-        tabs_row.setSpacing(4)
-        self.subproject_tabs = QTabBar()
-        self.subproject_tabs.setExpanding(False)
-        self.subproject_tabs.setDocumentMode(True)
-        self.subproject_tabs.setElideMode(Qt.TextElideMode.ElideRight)
-        self.subproject_tabs.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.subproject_tabs.customContextMenuRequested.connect(
-            self._show_subproject_tab_menu)
+        # The manuscript tabs (the main manuscript plus one per novella) are
+        # kept, never shown: the manuscript tree (D.10) drives them, and the
+        # row they sat in, with its novella buttons, was retired in D.11.
+        self.subproject_tabs = QTabBar(self)
+        self.subproject_tabs.setVisible(False)
         self.subproject_tabs.currentChanged.connect(self._on_subproject_tab_changed)
-        tabs_row.addWidget(self.subproject_tabs)
-        self.new_subproject_btn = QToolButton()
-        self.new_subproject_btn.setText("＋ Novella")
-        self.new_subproject_btn.setToolTip(
-            "Start a new novella in this project's universe.\n"
-            "It gets its own chapters; worldbuilding, characters and\n"
-            "plot planning are shared with the rest of the project.")
-        self.new_subproject_btn.setStyleSheet("font-size: 11px; padding: 2px 6px;")
-        self.new_subproject_btn.clicked.connect(self._create_subproject)
-        tabs_row.addWidget(self.new_subproject_btn)
-        self.move_to_novella_btn = QToolButton()
-        self.move_to_novella_btn.setText("⇢ Move main chapters…")
-        self.move_to_novella_btn.setToolTip(
-            "Move every chapter (and draft) of the main manuscript into a\n"
-            "new novella or an existing one. The files are moved, not\n"
-            "copied — the main tab is empty afterwards.")
-        self.move_to_novella_btn.setStyleSheet("font-size: 11px; padding: 2px 6px;")
-        self.move_to_novella_btn.clicked.connect(self._move_main_chapters_clicked)
-        tabs_row.addWidget(self.move_to_novella_btn)
-        self.drop_novella_btn = QToolButton()
-        self.drop_novella_btn.setText("🗑 Drop novella")
-        self.drop_novella_btn.setToolTip(
-            "Drop a novella and its content from the project (archived or\n"
-            "erased permanently — you choose).")
-        self.drop_novella_btn.setStyleSheet("font-size: 11px; padding: 2px 6px;")
-        self.drop_novella_btn.clicked.connect(self._drop_novella_clicked)
-        tabs_row.addWidget(self.drop_novella_btn)
-        tabs_row.addStretch()
-        layout.addLayout(tabs_row)
 
         # Minimal header - compact
         header_layout = QHBoxLayout()
@@ -4505,18 +4122,7 @@ class ManuscriptEditor(QWidget):
             while tabs.count():
                 tabs.removeTab(0)
             if not self.project or not hasattr(self.project, 'subprojects'):
-                tabs.setVisible(False)
-                for b in (self.new_subproject_btn, self.move_to_novella_btn,
-                          self.drop_novella_btn):
-                    b.setEnabled(False)
                 return
-            tabs.setVisible(True)
-            # Always enabled with a project open — the handlers explain
-            # when there's nothing to move / drop (chapter edits don't
-            # refresh this bar, so state-based disabling would go stale).
-            for b in (self.new_subproject_btn, self.move_to_novella_btn,
-                      self.drop_novella_btn):
-                b.setEnabled(True)
             main = self.project.get_main_manuscript()
             idx = tabs.addTab(f"📖 {main.title or 'Main Manuscript'}")
             tabs.setTabData(idx, "")
@@ -4756,93 +4362,10 @@ class ManuscriptEditor(QWidget):
         return self._create_novella_from_main(name, description)
 
     def _move_main_into_existing(self, sp_id: str):
-        """Move the main manuscript into an existing, still-empty novella."""
-        sp = self.project.get_subproject(sp_id)
-        main = self.project.get_main_manuscript()
-        if sp is None or not main.chapters:
-            return
-        after = (f" They'll follow its {len(sp.manuscript.chapters)} existing "
-                 f"chapter(s)." if sp.manuscript.chapters else "")
-        reply = QMessageBox.question(
-            self, "Move chapters",
-            f"Move the main manuscript's {len(main.chapters)} chapter(s) and "
-            f"{len(self.project.drafts_for_scope(None))} draft(s) into "
-            f"'{sp.name}'?{after}\n\nThe files are moved, not copied — the main "
-            f"tab will be empty afterwards. A copy of the project file is kept "
-            f"as a backup.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No)
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-        # The move happens from the main tab.
-        if self.project.active_subproject_id is not None:
-            self.switch_subproject(None)
-        self._flush_current_chapter()
-        self._sync_active_draft_out()
-        self._release_main_editor()
-        try:
-            moved = self.project.move_main_content_to_subproject(
-                sp.id, project_file=self.project.project_path or None)
-        except Exception as e:
-            self.load_manuscript(self.project.manuscript)
-            QMessageBox.critical(
-                self, "Move Failed",
-                f"The chapters could not be moved, so nothing was changed:\n{e}")
-            return
-        self.load_manuscript(self.project.manuscript)
-        self.subprojects_changed.emit()
-        self.switch_subproject(sp.id)
-        QMessageBox.information(
-            self, "Chapters Moved",
-            f"Moved {moved} chapter(s) into '{sp.name}'. The main manuscript "
-            f"tab is now empty.")
-        self._warn_cleanup_leftovers()
-
-    def _move_main_chapters_clicked(self):
-        """Toolbar: move the main manuscript into a new or existing novella."""
-        if not self.project:
-            return
-        main = self.project.get_main_manuscript()
-        if not main.chapters:
-            notify.empty(self, "Nothing to Move",
-                                    "The main manuscript has no chapters.")
-            return
-        if not self.project.subprojects:
-            self._turn_main_into_novella()
-            return
-        new_label = "＋ A new novella…"
-        labels = [new_label] + [
-            f"{sp.name} ({len(sp.manuscript.chapters)} chapter(s))"
-            for sp in self.project.subprojects]
-        choice, ok = QInputDialog.getItem(
-            self, "Move Main Chapters",
-            f"Move the main manuscript's {len(main.chapters)} chapter(s) into:",
-            labels, 0, False)
-        if not ok:
-            return
-        if choice == new_label:
-            self._turn_main_into_novella()
-        else:
-            sp = self.project.subprojects[labels.index(choice) - 1]
-            self._move_main_into_existing(sp.id)
-
-    def _drop_novella_clicked(self):
-        """Toolbar: drop the novella in focus, or pick one."""
-        if not self.project:
-            return
-        if not self.project.subprojects:
-            notify.empty(self, "No Novellas",
-                                    "This project has no novellas to drop.")
-            return
-        sp_id = self.project.active_subproject_id
-        if sp_id is None:
-            labels = [sp.name for sp in self.project.subprojects]
-            choice, ok = QInputDialog.getItem(
-                self, "Drop Novella", "Drop which novella?", labels, 0, False)
-            if not ok:
-                return
-            sp_id = self.project.subprojects[labels.index(choice)].id
-        self._delete_subproject(sp_id)
+        """Move every main chapter into an existing novella, with Undo
+        (D.11: through the manuscript tree's move, not a copy)."""
+        from src.ui import manuscript_tree
+        return manuscript_tree.move_main_into(self, sp_id)
 
     def _warn_cleanup_leftovers(self):
         """Tell the user about folders a move/drop couldn't delete."""
@@ -4887,61 +4410,6 @@ class ManuscriptEditor(QWidget):
                 shutil.rmtree(folder, ignore_errors=True)
         self.subprojects_changed.emit()
         self._refresh_subproject_tabs()
-
-    def _show_subproject_tab_menu(self, pos):
-        if not self.project or not hasattr(self.project, 'subprojects'):
-            return
-        index = self.subproject_tabs.tabAt(pos)
-        if index < 0:
-            return
-        sp_id = self.subproject_tabs.tabData(index) or None
-        menu = QMenu(self)
-        from src.ai.continuity_analysis import has_cross_manuscript_content
-        label = self.project.scope_label(sp_id)
-        critique_action = menu.addAction(
-            f"🧐 Critique {'main manuscript' if sp_id is None else 'this novella'} “{label}”…")
-        project_critique_action = continuity_action = None
-        if sp_id is None and has_cross_manuscript_content(self.project):
-            project_critique_action = menu.addAction(
-                "🧐 Critique main project + continuity across novellas…")
-            continuity_action = menu.addAction("🔗 Check continuity across novellas…")
-        menu.addSeparator()
-        rename_action = menu.addAction("Rename…")
-        desc_action = delete_action = move_action = turn_action = None
-        if sp_id is None and self.project.get_main_manuscript().chapters:
-            turn_action = menu.addAction("Turn main manuscript into a novella…")
-        if sp_id is not None:
-            desc_action = menu.addAction("Edit description…")
-            sp = self.project.get_subproject(sp_id)
-            main = self.project.get_main_manuscript()
-            if sp is not None and main.chapters:
-                move_action = menu.addAction(
-                    f"Move main chapters into this novella ({len(main.chapters)})…")
-            menu.addSeparator()
-            delete_action = menu.addAction("Drop novella and its content…")
-        menu.addSeparator()
-        new_action = menu.addAction("＋ New novella…")
-        chosen = menu.exec(self.subproject_tabs.mapToGlobal(pos))
-        if chosen is None:
-            return
-        if chosen is critique_action:
-            self.manuscript_critique_requested.emit(sp_id or "", False)
-        elif chosen is project_critique_action:
-            self.manuscript_critique_requested.emit("", True)
-        elif chosen is continuity_action:
-            self.manuscript_critique_requested.emit("__continuity__", True)
-        elif chosen is rename_action:
-            self._rename_subproject(sp_id)
-        elif chosen is desc_action:
-            self._edit_subproject_description(sp_id)
-        elif chosen is delete_action:
-            self._delete_subproject(sp_id)
-        elif chosen is move_action:
-            self._move_main_into_existing(sp_id)
-        elif chosen is turn_action:
-            self._turn_main_into_novella()
-        elif chosen is new_action:
-            self._create_subproject()
 
     def _rename_subproject(self, sp_id: Optional[str]):
         if sp_id is None:
@@ -5602,326 +5070,6 @@ class ManuscriptEditor(QWidget):
         cursor.endEditBlock()
 
         return count
-
-
-class ProseAnalysisDialog(QDialog):
-    """Scrollable, copyable dialog for displaying prose analysis results."""
-
-    def __init__(self, chapter_title: str = "", parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(f"Prose Analysis - {chapter_title}" if chapter_title else "Prose Analysis")
-        self.setMinimumSize(650, 500)
-        self.resize(750, 600)
-
-        layout = QVBoxLayout(self)
-        layout.setSpacing(8)
-
-        # Header
-        header = QLabel(f"Prose Analysis: {chapter_title}")
-        header.setStyleSheet("font-weight: bold; font-size: 14px; padding: 4px;")
-        layout.addWidget(header)
-
-        # Results area - scrollable and copyable
-        self._results = QTextEdit()
-        self._results.setReadOnly(True)
-        self._results.setFont(QFont(SYSTEM_FONT, 11))
-        self._results.setStyleSheet(f"QTextEdit {{ border: 1px solid {PALETTE['border_strong']}; border-radius: 6px;"
-                                    f" padding: 12px; background-color: {PALETTE['surface']}; line-height: 1.6; }}")
-        layout.addWidget(self._results)
-
-        # Bottom buttons
-        btn_bar = QHBoxLayout()
-        btn_bar.addStretch()
-
-        copy_btn = QPushButton("Copy to Clipboard")
-        copy_btn.setStyleSheet(PRIMARY_BUTTON)
-        copy_btn.clicked.connect(self._copy_results)
-        btn_bar.addWidget(copy_btn)
-
-        close_btn = QPushButton("Close")
-        plain(close_btn, 12, "8px 16px")
-        close_btn.clicked.connect(self.close)
-        btn_bar.addWidget(close_btn)
-
-        layout.addLayout(btn_bar)
-
-    def set_loading(self):
-        """Show a loading state."""
-        self._results.setHtml(
-            f'<div style="text-align: center; padding: 40px; color: {PALETTE["ink_faint"]};">'
-            '<p style="font-size: 16px;">Analyzing prose...</p>'
-            '<p style="font-size: 12px;">This may take a moment depending on your AI model.</p>'
-            '</div>'
-        )
-
-    def set_result(self, text: str):
-        """Display the analysis result with markdown-like formatting."""
-        # Convert markdown headers and bold to HTML for display
-        html = self._markdown_to_html(text)
-        self._results.setHtml(html)
-
-    def _markdown_to_html(self, text: str) -> str:
-        """Convert basic markdown to HTML for display."""
-        import re
-        lines = text.split('\n')
-        html_lines = []
-        in_list = False
-
-        for line in lines:
-            stripped = line.strip()
-
-            # Headers
-            if stripped.startswith('## '):
-                if in_list:
-                    html_lines.append('</ul>')
-                    in_list = False
-                html_lines.append(
-                    f'<h3 style="color: {PALETTE["primary_dark"]}; margin-top: 16px; margin-bottom: 4px;">'
-                    f'{stripped[3:]}</h3>')
-                continue
-            if stripped.startswith('# '):
-                if in_list:
-                    html_lines.append('</ul>')
-                    in_list = False
-                html_lines.append(
-                    f'<h2 style="color: {PALETTE["primary_ink"]}; margin-top: 20px; margin-bottom: 6px;">'
-                    f'{stripped[2:]}</h2>')
-                continue
-
-            # List items
-            if stripped.startswith('- ') or stripped.startswith('* '):
-                if not in_list:
-                    html_lines.append('<ul style="margin: 4px 0;">')
-                    in_list = True
-                item_text = stripped[2:]
-                item_text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', item_text)
-                item_text = re.sub(r'\*(.+?)\*', r'<em>\1</em>', item_text)
-                html_lines.append(f'<li style="margin: 2px 0;">{item_text}</li>')
-                continue
-
-            # Numbered list items
-            if re.match(r'^\d+\.\s', stripped):
-                if not in_list:
-                    html_lines.append('<ul style="margin: 4px 0;">')
-                    in_list = True
-                item_text = re.sub(r'^\d+\.\s', '', stripped)
-                item_text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', item_text)
-                item_text = re.sub(r'\*(.+?)\*', r'<em>\1</em>', item_text)
-                html_lines.append(f'<li style="margin: 2px 0;">{item_text}</li>')
-                continue
-
-            # Close list if we hit a non-list line
-            if in_list:
-                html_lines.append('</ul>')
-                in_list = False
-
-            # Empty lines
-            if not stripped:
-                html_lines.append('<br>')
-                continue
-
-            # Regular paragraph with inline formatting
-            p = stripped
-            p = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', p)
-            p = re.sub(r'\*(.+?)\*', r'<em>\1</em>', p)
-            p = re.sub(r'"(.+?)"', rf'<span style="color: {PALETTE["violet_ink"]};">&ldquo;\1&rdquo;</span>', p)
-            html_lines.append(f'<p style="margin: 4px 0; line-height: 1.5;">{p}</p>')
-
-        if in_list:
-            html_lines.append('</ul>')
-
-        return f'<div style="font-family: {SYSTEM_FONT}; font-size: 13px;">' + '\n'.join(html_lines) + '</div>'
-
-    def _copy_results(self):
-        """Copy the plain text results to clipboard."""
-        text = self._results.toPlainText()
-        if text:
-            QApplication.clipboard().setText(text)
-            notify.done(self, "Copied", "Analysis copied to clipboard.")
-
-
-class PromiseCheckDialog(QDialog):
-    """Dialog for showing promise check results."""
-
-    def __init__(
-        self,
-        chapter_title: str,
-        chapter_content: str,
-        promises: List[dict],
-        characters: List[dict],
-        plot_outline: str = "",
-        parent=None
-    ):
-        """Initialize promise check dialog.
-
-        Args:
-            chapter_title: Title of the chapter being checked
-            chapter_content: Content of the chapter
-            promises: List of promise dicts
-            characters: List of character dicts
-            plot_outline: Optional plot outline
-            parent: Parent widget
-        """
-        super().__init__(parent)
-        self.chapter_title = chapter_title
-        self.chapter_content = chapter_content
-        self.promises = promises
-        self.characters = characters
-        self.plot_outline = plot_outline
-        self.result = None
-        self._init_ui()
-
-    def _init_ui(self):
-        """Initialize UI."""
-        self.setWindowTitle(f"Promise Check: {self.chapter_title}")
-        self.setMinimumWidth(700)
-        self.setMinimumHeight(500)
-
-        layout = QVBoxLayout(self)
-
-        # Header
-        header = QLabel(f"<h3>Checking: {self.chapter_title}</h3>")
-        layout.addWidget(header)
-
-        # Info about what's being checked
-        info_text = []
-        if self.promises:
-            info_text.append(f"• {len(self.promises)} story promises")
-        if self.characters:
-            info_text.append(f"• {len(self.characters)} character profiles")
-        info_label = QLabel("Checking against: " + ", ".join(info_text) if info_text else "No data to check against")
-        info_label.setStyleSheet(text_style(extra="margin-bottom: 10px;"))
-        layout.addWidget(info_label)
-
-        # Results area (scrollable)
-        self.results_text = QTextEdit()
-        self.results_text.setReadOnly(True)
-        self.results_text.setPlaceholderText("Click 'Run Check' to analyze the chapter...")
-        layout.addWidget(self.results_text, stretch=1)
-
-        # Button layout
-        button_layout = QHBoxLayout()
-
-        self.run_button = QPushButton("🔍 Run Check")
-        self.run_button.clicked.connect(self._run_check)
-        button_layout.addWidget(self.run_button)
-
-        button_layout.addStretch()
-
-        close_button = QPushButton("Close")
-        close_button.clicked.connect(self.accept)
-        button_layout.addWidget(close_button)
-
-        layout.addLayout(button_layout)
-
-    def _run_check(self):
-        """Run the promise check."""
-        self.run_button.setEnabled(False)
-        self.run_button.setText("Checking...")
-        self.results_text.setPlainText("Analyzing chapter against promises and character profiles...\n\nThis may take a moment.")
-
-        # Force UI update
-        from PyQt6.QtWidgets import QApplication
-        QApplication.processEvents()
-
-        try:
-            from src.ai.chapter_analysis_agent import PromiseChecker
-            from src.ai.task_llm import (
-                build_task_llm_override, build_default_llm, no_model_message,
-            )
-
-            # Promise / plot continuity is plot-task work: use the plot
-            # task model when one is set, else the default model.
-            plot_override = build_task_llm_override("plot")
-            llm = plot_override or build_default_llm()
-            if llm is None:
-                self.results_text.setPlainText("⚠️ " + no_model_message())
-                self.run_button.setEnabled(True)
-                self.run_button.setText("🔍 Run Check")
-                return
-
-            checker = PromiseChecker(llm)
-            result = checker.check_chapter(
-                chapter_content=self.chapter_content,
-                chapter_title=self.chapter_title,
-                promises=self.promises,
-                characters=self.characters,
-                plot_outline=self.plot_outline,
-                llm_override=plot_override,
-            )
-
-            # Display results
-            self._display_results(result)
-
-        except ImportError as e:
-            self.results_text.setPlainText(
-                f"⚠️ AI module not available: {e}\n\n"
-                "Please ensure AI dependencies are installed."
-            )
-        except Exception as e:
-            self.results_text.setPlainText(
-                f"⚠️ Error running check: {e}\n\n"
-                "Please check your AI configuration and try again."
-            )
-        finally:
-            self.run_button.setEnabled(True)
-            self.run_button.setText("🔍 Run Check")
-
-    def _display_results(self, result):
-        """Display the check results."""
-        lines = []
-
-        # Overall assessment
-        adherence_icons = {
-            'excellent': '✅',
-            'good': '👍',
-            'needs_attention': '⚠️',
-            'problematic': '❌'
-        }
-        icon = adherence_icons.get(result.overall_adherence, '📝')
-        lines.append(f"<h3>{icon} Overall: {result.overall_adherence.replace('_', ' ').title()}</h3>")
-        lines.append(f"<p>{result.summary}</p>")
-
-        lines.append("<hr/>")
-
-        # Tone and Plot assessment
-        lines.append(f"<p><b>Tone Assessment:</b> {result.tone_assessment}</p>")
-        lines.append(f"<p><b>Plot Alignment:</b> {result.plot_alignment}</p>")
-
-        # Promise violations
-        if result.promise_violations:
-            lines.append("<h4>⚠️ Promise Violations</h4>")
-            for v in result.promise_violations:
-                severity_icon = {'high': '🔴', 'medium': '🟡', 'low': '🟢'}.get(v.severity, '⚪')
-                lines.append(f"<div style='margin-left: 10px; margin-bottom: 10px;'>")
-                lines.append(f"<b>{severity_icon} {v.promise_title}</b> ({v.promise_type})")
-                if v.quote:
-                    lines.append(f"<br/><i>\"{v.quote}\"</i>")
-                if v.violation_description:
-                    lines.append(f"<br/>Issue: {v.violation_description}")
-                if v.suggestion:
-                    lines.append(f"<br/><span style='color: {PALETTE['success_ink']};'>💡 {v.suggestion}</span>")
-                lines.append("</div>")
-        else:
-            lines.append("<p>✅ No promise violations detected</p>")
-
-        # Character inconsistencies
-        if result.character_inconsistencies:
-            lines.append("<h4>👤 Character Inconsistencies</h4>")
-            for c in result.character_inconsistencies:
-                lines.append(f"<div style='margin-left: 10px; margin-bottom: 10px;'>")
-                lines.append(f"<b>{c.character_name}</b> ({c.inconsistency_type})")
-                if c.quote:
-                    lines.append(f"<br/><i>\"{c.quote}\"</i>")
-                if c.expected_behavior:
-                    lines.append(f"<br/>Expected: {c.expected_behavior}")
-                if c.suggestion:
-                    lines.append(f"<br/><span style='color: {PALETTE['success_ink']};'>💡 {c.suggestion}</span>")
-                lines.append("</div>")
-        else:
-            lines.append("<p>✅ No character inconsistencies detected</p>")
-
-        self.results_text.setHtml("\n".join(lines))
 
 
 class SimilaritySearchDialog(QDialog):

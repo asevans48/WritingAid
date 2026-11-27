@@ -104,19 +104,6 @@ def _isolated_window_geometry(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _old_improve_windows_by_default(monkeypatch):
-    """The Improve window's trial switch (D.2b) starts on in the app. Tests
-    written before it check the old Suggestions and Overly descriptive?
-    windows, which the switch turned off still opens exactly as before, so
-    they see the switch off; tests of the Improve window turn it on."""
-    try:
-        import src.ui.improve as improve
-    except Exception:
-        return
-    monkeypatch.setattr(improve, "STARTS_ON", False)
-
-
-@pytest.fixture(autouse=True)
 def _american_spelling_by_default():
     """The British / period spelling settings start off in every test (and
     never read the writer's real settings)."""

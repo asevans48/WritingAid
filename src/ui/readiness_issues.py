@@ -439,6 +439,8 @@ class ChapterIssues(QTextBrowser):
                 self.show_chapter(*self._shown)
         elif kind == "plan":                       # change a scene's planned events (7.3)
             from src.ui import plan_section; plan_section.on_link(self, item)
+        elif kind == "marks":                      # a scene marker's link (7.4)
+            from src.ui import scene_marks_ui; scene_marks_ui.on_link(self, item)
         elif kind == "sheet":
             self.show_style_sheet()
         elif kind in ("intend", "unintend"):

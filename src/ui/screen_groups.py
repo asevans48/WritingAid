@@ -30,8 +30,9 @@ screen back.
   on it.
 * ``OLD_TABS`` is the old order of the ten tabs; ``old_tab`` maps an old
   index to its screen (tested for every value).
-* The old ten-tab arrangement is one switch away: Settings ▸ Features ▸
-  Main tabs (``ARRANGEMENT_KEY``), during the trial (rule 11).
+* The old ten-tab arrangement and its switch (Settings ▸ Main tabs) were
+  retired in D.11. The stored ``ARRANGEMENT_KEY`` is left in place and no
+  longer read: a settings file that says "ten" opens as the five groups.
 * No saved window layout existed before this piece (Multi-Window Mode never
   stored one); the Critique's own window kept ``critique_window/geometry``
   and ``critique_window/out``, and both are still read and written.
@@ -42,9 +43,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 from PyQt6.QtCore import QByteArray, QEvent, QObject, Qt
-from PyQt6.QtWidgets import (
-    QCheckBox, QGroupBox, QLabel, QMenu, QTabWidget, QVBoxLayout, QWidget,
-)
+from PyQt6.QtWidgets import QLabel, QMenu, QTabWidget, QVBoxLayout, QWidget
 
 # The ten tabs before D.4, in their old order: (key, main-window attribute).
 # The index in this tuple is the tab's old index.
@@ -70,7 +69,8 @@ GROUPS: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
     ("studio", "🎬 Studio", ("visuals", "video_studio")),
 )
 
-ARRANGEMENT_KEY = "screen_groups/arrangement"     # "groups" (default) or "ten"
+# Written by the retired Main tabs switch (D.4); left in place, unread (D.11).
+ARRANGEMENT_KEY = "screen_groups/arrangement"
 LAST_KEY = "screen_groups/last/{group}"           # the screen last used in a group
 GEOMETRY_KEY = "screen_windows/{key}/geometry"    # where a screen's window was left
 # The Critique's window kept these before D.4 (piece 2.5); still read and written.
@@ -102,11 +102,6 @@ def _set(key: str, value: Any) -> None:
         s.sync()
     except Exception as e:                      # window state never breaks the app
         print(f"[screen groups] could not record {key}: {e}")
-
-
-def grouped() -> bool:
-    """True for the five groups (the default), False for the old ten tabs."""
-    return _get(ARRANGEMENT_KEY, "groups") != "ten"
 
 
 def _plain_name(label: str) -> str:
@@ -227,12 +222,11 @@ class Groups:
         self.extra: List[Tuple[QWidget, str]] = [p for p in pages if id(p[0]) in by_widget]
         self.groups: Dict[str, Unit] = {}
         self._inner_of: Dict[str, Unit] = {}      # screen key → its group (several screens)
-        self.flat = not grouped()
 
     # ── Building ─────────────────────────────────────────────────────
 
     def build(self) -> None:
-        """Lay the tabs out as groups, or as the old ten."""
+        """Lay the tabs out as the five groups."""
         self._building = True
         blocked = self.tabs.blockSignals(True)
         try:
@@ -245,23 +239,17 @@ class Groups:
                         page = unit.inner.widget(0)
                         unit.inner.removeTab(0)
                         page.setParent(None)      # not deleted with the old group
-            if self.flat:
-                for key, _attr in OLD_TABS:
-                    unit = self.screens.get(key)
-                    if unit is not None:
-                        self.tabs.addTab(unit.slot, unit.label)
-            else:
-                for key, label, members in GROUPS:
-                    units = [self.screens[m] for m in members if m in self.screens]
-                    if not units:
-                        continue
-                    if len(units) == 1:
-                        index = self.tabs.addTab(units[0].slot, label)
-                        self.tabs.setTabToolTip(index, units[0].name)
-                        continue
-                    group = self._group(key, label, units)
-                    index = self.tabs.addTab(group.slot, label)
-                    self.tabs.setTabToolTip(index, " · ".join(u.name for u in units))
+            for key, label, members in GROUPS:
+                units = [self.screens[m] for m in members if m in self.screens]
+                if not units:
+                    continue
+                if len(units) == 1:
+                    index = self.tabs.addTab(units[0].slot, label)
+                    self.tabs.setTabToolTip(index, units[0].name)
+                    continue
+                group = self._group(key, label, units)
+                index = self.tabs.addTab(group.slot, label)
+                self.tabs.setTabToolTip(index, " · ".join(u.name for u in units))
             for widget, label in self.extra:
                 self.tabs.addTab(widget, label)
             for unit in old_groups.values():
@@ -291,17 +279,6 @@ class Groups:
             self._inner_of[unit.key] = group
         self.groups[key] = group
         return group
-
-    def arrange(self, flat: bool) -> None:
-        """Switch between the five groups and the old ten tabs, live."""
-        if flat == self.flat:
-            return
-        showing = self.current_screen()
-        self.bring_all_back()
-        self.flat = flat
-        self.build()
-        if showing is not None:
-            self.show(showing)
 
     # ── Finding things ───────────────────────────────────────────────
 
@@ -600,40 +577,3 @@ def bring_all_back(main_window: Any) -> None:
     groups = getattr(main_window, "screen_groups", None)
     if groups is not None:
         groups.bring_all_back()
-
-
-def set_grouped(on: bool, main_window: Any = None) -> None:
-    """Record the arrangement and apply it to the open main window."""
-    _set(ARRANGEMENT_KEY, "groups" if on else "ten")
-    if main_window is None:
-        try:
-            from src.ui.window_manager import WindowManager
-            main_window = WindowManager().get_main_window()
-        except Exception:
-            main_window = None
-    groups = getattr(main_window, "screen_groups", None)
-    if groups is not None:
-        groups.arrange(not on)
-
-
-class TabsOption:
-    """Settings ▸ Features ▸ Main tabs: the five groups, or the old ten
-    (two call lines in ``SettingsDialog``)."""
-
-    def __init__(self, layout):
-        group = QGroupBox("Main tabs")
-        lay = QVBoxLayout()
-        self.box = QCheckBox("Group the tabs into five: Write · Story · Revise · Publish · Studio")
-        self.box.setToolTip("Untick for the ten tabs as they were. Either way, right-click "
-                            "any tab to open it in its own window.")
-        self.box.setChecked(grouped())
-        lay.addWidget(self.box)
-        group.setLayout(lay)
-        layout.addWidget(group)
-
-    def save(self) -> None:
-        try:
-            if self.box.isChecked() != grouped():
-                set_grouped(self.box.isChecked())
-        except Exception as e:                       # noqa: BLE001
-            print(f"[screen groups] could not save: {e}")

@@ -32,7 +32,6 @@ from src.ui.prose_profile_widget import ProseProfileWidget
 from src.ui.window_manager import WindowManager
 from src.ui import notify  # quiet messages (D.9)
 from src.ui import screen_groups  # five top-level tabs, one mover (D.4)
-from src.ui.secondary_window import SecondaryWindow
 from src.ui.import_guide_dialog import ImportGuideDialog
 from src.ui.json_import_dialog import JSONImportDialog
 from src.export.manuscript_exporter import ManuscriptExporter
@@ -14427,9 +14426,10 @@ class MainWindow(QMainWindow):
             current_chapter = self.manuscript_editor.get_current_chapter()
 
         from src.ui.export_document_dialog import ExportDocumentDialog
+        from src.data import scene_marks  # 7.4: "Mark scene breaks", only with markers
         dlg = ExportDocumentDialog(
             has_current_chapter=current_chapter is not None,
-            parent=self)
+            parent=self, scene_marks=scene_marks.any_marks(self.current_project))
         if not dlg.exec():
             return
         scope = dlg.scope()
@@ -14462,9 +14462,10 @@ class MainWindow(QMainWindow):
 
         from src.export.manuscript_exporter import ManuscriptExporter
         try:
+            marked = dlg.mark_scenes()  # 7.4: the exported copy only
             ok = ManuscriptExporter(manuscript).export_document(
-                file_path, fmt, chapters=chapters,
-                title_page=title_page)
+                file_path, fmt, chapters=scene_marks.with_breaks(self.current_project, chapters)
+                if marked else chapters, title_page=title_page, centre_breaks=marked)
         except Exception as e:
             ok = False
             print(f"[export] document export error: {e}")
@@ -15071,8 +15072,6 @@ class MainWindow(QMainWindow):
     def _merge_all_secondary_windows(self):
         """Merge all secondary windows back to main window."""
         screen_groups.bring_all_back(self)   # the one mover (D.4)
-        for window in self.window_manager.get_secondary_windows():
-            window.close()  # closeEvent will merge tabs back
 
     def _show_tab_context_menu(self, pos: QPoint):
         """Right-click a tab: open it in its own window, or bring it back (D.4)."""
@@ -15081,11 +15080,6 @@ class MainWindow(QMainWindow):
     def _detach_tab_to_new_window(self, tab_index: int):
         """Open a top-level tab in its own window (the one mover, D.4)."""
         screen_groups.detach_tab(self, tab_index)
-
-    def _handle_tab_merge(self, widget: QWidget, label: str):
-        """Handle merging a tab back from a secondary window."""
-        self.tab_widget.addTab(widget, label)
-        self.statusBar().showMessage(f"Merged '{label}' tab back to main window", 3000)
 
     def closeEvent(self, event):
         """Handle window close event."""

@@ -169,7 +169,9 @@ def _current(issues: Any) -> Optional[Tuple[Any, Any, Any]]:
     from src.ai import reverse_outline as ro
     ch, text = shown[0], shown[2]
     names_fn = getattr(issues, "outline_names", None) or (lambda: [])
-    comp = comparison(issues, ch, text, ro.outline(text, names_fn()))
+    from src.ui import scene_marks_ui                                         # 7.4
+    comp = comparison(issues, ch, text, ro.outline(text, names_fn(),
+                                                   scene_marks_ui.offsets(issues, ch, text)))
     return (ch, comp, project) if comp is not None else None
 
 

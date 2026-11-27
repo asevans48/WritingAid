@@ -34,27 +34,29 @@ always shown, even with no novellas::
 pattern of ``write_toolbar``): other code reads and sets them, and the
 tree follows. ``+ ↑ ↓`` and ◀ Prev / Next ▶ stay below and above it.
 
-**The trial switch** (rule 11): Settings ▸ Features ▸ *Manuscript tree*.
-Ticked (the starting position), the tree; unticked, the tab row, Novellas ▾
-and the chapter list exactly as before. Kept as ``write/manuscript_tree``
-beside the window positions; a missing or unreadable value means ticked.
+**Always on** (D.11). The trial switch (Settings ▸ Features ▸ *Manuscript
+tree*), the tab row and Novellas ▾ were retired; every entry they had is
+on the tree's right-click. The switch's stored ``write/manuscript_tree``
+(``SETTING_KEY``) is left in place and no longer read.
+
+**Move main chapters into this novella** (a novella row's menu) moves
+every main chapter with ``chapter_move.move_chapters``, the main
+manuscript's drafts with them, and offers Undo (``move_main_into``, D.11).
 """
 
 from __future__ import annotations
 
-import weakref
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional, Tuple
 
 from PyQt6.QtCore import QPoint, Qt, QTimer
 from PyQt6.QtGui import QCursor
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QGroupBox, QHeaderView, QLabel, QMainWindow, QMenu,
-    QMessageBox, QPushButton, QStatusBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
+    QAbstractItemView, QHeaderView, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton,
+    QStatusBar, QTreeWidget, QTreeWidgetItem,
 )
 
-SETTING_KEY = "write/manuscript_tree"
-STARTS_ON = True                 # the writer, 26 November 2026: the tree is the default
+SETTING_KEY = "write/manuscript_tree"   # the retired switch (D.10); left in place, unread (D.11)
 
 KIND = Qt.ItemDataRole.UserRole
 SCOPE = Qt.ItemDataRole.UserRole + 1
@@ -65,72 +67,6 @@ NEW_NOVELLA = "＋ New novella…"
 MOVE_TO = "Move to"
 MOVE_TO_NEW = "＋ A new novella…"
 NOTICE_MS = 30000
-
-_live: "weakref.WeakSet[ManuscriptTree]" = weakref.WeakSet()
-
-
-# ── The switch ─────────────────────────────────────────────────────────
-
-def _settings():
-    from src.ui.ui_kit import _settings as kit_settings
-    return kit_settings()
-
-
-def on() -> bool:
-    """True when the tree is shown (the default), False for the old row."""
-    try:
-        value = _settings().value(SETTING_KEY, None)
-    except Exception:
-        return STARTS_ON
-    if value is None or value == "":
-        return STARTS_ON
-    if isinstance(value, bool):
-        return value
-    text = str(value).strip().lower()
-    if text in ("true", "1", "yes", "on"):
-        return True
-    if text in ("false", "0", "no", "off"):
-        return False
-    return STARTS_ON
-
-
-def set_on(value: bool) -> None:
-    """Store the switch and apply it to every Write screen now open."""
-    try:
-        s = _settings()
-        s.setValue(SETTING_KEY, "true" if value else "false")
-        s.sync()
-    except Exception as e:                       # a setting never breaks the app
-        print(f"[manuscript tree] could not save the switch: {e}")
-    for tree in list(_live):
-        try:
-            tree.apply(bool(value))
-        except RuntimeError:                     # its window is gone
-            pass
-
-
-class TreeOption:
-    """Settings ▸ Features ▸ Manuscript tree (two call lines in
-    ``SettingsDialog``, as ``ImproveOption``)."""
-
-    def __init__(self, layout):
-        group = QGroupBox("Manuscript tree")
-        lay = QVBoxLayout()
-        self.box = QCheckBox("Show the main manuscript, novellas and chapters as one tree "
-                             "on the Write screen")
-        self.box.setToolTip("Untick for the row of manuscript tabs and Novellas ▾ above "
-                            "the chapter list, as they were.")
-        self.box.setChecked(on())
-        lay.addWidget(self.box)
-        group.setLayout(lay)
-        layout.addWidget(group)
-
-    def save(self) -> None:
-        try:
-            if self.box.isChecked() != on():
-                set_on(self.box.isChecked())
-        except Exception as e:                   # noqa: BLE001
-            print(f"[manuscript tree] could not save: {e}")
 
 
 # ── Install (the call line in ``ManuscriptEditor._init_ui``) ────────────
@@ -161,21 +97,55 @@ def install(manuscript_editor: Any) -> None:
         for sig in (model.rowsInserted, model.rowsRemoved, model.modelReset, model.dataChanged):
             sig.connect(lambda *_: tree.schedule())
         me.chapter_list.currentItemChanged.connect(lambda *_: tree.follow_list())
-        _live.add(tree)
-        tree.apply(on(), initial=True)
+        tree.show_tree()
     except Exception as e:                       # never break the Write tab
         print(f"[manuscript tree] not installed: {e}")
 
 
 def add_move_menu(manuscript_editor: Any, menu: QMenu) -> None:
     """**Move to ▸** in a chapter's right-click menu (the call line in
-    ``_show_chapter_context_menu``). Only with the tree on."""
+    ``_show_chapter_context_menu``)."""
     tree = getattr(manuscript_editor, "manuscript_tree", None)
     try:
-        if tree is not None and tree.is_on:
+        if tree is not None:
             tree.fill_move_menu(menu)
     except Exception as e:                       # the menu still opens
         print(f"[manuscript tree] no Move to: {e}")
+
+
+def move_main_into(manuscript_editor: Any, sp_id: str) -> bool:
+    """"Move main chapters into this novella" (the call line in
+    ``ManuscriptEditor._move_main_into_existing``): ask once, then move every
+    main chapter with the tree's move, the main manuscript's drafts with
+    them, and offer Undo (D.11; it used to copy, check and delete)."""
+    me = manuscript_editor
+    project = me.project
+    sp = project.get_subproject(sp_id) if project is not None else None
+    main = project.get_main_manuscript() if project is not None else None
+    if sp is None or main is None or not main.chapters:
+        return False
+    tree = getattr(me, "manuscript_tree", None)
+    if tree is None:                             # never moved without the tree's Undo
+        QMessageBox.information(me, "Move Chapters", "The manuscript tree is not available, "
+                                "so nothing was moved.")
+        return False
+    after = (f" They'll follow its {len(sp.manuscript.chapters)} existing "
+             f"chapter(s)." if sp.manuscript.chapters else "")
+    reply = QMessageBox.question(
+        me, "Move chapters",
+        f"Move the main manuscript's {len(main.chapters)} chapter(s) and "
+        f"{len(project.drafts_for_scope(None))} draft(s) into '{sp.name}'?{after}\n\n"
+        "The folders are moved, not copied, and the main manuscript will be empty "
+        "afterwards. Undo is offered on the status bar.",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.No)
+    if reply != QMessageBox.StandardButton.Yes:
+        return False
+    try:
+        return tree.move_main_into(sp_id)
+    except Exception as e:                       # never escape a slot
+        print(f"[manuscript tree] move main chapters failed: {e}")
+        return False
 
 
 @contextmanager
@@ -198,9 +168,9 @@ class ManuscriptTree(QTreeWidget):
     def __init__(self, manuscript_editor: Any):
         super().__init__(manuscript_editor.chapter_list.parentWidget())
         self.me = manuscript_editor
-        self.is_on = True
         self.notice: Optional[QLabel] = None
         self._last = None                        # the last move, for Undo
+        self._last_drafts = None                 # (drafts, novella id) moved with it
         self._menu_chapters: Optional[List[Tuple[Optional[str], str]]] = None
         self._expanded = set()                   # manuscripts opened by hand
         self._active_seen = object()
@@ -245,22 +215,12 @@ class ManuscriptTree(QTreeWidget):
             " QTreeWidget#manuscriptTree::item:hover:!selected { background: "
             "rgba(99, 102, 241, 0.1); }")
 
-    # ── switching between the tree and the old row ──
+    # ── shown in place of the old row and list ──
 
-    def apply(self, value: bool, initial: bool = False) -> None:
-        me = self.me
-        self.is_on = value
-        self.setVisible(value)
-        me.chapter_list.setVisible(not value)
-        btn = getattr(me, "novellas_menu_btn", None)
-        if btn is not None:
-            btn.setVisible(not value)
-        if self.notice is not None and not value:
-            self.notice.setVisible(False)
-        if value:
-            me.subproject_tabs.setVisible(False)
-        elif not initial:
-            me._refresh_subproject_tabs()        # the tab bar shows or hides as before
+    def show_tree(self) -> None:
+        self.setVisible(True)
+        self.me.chapter_list.setVisible(False)
+        self.me.subproject_tabs.setVisible(False)
         self.rebuild()
 
     def keyPressEvent(self, event) -> None:
@@ -271,14 +231,13 @@ class ManuscriptTree(QTreeWidget):
         super().keyPressEvent(event)
 
     def after_tabs_refresh(self) -> None:
-        if self.is_on:
-            self.me.subproject_tabs.setVisible(False)
+        self.me.subproject_tabs.setVisible(False)
         self.schedule()
 
     # ── building ──
 
     def schedule(self) -> None:
-        if self.is_on and not self._building:
+        if not self._building:
             self._timer.start()
 
     def _project(self):
@@ -295,8 +254,6 @@ class ManuscriptTree(QTreeWidget):
                 for i in range(lst.count())]
 
     def rebuild(self) -> None:
-        if not self.is_on:
-            return
         self._timer.stop()
         me, project = self.me, self._project()
         active = self._active()
@@ -377,7 +334,7 @@ class ManuscriptTree(QTreeWidget):
     def follow_list(self) -> None:
         """The chapter list's selection changed (Prev / Next, + , another
         screen opening a chapter): show it in the tree."""
-        if not self.is_on or self._building:
+        if self._building:
             return
         cid = self.me._current_chapter_id
         item = self.chapter_item(self._active(), cid) if cid else None
@@ -507,7 +464,7 @@ class ManuscriptTree(QTreeWidget):
 
     def manuscript_menu(self, scope: Optional[str]):
         """Every entry of the manuscript tab's old right-click menu
-        (``_show_subproject_tab_menu``), calling the same methods."""
+        (retired with the tab row in D.11), calling the same methods."""
         me, project = self.me, self.me.project
         menu = QMenu(self)
         actions: Dict[Any, Any] = {}
@@ -766,6 +723,7 @@ class ManuscriptTree(QTreeWidget):
             project.get_main_manuscript().title or "Main Manuscript")
         what = f"“{titles[0]}”" if len(titles) == 1 else f"{len(titles)} chapters"
         self._last = result
+        self._last_drafts = None
         self.announce(f"Moved {what} to {where}")
         return True
 
@@ -786,19 +744,62 @@ class ManuscriptTree(QTreeWidget):
             return False
         return True
 
+    def move_main_into(self, sp_id: str) -> bool:
+        """Every main chapter into novella ``sp_id``, after its own chapters,
+        through ``move_to`` (``chapter_move.move_chapters``: folders renamed in
+        place, nothing overwritten, everything put back on failure). The main
+        manuscript's drafts go with it, as they always did; Undo brings them
+        back too."""
+        project = self._project()
+        if project is None or project.get_subproject(sp_id) is None:
+            return False
+        chapters = [(None, c.id) for c in project.get_main_manuscript().chapters]
+        drafts = [d for d in getattr(project, "drafts", []) if d.subproject_id is None]
+        if not chapters or not self.move_to(chapters, sp_id):
+            return False
+        if drafts:
+            for d in drafts:
+                d.subproject_id = sp_id
+            try:
+                if project.project_path:
+                    project.save_project(project.project_path)
+            except Exception as e:                # the chapters moved; the drafts stay with main
+                for d in drafts:
+                    d.subproject_id = None
+                QMessageBox.warning(self.me, "Drafts Not Moved",
+                                    "The chapters were moved, but the main manuscript's drafts "
+                                    f"could not be, so they stay with it.\n\n{e}")
+                return True
+            self._last_drafts = (drafts, sp_id)
+            self.me.subprojects_changed.emit()
+            try:
+                self.me._refresh_draft_selector()
+            except Exception:
+                pass
+        return True
+
     def undo_last(self) -> bool:
         """Undo on the status bar: the same move back to the same place."""
         me, project, result = self.me, self._project(), self._last
         if project is None or result is None:
             return False
         self._last = None
+        drafts, self._last_drafts = self._last_drafts, None
         self._hide_notice()
         reopen = me._current_chapter_id
         self._prepare()
         from src.data import chapter_move
+        for d in (drafts[0] if drafts else []):  # saved with the chapters put back
+            if d.subproject_id == drafts[1]:
+                d.subproject_id = None
         try:
             back = chapter_move.undo(project, result, project_file=project.project_path or None)
+            if drafts and project.project_path:
+                project.save_project(project.project_path)
         except Exception as e:
+            for d in (drafts[0] if drafts else []):
+                if d.subproject_id is None:
+                    d.subproject_id = drafts[1]
             self._after(reopen)
             QMessageBox.critical(me, "Undo Failed",
                                  "The move could not be undone, so the chapters were left "

@@ -25,6 +25,10 @@ gives each scene's tension (from the model's scene reading). When it
 returns values, ``book_pacing`` fills ``ScenePoint.tension`` and the
 chart draws tension instead of pacing. Until then it is ``None``.
 
+**Scene markers (7.4).** ``set_marks_source(fn)`` registers
+``fn(chapter_id, text) -> offsets`` (the writer's markers, kept beside
+the text); ``book_pacing`` splits each chapter at them as well.
+
 No Qt. Writes nothing.
 """
 
@@ -249,12 +253,33 @@ def set_tension_source(fn: Optional[Callable[[str, str, List[Tuple[int, int]]],
     _tension_source = fn
 
 
-def _pace(text: str) -> List[Tuple[int, float]]:
+_marks_source: Optional[Callable[[str, str], List[int]]] = None
+
+
+def set_marks_source(fn: Optional[Callable[[str, str], List[int]]]) -> None:
+    """7.4's hook: ``fn(chapter_id, text)`` → the offsets of the chapter's
+    scene markers ([] when none)."""
+    global _marks_source
+    _marks_source = fn
+
+
+def _marks(cid: str, text: str) -> List[int]:
+    if _marks_source is None:
+        return []
+    try:
+        return sorted(_marks_source(cid, text) or [])
+    except Exception as e:                         # a hook never breaks the chart
+        print(f"[plan_match] scene markers unavailable: {e}")
+        return []
+
+
+def _pace(text: str, marks: Sequence[int] = ()) -> List[Tuple[int, float]]:
     from src.ai import reverse_outline as ro
-    key = hashlib.sha1((text or "").encode("utf-8")).hexdigest()
+    key = hashlib.sha1(((text or "") + "\x00" + ",".join(map(str, marks))).encode("utf-8")
+                       ).hexdigest()
     if key not in _PACE_CACHE:
         rows = []
-        for s, e in ro.split_scenes(text):
+        for s, e in ro.split_scenes(text, marks):
             part = text[s:e]
             words = ro._words(part)
             talk = sum(ro._words(m.group(0)) for m in ro._QUOTED.finditer(part))
@@ -272,11 +297,12 @@ def book_pacing(chapters: Sequence[Tuple[str, str]]) -> List[ScenePoint]:
     for cid, text in chapters:
         if not (text or "").strip():
             continue
-        rows = _pace(text)
+        marks = _marks(cid, text)
+        rows = _pace(text, marks)
         tension = None
         if _tension_source is not None:
             try:
-                tension = _tension_source(cid, text, ro.split_scenes(text))
+                tension = _tension_source(cid, text, ro.split_scenes(text, marks))
             except Exception as e:                     # a hook never breaks the chart
                 print(f"[plan_match] tension source failed: {e}")
                 tension = None

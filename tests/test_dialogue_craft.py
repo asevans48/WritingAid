@@ -401,31 +401,27 @@ def test_editor_inserts_rewrites_as_separate_paragraphs(qapp, project, monkeypat
     from PyQt6.QtGui import QTextCursor
     from PyQt6.QtWidgets import QDialog
     from src.models.project import Chapter
-    import src.ui.passage_critique_dialog as pd
-    import src.ui.rephrase_dialog as rd
+    import src.ui.improve_window as iw
     from src.ui.manuscript_editor import ChapterEditor
-
-    class Suggest:
-        def __init__(self, *a, **k):
-            self.replacement = '"Go," Tobin said. "No," Mara said.'
-
-        def exec(self):
-            return QDialog.DialogCode.Accepted
 
     seen = {}
 
-    class Rephrase:
-        def __init__(self, text, *a, **k):
-            seen["text"] = text
+    class Improve:
+        """Stands in for the Improve window (every way in since D.11)."""
+        def __init__(self, text, start, end, *a, tab="", selection=None, rephrase=None, **k):
+            self.tool = tab
+            if tab == "rephrase":
+                seen["text"] = rephrase["text"]
+                self.span = selection                    # Rephrase: exactly the highlight
+                self.replacement = '"Row," Tobin said.\n"Fine," Mara said.'
+            else:
+                self.span = (start, end)
+                self.replacement = '"Go," Tobin said. "No," Mara said.'
 
         def exec(self):
             return QDialog.DialogCode.Accepted
 
-        def get_selected_text(self):
-            return '"Row," Tobin said.\n"Fine," Mara said.'
-
-    monkeypatch.setattr(pd, "PassageCritiqueDialog", Suggest)
-    monkeypatch.setattr(rd, "RephraseDialog", Rephrase)
+    monkeypatch.setattr(iw, "ImproveWindow", Improve)
     content = 'Tobin rowed.\n\n"Go now," Tobin said.\n\n"No," Mara said.\n\nFog.'
     ed = ChapterEditor(Chapter(id="c", number=1, title="T", content=content), project=project)
 

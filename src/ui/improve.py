@@ -12,23 +12,19 @@ the other tabs work on the highlight widened to whole sentences. It is
 used by Ctrl+R and ✨, the right-click Rephrase, a style flag's ✨ Rewrite
 with AI, and the draft window's Rephrase.
 
-**The trial switch** (rule 11: trial, then retire): Settings ▸ Features ▸
-*Improve window*. Ticked, Rephrase, Suggestions and Overly descriptive?
-open in the one window; unticked, the old ``RephraseDialog``,
-``PassageCritiqueDialog`` and ``ExpandStatementDialog`` open exactly as
-before. It starts ticked (decision 16). Kept as ``improve/merged`` beside
-the window positions; a missing or unreadable value means the starting
-position.
+**Every way in opens this window.** The trial switch (Settings ▸ Features
+▸ *Improve window*, D.2b) and the old windows' paths were retired in D.11.
+The switch's stored ``improve/merged`` (``SETTING_KEY``) is left in place
+and no longer read, so an older version of the app still finds it.
 """
 
 from __future__ import annotations
 
 from typing import Any, Optional
 
-from PyQt6.QtWidgets import QCheckBox, QDialog, QGroupBox, QVBoxLayout
+from PyQt6.QtWidgets import QDialog
 
-SETTING_KEY = "improve/merged"
-STARTS_ON = True                 # decision 16: the trial switch starts on
+SETTING_KEY = "improve/merged"   # the retired switch (D.2b); left in place, unread (D.11)
 
 # The tabs, in order (decision 16): Ctrl+1 … Ctrl+4.
 TABS = ("suggestions", "critique", "rephrase", "expand")
@@ -39,36 +35,9 @@ TOOL_NAMES = {"suggestions": "Suggestions", "expand": "Overly descriptive",
 
 
 def _settings():
+    """The window-settings file (``ui_kit``): the windows' remembered sections."""
     from src.ui.ui_kit import _settings as kit_settings
     return kit_settings()
-
-
-def merged() -> bool:
-    """True when the Improve window is used (the default), False for the
-    old windows."""
-    try:
-        value = _settings().value(SETTING_KEY, None)
-    except Exception:                        # unreadable: the starting position
-        return STARTS_ON
-    if value is None or value == "":
-        return STARTS_ON
-    if isinstance(value, bool):
-        return value
-    text = str(value).strip().lower()
-    if text in ("true", "1", "yes", "on"):
-        return True
-    if text in ("false", "0", "no", "off"):
-        return False
-    return STARTS_ON
-
-
-def set_merged(on: bool) -> None:
-    try:
-        s = _settings()
-        s.setValue(SETTING_KEY, "true" if on else "false")
-        s.sync()
-    except Exception as e:                   # a setting never breaks the app
-        print(f"[improve] could not save the switch: {e}")
 
 
 def open(host: Any, tab: str, text: str, start: int, end: int, *,
@@ -140,27 +109,3 @@ def _apply_to_draft(host: Any, text: str, start: int, end: int, replacement: str
     editor.setTextCursor(cursor)
     host._set_dirty(True)
     return True
-
-
-class ImproveOption:
-    """Settings ▸ Features ▸ Improve window (two call lines in
-    ``SettingsDialog``, as ``TabsOption``)."""
-
-    def __init__(self, layout):
-        group = QGroupBox("Improve window")
-        lay = QVBoxLayout()
-        self.box = QCheckBox("Open Rephrase, Suggestions and Overly descriptive? in one "
-                             "Improve window")
-        self.box.setToolTip("One window with tabs: Suggestions · Critique · Rephrase · Expand. "
-                            "Untick for the separate windows as they were.")
-        self.box.setChecked(merged())
-        lay.addWidget(self.box)
-        group.setLayout(lay)
-        layout.addWidget(group)
-
-    def save(self) -> None:
-        try:
-            if self.box.isChecked() != merged():
-                set_merged(self.box.isChecked())
-        except Exception as e:                       # noqa: BLE001
-            print(f"[improve] could not save: {e}")

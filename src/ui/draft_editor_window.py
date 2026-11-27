@@ -758,31 +758,9 @@ class DraftEditorPanel(QWidget):
                 "Select some text in this panel to rephrase.")
             return
 
-        doc_text = ed.toPlainText()
-        s = cursor.selectionStart()
-        e = cursor.selectionEnd()
-        ctx_before = doc_text[max(0, s - 500):s]
-        ctx_after = doc_text[e:e + 500]
-
         try:
-            from src.ui import improve      # the whole Improve window (D.2c), or the old one
-            if improve.merged():
-                improve.rephrase(self, cursor, chapter=self._current_chapter, draft=True)
-                return
-            from src.ui.rephrase_dialog import RephraseDialog
-            from PyQt6.QtWidgets import QDialog as _QDialog
-            dialog = RephraseDialog(
-                selected, self.project, self,
-                surrounding_context=(ctx_before, ctx_after),
-                chapter_content=doc_text,
-                chapter=self._current_chapter,
-                text_before=doc_text[:s])
-            if dialog.exec() == _QDialog.DialogCode.Accepted:
-                replacement = dialog.get_selected_text()
-                if replacement:
-                    # Apply to THIS panel's cursor — not any other editor
-                    cursor.insertText(replacement)
-                    self._set_dirty(True)
+            from src.ui import improve      # the whole Improve window (D.2c, D.11)
+            improve.rephrase(self, cursor, chapter=self._current_chapter, draft=True)
         except Exception as ex:
             QMessageBox.warning(self, "Rephrase Error", str(ex))
 

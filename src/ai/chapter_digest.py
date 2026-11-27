@@ -73,6 +73,13 @@ def _none(s: str) -> bool:
     return s.strip().strip('".').upper() in ("NONE", "N/A", "")
 
 
+def is_template_echo(pov: str, what: str) -> bool:
+    """A model that copies the SCENE line's own field names back (7.2 found
+    it in real outlines): not a scene."""
+    return (pov.strip().lower() in ("pov", "point-of-view character", "point of view character")
+            or what.strip().lower().startswith("what happens"))
+
+
 def parse(reply: str, text: str) -> Dict[str, Any]:
     from src.ai.story_read import locate
     out: Dict[str, Any] = {"scenes": [], "slips": [], "setups": [], "payoffs": [],
@@ -85,7 +92,7 @@ def parse(reply: str, text: str) -> Dict[str, Any]:
             where = None if _none(quote) else locate(text, quote)
             return ({"quote": text[where[0]:where[1]], "start": where[0], "end": where[1]}
                     if where else None)
-        if kind == "SCENE" and len(f) >= 3:
+        if kind == "SCENE" and len(f) >= 3 and not is_template_echo(f[0], f[1]):
             where = place(f[3]) if len(f) > 3 else None
             purpose = "" if _none(f[2]) else f[2].rstrip(".")
             out["scenes"].append(dict(where or {"quote": "", "start": -1, "end": -1},

@@ -298,7 +298,7 @@ def test_world_fits_600_high_and_its_tiled_share(app):
 def test_the_main_window_fits_1024_by_600_again(tmp_path):
     """Video Studio made the whole main window need 1,415 × 641."""
     h = _harness()
-    names = ["video_studio", "world", "main_tabs", "main_tabs_ten", "video_studio_tiled",
+    names = ["video_studio", "world", "main_tabs", "video_studio_tiled",
              "world_tiled", "characters_tiled", "visuals_tiled"]
     report = h.run(names, tmp_path, sizes=[(1024, 600, 1.0)])["1024x600"]
     for name in names:

@@ -35,8 +35,8 @@ back. No Qt.
   subplot notes, feedback) and annotations.
 * **What travels in the state files** beside the project
   (``<project>.readiness.json``): the chapter's readiness results and
-  stage, its digest, its style-sheet facts and its draft-beside-plan
-  corrections (each kept per manuscript, so they are moved from the old
+  stage, its digest, its style-sheet facts, its draft-beside-plan
+  corrections and its scene markers (7.4) (each kept per manuscript, so they are moved from the old
   manuscript's part to the new one's). The companion file
   (``<project>.companion_state.json``) keeps chapters by id alone, so its
   entry (last opened, where you stopped, heard marks) stays with the

@@ -32,6 +32,8 @@ class FakeLLM:
             return "SCENE | She | they wait | she decides to go | NONE\nREADER | 3 | fine | NONE"
         if prompt.startswith("OUTLINE OF THE BOOK"):
             return "NONE"
+        if "Begin your answer with: TENSION" in prompt:   # with the digest (7.2)
+            return "TENSION | 1 | 3 | steady"
         if prompt.startswith("Proofread the text below"):       # the proofreading pass (P.4)
             self.proof_prompts = getattr(self, "proof_prompts", []) + [prompt]
             return "NONE" if self.reply is None else self.reply

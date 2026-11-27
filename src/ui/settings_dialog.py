@@ -2833,12 +2833,6 @@ class SettingsDialog(QDialog):
         self.notify_option = BoxesOption(layout, self.settings)
         from src.ui.habit_view import HabitOption   # Writing habit: goals, nudge (H.1)
         self.habit_option = HabitOption(layout)
-        from src.ui.screen_groups import TabsOption   # five groups or the ten tabs (D.4)
-        self.tabs_option = TabsOption(layout)
-        from src.ui.improve import ImproveOption   # the one Improve window, or the old ones (D.2b)
-        self.improve_option = ImproveOption(layout)
-        from src.ui.manuscript_tree import TreeOption   # one manuscript tree, or the old tab row (D.10)
-        self.tree_option = TreeOption(layout)
 
         # Rephrasing Settings
         rephrase_group = QGroupBox("Rephrasing Settings")
@@ -3488,9 +3482,6 @@ class SettingsDialog(QDialog):
         self._save_per_task_models()
         self._contact_page.form.save()      # title page details (9.2)
         self.habit_option.save()            # writing goals and the nudge (H.1)
-        self.tabs_option.save()             # the main tabs: five groups or ten (D.4)
-        self.improve_option.save()          # the Improve window switch (D.2b)
-        self.tree_option.save()             # the manuscript tree switch (D.10)
         # Call parent accept to close dialog
         super().accept()
 

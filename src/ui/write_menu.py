@@ -20,7 +20,8 @@ A short menu, built from parts; every entry of the old menu is still in it.
   never has one. The same fix makes "Look Up “…”" and "Find Similar
   Content" appear for the selected text.
 * **Look Up Context ▸** as before.
-* **More ▸:** Add Annotation, View Annotations (when the line has some),
+* **More ▸:** 📝 Note or scene break ▸ (Add Annotation, View Annotations
+  when the line has some, and Scene break here / Remove scene break, 7.4),
   Heading Style (with a selection) and Text to Speech.
 
 Every action calls the same method as before. Order and grouping only.
@@ -105,15 +106,20 @@ def build(ce: Any, position) -> QMenu:
     lookup.addSeparator()
     lookup.addAction("Advanced Search...").triggered.connect(ce._show_advanced_search)
 
-    # 5. More.
+    # 5. More. Notes and scene breaks at this line, both kept beside the
+    # text, share one submenu (7.4), so the menu does not grow.
     more = menu.addMenu(MORE)
-    more.addAction("📝 Add Annotation").triggered.connect(
+    from src.ui import scene_marks_ui
+    marks = more.addMenu(scene_marks_ui.NOTE_MENU)
+    marks.setToolTipsVisible(True)
+    marks.addAction("📝 Add Annotation").triggered.connect(
         lambda _=False, n=line_number: ce._add_annotation(n))
     notes = [a for a in getattr(ce.chapter, "annotations", None) or []
              if a.line_number == line_number]
     if notes:
-        more.addAction(f"📋 View Annotations ({len(notes)})").triggered.connect(
+        marks.addAction(f"📋 View Annotations ({len(notes)})").triggered.connect(
             lambda _=False, n=line_number: ce._on_margin_clicked(n))
+    scene_marks_ui.add_to_menu(ce, marks, position)
     if selected:
         heading = more.addMenu("Heading Style")
         for level in ["Normal", "Heading 1", "Heading 2", "Heading 3"]:

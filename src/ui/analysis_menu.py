@@ -11,11 +11,12 @@ Each analysis's main tab starts with a line of links, so nothing the old
 windows did is lost and nothing is added to a menu or a button row:
 
 * **Run again** (the Promise Check window's "Run Check");
-* **Copy** (the old windows' "Copy to Clipboard");
-* **Show in a window (old)**: the old window, during the trial (rule 11).
+* **Copy** (the old windows' "Copy to Clipboard").
 
-Without a Critique (an editor on its own), an entry opens the old window,
-as before.
+The old windows and their "Show in a window (old)" link were retired in
+D.11; the Critique itself can go in its own window (Critique ▸ Critique in
+Its Own Window). Without a Critique (an editor on its own, outside the
+app), an entry says where to run it.
 """
 
 from __future__ import annotations
@@ -23,12 +24,6 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from src.ui import notify
-
-# Analyze ▾ entry → the ChapterEditor method that opens its old window.
-OLD_WINDOWS = {"promises": "_check_promises", "prose": "_analyze_prose",
-               "characters": "_analyze_characters", "world": "_analyze_world",
-               "plot": "_analyze_plot"}
-
 
 def install(grader) -> None:
     """Give the Critique the new report kinds' tab names (once per class)."""
@@ -59,12 +54,12 @@ def main_window_of(widget) -> Optional[Any]:
 
 def run(chapter_editor, key: str) -> bool:
     """The Analyze ▾ entry ``key``: run its reports in the Critique. Returns
-    False (and opens the old window) when there is no Critique to run in."""
+    False (and says where to run it) when there is no Critique to run in."""
     try:
         mw = main_window_of(chapter_editor)
         grader = getattr(mw, "grader_widget", None)
         if grader is None:
-            return _old_window(chapter_editor, key)
+            return _no_critique(chapter_editor, key)
         return run_in(grader, chapter_editor, key, mw)
     except Exception as e:                        # never let an exception escape a slot
         print(f"[analysis] could not run {key}: {e}")
@@ -153,8 +148,6 @@ def tab_links(kind: Any) -> str:
         return ""
     links = [f"<a href='analysis:again:{key}'>Run again</a>",
              f"<a href='analysis:copy:{key}'>Copy</a>"]
-    if key in OLD_WINDOWS:
-        links.append(f"<a href='analysis:old:{key}'>Show in a window (old)</a>")
     return (f"<p style='font-size:12px; color:{PALETTE['ink_faint']};'>"
             "From 🔍 Analyze ▾ in Write · " + " · ".join(links) + "</p>")
 
@@ -172,14 +165,12 @@ def on_link(grader, url: str) -> None:
         _, action, key = (url.split(":", 2) + ["", ""])[:3]
         if action == "copy":
             _copy(grader, key)
-        elif action in ("again", "old"):
+        elif action in ("again", "old"):      # "old": a link from before D.11 runs it again
             ce = _chapter_editor(grader)
             if ce is None:
                 notify.empty(grader, "No chapter open", "Open the chapter in Write first.")
-            elif action == "again":
-                run(ce, key)
             else:
-                _old_window(ce, key)
+                run(ce, key)
     except Exception as e:                       # never let an exception escape a slot
         print(f"[analysis] link {url}: {e}")
 
@@ -201,11 +192,10 @@ def _copy(grader, key: str) -> None:
         notify.done(grader, "Copied", "Report copied to the clipboard.")
 
 
-def _old_window(chapter_editor, key: str) -> bool:
-    name = OLD_WINDOWS.get(key)
-    if name is None:                 # Writing hints never had a window
-        notify.empty(chapter_editor, "Writing hints",
-                     "Writing hints run as a report in the Critique (Revise ▸ Critique).")
-        return False
-    getattr(chapter_editor, name)()
+def _no_critique(chapter_editor, key: str) -> bool:
+    from src.ai.analysis_reports import ITEMS
+    label = ITEMS.get(key, (key,))[0]
+    notify.empty(chapter_editor, label,
+                 f"“{label}” runs as a report in the Critique (Revise ▸ Critique). "
+                 "Run it from Write in the main window.")
     return False

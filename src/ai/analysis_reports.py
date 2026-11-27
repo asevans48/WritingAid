@@ -80,6 +80,20 @@ NO_MODEL = ("No model is set up, so {what} could not run. {shown} "
             "Add a model under Settings › AI Configuration or Local Models.")
 
 
+def no_model_line(what: str, shown: str) -> str:
+    """``NO_MODEL``, plus why a local model would not load when that is
+    known (what the old Promise Check window said; D.11)."""
+    line = NO_MODEL.format(what=what, shown=shown)
+    try:
+        from src.ai import task_llm
+        reason = (task_llm._last_error or "").strip()
+    except Exception:
+        reason = ""
+    if reason.startswith("Couldn't load the local model"):
+        line += " " + reason.rstrip(".") + "."
+    return line
+
+
 def kind_for(value: str) -> Optional[AnalysisKind]:
     try:
         return AnalysisKind(value)
@@ -150,8 +164,8 @@ class _Analysis(_BaseAnalyzer):
     # Without a model ────────────────────────────────────────────────
 
     def _scan(self, text, section, genre, critique_context) -> None:
-        section.summary = NO_MODEL.format(
-            what=self.what, shown=self.shown if self.scans else "There is no scan for it.")
+        section.summary = no_model_line(
+            self.what, self.shown if self.scans else "There is no scan for it.")
         for cls in self.scans:
             try:
                 sub = cls(story_planning=self.story_planning, manuscript=self.manuscript,
@@ -225,7 +239,7 @@ class CharacterCheckAnalyzer(_Analysis):
         return section
 
     def _scan(self, text, section, genre, critique_context):
-        section.summary = NO_MODEL.format(what=self.what, shown=self.shown)
+        section.summary = no_model_line(self.what, self.shown)
 
     def prompt(self, text):
         return prompts.character_prompt(self.project, self._chapter, text)
@@ -239,7 +253,7 @@ class PlotPlanAnalyzer(_Analysis):
                "Story ▸ Plot, or a plan for this chapter in Write's Planner.")
 
     def _scan(self, text, section, genre, critique_context):
-        section.summary = NO_MODEL.format(what=self.what, shown=self.shown)
+        section.summary = no_model_line(self.what, self.shown)
 
     def prompt(self, text):
         return prompts.plot_prompt(self.project, self._chapter, text)

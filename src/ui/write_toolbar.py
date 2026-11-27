@@ -4,7 +4,8 @@
 19; every action is still one click away and calls the same method):
 
 * **Novellas:** "＋ Novella", "⇢ Move main chapters…" and "🗑 Drop novella"
-  become one **Novellas ▾**.
+  became one **Novellas ▾**; since D.10 and D.11 they are the manuscript
+  tree's rows and right-click entries, and Novellas ▾ is gone.
 * **Manuscript drafts:** ＋ (save as a new draft), 🗑 (drop this draft) and
   ↗ (open a draft in its own window) become one **Drafts ▾** beside the
   "Editing:" selector. "⇅ Split View" stays a button. (The chapter's own
@@ -81,15 +82,9 @@ def _replace_in_layout(first: Any, new: Any) -> bool:
 
 
 def install(manuscript_editor: Any) -> None:
-    """Novellas ▾ and Drafts ▾ (the call line in ``ManuscriptEditor``)."""
+    """Drafts ▾ (the call line in ``ManuscriptEditor``)."""
     me = manuscript_editor
     try:
-        novellas = _menu_for(
-            me, "Novellas ▾", "Start, fill or drop a novella in this project's universe",
-            (me.new_subproject_btn, me.move_to_novella_btn, me.drop_novella_btn),
-            ("＋ New novella…", "⇢ Move main chapters into a novella…", "🗑 Drop a novella…"))
-        _replace_in_layout(me.new_subproject_btn, novellas)
-        me.novellas_menu_btn = novellas
         drafts = _menu_for(
             me, "Drafts ▾", "Save, drop or open manuscript drafts",
             (me.new_draft_btn, me.drop_draft_btn, me.popout_draft_btn),
